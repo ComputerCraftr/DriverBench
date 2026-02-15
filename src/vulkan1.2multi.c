@@ -2,12 +2,12 @@
 #include <GLFW/glfw3.h>
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <stdarg.h>
 
 #ifndef VERT_SPV_PATH
 #define VERT_SPV_PATH "rect.vert.spv"
@@ -16,9 +16,40 @@
 #define FRAG_SPV_PATH "rect.frag.spv"
 #endif
 
-#define BENCH_BANDS 16u
-#define BENCH_FRAMES 600u
+#define BENCH_BANDS 16U
+#define BENCH_FRAMES 600U
 #define BACKEND_NAME "vulkan"
+#define NS_PER_SECOND_U64 1000000000ULL
+#define NS_TO_MS_D 1e6
+#define MS_TO_S_D 1000.0
+#define BENCH_TARGET_FPS_D 60.0
+#define MAX_GPU_COUNT 8U
+#define MAX_BAND_OWNER 64U
+#define TRIANGLE_VERT_COUNT 6U
+#define QUAD_VERT_FLOAT_COUNT 12U
+#define DEFAULT_EMA_MS_PER_BAND 0.2
+#define FRAME_BUDGET_NS 16666666ULL
+#define FRAME_SAFETY_NS 2000000ULL
+#define BG_COLOR_R_F 0.05F
+#define BG_COLOR_G_F 0.05F
+#define BG_COLOR_B_F 0.07F
+#define BG_COLOR_A_F 1.0F
+#define BAND_PULSE_BASE 0.5F
+#define BAND_PULSE_AMP 0.5F
+#define BAND_PULSE_FREQ 2.0
+#define BAND_PULSE_PHASE 0.3
+#define BAND_COLOR_BASE 0.2F
+#define BAND_COLOR_SCALE 0.8F
+#define BAND_GREEN_SCALE 0.6F
+#define NDC_TOP_LEFT_Y (-1.0F)
+#define NDC_HEIGHT 2.0F
+#define MASK_GPU0 1U
+#define HOST_COHERENT_MSCALE_NS 1e6
+#define MAX_INSTANCE_EXTS 16U
+#define SLOW_GPU_RATIO_THRESHOLD 1.5
+#define EMA_KEEP 0.9
+#define EMA_NEW 0.1
+#define COLOR_CHANNEL_ALPHA 3U
 
 static void failf(const char *fmt, ...) {
     va_list ap;
@@ -39,8 +70,8 @@ static void infof(const char *fmt, ...) {
     va_end(ap);
 }
 
-static const char *vk_result_name(VkResult r) {
-    switch (r) {
+static const char *vk_result_name(VkResult result) {
+    switch (result) {
     case VK_SUCCESS:
         return "VK_SUCCESS";
     case VK_NOT_READY:
@@ -94,35 +125,38 @@ static const char *vk_result_name(VkResult r) {
     }
 }
 
-static void vk_fail(const char *expr, VkResult r, const char *file, int line) {
-    failf("%s failed: %s (%d) at %s:%d", expr, vk_result_name(r), (int)r, file,
-          line);
+static void vk_fail(const char *expr, VkResult result, const char *file,
+                    int line) {
+    failf("%s failed: %s (%d) at %s:%d", expr, vk_result_name(result),
+          (int)result, file, line);
 }
 
-#define VK_CHECK(x)                                                           \
-    do {                                                                      \
-        VkResult _r = (x);                                                    \
-        if (_r != VK_SUCCESS)                                                 \
-            vk_fail(#x, _r, __FILE__, __LINE__);                              \
+#define VK_CHECK(x)                                                            \
+    do {                                                                       \
+        VkResult _r = (x);                                                     \
+        if (_r != VK_SUCCESS)                                                  \
+            vk_fail(#x, _r, __FILE__, __LINE__);                               \
     } while (0)
 
 static uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return ((uint64_t)ts.tv_sec * NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
 }
 
 static uint8_t *read_file(const char *path, size_t *out_sz) {
-    FILE *f = fopen(path, "rb");
-    if (!f)
+    FILE *file = fopen(path, "rb");
+    if (!file) {
         failf("Failed to open shader file: %s", path);
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    }
+    fseek(file, 0, SEEK_END);
+    long sz = ftell(file);
+    fseek(file, 0, SEEK_SET);
     uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz)
+    if (fread(buf, 1, (size_t)sz, file) != (size_t)sz) {
         failf("Failed to read shader file: %s", path);
-    fclose(f);
+    }
+    fclose(file);
     *out_sz = (size_t)sz;
     return buf;
 }
@@ -139,32 +173,28 @@ typedef struct {
                               // surface (bitmask)
 } DeviceGroupInfo;
 
-static int has_ext(const char *name, uint32_t n, VkExtensionProperties *exts) {
-    for (uint32_t i = 0; i < n; i++)
-        if (strcmp(exts[i].extensionName, name) == 0)
-            return 1;
-    return 0;
-}
-
 int main(void) {
     // ---------------- Window ----------------
-    if (!glfwInit())
+    if (!glfwInit()) {
         failf("glfwInit failed");
+    }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *win = glfwCreateWindow(
         1000, 600, "Vulkan 1.2 opportunistic multi-GPU (device groups)", NULL,
         NULL);
-    if (!win)
+    if (!win) {
         failf("glfwCreateWindow failed");
+    }
 
     // ---------------- Instance ----------------
     uint32_t glfwExtCount = 0;
     const char **glfwExts = glfwGetRequiredInstanceExtensions(&glfwExtCount);
 
-    const char *instExts[16];
+    const char *instExts[MAX_INSTANCE_EXTS];
     uint32_t instExtN = 0;
-    for (uint32_t i = 0; i < glfwExtCount; i++)
+    for (uint32_t i = 0; i < glfwExtCount; i++) {
         instExts[instExtN++] = glfwExts[i];
+    }
     instExts[instExtN++] =
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
 
@@ -187,8 +217,9 @@ int main(void) {
     // ---------------- Enumerate physical devices + groups ----------------
     uint32_t physN = 0;
     VK_CHECK(vkEnumeratePhysicalDevices(instance, &physN, NULL));
-    if (physN == 0)
+    if (physN == 0) {
         failf("No Vulkan physical devices found");
+    }
     VkPhysicalDevice *phys =
         (VkPhysicalDevice *)calloc(physN, sizeof(VkPhysicalDevice));
     VK_CHECK(vkEnumeratePhysicalDevices(instance, &physN, phys));
@@ -199,8 +230,9 @@ int main(void) {
     VkPhysicalDeviceGroupProperties *grps =
         (VkPhysicalDeviceGroupProperties *)calloc(
             grpN, sizeof(VkPhysicalDeviceGroupProperties));
-    for (uint32_t i = 0; i < grpN; i++)
+    for (uint32_t i = 0; i < grpN; i++) {
         grps[i].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GROUP_PROPERTIES;
+    }
     VK_CHECK(vkEnumeratePhysicalDeviceGroups(instance, &grpN, grps));
 
     // Find a group with >=2 devices and at least one presentable device
@@ -209,8 +241,9 @@ int main(void) {
 
     for (uint32_t gi = 0; gi < grpN; gi++) {
         VkPhysicalDeviceGroupProperties *g = &grps[gi];
-        if (g->physicalDeviceCount < 2)
+        if (g->physicalDeviceCount < 2) {
             continue;
+        }
 
         // Determine which devices in group can present to our surface (need
         // queue family + surface support)
@@ -227,15 +260,16 @@ int main(void) {
                 VkBool32 supp = 0;
                 vkGetPhysicalDeviceSurfaceSupportKHR(pd, qi, surface, &supp);
                 if (supp && (qf[qi].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-                    mask |= (1u << di);
+                    mask |= (MASK_GPU0 << di);
                     break;
                 }
             }
             free(qf);
         }
 
-        if (mask == 0)
+        if (mask == 0) {
             continue;
+        }
 
         best.grp = *g;
         best.presentableMask = mask;
@@ -253,8 +287,9 @@ int main(void) {
     if (haveGroup) {
         chosenGrp = best.grp;
         chosenCount = chosenGrp.physicalDeviceCount;
-        for (uint32_t i = 0; i < chosenCount; i++)
+        for (uint32_t i = 0; i < chosenCount; i++) {
             chosenPhys[i] = chosenGrp.physicalDevices[i];
+        }
         presentMask = best.presentableMask;
         infof("Using device group with %u devices (presentMask=0x%x)",
               chosenCount, presentMask);
@@ -267,9 +302,9 @@ int main(void) {
     // else first presentable
     uint32_t presentDevIndex = 0;
     if (haveGroup) {
-        if (!(presentMask & 1u)) {
+        if (!(presentMask & MASK_GPU0)) {
             for (uint32_t i = 0; i < chosenCount; i++) {
-                if (presentMask & (1u << i)) {
+                if (presentMask & (MASK_GPU0 << i)) {
                     presentDevIndex = i;
                     break;
                 }
@@ -296,24 +331,26 @@ int main(void) {
             break;
         }
     }
-    if (gfxQF == UINT32_MAX)
+    if (gfxQF == UINT32_MAX) {
         failf("No graphics+present queue family found");
+    }
     free(qf);
 
     // ---------------- Device creation (with device group pNext if available)
     // ----------------
-    float prio = 1.0f;
+    float prio = 1.0F;
     VkDeviceQueueCreateInfo qci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     qci.queueFamilyIndex = gfxQF;
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
 
-    const char *devExts[8];
+    const char *devExts[MAX_GPU_COUNT];
     uint32_t devExtN = 0;
     devExts[devExtN++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
-    // Device-group functionality is requested via VkDeviceGroupDeviceCreateInfo.
+    // Device-group functionality is requested via
+    // VkDeviceGroupDeviceCreateInfo.
 
     VkPhysicalDeviceFeatures feats = {0};
 
@@ -356,10 +393,11 @@ int main(void) {
 
     VkExtent2D extent = caps.currentExtent;
     if (extent.width == 0xFFFFFFFF) {
-        int w, h;
-        glfwGetFramebufferSize(win, &w, &h);
-        extent.width = (uint32_t)w;
-        extent.height = (uint32_t)h;
+        int win_width = 0;
+        int win_height = 0;
+        glfwGetFramebufferSize(win, &win_width, &win_height);
+        extent.width = (uint32_t)win_width;
+        extent.height = (uint32_t)win_height;
     }
 
     VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // safe default
@@ -371,8 +409,9 @@ int main(void) {
     VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(presentPhys, surface,
                                                        &pmN, pms));
     for (uint32_t i = 0; i < pmN; i++) {
-        if (pms[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+        if (pms[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
             presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
     }
     free(pms);
 
@@ -380,8 +419,9 @@ int main(void) {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     sci.surface = surface;
     sci.minImageCount = caps.minImageCount + 1;
-    if (caps.maxImageCount && sci.minImageCount > caps.maxImageCount)
+    if (caps.maxImageCount && sci.minImageCount > caps.maxImageCount) {
         sci.minImageCount = caps.maxImageCount;
+    }
     sci.imageFormat = fmt.format;
     sci.imageColorSpace = fmt.colorSpace;
     sci.imageExtent = extent;
@@ -466,7 +506,8 @@ int main(void) {
     }
 
     // ---------------- Pipeline (rectangles) ----------------
-    size_t vsz = 0, fsz = 0;
+    size_t vsz = 0;
+    size_t fsz = 0;
     uint8_t *vbin = read_file(VERT_SPV_PATH, &vsz);
     uint8_t *fbin = read_file(FRAG_SPV_PATH, &fsz);
 
@@ -493,7 +534,8 @@ int main(void) {
     stages[1].pName = "main";
 
     // Vertex buffer: a unit quad as two triangles (6 verts), inPos in [0..1]
-    float quadVerts[12] = {0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1};
+    float quadVerts[QUAD_VERT_FLOAT_COUNT] = {0, 0, 1, 0, 1, 1,
+                                              0, 0, 1, 1, 0, 1};
 
     // Create a tiny host-visible vertex buffer (skipping allocator
     // sophistication)
@@ -513,7 +555,7 @@ int main(void) {
 
     uint32_t memIndex = UINT32_MAX;
     for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
-        if ((mr.memoryTypeBits & (1u << i)) &&
+        if ((mr.memoryTypeBits & (MASK_GPU0 << i)) &&
             (mp.memoryTypes[i].propertyFlags &
              (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
@@ -523,8 +565,9 @@ int main(void) {
             break;
         }
     }
-    if (memIndex == UINT32_MAX)
+    if (memIndex == UINT32_MAX) {
         failf("No host-visible + host-coherent memory type for vertex buffer");
+    }
 
     VkMemoryAllocateInfo mai = {.sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -569,7 +612,7 @@ int main(void) {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.cullMode = VK_CULL_MODE_NONE;
-    rs.lineWidth = 1.0f;
+    rs.lineWidth = 1.0F;
 
     VkPipelineMultisampleStateCreateInfo ms = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -657,21 +700,23 @@ int main(void) {
     VK_CHECK(vkCreateFence(device, &fci, NULL, &inFlight));
 
     // ---------------- Opportunistic scheduler state ----------------
-    uint32_t band_owner[64];
+    uint32_t band_owner[MAX_BAND_OWNER];
     uint32_t gpuCount = haveGroup ? chosenCount : 1;
 
     // Start: round robin across GPUs
-    for (uint32_t b = 0; b < BENCH_BANDS; b++)
+    for (uint32_t b = 0; b < BENCH_BANDS; b++) {
         band_owner[b] = b % gpuCount;
+    }
 
     // EMA ms per band per GPU
-    double ema_ms_per_band[8];
-    for (uint32_t g = 0; g < gpuCount; g++)
-        ema_ms_per_band[g] = 0.2; // seed guess
+    double ema_ms_per_band[MAX_GPU_COUNT];
+    for (uint32_t g = 0; g < gpuCount; g++) {
+        ema_ms_per_band[g] = DEFAULT_EMA_MS_PER_BAND; // seed guess
+    }
 
     // Frame budget (ns): approximate 60Hz if FIFO, else still useful heuristic
-    const uint64_t budget_ns = 16666666ull;
-    const uint64_t safety_ns = 2000000ull; // 2ms
+    const uint64_t budget_ns = FRAME_BUDGET_NS;
+    const uint64_t safety_ns = FRAME_SAFETY_NS;
 
     // ---------------- Main loop ----------------
     uint64_t bench_start = now_ns();
@@ -700,10 +745,10 @@ int main(void) {
         VK_CHECK(vkBeginCommandBuffer(cmd, &cbi));
 
         VkClearValue clear;
-        clear.color.float32[0] = 0.05f;
-        clear.color.float32[1] = 0.05f;
-        clear.color.float32[2] = 0.07f;
-        clear.color.float32[3] = 1.0f;
+        clear.color.float32[0] = BG_COLOR_R_F;
+        clear.color.float32[1] = BG_COLOR_G_F;
+        clear.color.float32[2] = BG_COLOR_B_F;
+        clear.color.float32[3] = BG_COLOR_A_F;
 
         VkRenderPassBeginInfo rbi = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -720,30 +765,34 @@ int main(void) {
         vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &off);
 
         // Time for animation uses the same nominal frame cadence as OpenGL.
-        double t = (double)frame / 60.0;
+        double time_s = (double)frame / BENCH_TARGET_FPS_D;
 
         // Compute current “eligibility” based on predicted finish time
         uint64_t frameStart = now_ns();
         for (uint32_t g = 1; g < gpuCount; g++) {
             // If this GPU is worse than GPU0 by a lot, drift bands away from it
             double ratio = ema_ms_per_band[g] / ema_ms_per_band[0];
-            if (ratio > 1.5) {
+            if (ratio > SLOW_GPU_RATIO_THRESHOLD) {
                 // Opportunistic skip: reassign its bands to GPU0
-                for (uint32_t b = 0; b < BENCH_BANDS; b++)
-                    if (band_owner[b] == g)
+                for (uint32_t b = 0; b < BENCH_BANDS; b++) {
+                    if (band_owner[b] == g) {
                         band_owner[b] = 0;
+                    }
+                }
             }
         }
 
         // Draw bands
         for (uint32_t b = 0; b < BENCH_BANDS; b++) {
             uint32_t owner = band_owner[b];
-            if (owner >= gpuCount)
+            if (owner >= gpuCount) {
                 owner = 0;
+            }
 
             // Deadline-aware: if predicted completion too late, give it to GPU0
             uint64_t now = now_ns();
-            uint64_t predicted_ns = (uint64_t)(ema_ms_per_band[owner] * 1e6);
+            uint64_t predicted_ns =
+                (uint64_t)(ema_ms_per_band[owner] * HOST_COHERENT_MSCALE_NS);
             if (owner != 0 &&
                 (now + predicted_ns) > (frameStart + budget_ns - safety_ns)) {
                 owner = 0;
@@ -753,7 +802,7 @@ int main(void) {
             if (haveGroup) {
                 // Device mask selects which physical device executes subsequent
                 // commands
-                vkCmdSetDeviceMask(cmd, (1u << owner));
+                vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
             }
 
             // Viewport/scissor for this band
@@ -765,8 +814,8 @@ int main(void) {
             vpo.y = 0;
             vpo.width = (float)extent.width;
             vpo.height = (float)extent.height;
-            vpo.minDepth = 0.0f;
-            vpo.maxDepth = 1.0f;
+            vpo.minDepth = 0.0F;
+            vpo.maxDepth = 1.0F;
             vkCmdSetViewport(cmd, 0, 1, &vpo);
 
             VkRect2D sc;
@@ -777,32 +826,40 @@ int main(void) {
             vkCmdSetScissor(cmd, 0, 1, &sc);
 
             // Push constants map quad into this band in NDC
-            float ndc_x0 = (2.0f * (float)x0 / (float)extent.width) - 1.0f;
-            float ndc_x1 = (2.0f * (float)x1 / (float)extent.width) - 1.0f;
+            float ndc_x0 =
+                (NDC_HEIGHT * (float)x0 / (float)extent.width) + NDC_TOP_LEFT_Y;
+            float ndc_x1 =
+                (NDC_HEIGHT * (float)x1 / (float)extent.width) + NDC_TOP_LEFT_Y;
 
             PushConstants pc;
             pc.offsetNDC[0] = ndc_x0;
-            pc.offsetNDC[1] = -1.0f;
+            pc.offsetNDC[1] = NDC_TOP_LEFT_Y;
             pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
-            pc.scaleNDC[1] = 2.0f;
+            pc.scaleNDC[1] = NDC_HEIGHT;
 
             // Color varies per band + animated pulse
-            float pulse = 0.5f + 0.5f * (float)sin(t * 2.0 + b * 0.3);
-            pc.color[0] = pulse * (0.2f + 0.8f * (float)b / (float)BENCH_BANDS);
-            pc.color[1] = pulse * 0.6f;
-            pc.color[2] = 1.0f - pc.color[0];
-            pc.color[3] = 1.0f;
+            float pulse =
+                BAND_PULSE_BASE +
+                (BAND_PULSE_AMP * (float)sin((time_s * BAND_PULSE_FREQ) +
+                                             (b * BAND_PULSE_PHASE)));
+            pc.color[0] =
+                pulse * (BAND_COLOR_BASE +
+                         BAND_COLOR_SCALE * (float)b / (float)BENCH_BANDS);
+            pc.color[1] = pulse * BAND_GREEN_SCALE;
+            pc.color[2] = 1.0F - pc.color[0];
+            pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
 
             vkCmdPushConstants(cmd, layout,
                                VK_SHADER_STAGE_VERTEX_BIT |
                                    VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(pc), &pc);
-            vkCmdDraw(cmd, 6, 1, 0, 0);
+            vkCmdDraw(cmd, TRIANGLE_VERT_COUNT, 1, 0, 0);
         }
 
         // Reset mask back to GPU0 before ending, for sanity
-        if (haveGroup)
-            vkCmdSetDeviceMask(cmd, 1u);
+        if (haveGroup) {
+            vkCmdSetDeviceMask(cmd, MASK_GPU0);
+        }
 
         vkCmdEndRenderPass(cmd);
         VK_CHECK(vkEndCommandBuffer(cmd));
@@ -833,31 +890,34 @@ int main(void) {
         // (This is CPU-side and coarse in this minimal sample; for real
         // accuracy use GPU timestamp queries.)
         uint64_t frameEnd = now_ns();
-        double frame_ms = (double)(frameEnd - frameStart) / 1e6;
+        double frame_ms = (double)(frameEnd - frameStart) / NS_TO_MS_D;
         double ms_per_band = frame_ms / (double)BENCH_BANDS;
 
         // We don’t know actual per-GPU contributions without query pools;
         // approximate: GPUs with more assigned bands get credit for more work.
-        uint32_t bandsPerGpu[8] = {0};
-        for (uint32_t b = 0; b < BENCH_BANDS; b++)
+        uint32_t bandsPerGpu[MAX_GPU_COUNT] = {0};
+        for (uint32_t b = 0; b < BENCH_BANDS; b++) {
             bandsPerGpu[band_owner[b]]++;
+        }
 
         for (uint32_t g = 0; g < gpuCount; g++) {
-            if (bandsPerGpu[g] == 0)
+            if (bandsPerGpu[g] == 0) {
                 continue;
+            }
             // Heuristic: assume ms scales with number of bands per GPU
             double est = ms_per_band;
-            ema_ms_per_band[g] = 0.9 * ema_ms_per_band[g] + 0.1 * est;
+            ema_ms_per_band[g] =
+                (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * est);
         }
 
         bench_frames++;
     }
 
     uint64_t bench_end = now_ns();
-    double bench_ms = (double)(bench_end - bench_start) / 1e6;
+    double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
     if (bench_frames > 0) {
         double ms_per_frame = bench_ms / (double)bench_frames;
-        double fps = 1000.0 / ms_per_frame;
+        double fps = MS_TO_S_D / ms_per_frame;
         printf("Vulkan benchmark: frames=%u bands=%u total_ms=%.2f "
                "ms_per_frame=%.3f fps=%.2f\n",
                bench_frames, BENCH_BANDS, bench_ms, ms_per_frame, fps);
@@ -876,14 +936,16 @@ int main(void) {
     vkDestroyPipeline(device, pipeline, NULL);
     vkDestroyPipelineLayout(device, layout, NULL);
 
-    for (uint32_t i = 0; i < imgN; i++)
+    for (uint32_t i = 0; i < imgN; i++) {
         vkDestroyFramebuffer(device, fbs[i], NULL);
+    }
     free(fbs);
 
     vkDestroyRenderPass(device, renderPass, NULL);
 
-    for (uint32_t i = 0; i < imgN; i++)
+    for (uint32_t i = 0; i < imgN; i++) {
         vkDestroyImageView(device, views[i], NULL);
+    }
     free(views);
 
     free(images);

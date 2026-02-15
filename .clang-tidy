@@ -1,0 +1,27 @@
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -readability-function-cognitive-complexity,
+  -readability-isolate-declaration
+
+HeaderFilterRegex: '.*'
+WarningsAsErrors: ''
+CheckOptions:
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: '2'
+  - key: readability-identifier-length.MinimumParameterNameLength
+    value: '2'
+  - key: readability-identifier-length.MinimumLoopCounterNameLength
+    value: '1'
+  - key: readability-identifier-length.IgnoredVariableNames
+    value: 'ap;ts;fd;fb;bo;ctx;cfg;dpy;req;cur;ev;vs;fs;cb;ds;ms;rs;ia;vp;si;pi;pc;p;n;t;i;k;w;h;f;r'
+  - key: readability-identifier-length.IgnoredParameterNames
+    value: 'fd;bo;ctx;cfg;dpy;msg;k;r;t;p;n'
+  - key: readability-magic-numbers.IgnoredIntegerValues
+    value: '0;1;2;4;8;16;32;64;255'
+  - key: readability-magic-numbers.IgnoredFloatingPointValues
+    value: '0.0;1.0;2.0'
