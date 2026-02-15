@@ -50,6 +50,9 @@
 #define EMA_KEEP 0.9
 #define EMA_NEW 0.1
 #define COLOR_CHANNEL_ALPHA 3U
+#define DISPLAY_LOCALHOST_PREFIX "localhost:"
+#define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
+#define REMOTE_DISPLAY_OVERRIDE_ENV "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
 
 static void failf(const char *fmt, ...) {
     va_list ap;
@@ -68,6 +71,42 @@ static void infof(const char *fmt, ...) {
     vfprintf(stdout, fmt, ap);
     fprintf(stdout, "\n");
     va_end(ap);
+}
+
+static int env_is_truthy(const char *name) {
+    const char *value = getenv(name);
+    if (!value) {
+        return 0;
+    }
+    return (strcmp(value, "1") == 0) || (strcmp(value, "true") == 0) ||
+           (strcmp(value, "TRUE") == 0) || (strcmp(value, "yes") == 0) ||
+           (strcmp(value, "YES") == 0);
+}
+
+static int has_ssh_env(void) {
+    return getenv("SSH_CONNECTION") || getenv("SSH_CLIENT") ||
+           getenv("SSH_TTY");
+}
+
+static int is_forwarded_x11_display(void) {
+    const char *display = getenv("DISPLAY");
+    if (!display || !has_ssh_env()) {
+        return 0;
+    }
+    return (strncmp(display, DISPLAY_LOCALHOST_PREFIX,
+                    strlen(DISPLAY_LOCALHOST_PREFIX)) == 0) ||
+           (strncmp(display, DISPLAY_LOOPBACK_PREFIX,
+                    strlen(DISPLAY_LOOPBACK_PREFIX)) == 0);
+}
+
+static void validate_runtime_environment(void) {
+    const char *display = getenv("DISPLAY");
+    if (is_forwarded_x11_display() &&
+        !env_is_truthy(REMOTE_DISPLAY_OVERRIDE_ENV)) {
+        failf("Refusing forwarded X11 session (DISPLAY=%s). This benchmark "
+              "expects local display/GPU access. Set %s=1 to override.",
+              display ? display : "(null)", REMOTE_DISPLAY_OVERRIDE_ENV);
+    }
 }
 
 static const char *vk_result_name(VkResult result) {
@@ -174,6 +213,8 @@ typedef struct {
 } DeviceGroupInfo;
 
 int main(void) {
+    validate_runtime_environment();
+
     // ---------------- Window ----------------
     if (!glfwInit()) {
         failf("glfwInit failed");
