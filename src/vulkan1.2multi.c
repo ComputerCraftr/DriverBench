@@ -241,12 +241,7 @@ int main(void) {
     uint32_t devExtN = 0;
     devExts[devExtN++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
-    // Device-group swapchain features
-    if (haveGroup) {
-        devExts[devExtN++] =
-            VK_KHR_DEVICE_GROUP_EXTENSION_NAME; // usually core-ish, harmless
-        devExts[devExtN++] = VK_KHR_DEVICE_GROUP_SWAPCHAIN_EXTENSION_NAME;
-    }
+    // Device-group functionality is requested via VkDeviceGroupDeviceCreateInfo.
 
     VkPhysicalDeviceFeatures feats = {0};
 
@@ -325,15 +320,6 @@ int main(void) {
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     sci.presentMode = presentMode;
     sci.clipped = VK_TRUE;
-
-    // If device group is active, request a present mode that allows
-    // multi-device rendering where possible.
-    VkDeviceGroupSwapchainCreateInfoKHR dgsci = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_SWAPCHAIN_CREATE_INFO_KHR};
-    if (haveGroup) {
-        dgsci.modes = VK_DEVICE_GROUP_PRESENT_MODE_LOCAL_BIT_KHR;
-        sci.pNext = &dgsci;
-    }
 
     VkSwapchainKHR swapchain;
     VK_CHECK(vkCreateSwapchainKHR(device, &sci, NULL, &swapchain));
