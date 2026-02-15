@@ -47,19 +47,36 @@
 #define COLOR_R_BASE_F 0.2F
 #define COLOR_R_SCALE_F 0.8F
 #define COLOR_G_SCALE_F 0.6F
+#define LOG_MSG_CAPACITY 2048U
+#define VERT_IDX_0 0U
+#define VERT_IDX_1 1U
+#define VERT_IDX_2 2U
+#define VERT_IDX_3 3U
+#define VERT_IDX_4 4U
+#define VERT_IDX_5 5U
 
 typedef struct {
     GLfloat x, y;
     GLubyte r, g, b, a;
 } V;
 
-static void failf(const char *fmt, ...) {
+static __attribute__((noreturn)) void failf(const char *fmt, ...) {
+    char message[LOG_MSG_CAPACITY];
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "[%s][error] ", BACKEND_NAME);
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
+#ifdef __STDC_LIB_EXT1__
+    (void)vsnprintf_s(message, sizeof(message), _TRUNCATE, fmt, ap);
+#else
+    // Fallback for platforms without Annex K bounds-checked APIs.
+    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+    (void)vsnprintf(message, sizeof(message), fmt, ap);
+#endif
     va_end(ap);
+    fputs("[", stderr);
+    fputs(BACKEND_NAME, stderr);
+    fputs("][error] ", stderr);
+    fputs(message, stderr);
+    fputc('\n', stderr);
     exit(EXIT_FAILURE);
 }
 
@@ -105,18 +122,24 @@ static void fill_band_vertices(V *verts, uint32_t width, uint32_t height,
         float gf = pulse * COLOR_G_SCALE_F;
         float bf = 1.0F - rf;
 
-        GLubyte r = (GLubyte)(USCALE_255_F * rf);
-        GLubyte g = (GLubyte)(USCALE_255_F * gf);
-        GLubyte bl = (GLubyte)(USCALE_255_F * bf);
-        GLubyte a = 255;
+        GLubyte red_u8 = (GLubyte)(USCALE_255_F * rf);
+        GLubyte green_u8 = (GLubyte)(USCALE_255_F * gf);
+        GLubyte blue_u8 = (GLubyte)(USCALE_255_F * bf);
+        GLubyte alpha_u8 = 255;
 
         uint32_t vert_index = b * TRI_VERTS_PER_BAND;
-        verts[vert_index + 0] = (V){x0, y0, r, g, bl, a};
-        verts[vert_index + 1] = (V){x1, y0, r, g, bl, a};
-        verts[vert_index + 2] = (V){x1, y1, r, g, bl, a};
-        verts[vert_index + 3] = (V){x0, y0, r, g, bl, a};
-        verts[vert_index + 4] = (V){x1, y1, r, g, bl, a};
-        verts[vert_index + 5] = (V){x0, y1, r, g, bl, a};
+        verts[vert_index + VERT_IDX_0] =
+            (V){x0, y0, red_u8, green_u8, blue_u8, alpha_u8};
+        verts[vert_index + VERT_IDX_1] =
+            (V){x1, y0, red_u8, green_u8, blue_u8, alpha_u8};
+        verts[vert_index + VERT_IDX_2] =
+            (V){x1, y1, red_u8, green_u8, blue_u8, alpha_u8};
+        verts[vert_index + VERT_IDX_3] =
+            (V){x0, y0, red_u8, green_u8, blue_u8, alpha_u8};
+        verts[vert_index + VERT_IDX_4] =
+            (V){x1, y1, red_u8, green_u8, blue_u8, alpha_u8};
+        verts[vert_index + VERT_IDX_5] =
+            (V){x0, y1, red_u8, green_u8, blue_u8, alpha_u8};
     }
 }
 
@@ -158,16 +181,16 @@ static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
 
     uint32_t prop_id = 0;
     for (uint32_t i = 0; i < props->count_props; i++) {
-        drmModePropertyRes *p = drmModeGetProperty(fd, props->props[i]);
-        if (!p) {
+        drmModePropertyRes *prop = drmModeGetProperty(fd, props->props[i]);
+        if (!prop) {
             continue;
         }
-        if (strcmp(p->name, name) == 0) {
-            prop_id = p->prop_id;
-            drmModeFreeProperty(p);
+        if (strcmp(prop->name, name) == 0) {
+            prop_id = prop->prop_id;
+            drmModeFreeProperty(prop);
             break;
         }
-        drmModeFreeProperty(p);
+        drmModeFreeProperty(prop);
     }
     drmModeFreeObjectProperties(props);
 
@@ -180,15 +203,16 @@ static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
 
 static drmModeConnector *pick_connected_connector(struct kms_atomic *kms) {
     for (int i = 0; i < kms->res->count_connectors; i++) {
-        drmModeConnector *c =
+        drmModeConnector *connector =
             drmModeGetConnector(kms->fd, kms->res->connectors[i]);
-        if (!c) {
+        if (!connector) {
             continue;
         }
-        if (c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) {
-            return c;
+        if (connector->connection == DRM_MODE_CONNECTED &&
+            connector->count_modes > 0) {
+            return connector;
         }
-        drmModeFreeConnector(c);
+        drmModeFreeConnector(connector);
     }
     return NULL;
 }
@@ -251,25 +275,25 @@ static uint32_t pick_primary_plane_for_crtc(struct kms_atomic *kms,
 
         int is_primary = 0;
         for (uint32_t j = 0; j < props->count_props; j++) {
-            drmModePropertyRes *p =
+            drmModePropertyRes *prop =
                 drmModeGetProperty(kms->fd, props->props[j]);
-            if (!p) {
+            if (!prop) {
                 continue;
             }
-            if (strcmp(p->name, "type") == 0 &&
-                (p->flags & DRM_MODE_PROP_ENUM)) {
+            if (strcmp(prop->name, "type") == 0 &&
+                (prop->flags & DRM_MODE_PROP_ENUM)) {
                 // enum values: 0 Overlay, 1 Primary, 2 Cursor (common
                 // convention)
-                for (int e = 0; e < p->count_enums; e++) {
-                    if (strcmp(p->enums[e].name, "Primary") == 0) {
+                for (int e = 0; e < prop->count_enums; e++) {
+                    if (strcmp(prop->enums[e].name, "Primary") == 0) {
                         uint64_t val = props->prop_values[j];
-                        if (val == p->enums[e].value) {
+                        if (val == prop->enums[e].value) {
                             is_primary = 1;
                         }
                     }
                 }
             }
-            drmModeFreeProperty(p);
+            drmModeFreeProperty(prop);
             if (is_primary) {
                 break;
             }
@@ -286,7 +310,7 @@ static uint32_t pick_primary_plane_for_crtc(struct kms_atomic *kms,
 }
 
 static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
-    memset(kms, 0, sizeof(*kms));
+    *kms = (struct kms_atomic){0};
 
     kms->fd = open(card, O_RDWR | O_CLOEXEC);
     if (kms->fd < 0) {
@@ -436,8 +460,9 @@ egl_init_try_gl15_then_gles11(struct gbm_device *gbm, EGLConfig *out_cfg,
         cfg_attribs_gl[idx++] = EGL_NONE;
 
         EGLConfig cfg;
-        EGLint n;
-        if (eglChooseConfig(dpy, cfg_attribs_gl, &cfg, 1, &n) && n == 1) {
+        EGLint config_count = 0;
+        if (eglChooseConfig(dpy, cfg_attribs_gl, &cfg, 1, &config_count) &&
+            config_count == 1) {
             EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, NULL);
             if (ctx != EGL_NO_CONTEXT) {
                 EGLSurface surf = eglCreateWindowSurface(
@@ -480,8 +505,9 @@ egl_init_try_gl15_then_gles11(struct gbm_device *gbm, EGLConfig *out_cfg,
     cfg_attribs_es[idx++] = EGL_NONE;
 
     EGLConfig cfg;
-    EGLint n;
-    if (!eglChooseConfig(dpy, cfg_attribs_es, &cfg, 1, &n) || n != 1) {
+    EGLint config_count = 0;
+    if (!eglChooseConfig(dpy, cfg_attribs_es, &cfg, 1, &config_count) ||
+        config_count != 1) {
         die("eglChooseConfig ES");
     }
 
@@ -645,21 +671,21 @@ int main(int argc, char **argv) {
         }
         struct fb *next = fb_from_bo(kms.fd, next_bo);
 
-        drmModeAtomicReq *r = drmModeAtomicAlloc();
-        if (!r) {
+        drmModeAtomicReq *commit_req = drmModeAtomicAlloc();
+        if (!commit_req) {
             diex("drmModeAtomicAlloc");
         }
-        drmModeAtomicAddProperty(r, kms.plane_id, kms.plane_prop_fb_id,
+        drmModeAtomicAddProperty(commit_req, kms.plane_id, kms.plane_prop_fb_id,
                                  next->fb_id);
 
         int waiting = 1;
         // Request page flip event; NONBLOCK is optional but common
         uint32_t flip_flags =
             DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT;
-        if (drmModeAtomicCommit(kms.fd, r, flip_flags, &waiting)) {
+        if (drmModeAtomicCommit(kms.fd, commit_req, flip_flags, &waiting)) {
             die("drmModeAtomicCommit flip");
         }
-        drmModeAtomicFree(r);
+        drmModeAtomicFree(commit_req);
 
         while (waiting) {
             fd_set fds;

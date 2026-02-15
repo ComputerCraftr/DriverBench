@@ -50,27 +50,52 @@
 #define EMA_KEEP 0.9
 #define EMA_NEW 0.1
 #define COLOR_CHANNEL_ALPHA 3U
+#define WINDOW_WIDTH_PX 1000
+#define WINDOW_HEIGHT_PX 600
+#define SURFACE_EXTENT_UNDEFINED 0xFFFFFFFFU
+#define COLOR_WRITE_MASK_RGBA 0xFU
+#define LOG_MSG_CAPACITY 2048U
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 #define REMOTE_DISPLAY_OVERRIDE_ENV "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
 
-static void failf(const char *fmt, ...) {
+static __attribute__((noreturn)) void failf(const char *fmt, ...) {
+    char message[LOG_MSG_CAPACITY];
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "[%s][error] ", BACKEND_NAME);
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
+#ifdef __STDC_LIB_EXT1__
+    (void)vsnprintf_s(message, sizeof(message), _TRUNCATE, fmt, ap);
+#else
+    // Fallback for platforms without Annex K bounds-checked APIs.
+    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+    (void)vsnprintf(message, sizeof(message), fmt, ap);
+#endif
     va_end(ap);
+    fputs("[", stderr);
+    fputs(BACKEND_NAME, stderr);
+    fputs("][error] ", stderr);
+    fputs(message, stderr);
+    fputc('\n', stderr);
     exit(EXIT_FAILURE);
 }
 
 static void infof(const char *fmt, ...) {
+    char message[LOG_MSG_CAPACITY];
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stdout, "[%s][info] ", BACKEND_NAME);
-    vfprintf(stdout, fmt, ap);
-    fprintf(stdout, "\n");
+#ifdef __STDC_LIB_EXT1__
+    (void)vsnprintf_s(message, sizeof(message), _TRUNCATE, fmt, ap);
+#else
+    // Fallback for platforms without Annex K bounds-checked APIs.
+    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+    (void)vsnprintf(message, sizeof(message), fmt, ap);
+#endif
     va_end(ap);
+    fputs("[", stdout);
+    fputs(BACKEND_NAME, stdout);
+    fputs("][info] ", stdout);
+    fputs(message, stdout);
+    fputc('\n', stdout);
 }
 
 static int env_is_truthy(const char *name) {
@@ -221,8 +246,8 @@ int main(void) {
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *win = glfwCreateWindow(
-        1000, 600, "Vulkan 1.2 opportunistic multi-GPU (device groups)", NULL,
-        NULL);
+        WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX,
+        "Vulkan 1.2 opportunistic multi-GPU (device groups)", NULL, NULL);
     if (!win) {
         failf("glfwCreateWindow failed");
     }
@@ -281,16 +306,16 @@ int main(void) {
     int haveGroup = 0;
 
     for (uint32_t gi = 0; gi < grpN; gi++) {
-        VkPhysicalDeviceGroupProperties *g = &grps[gi];
-        if (g->physicalDeviceCount < 2) {
+        VkPhysicalDeviceGroupProperties *group_props = &grps[gi];
+        if (group_props->physicalDeviceCount < 2) {
             continue;
         }
 
         // Determine which devices in group can present to our surface (need
         // queue family + surface support)
         uint32_t mask = 0;
-        for (uint32_t di = 0; di < g->physicalDeviceCount; di++) {
-            VkPhysicalDevice pd = g->physicalDevices[di];
+        for (uint32_t di = 0; di < group_props->physicalDeviceCount; di++) {
+            VkPhysicalDevice pd = group_props->physicalDevices[di];
             uint32_t qfN = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(pd, &qfN, NULL);
             VkQueueFamilyProperties *qf = (VkQueueFamilyProperties *)calloc(
@@ -312,7 +337,7 @@ int main(void) {
             continue;
         }
 
-        best.grp = *g;
+        best.grp = *group_props;
         best.presentableMask = mask;
         haveGroup = 1;
         break; // keep first usable group for simplicity
@@ -433,7 +458,7 @@ int main(void) {
     free(fmts);
 
     VkExtent2D extent = caps.currentExtent;
-    if (extent.width == 0xFFFFFFFF) {
+    if (extent.width == SURFACE_EXTENT_UNDEFINED) {
         int win_width = 0;
         int win_height = 0;
         glfwGetFramebufferSize(win, &win_width, &win_height);
@@ -619,7 +644,12 @@ int main(void) {
 
     void *mapped = NULL;
     VK_CHECK(vkMapMemory(device, vmem, 0, sizeof(quadVerts), 0, &mapped));
-    memcpy(mapped, quadVerts, sizeof(quadVerts));
+    {
+        float *mapped_f32 = (float *)mapped;
+        for (size_t i = 0; i < QUAD_VERT_FLOAT_COUNT; i++) {
+            mapped_f32[i] = quadVerts[i];
+        }
+    }
     vkUnmapMemory(device, vmem);
 
     VkVertexInputBindingDescription bind = {0};
@@ -660,7 +690,7 @@ int main(void) {
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineColorBlendAttachmentState cba = {0};
-    cba.colorWriteMask = 0xF;
+    cba.colorWriteMask = COLOR_WRITE_MASK_RGBA;
     cba.blendEnable = VK_FALSE;
 
     VkPipelineColorBlendStateCreateInfo cb = {
@@ -789,7 +819,7 @@ int main(void) {
         clear.color.float32[0] = BG_COLOR_R_F;
         clear.color.float32[1] = BG_COLOR_G_F;
         clear.color.float32[2] = BG_COLOR_B_F;
-        clear.color.float32[3] = BG_COLOR_A_F;
+        clear.color.float32[COLOR_CHANNEL_ALPHA] = BG_COLOR_A_F;
 
         VkRenderPassBeginInfo rbi = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -862,7 +892,7 @@ int main(void) {
             VkRect2D sc;
             sc.offset.x = (int32_t)x0;
             sc.offset.y = 0;
-            sc.extent.width = (uint32_t)(x1 - x0);
+            sc.extent.width = x1 - x0;
             sc.extent.height = extent.height;
             vkCmdSetScissor(cmd, 0, 1, &sc);
 
@@ -980,16 +1010,16 @@ int main(void) {
     for (uint32_t i = 0; i < imgN; i++) {
         vkDestroyFramebuffer(device, fbs[i], NULL);
     }
-    free(fbs);
+    free((void *)fbs);
 
     vkDestroyRenderPass(device, renderPass, NULL);
 
     for (uint32_t i = 0; i < imgN; i++) {
         vkDestroyImageView(device, views[i], NULL);
     }
-    free(views);
+    free((void *)views);
 
-    free(images);
+    free((void *)images);
     vkDestroySwapchainKHR(device, swapchain, NULL);
 
     vkDestroyCommandPool(device, cmdPool, NULL);
@@ -1001,7 +1031,7 @@ int main(void) {
     glfwDestroyWindow(win);
     glfwTerminate();
 
-    free(phys);
-    free(grps);
+    free((void *)phys);
+    free((void *)grps);
     return 0;
 }
