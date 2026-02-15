@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
 
 #ifndef VERT_SPV_PATH
 #define VERT_SPV_PATH "rect.vert.spv"
@@ -17,15 +18,92 @@
 
 #define BENCH_BANDS 16u
 #define BENCH_FRAMES 600u
+#define BACKEND_NAME "vulkan"
 
-#define VK_CHECK(x)                                                            \
-    do {                                                                       \
-        VkResult _r = (x);                                                     \
-        if (_r != VK_SUCCESS) {                                                \
-            fprintf(stderr, "Vulkan error %d at %s:%d\n", _r, __FILE__,        \
-                    __LINE__);                                                 \
-            exit(1);                                                           \
-        }                                                                      \
+static void failf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "[%s][error] ", BACKEND_NAME);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+    exit(EXIT_FAILURE);
+}
+
+static void infof(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stdout, "[%s][info] ", BACKEND_NAME);
+    vfprintf(stdout, fmt, ap);
+    fprintf(stdout, "\n");
+    va_end(ap);
+}
+
+static const char *vk_result_name(VkResult r) {
+    switch (r) {
+    case VK_SUCCESS:
+        return "VK_SUCCESS";
+    case VK_NOT_READY:
+        return "VK_NOT_READY";
+    case VK_TIMEOUT:
+        return "VK_TIMEOUT";
+    case VK_EVENT_SET:
+        return "VK_EVENT_SET";
+    case VK_EVENT_RESET:
+        return "VK_EVENT_RESET";
+    case VK_INCOMPLETE:
+        return "VK_INCOMPLETE";
+    case VK_ERROR_OUT_OF_HOST_MEMORY:
+        return "VK_ERROR_OUT_OF_HOST_MEMORY";
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+        return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+    case VK_ERROR_INITIALIZATION_FAILED:
+        return "VK_ERROR_INITIALIZATION_FAILED";
+    case VK_ERROR_DEVICE_LOST:
+        return "VK_ERROR_DEVICE_LOST";
+    case VK_ERROR_MEMORY_MAP_FAILED:
+        return "VK_ERROR_MEMORY_MAP_FAILED";
+    case VK_ERROR_LAYER_NOT_PRESENT:
+        return "VK_ERROR_LAYER_NOT_PRESENT";
+    case VK_ERROR_EXTENSION_NOT_PRESENT:
+        return "VK_ERROR_EXTENSION_NOT_PRESENT";
+    case VK_ERROR_FEATURE_NOT_PRESENT:
+        return "VK_ERROR_FEATURE_NOT_PRESENT";
+    case VK_ERROR_INCOMPATIBLE_DRIVER:
+        return "VK_ERROR_INCOMPATIBLE_DRIVER";
+    case VK_ERROR_TOO_MANY_OBJECTS:
+        return "VK_ERROR_TOO_MANY_OBJECTS";
+    case VK_ERROR_FORMAT_NOT_SUPPORTED:
+        return "VK_ERROR_FORMAT_NOT_SUPPORTED";
+    case VK_ERROR_FRAGMENTED_POOL:
+        return "VK_ERROR_FRAGMENTED_POOL";
+    case VK_ERROR_SURFACE_LOST_KHR:
+        return "VK_ERROR_SURFACE_LOST_KHR";
+    case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR:
+        return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
+    case VK_SUBOPTIMAL_KHR:
+        return "VK_SUBOPTIMAL_KHR";
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        return "VK_ERROR_OUT_OF_DATE_KHR";
+    case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR:
+        return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";
+    case VK_ERROR_VALIDATION_FAILED_EXT:
+        return "VK_ERROR_VALIDATION_FAILED_EXT";
+    default:
+        return "VK_RESULT_UNKNOWN";
+    }
+}
+
+static void vk_fail(const char *expr, VkResult r, const char *file, int line) {
+    failf("%s failed: %s (%d) at %s:%d", expr, vk_result_name(r), (int)r, file,
+          line);
+}
+
+#define VK_CHECK(x)                                                           \
+    do {                                                                      \
+        VkResult _r = (x);                                                    \
+        if (_r != VK_SUCCESS)                                                 \
+            vk_fail(#x, _r, __FILE__, __LINE__);                              \
     } while (0)
 
 static uint64_t now_ns(void) {
@@ -36,18 +114,14 @@ static uint64_t now_ns(void) {
 
 static uint8_t *read_file(const char *path, size_t *out_sz) {
     FILE *f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "Failed to open %s\n", path);
-        exit(1);
-    }
+    if (!f)
+        failf("Failed to open shader file: %s", path);
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     fseek(f, 0, SEEK_SET);
     uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
-        fprintf(stderr, "Failed read %s\n", path);
-        exit(1);
-    }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz)
+        failf("Failed to read shader file: %s", path);
     fclose(f);
     *out_sz = (size_t)sz;
     return buf;
@@ -74,11 +148,14 @@ static int has_ext(const char *name, uint32_t n, VkExtensionProperties *exts) {
 
 int main(void) {
     // ---------------- Window ----------------
-    glfwInit();
+    if (!glfwInit())
+        failf("glfwInit failed");
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *win = glfwCreateWindow(
         1000, 600, "Vulkan 1.2 opportunistic multi-GPU (device groups)", NULL,
         NULL);
+    if (!win)
+        failf("glfwCreateWindow failed");
 
     // ---------------- Instance ----------------
     uint32_t glfwExtCount = 0;
@@ -110,10 +187,8 @@ int main(void) {
     // ---------------- Enumerate physical devices + groups ----------------
     uint32_t physN = 0;
     VK_CHECK(vkEnumeratePhysicalDevices(instance, &physN, NULL));
-    if (physN == 0) {
-        fprintf(stderr, "No Vulkan devices.\n");
-        return 1;
-    }
+    if (physN == 0)
+        failf("No Vulkan physical devices found");
     VkPhysicalDevice *phys =
         (VkPhysicalDevice *)calloc(physN, sizeof(VkPhysicalDevice));
     VK_CHECK(vkEnumeratePhysicalDevices(instance, &physN, phys));
@@ -181,12 +256,11 @@ int main(void) {
         for (uint32_t i = 0; i < chosenCount; i++)
             chosenPhys[i] = chosenGrp.physicalDevices[i];
         presentMask = best.presentableMask;
-        fprintf(stderr,
-                "Using device group with %u devices (presentMask=0x%x)\n",
-                chosenCount, presentMask);
+        infof("Using device group with %u devices (presentMask=0x%x)",
+              chosenCount, presentMask);
     } else {
         chosenPhys[0] = phys[0];
-        fprintf(stderr, "No usable device group found; running single-GPU.\n");
+        infof("No usable device group found; running single-GPU");
     }
 
     // Pick a present device index inside group; prefer device 0 if presentable,
@@ -222,10 +296,8 @@ int main(void) {
             break;
         }
     }
-    if (gfxQF == UINT32_MAX) {
-        fprintf(stderr, "No graphics+present queue.\n");
-        return 1;
-    }
+    if (gfxQF == UINT32_MAX)
+        failf("No graphics+present queue family found");
     free(qf);
 
     // ---------------- Device creation (with device group pNext if available)
@@ -451,10 +523,8 @@ int main(void) {
             break;
         }
     }
-    if (memIndex == UINT32_MAX) {
-        fprintf(stderr, "No host visible mem.\n");
-        return 1;
-    }
+    if (memIndex == UINT32_MAX)
+        failf("No host-visible + host-coherent memory type for vertex buffer");
 
     VkMemoryAllocateInfo mai = {.sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -618,7 +688,8 @@ int main(void) {
             vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvail,
                                   VK_NULL_HANDLE, &imgIndex);
         if (ar != VK_SUCCESS) {
-            fprintf(stderr, "Acquire failed %d\n", ar);
+            infof("AcquireNextImage returned %s (%d), ending benchmark loop",
+                  vk_result_name(ar), (int)ar);
             break;
         }
 

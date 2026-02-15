@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
 #include <unistd.h>
 
 #include <xf86drm.h>
@@ -27,20 +28,25 @@
 
 #define BENCH_BANDS 16u
 #define BENCH_FRAMES 600u
+#define BACKEND_NAME "opengl"
 
 typedef struct {
     GLfloat x, y;
     GLubyte r, g, b, a;
 } V;
 
-static void die(const char *msg) {
-    perror(msg);
-    exit(1);
+static void failf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "[%s][error] ", BACKEND_NAME);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    va_end(ap);
+    exit(EXIT_FAILURE);
 }
-static void diex(const char *msg) {
-    fprintf(stderr, "%s\n", msg);
-    exit(1);
-}
+
+static void die(const char *msg) { failf("%s: %s", msg, strerror(errno)); }
+static void diex(const char *msg) { failf("%s", msg); }
 
 static int has_ext(const char *exts, const char *needle) {
     if (!exts || !needle)
@@ -139,11 +145,10 @@ static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
     }
     drmModeFreeObjectProperties(props);
 
-    if (!prop_id) {
-        fprintf(stderr, "Missing property '%s' on object %u type %u\n", name,
-                obj_id, obj_type);
-        exit(1);
-    }
+  if (!prop_id) {
+    failf("Missing DRM property '%s' on object %u type %u", name, obj_id,
+          obj_type);
+  }
     return prop_id;
 }
 
