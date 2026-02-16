@@ -9,6 +9,9 @@ set(DB_GLFW_DISPLAY_SOURCES src/displays/glfw_window/display_glfw_window_common.
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
+option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
+option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
+option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
 
 set(DB_OPENGL_RENDERER "auto" CACHE STRING
   "OpenGL renderer: auto, gl1_5_gles1_1, or gl3_3")
@@ -27,6 +30,58 @@ set_property(CACHE DB_VULKAN_DISPLAY PROPERTY STRINGS
 )
 
 set(HAVE_BACKEND OFF)
+set(DB_IS_RELEASE_LIKE OFF)
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
+  set(DB_IS_RELEASE_LIKE ON)
+endif()
+
+set(DB_EFFECTIVE_LTO OFF)
+if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LTO)
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    set(DB_EFFECTIVE_LTO ON)
+  else()
+    message(WARNING
+      "DB_ENABLE_LTO is ON, but compiler '${CMAKE_C_COMPILER_ID}' is not Clang; "
+      "disabling LTO for this configure."
+    )
+  endif()
+endif()
+
+set(DB_USE_LLD OFF)
+if(DB_EFFECTIVE_LTO AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
+  find_program(DB_LLD_PROGRAM NAMES ld.lld lld)
+  if(DB_LLD_PROGRAM)
+    set(DB_USE_LLD ON)
+  endif()
+endif()
+
+function(db_apply_perf_options target_name)
+  if(NOT TARGET ${target_name})
+    return()
+  endif()
+
+  if(DB_IS_RELEASE_LIKE AND DB_ENABLE_AGGRESSIVE_OPT)
+    if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang|GNU)$")
+      target_compile_options(${target_name} PRIVATE -O3)
+    endif()
+  endif()
+
+  if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LOOP_HINTS)
+    if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang|GNU)$")
+      target_compile_options(${target_name} PRIVATE -funroll-loops)
+    endif()
+  endif()
+
+  if(DB_EFFECTIVE_LTO)
+    target_compile_options(${target_name} PRIVATE -flto)
+    if(COMMAND target_link_options)
+      target_link_options(${target_name} PRIVATE -flto)
+      if(DB_USE_LLD)
+        target_link_options(${target_name} PRIVATE -fuse-ld=lld)
+      endif()
+    endif()
+  endif()
+endfunction()
 
 set(DB_GLFW_TARGET "")
 find_package(glfw3 QUIET)
@@ -91,6 +146,7 @@ if(DB_BUILD_VULKAN)
       ${DB_GLFW_DISPLAY_SOURCES}
       ${DB_CORE_SOURCES}
     )
+    db_apply_perf_options(${DB_VULKAN_TARGET})
     target_include_directories(${DB_VULKAN_TARGET} PRIVATE ${Vulkan_INCLUDE_DIRS})
     target_link_libraries(${DB_VULKAN_TARGET} PRIVATE ${DB_VULKAN_LIB} ${DB_GLFW_TARGET} m)
 
@@ -178,6 +234,7 @@ if(DB_BUILD_OPENGL)
           ${DB_GLFW_DISPLAY_SOURCES}
           ${DB_CORE_SOURCES}
         )
+        db_apply_perf_options(${DB_OPENGL_TARGET})
         if(APPLE)
           target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE GL_SILENCE_DEPRECATION)
           if(DB_RENDERER STREQUAL "gl3_3")
@@ -241,6 +298,7 @@ if(DB_BUILD_OPENGL)
             src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl1_5_gles1_1.c
             ${DB_CORE_SOURCES}
           )
+          db_apply_perf_options(${DB_OPENGL_TARGET})
 
           target_include_directories(${DB_OPENGL_TARGET} PRIVATE
             ${GBM_INCLUDE_DIRS}

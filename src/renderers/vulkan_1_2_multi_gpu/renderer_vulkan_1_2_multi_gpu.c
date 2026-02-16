@@ -776,6 +776,7 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
         }
 
         // Draw bands
+        const float inv_extent_width = 1.0F / (float)extent.width;
         for (uint32_t b = 0; b < BENCH_BANDS; b++) {
             uint32_t owner = band_owner[b];
             if (owner >= gpuCount) {
@@ -820,9 +821,9 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
 
             // Push constants map quad into this band in NDC
             float ndc_x0 =
-                (NDC_HEIGHT * (float)x0 / (float)extent.width) + NDC_TOP_LEFT_Y;
+                (NDC_HEIGHT * (float)x0 * inv_extent_width) + NDC_TOP_LEFT_Y;
             float ndc_x1 =
-                (NDC_HEIGHT * (float)x1 / (float)extent.width) + NDC_TOP_LEFT_Y;
+                (NDC_HEIGHT * (float)x1 * inv_extent_width) + NDC_TOP_LEFT_Y;
 
             PushConstants pc;
             pc.offsetNDC[0] = ndc_x0;

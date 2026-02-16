@@ -16,6 +16,23 @@ Notes:
 - `linux_kms_atomic` is Linux-only and currently supports `gl1_5_gles1_1`.
 - Default `auto` values opportunistically build as many valid targets as your platform/dependencies allow.
 
+## Build Defaults
+
+- `cmake --preset ninja` now configures a `Release` build by default.
+- Release-like builds use portable optimization defaults:
+  - `-O3`
+  - `-funroll-loops` (compiler-led loop optimization hints)
+- Clang-family compilers (`Clang`/`AppleClang`) enable `-flto` by default in
+  release-like builds.
+- Non-Clang compilers auto-disable LTO with a configure-time warning.
+
+Override knobs:
+
+- `-DCMAKE_BUILD_TYPE=Debug` to disable release optimizations.
+- `-DDB_ENABLE_AGGRESSIVE_OPT=OFF` to disable aggressive optimization flags.
+- `-DDB_ENABLE_LOOP_HINTS=OFF` to disable loop hint flags.
+- `-DDB_ENABLE_LTO=OFF` to disable LTO.
+
 ## Target Names
 
 Build outputs use versioned, display-aware target names only:

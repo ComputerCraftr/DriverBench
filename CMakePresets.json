@@ -8,11 +8,11 @@
     "configurePresets": [
         {
             "name": "ninja",
-            "displayName": "Ninja (Debug)",
+            "displayName": "Ninja (Release)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_BUILD_TYPE": "Release",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "DB_OPENGL_RENDERER": "auto",
                 "DB_OPENGL_DISPLAY": "auto",

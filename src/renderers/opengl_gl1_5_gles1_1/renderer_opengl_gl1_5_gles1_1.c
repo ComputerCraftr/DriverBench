@@ -60,10 +60,11 @@ static const GLvoid *vbo_offset_ptr(size_t byte_offset) {
 }
 
 static void fill_vertices(float time_s) {
-    size_t offset = 0U;
+    float *out = g_state.vertices;
+    const float inv_band_count = 1.0F / (float)BENCH_BANDS;
     for (uint32_t band = 0; band < BENCH_BANDS; band++) {
-        float x0 = ((2.0F * (float)band) / (float)BENCH_BANDS) - 1.0F;
-        float x1 = ((2.0F * (float)(band + 1U)) / (float)BENCH_BANDS) - 1.0F;
+        float x0 = ((2.0F * (float)band) * inv_band_count) - 1.0F;
+        float x1 = ((2.0F * (float)(band + 1U)) * inv_band_count) - 1.0F;
 
         float pulse =
             BENCH_PULSE_BASE_F +
@@ -75,22 +76,43 @@ static void fill_vertices(float time_s) {
         float color_g = pulse * BENCH_COLOR_G_SCALE_F;
         float color_b = 1.0F - color_r;
 
-        float tri[TRI_VERTS_PER_BAND][VERT_FLOATS] = {
-            {x0, -1.0F, color_r, color_g, color_b},
-            {x1, -1.0F, color_r, color_g, color_b},
-            {x1, 1.0F, color_r, color_g, color_b},
-            {x0, -1.0F, color_r, color_g, color_b},
-            {x1, 1.0F, color_r, color_g, color_b},
-            {x0, 1.0F, color_r, color_g, color_b},
-        };
+        // Triangle 1
+        *out++ = x0;
+        *out++ = -1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
 
-        for (uint32_t vertex_index = 0; vertex_index < TRI_VERTS_PER_BAND;
-             vertex_index++) {
-            for (uint32_t float_index = 0; float_index < VERT_FLOATS;
-                 float_index++) {
-                g_state.vertices[offset++] = tri[vertex_index][float_index];
-            }
-        }
+        *out++ = x1;
+        *out++ = -1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        *out++ = x1;
+        *out++ = 1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        // Triangle 2
+        *out++ = x0;
+        *out++ = -1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        *out++ = x1;
+        *out++ = 1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        *out++ = x0;
+        *out++ = 1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
     }
 }
 

@@ -32,10 +32,6 @@
 #define POS_FLOATS 2U
 #define COLOR_FLOATS 3U
 #define VERT_FLOATS (POS_FLOATS + COLOR_FLOATS)
-#define VERT_TRI_IDX_2 2U
-#define VERT_TRI_IDX_3 3U
-#define VERT_TRI_IDX_4 4U
-#define VERT_TRI_IDX_5 5U
 #define ATTR_POSITION_LOC 0U
 #define ATTR_COLOR_LOC 1U
 #define ATTR_POSITION_COMPONENTS 2
@@ -100,11 +96,11 @@ static GLuint build_program_from_files(const char *vert_shader_path,
 }
 
 static void fill_vertices(float *verts, double time_s) {
+    const float inv_band_count = 1.0F / (float)BENCH_BANDS;
     for (uint32_t band_index = 0; band_index < BENCH_BANDS; band_index++) {
         const float band_f = (float)band_index;
-        float x0 = ((2.0F * (float)band_index) / (float)BENCH_BANDS) - 1.0F;
-        float x1 =
-            ((2.0F * (float)(band_index + 1U)) / (float)BENCH_BANDS) - 1.0F;
+        float x0 = ((2.0F * (float)band_index) * inv_band_count) - 1.0F;
+        float x1 = ((2.0F * (float)(band_index + 1U)) * inv_band_count) - 1.0F;
         float pulse =
             BENCH_PULSE_BASE_F +
             (BENCH_PULSE_AMP_F * sinf((float)((time_s * BENCH_PULSE_FREQ_F) +
@@ -115,20 +111,47 @@ static void fill_vertices(float *verts, double time_s) {
         float color_g = pulse * BENCH_COLOR_G_SCALE_F;
         float color_b = 1.0F - color_r;
 
-        const float p0[VERT_FLOATS] = {x0, -1.0F, color_r, color_g, color_b};
-        const float p1[VERT_FLOATS] = {x1, -1.0F, color_r, color_g, color_b};
-        const float p2[VERT_FLOATS] = {x1, 1.0F, color_r, color_g, color_b};
-        const float p3[VERT_FLOATS] = {x0, 1.0F, color_r, color_g, color_b};
+        size_t base_offset =
+            (size_t)band_index * TRI_VERTS_PER_BAND * VERT_FLOATS;
+        float *out = &verts[base_offset];
 
-        uint32_t base = band_index * TRI_VERTS_PER_BAND * VERT_FLOATS;
-        for (uint32_t i = 0; i < VERT_FLOATS; i++) {
-            verts[base + i] = p0[i];
-            verts[base + VERT_FLOATS + i] = p1[i];
-            verts[base + (VERT_TRI_IDX_2 * VERT_FLOATS) + i] = p2[i];
-            verts[base + (VERT_TRI_IDX_3 * VERT_FLOATS) + i] = p0[i];
-            verts[base + (VERT_TRI_IDX_4 * VERT_FLOATS) + i] = p2[i];
-            verts[base + (VERT_TRI_IDX_5 * VERT_FLOATS) + i] = p3[i];
-        }
+        // Triangle 1
+        *out++ = x0;
+        *out++ = -1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        *out++ = x1;
+        *out++ = -1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        *out++ = x1;
+        *out++ = 1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        // Triangle 2
+        *out++ = x0;
+        *out++ = -1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        *out++ = x1;
+        *out++ = 1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
+
+        *out++ = x0;
+        *out++ = 1.0F;
+        *out++ = color_r;
+        *out++ = color_g;
+        *out++ = color_b;
     }
 }
 
