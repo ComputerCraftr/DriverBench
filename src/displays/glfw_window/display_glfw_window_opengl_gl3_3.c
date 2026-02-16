@@ -1,0 +1,92 @@
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
+
+#include <stdint.h>
+#include <stdio.h>
+
+#include "../../core/db_core.h"
+#include "../../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
+#include "../bench_config.h"
+#include "display_glfw_window_common.h"
+
+#ifdef __APPLE__
+#include <OpenGL/gl3.h>
+#else
+#ifdef __has_include
+#if __has_include(<GL/glcorearb.h>)
+#include <GL/glcorearb.h>
+#else
+#define GL_GLEXT_PROTOTYPES
+#include <GL/gl.h>
+#include <GL/glext.h>
+#endif
+#else
+#define GL_GLEXT_PROTOTYPES
+#include <GL/gl.h>
+#include <GL/glext.h>
+#endif
+#endif
+
+#ifndef OPENGL_GL3_3_VERT_SHADER_PATH
+#define OPENGL_GL3_3_VERT_SHADER_PATH                                          \
+    "src/shaders/shader_opengl_gl3_3_rect.vert"
+#endif
+#ifndef OPENGL_GL3_3_FRAG_SHADER_PATH
+#define OPENGL_GL3_3_FRAG_SHADER_PATH                                          \
+    "src/shaders/shader_opengl_gl3_3_rect.frag"
+#endif
+
+#define BACKEND_NAME "display_glfw_window_opengl_gl3_3"
+#define RENDERER_NAME "renderer_opengl_gl3_3"
+#define REMOTE_DISPLAY_OVERRIDE_ENV "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
+
+#define OPENGL_CONTEXT_VERSION_MAJOR 3
+#define OPENGL_CONTEXT_VERSION_MINOR 3
+
+#define BG_R 0.04F
+#define BG_G 0.04F
+#define BG_B 0.07F
+#define BG_A 1.0F
+
+int main(void) {
+    db_validate_runtime_environment(BACKEND_NAME, REMOTE_DISPLAY_OVERRIDE_ENV);
+
+    GLFWwindow *window = db_glfw_create_opengl_window(
+        BACKEND_NAME, "OpenGL 3.3 Shader GLFW DriverBench",
+        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
+        OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 1);
+
+    db_renderer_opengl_gl3_3_init(OPENGL_GL3_3_VERT_SHADER_PATH,
+                                  OPENGL_GL3_3_FRAG_SHADER_PATH);
+
+    uint32_t frames = 0;
+    double bench_start = db_glfw_time_seconds();
+
+    while (!glfwWindowShouldClose(window) && frames < BENCH_FRAMES) {
+        db_glfw_poll_events();
+        glViewport(0, 0, BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX);
+        glClearColor(BG_R, BG_G, BG_B, BG_A);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        double frame_time_s = (double)frames / BENCH_TARGET_FPS_D;
+        db_renderer_opengl_gl3_3_render_frame(frame_time_s);
+
+        glfwSwapBuffers(window);
+        frames++;
+    }
+
+    double bench_ms =
+        (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
+    if (frames > 0U) {
+        double ms_per_frame = bench_ms / (double)frames;
+        double fps = BENCH_MS_PER_SEC_D / ms_per_frame;
+        printf("OpenGL benchmark: renderer=%s backend=%s frames=%u "
+               "bands=%u total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
+               RENDERER_NAME, BACKEND_NAME, frames, BENCH_BANDS, bench_ms,
+               ms_per_frame, fps);
+    }
+
+    db_renderer_opengl_gl3_3_shutdown();
+    db_glfw_destroy_window(window);
+    return 0;
+}

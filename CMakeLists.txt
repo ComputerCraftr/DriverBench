@@ -3,22 +3,77 @@ project(DriverBench C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(DB_CORE_SOURCES src/core/db_core.c)
+set(DB_GLFW_DISPLAY_SOURCES src/displays/glfw_window/display_glfw_window_common.c)
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
 
+set(DB_OPENGL_RENDERER "auto" CACHE STRING
+  "OpenGL renderer: auto, gl1_5_gles1_1, or gl3_3")
+set_property(CACHE DB_OPENGL_RENDERER PROPERTY STRINGS auto gl1_5_gles1_1 gl3_3)
+
+set(DB_OPENGL_DISPLAY "auto" CACHE STRING
+  "OpenGL display: auto, glfw_window, or linux_kms_atomic")
+set_property(CACHE DB_OPENGL_DISPLAY PROPERTY STRINGS
+  auto glfw_window linux_kms_atomic
+)
+
+set(DB_VULKAN_DISPLAY "auto" CACHE STRING
+  "Vulkan display: auto, glfw_window, or vk_khr_display")
+set_property(CACHE DB_VULKAN_DISPLAY PROPERTY STRINGS
+  auto glfw_window vk_khr_display
+)
+
 set(HAVE_BACKEND OFF)
 
+set(DB_GLFW_TARGET "")
+find_package(glfw3 QUIET)
+if(TARGET glfw)
+  set(DB_GLFW_TARGET glfw)
+elseif(TARGET glfw3::glfw)
+  set(DB_GLFW_TARGET glfw3::glfw)
+endif()
+
+if(NOT DB_OPENGL_RENDERER MATCHES "^(auto|gl1_5_gles1_1|gl3_3)$")
+  message(FATAL_ERROR
+    "Invalid DB_OPENGL_RENDERER='${DB_OPENGL_RENDERER}'. "
+    "Use: auto, gl1_5_gles1_1, or gl3_3."
+  )
+endif()
+
+if(NOT DB_OPENGL_DISPLAY MATCHES "^(auto|glfw_window|linux_kms_atomic)$")
+  message(FATAL_ERROR
+    "Invalid DB_OPENGL_DISPLAY='${DB_OPENGL_DISPLAY}'. "
+    "Use: auto, glfw_window, or linux_kms_atomic."
+  )
+endif()
+
+if(NOT DB_VULKAN_DISPLAY MATCHES "^(auto|glfw_window|vk_khr_display)$")
+  message(FATAL_ERROR
+    "Invalid DB_VULKAN_DISPLAY='${DB_VULKAN_DISPLAY}'. "
+    "Use: auto, glfw_window, or vk_khr_display."
+  )
+endif()
+
 if(DB_BUILD_VULKAN)
+  message(STATUS "Vulkan selection: renderer=vulkan_1_2_multi_gpu display=${DB_VULKAN_DISPLAY}")
   find_package(Vulkan QUIET)
-  find_package(glfw3 QUIET)
   find_program(GLSLC glslc HINTS ENV VULKAN_SDK PATH_SUFFIXES Bin bin)
 
-  set(DB_GLFW_TARGET "")
-  if(TARGET glfw)
-    set(DB_GLFW_TARGET glfw)
-  elseif(TARGET glfw3::glfw)
-    set(DB_GLFW_TARGET glfw3::glfw)
+  set(DB_VULKAN_DISPLAY_SELECTED "${DB_VULKAN_DISPLAY}")
+  if(DB_VULKAN_DISPLAY_SELECTED STREQUAL "auto")
+    set(DB_VULKAN_DISPLAY_SELECTED "glfw_window")
+  endif()
+
+  if(DB_VULKAN_DISPLAY_SELECTED STREQUAL "vk_khr_display")
+    message(WARNING
+      "Skipping Vulkan backend: DB_VULKAN_DISPLAY=vk_khr_display is not "
+      "implemented yet (select glfw_window)."
+    )
+  else()
+    set(DB_VULKAN_SOURCE "src/displays/glfw_window/display_glfw_window_vulkan_1_2_multi_gpu.c")
   endif()
 
   set(DB_VULKAN_LIB "")
@@ -28,38 +83,43 @@ if(DB_BUILD_VULKAN)
     set(DB_VULKAN_LIB "${Vulkan_LIBRARY}")
   endif()
 
-  if(Vulkan_FOUND AND DB_VULKAN_LIB AND DB_GLFW_TARGET AND GLSLC)
-    add_executable(driverbench_vulkan src/vulkan1.2multi.c)
-    target_include_directories(driverbench_vulkan PRIVATE ${Vulkan_INCLUDE_DIRS})
-    target_link_libraries(driverbench_vulkan PRIVATE ${DB_VULKAN_LIB} ${DB_GLFW_TARGET} m)
+  if(DB_VULKAN_SOURCE AND Vulkan_FOUND AND DB_VULKAN_LIB AND DB_GLFW_TARGET AND GLSLC)
+    set(DB_VULKAN_TARGET driverbench_glfw_window_vulkan_1_2_multi_gpu)
+    add_executable(${DB_VULKAN_TARGET}
+      ${DB_VULKAN_SOURCE}
+      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.c
+      ${DB_GLFW_DISPLAY_SOURCES}
+      ${DB_CORE_SOURCES}
+    )
+    target_include_directories(${DB_VULKAN_TARGET} PRIVATE ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(${DB_VULKAN_TARGET} PRIVATE ${DB_VULKAN_LIB} ${DB_GLFW_TARGET} m)
 
     add_custom_command(
-      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/rect.vert.spv
-      COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/rect.vert -o
-              ${CMAKE_CURRENT_BINARY_DIR}/rect.vert.spv
-      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/rect.vert
+      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
+      COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.vert -o
+              ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.vert
       VERBATIM
     )
 
     add_custom_command(
-      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/rect.frag.spv
-      COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/rect.frag -o
-              ${CMAKE_CURRENT_BINARY_DIR}/rect.frag.spv
-      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/rect.frag
+      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
+      COMMAND ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.frag -o
+              ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.frag
       VERBATIM
     )
 
-    add_custom_target(driverbench_vulkan_shaders ALL
-      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/rect.vert.spv
-              ${CMAKE_CURRENT_BINARY_DIR}/rect.frag.spv
+    add_custom_target(driverbench_vulkan_1_2_multi_gpu_shaders ALL
+      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
+              ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
     )
-    add_dependencies(driverbench_vulkan driverbench_vulkan_shaders)
+    add_dependencies(${DB_VULKAN_TARGET} driverbench_vulkan_1_2_multi_gpu_shaders)
 
-    target_compile_definitions(driverbench_vulkan PRIVATE
-      VERT_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/rect.vert.spv"
-      FRAG_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/rect.frag.spv"
+    target_compile_definitions(${DB_VULKAN_TARGET} PRIVATE
+      VERT_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv"
+      FRAG_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv"
     )
-
     set(HAVE_BACKEND ON)
   else()
     message(WARNING
@@ -69,48 +129,150 @@ if(DB_BUILD_VULKAN)
 endif()
 
 if(DB_BUILD_OPENGL)
-  find_package(PkgConfig QUIET)
-  if(PkgConfig_FOUND)
-    pkg_check_modules(GBM QUIET gbm)
-    pkg_check_modules(EGL QUIET egl)
-    pkg_check_modules(GLES QUIET glesv1_cm)
-    pkg_check_modules(DRM QUIET libdrm)
+  message(STATUS
+    "OpenGL selection: renderer=${DB_OPENGL_RENDERER} display=${DB_OPENGL_DISPLAY}"
+  )
+
+  set(DB_OPENGL_RENDERER_LIST "")
+  if(DB_OPENGL_RENDERER STREQUAL "auto")
+    list(APPEND DB_OPENGL_RENDERER_LIST gl1_5_gles1_1 gl3_3)
+  else()
+    list(APPEND DB_OPENGL_RENDERER_LIST ${DB_OPENGL_RENDERER})
   endif()
 
-  if(PkgConfig_FOUND AND GBM_FOUND AND EGL_FOUND AND GLES_FOUND AND DRM_FOUND)
-    add_executable(driverbench_opengl src/gl1.5gles1.1.c)
-
-    target_include_directories(driverbench_opengl PRIVATE
-      ${GBM_INCLUDE_DIRS}
-      ${EGL_INCLUDE_DIRS}
-      ${GLES_INCLUDE_DIRS}
-      ${DRM_INCLUDE_DIRS}
-    )
-    target_compile_options(driverbench_opengl PRIVATE
-      ${GBM_CFLAGS_OTHER}
-      ${EGL_CFLAGS_OTHER}
-      ${GLES_CFLAGS_OTHER}
-      ${DRM_CFLAGS_OTHER}
-    )
-    target_link_directories(driverbench_opengl PRIVATE
-      ${GBM_LIBRARY_DIRS}
-      ${EGL_LIBRARY_DIRS}
-      ${GLES_LIBRARY_DIRS}
-      ${DRM_LIBRARY_DIRS}
-    )
-    target_link_libraries(driverbench_opengl PRIVATE
-      ${GBM_LIBRARIES}
-      ${EGL_LIBRARIES}
-      ${GLES_LIBRARIES}
-      ${DRM_LIBRARIES}
-      m
-    )
-
-    set(HAVE_BACKEND ON)
+  set(DB_OPENGL_DISPLAY_LIST "")
+  if(DB_OPENGL_DISPLAY STREQUAL "auto")
+    list(APPEND DB_OPENGL_DISPLAY_LIST glfw_window)
+    if(NOT APPLE)
+      list(APPEND DB_OPENGL_DISPLAY_LIST linux_kms_atomic)
+    endif()
   else()
-    message(WARNING
-      "Skipping OpenGL backend: requires pkg-config with gbm, egl, glesv1_cm, and libdrm."
-    )
+    list(APPEND DB_OPENGL_DISPLAY_LIST ${DB_OPENGL_DISPLAY})
+  endif()
+
+  list(FIND DB_OPENGL_DISPLAY_LIST "glfw_window" DB_HAS_GLFW_DISPLAY_INDEX)
+  if(NOT DB_HAS_GLFW_DISPLAY_INDEX EQUAL -1)
+    if(NOT DB_GLFW_TARGET)
+      message(WARNING
+        "Skipping OpenGL backend: DB_OPENGL_DISPLAY includes glfw_window but glfw was not found."
+      )
+    else()
+      foreach(DB_RENDERER IN LISTS DB_OPENGL_RENDERER_LIST)
+        if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
+          set(DB_OPENGL_TARGET driverbench_glfw_window_opengl_gl1_5_gles1_1)
+          set(DB_OPENGL_SOURCE src/displays/glfw_window/display_glfw_window_opengl_gl1_5_gles1_1.c)
+          set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c)
+        elseif(DB_RENDERER STREQUAL "gl3_3")
+          set(DB_OPENGL_TARGET driverbench_glfw_window_opengl_gl3_3)
+          set(DB_OPENGL_SOURCE src/displays/glfw_window/display_glfw_window_opengl_gl3_3.c)
+          set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c)
+        else()
+          continue()
+        endif()
+
+        add_executable(${DB_OPENGL_TARGET}
+          ${DB_OPENGL_SOURCE}
+          ${DB_OPENGL_RENDERER_SOURCE}
+          ${DB_GLFW_DISPLAY_SOURCES}
+          ${DB_CORE_SOURCES}
+        )
+        if(APPLE)
+          target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE GL_SILENCE_DEPRECATION)
+          if(DB_RENDERER STREQUAL "gl3_3")
+            target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
+              OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
+              OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+            )
+          endif()
+          target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
+            ${DB_GLFW_TARGET}
+            "-framework OpenGL"
+            m
+          )
+        else()
+          find_package(OpenGL QUIET)
+          if(DB_RENDERER STREQUAL "gl3_3")
+            target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
+              OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
+              OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+            )
+          endif()
+          if(TARGET OpenGL::GL)
+            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
+              ${DB_GLFW_TARGET}
+              OpenGL::GL
+              m
+            )
+          else()
+            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
+              ${DB_GLFW_TARGET}
+              GL
+              m
+            )
+          endif()
+        endif()
+        set(HAVE_BACKEND ON)
+      endforeach()
+    endif()
+  endif()
+
+  list(FIND DB_OPENGL_DISPLAY_LIST "linux_kms_atomic" DB_HAS_KMS_DISPLAY_INDEX)
+  if(NOT DB_HAS_KMS_DISPLAY_INDEX EQUAL -1)
+    if(APPLE)
+      message(WARNING
+        "Skipping OpenGL backend: linux_kms_atomic display is Linux-only."
+      )
+    else()
+      find_package(PkgConfig QUIET)
+      if(PkgConfig_FOUND)
+        pkg_check_modules(GBM QUIET gbm)
+        pkg_check_modules(EGL QUIET egl)
+        pkg_check_modules(GLES QUIET glesv1_cm)
+        pkg_check_modules(DRM QUIET libdrm)
+      endif()
+
+      if(PkgConfig_FOUND AND GBM_FOUND AND EGL_FOUND AND GLES_FOUND AND DRM_FOUND)
+        list(FIND DB_OPENGL_RENDERER_LIST "gl1_5_gles1_1" DB_HAS_GL15_RENDERER_INDEX)
+        if(NOT DB_HAS_GL15_RENDERER_INDEX EQUAL -1)
+          set(DB_OPENGL_TARGET driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1)
+          add_executable(${DB_OPENGL_TARGET}
+            src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl1_5_gles1_1.c
+            ${DB_CORE_SOURCES}
+          )
+
+          target_include_directories(${DB_OPENGL_TARGET} PRIVATE
+            ${GBM_INCLUDE_DIRS}
+            ${EGL_INCLUDE_DIRS}
+            ${GLES_INCLUDE_DIRS}
+            ${DRM_INCLUDE_DIRS}
+          )
+          target_compile_options(${DB_OPENGL_TARGET} PRIVATE
+            ${GBM_CFLAGS_OTHER}
+            ${EGL_CFLAGS_OTHER}
+            ${GLES_CFLAGS_OTHER}
+            ${DRM_CFLAGS_OTHER}
+          )
+          target_link_directories(${DB_OPENGL_TARGET} PRIVATE
+            ${GBM_LIBRARY_DIRS}
+            ${EGL_LIBRARY_DIRS}
+            ${GLES_LIBRARY_DIRS}
+            ${DRM_LIBRARY_DIRS}
+          )
+          target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
+            ${GBM_LIBRARIES}
+            ${EGL_LIBRARIES}
+            ${GLES_LIBRARIES}
+            ${DRM_LIBRARIES}
+            m
+          )
+          set(HAVE_BACKEND ON)
+        endif()
+      else()
+        message(WARNING
+          "Skipping OpenGL backend on Linux: requires pkg-config with gbm, egl, glesv1_cm, and libdrm."
+        )
+      endif()
+    endif()
   endif()
 endif()
 

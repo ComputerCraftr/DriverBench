@@ -1,0 +1,8 @@
+#ifndef DRIVERBENCH_RENDERER_OPENGL_GL1_5_GLES1_1_H
+#define DRIVERBENCH_RENDERER_OPENGL_GL1_5_GLES1_1_H
+
+void db_renderer_opengl_gl1_5_gles1_1_init(void);
+void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s);
+void db_renderer_opengl_gl1_5_gles1_1_shutdown(void);
+
+#endif

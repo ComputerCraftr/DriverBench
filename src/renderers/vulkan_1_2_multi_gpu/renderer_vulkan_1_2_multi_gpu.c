@@ -2,12 +2,15 @@
 #include <GLFW/glfw3.h>
 
 #include <math.h>
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "../../core/db_core.h"
+#include "../../displays/bench_config.h"
+#include "renderer_vulkan_1_2_multi_gpu.h"
 
 #ifndef VERT_SPV_PATH
 #define VERT_SPV_PATH "rect.vert.spv"
@@ -16,13 +19,11 @@
 #define FRAG_SPV_PATH "rect.frag.spv"
 #endif
 
-#define BENCH_BANDS 16U
-#define BENCH_FRAMES 600U
-#define BACKEND_NAME "vulkan"
+#define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
+#define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
 #define NS_PER_SECOND_U64 1000000000ULL
 #define NS_TO_MS_D 1e6
 #define MS_TO_S_D 1000.0
-#define BENCH_TARGET_FPS_D 60.0
 #define MAX_GPU_COUNT 8U
 #define MAX_BAND_OWNER 64U
 #define TRIANGLE_VERT_COUNT 6U
@@ -34,13 +35,6 @@
 #define BG_COLOR_G_F 0.05F
 #define BG_COLOR_B_F 0.07F
 #define BG_COLOR_A_F 1.0F
-#define BAND_PULSE_BASE 0.5F
-#define BAND_PULSE_AMP 0.5F
-#define BAND_PULSE_FREQ 2.0
-#define BAND_PULSE_PHASE 0.3
-#define BAND_COLOR_BASE 0.2F
-#define BAND_COLOR_SCALE 0.8F
-#define BAND_GREEN_SCALE 0.6F
 #define NDC_TOP_LEFT_Y (-1.0F)
 #define NDC_HEIGHT 2.0F
 #define MASK_GPU0 1U
@@ -50,89 +44,10 @@
 #define EMA_KEEP 0.9
 #define EMA_NEW 0.1
 #define COLOR_CHANNEL_ALPHA 3U
-#define WINDOW_WIDTH_PX 1000
-#define WINDOW_HEIGHT_PX 600
 #define SURFACE_EXTENT_UNDEFINED 0xFFFFFFFFU
 #define COLOR_WRITE_MASK_RGBA 0xFU
-#define LOG_MSG_CAPACITY 2048U
-#define DISPLAY_LOCALHOST_PREFIX "localhost:"
-#define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
-#define REMOTE_DISPLAY_OVERRIDE_ENV "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
-
-static __attribute__((noreturn)) void failf(const char *fmt, ...) {
-    char message[LOG_MSG_CAPACITY];
-    va_list ap;
-    va_start(ap, fmt);
-#ifdef __STDC_LIB_EXT1__
-    (void)vsnprintf_s(message, sizeof(message), _TRUNCATE, fmt, ap);
-#else
-    // Fallback for platforms without Annex K bounds-checked APIs.
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    (void)vsnprintf(message, sizeof(message), fmt, ap);
-#endif
-    va_end(ap);
-    fputs("[", stderr);
-    fputs(BACKEND_NAME, stderr);
-    fputs("][error] ", stderr);
-    fputs(message, stderr);
-    fputc('\n', stderr);
-    exit(EXIT_FAILURE);
-}
-
-static void infof(const char *fmt, ...) {
-    char message[LOG_MSG_CAPACITY];
-    va_list ap;
-    va_start(ap, fmt);
-#ifdef __STDC_LIB_EXT1__
-    (void)vsnprintf_s(message, sizeof(message), _TRUNCATE, fmt, ap);
-#else
-    // Fallback for platforms without Annex K bounds-checked APIs.
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    (void)vsnprintf(message, sizeof(message), fmt, ap);
-#endif
-    va_end(ap);
-    fputs("[", stdout);
-    fputs(BACKEND_NAME, stdout);
-    fputs("][info] ", stdout);
-    fputs(message, stdout);
-    fputc('\n', stdout);
-}
-
-static int env_is_truthy(const char *name) {
-    const char *value = getenv(name);
-    if (!value) {
-        return 0;
-    }
-    return (strcmp(value, "1") == 0) || (strcmp(value, "true") == 0) ||
-           (strcmp(value, "TRUE") == 0) || (strcmp(value, "yes") == 0) ||
-           (strcmp(value, "YES") == 0);
-}
-
-static int has_ssh_env(void) {
-    return getenv("SSH_CONNECTION") || getenv("SSH_CLIENT") ||
-           getenv("SSH_TTY");
-}
-
-static int is_forwarded_x11_display(void) {
-    const char *display = getenv("DISPLAY");
-    if (!display || !has_ssh_env()) {
-        return 0;
-    }
-    return (strncmp(display, DISPLAY_LOCALHOST_PREFIX,
-                    strlen(DISPLAY_LOCALHOST_PREFIX)) == 0) ||
-           (strncmp(display, DISPLAY_LOOPBACK_PREFIX,
-                    strlen(DISPLAY_LOOPBACK_PREFIX)) == 0);
-}
-
-static void validate_runtime_environment(void) {
-    const char *display = getenv("DISPLAY");
-    if (is_forwarded_x11_display() &&
-        !env_is_truthy(REMOTE_DISPLAY_OVERRIDE_ENV)) {
-        failf("Refusing forwarded X11 session (DISPLAY=%s). This benchmark "
-              "expects local display/GPU access. Set %s=1 to override.",
-              display ? display : "(null)", REMOTE_DISPLAY_OVERRIDE_ENV);
-    }
-}
+#define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
+#define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 static const char *vk_result_name(VkResult result) {
     switch (result) {
@@ -208,23 +123,6 @@ static uint64_t now_ns(void) {
     return ((uint64_t)ts.tv_sec * NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
 }
 
-static uint8_t *read_file(const char *path, size_t *out_sz) {
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        failf("Failed to open shader file: %s", path);
-    }
-    fseek(file, 0, SEEK_END);
-    long sz = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (fread(buf, 1, (size_t)sz, file) != (size_t)sz) {
-        failf("Failed to read shader file: %s", path);
-    }
-    fclose(file);
-    *out_sz = (size_t)sz;
-    return buf;
-}
-
 typedef struct {
     float offsetNDC[2];
     float scaleNDC[2];
@@ -237,21 +135,7 @@ typedef struct {
                               // surface (bitmask)
 } DeviceGroupInfo;
 
-int main(void) {
-    validate_runtime_environment();
-
-    // ---------------- Window ----------------
-    if (!glfwInit()) {
-        failf("glfwInit failed");
-    }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *win = glfwCreateWindow(
-        WINDOW_WIDTH_PX, WINDOW_HEIGHT_PX,
-        "Vulkan 1.2 opportunistic multi-GPU (device groups)", NULL, NULL);
-    if (!win) {
-        failf("glfwCreateWindow failed");
-    }
-
+int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     // ---------------- Instance ----------------
     uint32_t glfwExtCount = 0;
     const char **glfwExts = glfwGetRequiredInstanceExtensions(&glfwExtCount);
@@ -574,8 +458,8 @@ int main(void) {
     // ---------------- Pipeline (rectangles) ----------------
     size_t vsz = 0;
     size_t fsz = 0;
-    uint8_t *vbin = read_file(VERT_SPV_PATH, &vsz);
-    uint8_t *fbin = read_file(FRAG_SPV_PATH, &fsz);
+    uint8_t *vbin = db_read_file_or_fail(BACKEND_NAME, VERT_SPV_PATH, &vsz);
+    uint8_t *fbin = db_read_file_or_fail(BACKEND_NAME, FRAG_SPV_PATH, &fsz);
 
     VkShaderModuleCreateInfo smci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -909,14 +793,15 @@ int main(void) {
             pc.scaleNDC[1] = NDC_HEIGHT;
 
             // Color varies per band + animated pulse
-            float pulse =
-                BAND_PULSE_BASE +
-                (BAND_PULSE_AMP * (float)sin((time_s * BAND_PULSE_FREQ) +
-                                             (b * BAND_PULSE_PHASE)));
+            const float band_f = (float)b;
+            float pulse = BENCH_PULSE_BASE_F +
+                          (BENCH_PULSE_AMP_F *
+                           (float)sin((time_s * BENCH_PULSE_FREQ_F) +
+                                      (band_f * BENCH_PULSE_PHASE_F)));
             pc.color[0] =
-                pulse * (BAND_COLOR_BASE +
-                         BAND_COLOR_SCALE * (float)b / (float)BENCH_BANDS);
-            pc.color[1] = pulse * BAND_GREEN_SCALE;
+                pulse * (BENCH_COLOR_R_BASE_F +
+                         BENCH_COLOR_R_SCALE_F * band_f / (float)BENCH_BANDS);
+            pc.color[1] = pulse * BENCH_COLOR_G_SCALE_F;
             pc.color[2] = 1.0F - pc.color[0];
             pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
 
@@ -989,9 +874,10 @@ int main(void) {
     if (bench_frames > 0) {
         double ms_per_frame = bench_ms / (double)bench_frames;
         double fps = MS_TO_S_D / ms_per_frame;
-        printf("Vulkan benchmark: frames=%u bands=%u total_ms=%.2f "
-               "ms_per_frame=%.3f fps=%.2f\n",
-               bench_frames, BENCH_BANDS, bench_ms, ms_per_frame, fps);
+        printf("Vulkan benchmark: renderer=%s backend=%s frames=%u bands=%u "
+               "total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
+               RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS, bench_ms,
+               ms_per_frame, fps);
     }
 
     vkDeviceWaitIdle(device);
@@ -1027,9 +913,6 @@ int main(void) {
     vkDestroyDevice(device, NULL);
     vkDestroySurfaceKHR(instance, surface, NULL);
     vkDestroyInstance(instance, NULL);
-
-    glfwDestroyWindow(win);
-    glfwTerminate();
 
     free((void *)phys);
     free((void *)grps);

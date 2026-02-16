@@ -13,6 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../bench_config.h"
+
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
@@ -26,12 +28,10 @@
 // in EGL.
 #include <GLES/gl.h>
 
-#define BENCH_BANDS 16U
-#define BENCH_FRAMES 600U
-#define BACKEND_NAME "opengl"
+#define BACKEND_NAME "display_linux_kms_atomic_opengl_gl1_5_gles1_1"
+#define RENDERER_NAME "renderer_opengl_gl1_5_gles1_1"
 #define NS_PER_SECOND_U64 1000000000ULL
 #define USCALE_255_F 255.0F
-#define BENCH_TARGET_FPS_F 60.0F
 #define BG_COLOR_R_F 0.04F
 #define BG_COLOR_G_F 0.04F
 #define BG_COLOR_B_F 0.07F
@@ -40,13 +40,6 @@
 #define DRM_SRC_FP_SHIFT 16U
 #define NS_TO_MS_D 1e6
 #define MS_TO_S_D 1000.0
-#define PULSE_BASE_F 0.5F
-#define PULSE_AMP_F 0.5F
-#define PULSE_FREQ_F 2.0F
-#define PULSE_PHASE_STEP_F 0.3F
-#define COLOR_R_BASE_F 0.2F
-#define COLOR_R_SCALE_F 0.8F
-#define COLOR_G_SCALE_F 0.6F
 #define LOG_MSG_CAPACITY 2048U
 #define VERT_IDX_0 0U
 #define VERT_IDX_1 1U
@@ -114,12 +107,14 @@ static void fill_band_vertices(V *verts, uint32_t width, uint32_t height,
         float y0 = 0.0F;
         float y1 = (float)height;
 
-        float pulse = PULSE_BASE_F +
-                      (PULSE_AMP_F * sinf((time_s * PULSE_FREQ_F) +
-                                          ((float)b * PULSE_PHASE_STEP_F)));
-        float rf = pulse * (COLOR_R_BASE_F +
-                            COLOR_R_SCALE_F * (float)b / (float)BENCH_BANDS);
-        float gf = pulse * COLOR_G_SCALE_F;
+        float pulse =
+            BENCH_PULSE_BASE_F +
+            (BENCH_PULSE_AMP_F * sinf((time_s * BENCH_PULSE_FREQ_F) +
+                                      ((float)b * BENCH_PULSE_PHASE_F)));
+        float rf =
+            pulse * (BENCH_COLOR_R_BASE_F +
+                     BENCH_COLOR_R_SCALE_F * (float)b / (float)BENCH_BANDS);
+        float gf = pulse * BENCH_COLOR_G_SCALE_F;
         float bf = 1.0F - rf;
 
         GLubyte red_u8 = (GLubyte)(USCALE_255_F * rf);
@@ -710,9 +705,10 @@ int main(int argc, char **argv) {
     if (bench_frames > 0) {
         double ms_per_frame = bench_ms / (double)bench_frames;
         double fps = MS_TO_S_D / ms_per_frame;
-        printf("OpenGL benchmark: frames=%u bands=%u total_ms=%.2f "
-               "ms_per_frame=%.3f fps=%.2f\n",
-               bench_frames, BENCH_BANDS, bench_ms, ms_per_frame, fps);
+        printf("OpenGL benchmark: renderer=%s backend=%s frames=%u bands=%u "
+               "total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
+               RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS, bench_ms,
+               ms_per_frame, fps);
     }
 
     // Cleanup current
