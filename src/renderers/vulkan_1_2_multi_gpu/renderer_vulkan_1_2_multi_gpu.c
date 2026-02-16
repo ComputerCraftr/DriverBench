@@ -3,7 +3,6 @@
 
 #include <math.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -22,8 +21,8 @@
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
 #define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
 #define NS_PER_SECOND_U64 1000000000ULL
+#define WAIT_TIMEOUT_NS 100000000ULL
 #define NS_TO_MS_D 1e6
-#define MS_TO_S_D 1000.0
 #define MAX_GPU_COUNT 8U
 #define MAX_BAND_OWNER 64U
 #define TRIANGLE_VERT_COUNT 6U
@@ -136,6 +135,8 @@ typedef struct {
 } DeviceGroupInfo;
 
 int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
+    db_install_signal_handlers();
+
     // ---------------- Instance ----------------
     uint32_t glfwExtCount = 0;
     const char **glfwExts = glfwGetRequiredInstanceExtensions(&glfwExtCount);
@@ -675,18 +676,50 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
 
     // ---------------- Main loop ----------------
     uint64_t bench_start = now_ns();
-    uint32_t bench_frames = 0;
-    for (uint32_t frame = 0;
-         frame < BENCH_FRAMES && !glfwWindowShouldClose(win); frame++) {
+    uint64_t bench_frames = 0;
+    double next_progress_log_due_ms = 0.0;
+    for (uint64_t frame = 0; !glfwWindowShouldClose(win) && !db_should_stop();
+         frame++) {
         glfwPollEvents();
 
-        VK_CHECK(vkWaitForFences(device, 1, &inFlight, VK_TRUE, UINT64_MAX));
+        int should_exit = 0;
+        while (1) {
+            VkResult wait_result =
+                vkWaitForFences(device, 1, &inFlight, VK_TRUE, WAIT_TIMEOUT_NS);
+            if (wait_result == VK_SUCCESS) {
+                break;
+            }
+            if (wait_result == VK_TIMEOUT) {
+                glfwPollEvents();
+                if (glfwWindowShouldClose(win) || db_should_stop()) {
+                    should_exit = 1;
+                    break;
+                }
+                continue;
+            }
+            vk_fail("vkWaitForFences", wait_result, __FILE__, __LINE__);
+        }
+        if (should_exit) {
+            break;
+        }
         VK_CHECK(vkResetFences(device, 1, &inFlight));
 
         uint32_t imgIndex = 0;
-        VkResult ar =
-            vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvail,
-                                  VK_NULL_HANDLE, &imgIndex);
+        VkResult ar = VK_TIMEOUT;
+        while (ar == VK_TIMEOUT) {
+            ar = vkAcquireNextImageKHR(device, swapchain, WAIT_TIMEOUT_NS,
+                                       imageAvail, VK_NULL_HANDLE, &imgIndex);
+            if (ar == VK_TIMEOUT) {
+                glfwPollEvents();
+                if (glfwWindowShouldClose(win) || db_should_stop()) {
+                    should_exit = 1;
+                    break;
+                }
+            }
+        }
+        if (should_exit) {
+            break;
+        }
         if (ar != VK_SUCCESS) {
             infof("AcquireNextImage returned %s (%d), ending benchmark loop",
                   vk_result_name(ar), (int)ar);
@@ -867,18 +900,16 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
         }
 
         bench_frames++;
+        double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
+        db_benchmark_log_periodic(
+            "Vulkan", RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS,
+            bench_ms, &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
     }
 
     uint64_t bench_end = now_ns();
     double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
-    if (bench_frames > 0) {
-        double ms_per_frame = bench_ms / (double)bench_frames;
-        double fps = MS_TO_S_D / ms_per_frame;
-        printf("Vulkan benchmark: renderer=%s backend=%s frames=%u bands=%u "
-               "total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
-               RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS, bench_ms,
-               ms_per_frame, fps);
-    }
+    db_benchmark_log_final("Vulkan", RENDERER_NAME, BACKEND_NAME, bench_frames,
+                           BENCH_BANDS, bench_ms);
 
     vkDeviceWaitIdle(device);
 

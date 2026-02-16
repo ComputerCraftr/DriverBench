@@ -1,5 +1,6 @@
 #include "db_core.h"
 
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -9,6 +10,14 @@
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 #define DB_MAX_TEXT_FILE_BYTES (16U * 1024U * 1024U)
+#define DB_MS_PER_SEC_D 1000.0
+
+static volatile sig_atomic_t db_stop_requested = 0;
+
+static void db_signal_handler(int signum) {
+    (void)signum;
+    db_stop_requested = 1;
+}
 
 void db_failf(const char *backend, const char *fmt, ...) {
     va_list ap;
@@ -72,6 +81,20 @@ void db_validate_runtime_environment(const char *backend,
     }
 }
 
+void db_install_signal_handlers(void) {
+    struct sigaction sa;
+    (void)memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = db_signal_handler;
+    (void)sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+
+    (void)sigaction(SIGINT, &sa, NULL);
+    (void)sigaction(SIGTERM, &sa, NULL);
+    (void)sigaction(SIGHUP, &sa, NULL);
+}
+
+int db_should_stop(void) { return db_stop_requested != 0; }
+
 uint8_t *db_read_file_or_fail(const char *backend, const char *path,
                               size_t *out_sz) {
     FILE *file = fopen(path, "rb");
@@ -128,4 +151,49 @@ char *db_read_text_file_or_fail(const char *backend, const char *path) {
     (void)memcpy(text, buffer_u8, file_size);
     free(buffer_u8);
     return text;
+}
+
+static void db_benchmark_log(const char *api_name, const char *renderer_name,
+                             const char *backend_name, uint64_t frames,
+                             uint32_t bands, double elapsed_ms,
+                             const char *tag) {
+    if (frames == 0U) {
+        return;
+    }
+
+    double ms_per_frame = elapsed_ms / (double)frames;
+    double fps = DB_MS_PER_SEC_D / ms_per_frame;
+    printf("%s benchmark (%s): renderer=%s backend=%s frames=%llu bands=%u "
+           "total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
+           api_name, tag, renderer_name, backend_name,
+           (unsigned long long)frames, bands, elapsed_ms, ms_per_frame, fps);
+}
+
+void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
+                               const char *backend_name, uint64_t frames,
+                               uint32_t bands, double elapsed_ms,
+                               double *next_log_due_ms, double interval_ms) {
+    if ((next_log_due_ms == NULL) || (interval_ms <= 0.0)) {
+        return;
+    }
+
+    if (*next_log_due_ms <= 0.0) {
+        *next_log_due_ms = interval_ms;
+    }
+    if (elapsed_ms < *next_log_due_ms) {
+        return;
+    }
+
+    db_benchmark_log(api_name, renderer_name, backend_name, frames, bands,
+                     elapsed_ms, "progress");
+    do {
+        *next_log_due_ms += interval_ms;
+    } while (elapsed_ms >= *next_log_due_ms);
+}
+
+void db_benchmark_log_final(const char *api_name, const char *renderer_name,
+                            const char *backend_name, uint64_t frames,
+                            uint32_t bands, double elapsed_ms) {
+    db_benchmark_log(api_name, renderer_name, backend_name, frames, bands,
+                     elapsed_ms, "final");
 }

@@ -2,7 +2,6 @@
 #include <GLFW/glfw3.h>
 
 #include <stdint.h>
-#include <stdio.h>
 
 #include "../../core/db_core.h"
 #include "../../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
@@ -50,6 +49,7 @@
 
 int main(void) {
     db_validate_runtime_environment(BACKEND_NAME, REMOTE_DISPLAY_OVERRIDE_ENV);
+    db_install_signal_handlers();
 
     GLFWwindow *window = db_glfw_create_opengl_window(
         BACKEND_NAME, "OpenGL 3.3 Shader GLFW DriverBench",
@@ -59,12 +59,17 @@ int main(void) {
     db_renderer_opengl_gl3_3_init(OPENGL_GL3_3_VERT_SHADER_PATH,
                                   OPENGL_GL3_3_FRAG_SHADER_PATH);
 
-    uint32_t frames = 0;
+    uint64_t frames = 0;
     double bench_start = db_glfw_time_seconds();
+    double next_progress_log_due_ms = 0.0;
 
-    while (!glfwWindowShouldClose(window) && frames < BENCH_FRAMES) {
+    while (!glfwWindowShouldClose(window) && !db_should_stop()) {
         db_glfw_poll_events();
-        glViewport(0, 0, BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX);
+        int framebuffer_width_px = 0;
+        int framebuffer_height_px = 0;
+        glfwGetFramebufferSize(window, &framebuffer_width_px,
+                               &framebuffer_height_px);
+        glViewport(0, 0, framebuffer_width_px, framebuffer_height_px);
         glClearColor(BG_R, BG_G, BG_B, BG_A);
         glClear(GL_COLOR_BUFFER_BIT);
 
@@ -73,18 +78,18 @@ int main(void) {
 
         glfwSwapBuffers(window);
         frames++;
+
+        double bench_ms =
+            (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
+        db_benchmark_log_periodic(
+            "OpenGL", RENDERER_NAME, BACKEND_NAME, frames, BENCH_BANDS,
+            bench_ms, &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
     }
 
     double bench_ms =
         (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
-    if (frames > 0U) {
-        double ms_per_frame = bench_ms / (double)frames;
-        double fps = BENCH_MS_PER_SEC_D / ms_per_frame;
-        printf("OpenGL benchmark: renderer=%s backend=%s frames=%u "
-               "bands=%u total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
-               RENDERER_NAME, BACKEND_NAME, frames, BENCH_BANDS, bench_ms,
-               ms_per_frame, fps);
-    }
+    db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
+                           BENCH_BANDS, bench_ms);
 
     db_renderer_opengl_gl3_3_shutdown();
     db_glfw_destroy_window(window);

@@ -13,6 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "../../core/db_core.h"
 #include "../bench_config.h"
 
 #include <xf86drm.h>
@@ -39,7 +40,6 @@
 #define TRI_VERTS_PER_BAND 6U
 #define DRM_SRC_FP_SHIFT 16U
 #define NS_TO_MS_D 1e6
-#define MS_TO_S_D 1000.0
 #define LOG_MSG_CAPACITY 2048U
 #define VERT_IDX_0 0U
 #define VERT_IDX_1 1U
@@ -533,6 +533,8 @@ egl_init_try_gl15_then_gles11(struct gbm_device *gbm, EGLConfig *out_cfg,
 }
 
 int main(int argc, char **argv) {
+    db_install_signal_handlers();
+
     const char *card = (argc > 1) ? argv[1] : "/dev/dri/card0";
 
     struct kms_atomic kms;
@@ -649,9 +651,10 @@ int main(int argc, char **argv) {
 
     // Loop: render new frame, swap, atomic pageflip by changing plane FB_ID.
     uint64_t bench_start = now_ns();
-    uint32_t bench_frames = 0;
-    for (uint32_t frame = 0; frame < BENCH_FRAMES; frame++) {
-        float time_s = (float)frame / BENCH_TARGET_FPS_F;
+    uint64_t bench_frames = 0;
+    double next_progress_log_due_ms = 0.0;
+    while (!db_should_stop()) {
+        float time_s = (float)bench_frames / (float)BENCH_TARGET_FPS_D;
         fill_band_vertices(verts, width, height, time_s);
 
         glClearColor(BG_COLOR_R_F, BG_COLOR_G_F, BG_COLOR_B_F, BG_COLOR_A_F);
@@ -687,6 +690,9 @@ int main(int argc, char **argv) {
             FD_ZERO(&fds);
             FD_SET(kms.fd, &fds);
             if (select(kms.fd + 1, &fds, NULL, NULL, NULL) < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
                 die("select");
             }
             drmHandleEvent(kms.fd, &ev);
@@ -698,18 +704,17 @@ int main(int argc, char **argv) {
         free(cur);
         cur = next;
         bench_frames++;
+
+        double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
+        db_benchmark_log_periodic(
+            "OpenGL", RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS,
+            bench_ms, &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
     }
 
     uint64_t bench_end = now_ns();
     double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
-    if (bench_frames > 0) {
-        double ms_per_frame = bench_ms / (double)bench_frames;
-        double fps = MS_TO_S_D / ms_per_frame;
-        printf("OpenGL benchmark: renderer=%s backend=%s frames=%u bands=%u "
-               "total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
-               RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS, bench_ms,
-               ms_per_frame, fps);
-    }
+    db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, bench_frames,
+                           BENCH_BANDS, bench_ms);
 
     // Cleanup current
     if (cur) {

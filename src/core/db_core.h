@@ -14,9 +14,19 @@ int db_has_ssh_env(void);
 int db_is_forwarded_x11_display(void);
 void db_validate_runtime_environment(const char *backend,
                                      const char *remote_override_env);
+void db_install_signal_handlers(void);
+int db_should_stop(void);
 
 uint8_t *db_read_file_or_fail(const char *backend, const char *path,
                               size_t *out_sz);
 char *db_read_text_file_or_fail(const char *backend, const char *path);
+
+void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
+                               const char *backend_name, uint64_t frames,
+                               uint32_t bands, double elapsed_ms,
+                               double *next_log_due_ms, double interval_ms);
+void db_benchmark_log_final(const char *api_name, const char *renderer_name,
+                            const char *backend_name, uint64_t frames,
+                            uint32_t bands, double elapsed_ms);
 
 #endif
