@@ -1,12 +1,11 @@
 #include "renderer_opengl_gl3_3.h"
 
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
 #include "../../core/db_core.h"
-#include "../../displays/bench_config.h"
+#include "../renderer_bands_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
@@ -28,10 +27,10 @@
 
 #define BACKEND_NAME "renderer_opengl_gl3_3"
 #define SHADER_LOG_MSG_CAPACITY 1024
-#define TRI_VERTS_PER_BAND 6U
+#define TRI_VERTS_PER_BAND DB_BAND_TRI_VERTS_PER_BAND
 #define POS_FLOATS 2U
 #define COLOR_FLOATS 3U
-#define VERT_FLOATS (POS_FLOATS + COLOR_FLOATS)
+#define VERT_FLOATS DB_BAND_VERT_FLOATS
 #define ATTR_POSITION_LOC 0U
 #define ATTR_COLOR_LOC 1U
 #define ATTR_POSITION_COMPONENTS 2
@@ -95,66 +94,6 @@ static GLuint build_program_from_files(const char *vert_shader_path,
     return program;
 }
 
-static void fill_vertices(float *verts, double time_s) {
-    const float inv_band_count = 1.0F / (float)BENCH_BANDS;
-    for (uint32_t band_index = 0; band_index < BENCH_BANDS; band_index++) {
-        const float band_f = (float)band_index;
-        float x0 = ((2.0F * (float)band_index) * inv_band_count) - 1.0F;
-        float x1 = ((2.0F * (float)(band_index + 1U)) * inv_band_count) - 1.0F;
-        float pulse =
-            BENCH_PULSE_BASE_F +
-            (BENCH_PULSE_AMP_F * sinf((float)((time_s * BENCH_PULSE_FREQ_F) +
-                                              (band_f * BENCH_PULSE_PHASE_F))));
-        float color_r =
-            pulse * (BENCH_COLOR_R_BASE_F +
-                     BENCH_COLOR_R_SCALE_F * band_f / (float)BENCH_BANDS);
-        float color_g = pulse * BENCH_COLOR_G_SCALE_F;
-        float color_b = 1.0F - color_r;
-
-        size_t base_offset =
-            (size_t)band_index * TRI_VERTS_PER_BAND * VERT_FLOATS;
-        float *out = &verts[base_offset];
-
-        // Triangle 1
-        *out++ = x0;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        // Triangle 2
-        *out++ = x0;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x0;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-    }
-}
-
 void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
                                    const char *frag_shader_path) {
     glGenVertexArrays(1, &g_state.vao);
@@ -179,7 +118,7 @@ void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
 }
 
 void db_renderer_opengl_gl3_3_render_frame(double time_s) {
-    fill_vertices(g_state.vertices, time_s);
+    db_fill_band_vertices_pos_rgb(g_state.vertices, BENCH_BANDS, time_s);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)sizeof(g_state.vertices),
                     g_state.vertices);
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)(BENCH_BANDS * TRI_VERTS_PER_BAND));

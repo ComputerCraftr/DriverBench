@@ -1,13 +1,12 @@
 #include "renderer_opengl_gl1_5_gles1_1.h"
 
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../../core/db_core.h"
-#include "../../displays/bench_config.h"
+#include "../renderer_bands_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
@@ -16,8 +15,8 @@
 #endif
 
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
-#define TRI_VERTS_PER_BAND 6U
-#define VERT_FLOATS 5U
+#define TRI_VERTS_PER_BAND DB_BAND_TRI_VERTS_PER_BAND
+#define VERT_FLOATS DB_BAND_VERT_FLOATS
 #define STRIDE_BYTES ((GLsizei)(sizeof(float) * VERT_FLOATS))
 #define POS_OFFSET_FLOATS 0U
 #define COLOR_OFFSET_FLOATS 2U
@@ -59,63 +58,6 @@ static const GLvoid *vbo_offset_ptr(size_t byte_offset) {
     return (const GLvoid *)((const char *)NULL + byte_offset);
 }
 
-static void fill_vertices(float time_s) {
-    float *out = g_state.vertices;
-    const float inv_band_count = 1.0F / (float)BENCH_BANDS;
-    for (uint32_t band = 0; band < BENCH_BANDS; band++) {
-        float x0 = ((2.0F * (float)band) * inv_band_count) - 1.0F;
-        float x1 = ((2.0F * (float)(band + 1U)) * inv_band_count) - 1.0F;
-
-        float pulse =
-            BENCH_PULSE_BASE_F +
-            (BENCH_PULSE_AMP_F * sinf((time_s * BENCH_PULSE_FREQ_F) +
-                                      ((float)band * BENCH_PULSE_PHASE_F)));
-        float color_r =
-            pulse * (BENCH_COLOR_R_BASE_F +
-                     BENCH_COLOR_R_SCALE_F * (float)band / (float)BENCH_BANDS);
-        float color_g = pulse * BENCH_COLOR_G_SCALE_F;
-        float color_b = 1.0F - color_r;
-
-        // Triangle 1
-        *out++ = x0;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        // Triangle 2
-        *out++ = x0;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x0;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-    }
-}
-
 void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -147,7 +89,7 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
-    fill_vertices((float)time_s);
+    db_fill_band_vertices_pos_rgb(g_state.vertices, BENCH_BANDS, time_s);
 
     if (g_state.use_vbo) {
         glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
