@@ -33,7 +33,8 @@ int main(void) {
     GLFWwindow *window = db_glfw_create_opengl_window(
         BACKEND_NAME, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
-        OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 0);
+        OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 0,
+        BENCH_GLFW_SWAP_INTERVAL);
 
     db_renderer_opengl_gl1_5_gles1_1_init();
     const char *capability_mode =

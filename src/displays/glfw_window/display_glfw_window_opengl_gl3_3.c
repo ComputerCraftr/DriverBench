@@ -55,7 +55,8 @@ int main(void) {
     GLFWwindow *window = db_glfw_create_opengl_window(
         BACKEND_NAME, "OpenGL 3.3 Shader GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
-        OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 1);
+        OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 1,
+        BENCH_GLFW_SWAP_INTERVAL);
 
     db_renderer_opengl_gl3_3_init(OPENGL_GL3_3_VERT_SHADER_PATH,
                                   OPENGL_GL3_3_FRAG_SHADER_PATH);

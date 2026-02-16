@@ -353,7 +353,7 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
         extent.height = (uint32_t)win_height;
     }
 
-    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // safe default
+    VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
     uint32_t pmN = 0;
     VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(presentPhys, surface,
                                                        &pmN, NULL));
@@ -361,9 +361,21 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
         (VkPresentModeKHR *)calloc(pmN, sizeof(VkPresentModeKHR));
     VK_CHECK(vkGetPhysicalDeviceSurfacePresentModesKHR(presentPhys, surface,
                                                        &pmN, pms));
-    for (uint32_t i = 0; i < pmN; i++) {
-        if (pms[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-            presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+    if (BENCH_VSYNC_ENABLED != 0) {
+        // Vsync on: FIFO is guaranteed and synchronized to presentation.
+        presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    } else {
+        // Vsync off: prefer IMMEDIATE for uncapped throughput.
+        // If unavailable, MAILBOX is the next best low-latency option.
+        presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        for (uint32_t i = 0; i < pmN; i++) {
+            if (pms[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+                break;
+            }
+            if (pms[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+                presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+            }
         }
     }
     free(pms);

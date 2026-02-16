@@ -21,7 +21,7 @@ GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
 GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
                                          int width_px, int height_px,
                                          int context_major, int context_minor,
-                                         int core_profile) {
+                                         int core_profile, int swap_interval) {
     if (!glfwInit()) {
         db_failf(backend, "glfwInit failed");
     }
@@ -42,7 +42,7 @@ GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
     }
 
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);
+    glfwSwapInterval(swap_interval);
     return window;
 }
 
