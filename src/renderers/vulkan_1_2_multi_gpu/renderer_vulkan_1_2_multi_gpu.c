@@ -45,6 +45,8 @@
 #define COLOR_CHANNEL_ALPHA 3U
 #define SURFACE_EXTENT_UNDEFINED 0xFFFFFFFFU
 #define COLOR_WRITE_MASK_RGBA 0xFU
+#define CAPABILITY_MODE_SINGLE_GPU "single_gpu"
+#define CAPABILITY_MODE_DEVICE_GROUP "device_group_multi_gpu"
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
@@ -658,6 +660,9 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     // ---------------- Opportunistic scheduler state ----------------
     uint32_t band_owner[MAX_BAND_OWNER];
     uint32_t gpuCount = haveGroup ? chosenCount : 1;
+    const char *capability_mode = (haveGroup && (gpuCount > 1U))
+                                      ? CAPABILITY_MODE_DEVICE_GROUP
+                                      : CAPABILITY_MODE_SINGLE_GPU;
 
     // Start: round robin across GPUs
     for (uint32_t b = 0; b < BENCH_BANDS; b++) {
@@ -901,15 +906,16 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
 
         bench_frames++;
         double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
-        db_benchmark_log_periodic(
-            "Vulkan", RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS,
-            bench_ms, &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
+        db_benchmark_log_periodic("Vulkan", RENDERER_NAME, BACKEND_NAME,
+                                  bench_frames, BENCH_BANDS, bench_ms,
+                                  capability_mode, &next_progress_log_due_ms,
+                                  BENCH_LOG_INTERVAL_MS_D);
     }
 
     uint64_t bench_end = now_ns();
     double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
     db_benchmark_log_final("Vulkan", RENDERER_NAME, BACKEND_NAME, bench_frames,
-                           BENCH_BANDS, bench_ms);
+                           BENCH_BANDS, bench_ms, capability_mode);
 
     vkDeviceWaitIdle(device);
 

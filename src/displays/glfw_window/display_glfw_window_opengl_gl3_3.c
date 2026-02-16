@@ -46,6 +46,7 @@
 #define BG_G 0.04F
 #define BG_B 0.07F
 #define BG_A 1.0F
+#define CAPABILITY_MODE "shader_vbo"
 
 int main(void) {
     db_validate_runtime_environment(BACKEND_NAME, REMOTE_DISPLAY_OVERRIDE_ENV);
@@ -81,15 +82,16 @@ int main(void) {
 
         double bench_ms =
             (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
-        db_benchmark_log_periodic(
-            "OpenGL", RENDERER_NAME, BACKEND_NAME, frames, BENCH_BANDS,
-            bench_ms, &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
+        db_benchmark_log_periodic("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
+                                  BENCH_BANDS, bench_ms, CAPABILITY_MODE,
+                                  &next_progress_log_due_ms,
+                                  BENCH_LOG_INTERVAL_MS_D);
     }
 
     double bench_ms =
         (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
     db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
-                           BENCH_BANDS, bench_ms);
+                           BENCH_BANDS, bench_ms, CAPABILITY_MODE);
 
     db_renderer_opengl_gl3_3_shutdown();
     db_glfw_destroy_window(window);

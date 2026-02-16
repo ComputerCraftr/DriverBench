@@ -24,9 +24,11 @@ char *db_read_text_file_or_fail(const char *backend, const char *path);
 void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
                                const char *backend_name, uint64_t frames,
                                uint32_t bands, double elapsed_ms,
+                               const char *capability_mode,
                                double *next_log_due_ms, double interval_ms);
 void db_benchmark_log_final(const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
-                            uint32_t bands, double elapsed_ms);
+                            uint32_t bands, double elapsed_ms,
+                            const char *capability_mode);
 
 #endif

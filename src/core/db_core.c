@@ -155,23 +155,32 @@ char *db_read_text_file_or_fail(const char *backend, const char *path) {
 
 static void db_benchmark_log(const char *api_name, const char *renderer_name,
                              const char *backend_name, uint64_t frames,
-                             uint32_t bands, double elapsed_ms,
-                             const char *tag) {
+                             uint32_t bands, double elapsed_ms, const char *tag,
+                             const char *capability_mode) {
     if (frames == 0U) {
         return;
     }
 
     double ms_per_frame = elapsed_ms / (double)frames;
     double fps = DB_MS_PER_SEC_D / ms_per_frame;
-    printf("%s benchmark (%s): renderer=%s backend=%s frames=%llu bands=%u "
-           "total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
-           api_name, tag, renderer_name, backend_name,
+    const char *mode = (capability_mode != NULL) ? capability_mode : "default";
+    if (strcmp(tag, "progress") == 0) {
+        printf("%s benchmark (%s): mode=%s frames=%llu total_ms=%.2f "
+               "ms_per_frame=%.3f fps=%.2f\n",
+               api_name, tag, mode, (unsigned long long)frames, elapsed_ms,
+               ms_per_frame, fps);
+        return;
+    }
+    printf("%s benchmark (%s): renderer=%s backend=%s mode=%s frames=%llu "
+           "bands=%u total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
+           api_name, tag, renderer_name, backend_name, mode,
            (unsigned long long)frames, bands, elapsed_ms, ms_per_frame, fps);
 }
 
 void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
                                const char *backend_name, uint64_t frames,
                                uint32_t bands, double elapsed_ms,
+                               const char *capability_mode,
                                double *next_log_due_ms, double interval_ms) {
     if ((next_log_due_ms == NULL) || (interval_ms <= 0.0)) {
         return;
@@ -185,7 +194,7 @@ void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
     }
 
     db_benchmark_log(api_name, renderer_name, backend_name, frames, bands,
-                     elapsed_ms, "progress");
+                     elapsed_ms, "progress", capability_mode);
     do {
         *next_log_due_ms += interval_ms;
     } while (elapsed_ms >= *next_log_due_ms);
@@ -193,7 +202,8 @@ void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
 
 void db_benchmark_log_final(const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
-                            uint32_t bands, double elapsed_ms) {
+                            uint32_t bands, double elapsed_ms,
+                            const char *capability_mode) {
     db_benchmark_log(api_name, renderer_name, backend_name, frames, bands,
-                     elapsed_ms, "final");
+                     elapsed_ms, "final", capability_mode);
 }

@@ -4,5 +4,6 @@
 void db_renderer_opengl_gl1_5_gles1_1_init(void);
 void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s);
 void db_renderer_opengl_gl1_5_gles1_1_shutdown(void);
+const char *db_renderer_opengl_gl1_5_gles1_1_capability_mode(void);
 
 #endif

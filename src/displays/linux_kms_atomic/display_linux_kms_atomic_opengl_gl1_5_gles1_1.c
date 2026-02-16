@@ -47,6 +47,7 @@
 #define VERT_IDX_3 3U
 #define VERT_IDX_4 4U
 #define VERT_IDX_5 5U
+#define CAPABILITY_MODE "client_array"
 
 typedef struct {
     GLfloat x, y;
@@ -706,15 +707,16 @@ int main(int argc, char **argv) {
         bench_frames++;
 
         double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
-        db_benchmark_log_periodic(
-            "OpenGL", RENDERER_NAME, BACKEND_NAME, bench_frames, BENCH_BANDS,
-            bench_ms, &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
+        db_benchmark_log_periodic("OpenGL", RENDERER_NAME, BACKEND_NAME,
+                                  bench_frames, BENCH_BANDS, bench_ms,
+                                  CAPABILITY_MODE, &next_progress_log_due_ms,
+                                  BENCH_LOG_INTERVAL_MS_D);
     }
 
     uint64_t bench_end = now_ns();
     double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
     db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, bench_frames,
-                           BENCH_BANDS, bench_ms);
+                           BENCH_BANDS, bench_ms, CAPABILITY_MODE);
 
     // Cleanup current
     if (cur) {

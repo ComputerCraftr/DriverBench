@@ -36,6 +36,8 @@ int main(void) {
         OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 0);
 
     db_renderer_opengl_gl1_5_gles1_1_init();
+    const char *capability_mode =
+        db_renderer_opengl_gl1_5_gles1_1_capability_mode();
 
     uint64_t frames = 0;
     double bench_start = db_glfw_time_seconds();
@@ -59,15 +61,16 @@ int main(void) {
 
         double bench_ms =
             (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
-        db_benchmark_log_periodic(
-            "OpenGL", RENDERER_NAME, BACKEND_NAME, frames, BENCH_BANDS,
-            bench_ms, &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
+        db_benchmark_log_periodic("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
+                                  BENCH_BANDS, bench_ms, capability_mode,
+                                  &next_progress_log_due_ms,
+                                  BENCH_LOG_INTERVAL_MS_D);
     }
 
     double bench_ms =
         (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
     db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
-                           BENCH_BANDS, bench_ms);
+                           BENCH_BANDS, bench_ms, capability_mode);
 
     db_renderer_opengl_gl1_5_gles1_1_shutdown();
     db_glfw_destroy_window(window);
