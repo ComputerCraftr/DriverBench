@@ -207,6 +207,7 @@ if(DB_BUILD_VULKAN)
       VERT_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv"
       FRAG_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv"
     )
+
     set(HAVE_BACKEND ON)
   else()
     set(DB_VULKAN_MISSING_DEPS "")
@@ -380,5 +381,15 @@ endif()
 if(NOT HAVE_BACKEND)
   message(WARNING
     "No backends were built. Install Vulkan/glfw/glslc and/or gbm/egl/glesv1_cm/libdrm to enable targets."
+  )
+endif()
+
+if(CMAKE_EXPORT_COMPILE_COMMANDS)
+  add_custom_target(db_sync_compile_commands ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${CMAKE_BINARY_DIR}/compile_commands.json
+      ${CMAKE_SOURCE_DIR}/compile_commands.json
+    COMMENT "Sync compile_commands.json to source root for clangd"
+    VERBATIM
   )
 endif()
