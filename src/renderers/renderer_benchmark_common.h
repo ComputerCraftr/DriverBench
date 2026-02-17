@@ -46,6 +46,23 @@ db_parse_benchmark_pattern_from_env(db_pattern_t *out_pattern) {
     return 0;
 }
 
+static inline int db_has_gl_extension_token(const char *exts,
+                                            const char *needle) {
+    if ((exts == NULL) || (needle == NULL)) {
+        return 0;
+    }
+    const size_t needle_len = strlen(needle);
+    const char *ext_ptr = exts;
+    while ((ext_ptr = strstr(ext_ptr, needle)) != NULL) {
+        if (((ext_ptr == exts) || (ext_ptr[-1] == ' ')) &&
+            ((ext_ptr[needle_len] == '\0') || (ext_ptr[needle_len] == ' '))) {
+            return 1;
+        }
+        ext_ptr += needle_len;
+    }
+    return 0;
+}
+
 static inline uint32_t db_pattern_work_unit_count(db_pattern_t pattern) {
     if (pattern == DB_PATTERN_SNAKE_GRID) {
         const uint32_t rows = db_snake_grid_rows_effective();

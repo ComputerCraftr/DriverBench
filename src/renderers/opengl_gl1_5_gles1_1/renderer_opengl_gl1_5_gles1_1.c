@@ -3,9 +3,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "../../core/db_core.h"
+#include "../renderer_opengl_capabilities.h"
 #include "../renderer_benchmark_common.h"
 
 #ifdef __APPLE__
@@ -19,12 +19,15 @@
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
 #define STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_BAND_VERT_FLOATS))
 #define POS_OFFSET_FLOATS 0U
+#define MODE_VBO_MAP_RANGE "vbo_map_range"
+#define MODE_VBO_MAP_BUFFER "vbo_map_buffer"
 #define MODE_VBO "vbo"
 #define MODE_CLIENT_ARRAY "client_array"
-#define BASE10 10
 
 typedef struct {
     int use_vbo;
+    int use_map_range_upload;
+    int use_map_buffer_upload;
     GLuint vbo;
     float *vertices;
     uint32_t work_unit_count;
@@ -37,28 +40,6 @@ typedef struct {
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};
-
-static int has_gl15_vbo_support(void) {
-    const char *version_text = (const char *)glGetString(GL_VERSION);
-    if (version_text == NULL) {
-        return 0;
-    }
-
-    char *parse_end = NULL;
-    long major_l = strtol(version_text, &parse_end, BASE10);
-    if ((parse_end == version_text) || (*parse_end != '.')) {
-        return 0;
-    }
-    const char *minor_start = parse_end + 1;
-    long minor_l = strtol(minor_start, &parse_end, BASE10);
-    if (parse_end == minor_start) {
-        return 0;
-    }
-
-    int major = (int)major_l;
-    int minor = (int)minor_l;
-    return (major > 1) || ((major == 1) && (minor >= 5));
-}
 
 // NOLINTBEGIN(performance-no-int-to-ptr)
 static const GLvoid *vbo_offset_ptr(size_t byte_offset) {
@@ -186,13 +167,6 @@ static void db_render_snake_grid_step(void) {
         float *unit = &g_state.vertices[tile_float_offset];
         db_set_rect_unit_rgb(unit, DB_BAND_VERT_FLOATS, DB_BAND_POS_FLOATS,
                              target_r, target_g, target_b);
-        if (g_state.use_vbo) {
-            glBufferSubData(
-                GL_ARRAY_BUFFER, (GLintptr)(tile_float_offset * sizeof(float)),
-                (GLsizeiptr)((size_t)DB_BAND_TRI_VERTS_PER_BAND *
-                             (size_t)DB_BAND_VERT_FLOATS * sizeof(float)),
-                unit);
-        }
     }
 
     for (uint32_t update_index = 0; update_index < batch_size; update_index++) {
@@ -214,13 +188,6 @@ static void db_render_snake_grid_step(void) {
         db_set_rect_unit_rgb(unit, DB_BAND_VERT_FLOATS, DB_BAND_POS_FLOATS,
                              color_r, color_g, color_b);
 
-        if (g_state.use_vbo) {
-            glBufferSubData(
-                GL_ARRAY_BUFFER, (GLintptr)(tile_float_offset * sizeof(float)),
-                (GLsizeiptr)((size_t)DB_BAND_TRI_VERTS_PER_BAND *
-                             (size_t)DB_BAND_VERT_FLOATS * sizeof(float)),
-                unit);
-        }
     }
 
     const int phase_completed =
@@ -237,14 +204,6 @@ static void db_render_snake_grid_step(void) {
             float *unit = &g_state.vertices[tile_float_offset];
             db_set_rect_unit_rgb(unit, DB_BAND_VERT_FLOATS, DB_BAND_POS_FLOATS,
                                  target_r, target_g, target_b);
-            if (g_state.use_vbo) {
-                glBufferSubData(
-                    GL_ARRAY_BUFFER,
-                    (GLintptr)(tile_float_offset * sizeof(float)),
-                    (GLsizeiptr)((size_t)DB_BAND_TRI_VERTS_PER_BAND *
-                                 (size_t)DB_BAND_VERT_FLOATS * sizeof(float)),
-                    unit);
-            }
         }
     }
 
@@ -265,7 +224,13 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         db_failf(BACKEND_NAME, "failed to allocate benchmark vertex buffers");
     }
 
-    g_state.use_vbo = has_gl15_vbo_support();
+    db_gl15_upload_probe_result_t probe_result = {0};
+    const size_t vbo_bytes = (size_t)g_state.draw_vertex_count *
+                             DB_BAND_VERT_FLOATS * sizeof(float);
+
+    g_state.use_vbo = db_gl15_has_vbo_support();
+    g_state.use_map_range_upload = 0;
+    g_state.use_map_buffer_upload = 0;
     g_state.vbo = 0U;
 
     glEnableClientState(GL_VERTEX_ARRAY);
@@ -275,10 +240,11 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         glGenBuffers(1, &g_state.vbo);
         if (g_state.vbo != 0U) {
             glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
-            glBufferData(GL_ARRAY_BUFFER,
-                         (GLsizeiptr)((size_t)g_state.draw_vertex_count *
-                                      DB_BAND_VERT_FLOATS * sizeof(float)),
-                         g_state.vertices, GL_STREAM_DRAW);
+            db_gl15_probe_upload_capabilities(vbo_bytes, g_state.vertices,
+                                              &probe_result);
+            g_state.use_vbo = probe_result.has_vbo;
+            g_state.use_map_range_upload = probe_result.use_map_range_upload;
+            g_state.use_map_buffer_upload = probe_result.use_map_buffer_upload;
             glVertexPointer(2, GL_FLOAT, STRIDE_BYTES,
                             vbo_offset_ptr(sizeof(float) * POS_OFFSET_FLOATS));
             glColorPointer(3, GL_FLOAT, STRIDE_BYTES,
@@ -305,10 +271,45 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
 
     if (g_state.use_vbo) {
         glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
-        if (g_state.pattern == DB_PATTERN_BANDS) {
+        const size_t vbo_bytes = (size_t)g_state.draw_vertex_count *
+                                 DB_BAND_VERT_FLOATS * sizeof(float);
+        if (g_state.use_map_range_upload) {
+#if defined(GL_MAP_INVALIDATE_BUFFER_BIT) && defined(GL_MAP_UNSYNCHRONIZED_BIT)
+            void *dst = glMapBufferRange(
+                GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
+                GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
+                    GL_MAP_UNSYNCHRONIZED_BIT);
+            if (dst != NULL) {
+                // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+                memcpy(dst, g_state.vertices, vbo_bytes);
+                if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
+                                    g_state.vertices);
+                }
+            } else {
+                glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
+                                g_state.vertices);
+            }
+#else
+            glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
+                            g_state.vertices);
+#endif
+        } else if (g_state.use_map_buffer_upload) {
+            void *dst = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            if (dst != NULL) {
+                // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+                memcpy(dst, g_state.vertices, vbo_bytes);
+                if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
+                    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
+                                    g_state.vertices);
+                }
+            } else {
+                glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
+                                g_state.vertices);
+            }
+        } else {
             glBufferSubData(GL_ARRAY_BUFFER, 0,
-                            (GLsizeiptr)((size_t)g_state.draw_vertex_count *
-                                         DB_BAND_VERT_FLOATS * sizeof(float)),
+                            (GLsizeiptr)vbo_bytes,
                             g_state.vertices);
         }
         glVertexPointer(2, GL_FLOAT, STRIDE_BYTES,
@@ -338,7 +339,16 @@ void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
 }
 
 const char *db_renderer_opengl_gl1_5_gles1_1_capability_mode(void) {
-    return g_state.use_vbo ? MODE_VBO : MODE_CLIENT_ARRAY;
+    if (!g_state.use_vbo) {
+        return MODE_CLIENT_ARRAY;
+    }
+    if (g_state.use_map_range_upload) {
+        return MODE_VBO_MAP_RANGE;
+    }
+    if (g_state.use_map_buffer_upload) {
+        return MODE_VBO_MAP_BUFFER;
+    }
+    return MODE_VBO;
 }
 
 uint32_t db_renderer_opengl_gl1_5_gles1_1_work_unit_count(void) {
