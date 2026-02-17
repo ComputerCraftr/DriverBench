@@ -265,14 +265,14 @@ if(DB_BUILD_OPENGL)
           ${DB_CORE_SOURCES}
         )
         db_apply_perf_options(${DB_OPENGL_TARGET})
+        if(DB_RENDERER STREQUAL "gl3_3")
+          target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
+            OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
+            OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+          )
+        endif()
         if(APPLE)
           target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE GL_SILENCE_DEPRECATION)
-          if(DB_RENDERER STREQUAL "gl3_3")
-            target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
-              OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
-              OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
-            )
-          endif()
           target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
             ${DB_GLFW_TARGET}
             "-framework OpenGL"
@@ -280,12 +280,6 @@ if(DB_BUILD_OPENGL)
           )
         else()
           find_package(OpenGL QUIET)
-          if(DB_RENDERER STREQUAL "gl3_3")
-            target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
-              OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
-              OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
-            )
-          endif()
           if(TARGET OpenGL::GL)
             target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
               ${DB_GLFW_TARGET}

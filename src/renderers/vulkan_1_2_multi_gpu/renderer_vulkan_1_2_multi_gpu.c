@@ -11,11 +11,8 @@
 #include "../renderer_benchmark_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 
-#ifndef VERT_SPV_PATH
-#define VERT_SPV_PATH "rect.vert.spv"
-#endif
-#ifndef FRAG_SPV_PATH
-#define FRAG_SPV_PATH "rect.frag.spv"
+#if !defined(VERT_SPV_PATH) || !defined(FRAG_SPV_PATH)
+#error "Vulkan SPIR-V shader paths must be provided by the build system."
 #endif
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"

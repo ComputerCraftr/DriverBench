@@ -25,13 +25,9 @@
 #endif
 #endif
 
-#ifndef OPENGL_GL3_3_VERT_SHADER_PATH
-#define OPENGL_GL3_3_VERT_SHADER_PATH                                          \
-    "src/shaders/shader_opengl_gl3_3_rect.vert"
-#endif
-#ifndef OPENGL_GL3_3_FRAG_SHADER_PATH
-#define OPENGL_GL3_3_FRAG_SHADER_PATH                                          \
-    "src/shaders/shader_opengl_gl3_3_rect.frag"
+#if !defined(OPENGL_GL3_3_VERT_SHADER_PATH) ||                                 \
+    !defined(OPENGL_GL3_3_FRAG_SHADER_PATH)
+#error "OpenGL GL3.3 shader paths must be provided by the build system."
 #endif
 
 #define BACKEND_NAME "display_glfw_window_opengl_gl3_3"
@@ -45,6 +41,7 @@
 #define BG_G 0.04F
 #define BG_B 0.07F
 #define BG_A 1.0F
+
 int main(void) {
     db_validate_runtime_environment(BACKEND_NAME, REMOTE_DISPLAY_OVERRIDE_ENV);
     db_install_signal_handlers();
