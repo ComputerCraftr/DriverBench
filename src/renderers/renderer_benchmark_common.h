@@ -157,8 +157,8 @@ static inline uint32_t db_snake_grid_step_batch_size(uint32_t cursor,
 }
 
 static inline void db_snake_grid_target_color_rgb(int clearing_phase,
-                                                   float *out_r, float *out_g,
-                                                   float *out_b) {
+                                                  float *out_r, float *out_g,
+                                                  float *out_b) {
     if (clearing_phase) {
         *out_r = BENCH_GRID_PHASE0_R;
         *out_g = BENCH_GRID_PHASE0_G;

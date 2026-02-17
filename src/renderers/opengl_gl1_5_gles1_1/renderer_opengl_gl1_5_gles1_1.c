@@ -60,9 +60,11 @@ static int has_gl15_vbo_support(void) {
     return (major > 1) || ((major == 1) && (minor >= 5));
 }
 
+// NOLINTBEGIN(performance-no-int-to-ptr)
 static const GLvoid *vbo_offset_ptr(size_t byte_offset) {
-    return (const GLvoid *)((const char *)NULL + byte_offset);
+    return (const GLvoid *)(uintptr_t)byte_offset;
 }
+// NOLINTEND(performance-no-int-to-ptr)
 
 static int db_init_band_vertices(void) {
     const size_t vertex_count =
@@ -224,7 +226,8 @@ static void db_render_snake_grid_step(void) {
     const int phase_completed =
         (g_state.snake_cursor + batch_size) >= g_state.work_unit_count;
     if (phase_completed) {
-        for (uint32_t update_index = 0; update_index < batch_size; update_index++) {
+        for (uint32_t update_index = 0; update_index < batch_size;
+             update_index++) {
             const uint32_t tile_step = g_state.snake_cursor + update_index;
             const uint32_t tile_index =
                 db_snake_grid_tile_index_from_step(tile_step);
@@ -236,7 +239,8 @@ static void db_render_snake_grid_step(void) {
                                  target_r, target_g, target_b);
             if (g_state.use_vbo) {
                 glBufferSubData(
-                    GL_ARRAY_BUFFER, (GLintptr)(tile_float_offset * sizeof(float)),
+                    GL_ARRAY_BUFFER,
+                    (GLintptr)(tile_float_offset * sizeof(float)),
                     (GLsizeiptr)((size_t)DB_BAND_TRI_VERTS_PER_BAND *
                                  (size_t)DB_BAND_VERT_FLOATS * sizeof(float)),
                     unit);

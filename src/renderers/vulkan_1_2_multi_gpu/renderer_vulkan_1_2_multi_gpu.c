@@ -20,7 +20,7 @@
 #define MAX_GPU_COUNT 8U
 #define MAX_BAND_OWNER 64U
 #define QUAD_VERT_FLOAT_COUNT 12U
-#define DEFAULT_EMA_MS_PER_BAND 0.2
+#define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
 #define FRAME_BUDGET_NS 16666666ULL
 #define FRAME_SAFETY_NS 2000000ULL
 #define BG_COLOR_R_F 0.05F
@@ -134,9 +134,9 @@ typedef struct {
 
 typedef struct {
     uint32_t phys_count;
-    VkPhysicalDevice *phys;
+    VkPhysicalDevice phys[MAX_GPU_COUNT];
     uint32_t group_count;
-    VkPhysicalDeviceGroupProperties *groups;
+    VkPhysicalDeviceGroupProperties groups[MAX_GPU_COUNT];
     int have_group;
     uint32_t chosen_count;
     VkPhysicalDevice chosen_phys[MAX_GPU_COUNT];
@@ -182,8 +182,8 @@ typedef struct {
     db_pattern_t pattern;
     uint32_t work_unit_count;
     const char *capability_mode;
-    uint32_t band_owner[MAX_BAND_OWNER];
-    double ema_ms_per_band[MAX_GPU_COUNT];
+    uint32_t work_owner[MAX_BAND_OWNER];
+    double ema_ms_per_work_unit[MAX_GPU_COUNT];
     uint64_t bench_start_ns;
     uint64_t bench_frames;
     double next_progress_log_due_ms;
@@ -486,23 +486,23 @@ static void db_vk_owner_timing_end(VkCommandBuffer cmd, int timing_enabled,
 }
 
 static void db_vk_update_ema_fallback(db_pattern_t pattern, uint32_t gpu_count,
-                                      const uint32_t *band_owner,
+                                      const uint32_t *work_owner,
                                       const uint32_t *snake_tiles_per_gpu,
                                       uint32_t snake_tiles_drawn,
                                       double frame_ms,
-                                      double *ema_ms_per_band) {
+                                      double *ema_ms_per_work_unit) {
     if (pattern == DB_PATTERN_BANDS) {
-        const double ms_per_band = frame_ms / (double)BENCH_BANDS;
+        const double ms_per_work_unit = frame_ms / (double)BENCH_BANDS;
         uint32_t bands_per_gpu[MAX_GPU_COUNT] = {0};
         for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-            bands_per_gpu[band_owner[b]]++;
+            bands_per_gpu[work_owner[b]]++;
         }
         for (uint32_t g = 0; g < gpu_count; g++) {
             if (bands_per_gpu[g] == 0U) {
                 continue;
             }
-            ema_ms_per_band[g] =
-                (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * ms_per_band);
+            ema_ms_per_work_unit[g] = (EMA_KEEP * ema_ms_per_work_unit[g]) +
+                                      (EMA_NEW * ms_per_work_unit);
         }
         return;
     }
@@ -513,8 +513,8 @@ static void db_vk_update_ema_fallback(db_pattern_t pattern, uint32_t gpu_count,
         if (snake_tiles_per_gpu[g] == 0U) {
             continue;
         }
-        ema_ms_per_band[g] =
-            (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * ms_per_tile);
+        ema_ms_per_work_unit[g] =
+            (EMA_KEEP * ema_ms_per_work_unit[g]) + (EMA_NEW * ms_per_tile);
     }
 }
 
@@ -543,8 +543,7 @@ db_vk_cleanup_runtime(VkDevice device, VkFence in_flight,
     vkDestroyDevice(device, NULL);
     vkDestroySurfaceKHR(instance, surface, NULL);
     vkDestroyInstance(instance, NULL);
-    free((void *)selection->phys);
-    free((void *)selection->groups);
+    (void)selection;
 }
 
 static DeviceSelectionState
@@ -555,21 +554,33 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface) {
     if (selection.phys_count == 0) {
         failf("No Vulkan physical devices found");
     }
-    selection.phys = (VkPhysicalDevice *)calloc(selection.phys_count,
-                                                sizeof(VkPhysicalDevice));
-    VK_CHECK(vkEnumeratePhysicalDevices(instance, &selection.phys_count,
-                                        selection.phys));
+    if (selection.phys_count > MAX_GPU_COUNT) {
+        failf("Too many Vulkan physical devices (%u > %u)",
+              selection.phys_count, MAX_GPU_COUNT);
+    }
+    VkResult enumerate_phys_result = vkEnumeratePhysicalDevices(
+        instance, &selection.phys_count, selection.phys);
+    if (enumerate_phys_result != VK_SUCCESS) {
+        vk_fail("vkEnumeratePhysicalDevices", enumerate_phys_result, __FILE__,
+                __LINE__);
+    }
 
     VK_CHECK(vkEnumeratePhysicalDeviceGroups(instance, &selection.group_count,
                                              NULL));
-    selection.groups = (VkPhysicalDeviceGroupProperties *)calloc(
-        selection.group_count, sizeof(VkPhysicalDeviceGroupProperties));
+    if (selection.group_count > MAX_GPU_COUNT) {
+        failf("Too many Vulkan device groups (%u > %u)", selection.group_count,
+              MAX_GPU_COUNT);
+    }
     for (uint32_t i = 0; i < selection.group_count; i++) {
         selection.groups[i].sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GROUP_PROPERTIES;
     }
-    VK_CHECK(vkEnumeratePhysicalDeviceGroups(instance, &selection.group_count,
-                                             selection.groups));
+    VkResult enumerate_groups_result = vkEnumeratePhysicalDeviceGroups(
+        instance, &selection.group_count, selection.groups);
+    if (enumerate_groups_result != VK_SUCCESS) {
+        vk_fail("vkEnumeratePhysicalDeviceGroups", enumerate_groups_result,
+                __FILE__, __LINE__);
+    }
 
     DeviceGroupInfo best = {0};
     for (uint32_t gi = 0; gi < selection.group_count; gi++) {
@@ -616,10 +627,19 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface) {
     selection.present_mask = MASK_GPU0;
     if (selection.have_group) {
         selection.chosen_count = best.grp.physicalDeviceCount;
+        if (selection.chosen_count > MAX_GPU_COUNT) {
+            infof("Device group has %u devices; capping active GPUs to %u",
+                  selection.chosen_count, MAX_GPU_COUNT);
+            selection.chosen_count = MAX_GPU_COUNT;
+        }
         for (uint32_t i = 0; i < selection.chosen_count; i++) {
             selection.chosen_phys[i] = best.grp.physicalDevices[i];
         }
-        selection.present_mask = best.presentableMask;
+        const uint32_t usable_mask =
+            (selection.chosen_count >= 32U)
+                ? 0xFFFFFFFFU
+                : ((1U << selection.chosen_count) - 1U);
+        selection.present_mask = best.presentableMask & usable_mask;
         infof("Using device group with %u devices (presentMask=0x%x)",
               selection.chosen_count, selection.present_mask);
     } else {
@@ -1029,7 +1049,7 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     }
 
     // ---------------- Opportunistic scheduler state ----------------
-    uint32_t band_owner[MAX_BAND_OWNER];
+    uint32_t work_owner[MAX_BAND_OWNER];
     uint32_t gpuCount = haveGroup ? chosenCount : 1;
     db_pattern_t pattern = DB_PATTERN_BANDS;
     if (!db_parse_benchmark_pattern_from_env(&pattern)) {
@@ -1052,14 +1072,14 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     // Start: round robin across GPUs
     if (pattern == DB_PATTERN_BANDS) {
         for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-            band_owner[b] = b % gpuCount;
+            work_owner[b] = b % gpuCount;
         }
     }
 
     // EMA ms per band per GPU
-    double ema_ms_per_band[MAX_GPU_COUNT];
+    double ema_ms_per_work_unit[MAX_GPU_COUNT];
     for (uint32_t g = 0; g < gpuCount; g++) {
-        ema_ms_per_band[g] = DEFAULT_EMA_MS_PER_BAND; // seed guess
+        ema_ms_per_work_unit[g] = DEFAULT_EMA_MS_PER_WORK_UNIT; // seed guess
     }
 
     // Frame budget (ns): approximate 60Hz if FIFO, else still useful heuristic
@@ -1097,13 +1117,14 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     g_state.pattern = pattern;
     g_state.work_unit_count = work_unit_count;
     g_state.capability_mode = capability_mode;
-    memcpy(g_state.band_owner, band_owner, sizeof(g_state.band_owner));
-    memcpy(g_state.ema_ms_per_band, ema_ms_per_band,
-           sizeof(g_state.ema_ms_per_band));
-    memset(g_state.prev_frame_work_units, 0,
-           sizeof(g_state.prev_frame_work_units));
-    memset(g_state.prev_frame_owner_used, 0,
-           sizeof(g_state.prev_frame_owner_used));
+    for (uint32_t i = 0; i < MAX_BAND_OWNER; i++) {
+        g_state.work_owner[i] = work_owner[i];
+    }
+    for (uint32_t i = 0; i < MAX_GPU_COUNT; i++) {
+        g_state.ema_ms_per_work_unit[i] = ema_ms_per_work_unit[i];
+        g_state.prev_frame_work_units[i] = 0U;
+        g_state.prev_frame_owner_used[i] = 0U;
+    }
     g_state.have_prev_timing_frame = have_prev_timing_frame;
     g_state.timestamp_period_ns = timestamp_period_ns;
     g_state.bench_start_ns = now_ns();
@@ -1159,8 +1180,8 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                     NS_TO_MS_D;
                 const double ms_per_unit =
                     elapsed_ms / (double)g_state.prev_frame_work_units[g];
-                g_state.ema_ms_per_band[g] =
-                    (EMA_KEEP * g_state.ema_ms_per_band[g]) +
+                g_state.ema_ms_per_work_unit[g] =
+                    (EMA_KEEP * g_state.ema_ms_per_work_unit[g]) +
                     (EMA_NEW * ms_per_unit);
             }
         }
@@ -1242,15 +1263,15 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         const float inv_extent_width =
             1.0F / (float)g_state.swapchain_state.extent.width;
         for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-            uint32_t owner = g_state.band_owner[b];
+            uint32_t owner = g_state.work_owner[b];
             if (owner >= gpuCount) {
                 owner = 0U;
             }
             owner = db_vk_select_owner_for_work(owner, gpuCount, 1U, frameStart,
                                                 budget_ns, safety_ns,
-                                                g_state.ema_ms_per_band);
+                                                g_state.ema_ms_per_work_unit);
             if (owner == 0U) {
-                g_state.band_owner[b] = 0U;
+                g_state.work_owner[b] = 0U;
             }
             if (haveGroup) {
                 vkCmdSetDeviceMask(g_state.command_buffer,
@@ -1323,7 +1344,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             const uint32_t span_units = snake_cols;
             uint32_t owner = db_vk_select_owner_for_work(
                 row % gpuCount, gpuCount, span_units, frameStart, budget_ns,
-                safety_ns, g_state.ema_ms_per_band);
+                safety_ns, g_state.ema_ms_per_work_unit);
             snake_tiles_per_gpu[owner] += span_units;
             snake_tiles_drawn += span_units;
             if (haveGroup) {
@@ -1347,7 +1368,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             const uint32_t span_units = row_remainder;
             uint32_t owner = db_vk_select_owner_for_work(
                 full_rows % gpuCount, gpuCount, span_units, frameStart,
-                budget_ns, safety_ns, g_state.ema_ms_per_band);
+                budget_ns, safety_ns, g_state.ema_ms_per_work_unit);
             snake_tiles_per_gpu[owner] += span_units;
             snake_tiles_drawn += span_units;
             if (haveGroup) {
@@ -1382,7 +1403,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             const uint32_t col = tile_index % snake_cols;
             uint32_t owner = db_vk_select_owner_for_work(
                 tile_step % gpuCount, gpuCount, 1U, frameStart, budget_ns,
-                safety_ns, g_state.ema_ms_per_band);
+                safety_ns, g_state.ema_ms_per_work_unit);
             snake_tiles_per_gpu[owner]++;
             snake_tiles_drawn++;
             if (haveGroup) {
@@ -1418,7 +1439,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 const uint32_t col = tile_index % snake_cols;
                 uint32_t owner = db_vk_select_owner_for_work(
                     tile_step % gpuCount, gpuCount, 1U, frameStart, budget_ns,
-                    safety_ns, g_state.ema_ms_per_band);
+                    safety_ns, g_state.ema_ms_per_work_unit);
                 snake_tiles_per_gpu[owner]++;
                 snake_tiles_drawn++;
                 if (haveGroup) {
@@ -1498,9 +1519,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     if (!g_state.gpu_timing_enabled) {
         uint64_t frameEnd = now_ns();
         double frame_ms = (double)(frameEnd - frameStart) / NS_TO_MS_D;
-        db_vk_update_ema_fallback(g_state.pattern, gpuCount, g_state.band_owner,
+        db_vk_update_ema_fallback(g_state.pattern, gpuCount, g_state.work_owner,
                                   snake_tiles_per_gpu, snake_tiles_drawn,
-                                  frame_ms, g_state.ema_ms_per_band);
+                                  frame_ms, g_state.ema_ms_per_work_unit);
     }
 
     g_state.bench_frames++;

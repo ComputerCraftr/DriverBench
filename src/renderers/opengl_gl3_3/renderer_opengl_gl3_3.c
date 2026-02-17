@@ -31,8 +31,6 @@
 #define ATTR_COLOR_LOC 1U
 #define ATTR_POSITION_COMPONENTS 2
 #define ATTR_COLOR_COMPONENTS 3
-#define BUFFER_OFFSET_BYTES(byte_count)                                        \
-    ((const void *)((const char *)NULL + (byte_count)))
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define CAPABILITY_MODE "shader_vbo"
 #define RENDER_MODE_BANDS 0
@@ -66,6 +64,12 @@ typedef struct {
 } ShaderRendererState;
 
 static ShaderRendererState g_state = {0};
+
+// NOLINTBEGIN(performance-no-int-to-ptr)
+static const void *vbo_offset_ptr(size_t byte_offset) {
+    return (const void *)(uintptr_t)byte_offset;
+}
+// NOLINTEND(performance-no-int-to-ptr)
 
 static void db_set_uniform1i_if_changed(GLint location, int *cache, int value) {
     if ((location >= 0) && (*cache != value)) {
@@ -264,23 +268,26 @@ void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
         ATTR_POSITION_LOC, ATTR_POSITION_COMPONENTS, GL_FLOAT, GL_FALSE,
         (GLsizei)(DB_BAND_VERT_FLOATS * sizeof(float)), (const void *)0);
     glEnableVertexAttribArray(ATTR_COLOR_LOC);
-    glVertexAttribPointer(
-        ATTR_COLOR_LOC, ATTR_COLOR_COMPONENTS, GL_FLOAT, GL_FALSE,
-        (GLsizei)(DB_BAND_VERT_FLOATS * sizeof(float)),
-        BUFFER_OFFSET_BYTES(DB_BAND_POS_FLOATS * sizeof(float)));
+    glVertexAttribPointer(ATTR_COLOR_LOC, ATTR_COLOR_COMPONENTS, GL_FLOAT,
+                          GL_FALSE,
+                          (GLsizei)(DB_BAND_VERT_FLOATS * sizeof(float)),
+                          vbo_offset_ptr(DB_BAND_POS_FLOATS * sizeof(float)));
 
     g_state.program =
         build_program_from_files(vert_shader_path, frag_shader_path);
     glUseProgram(g_state.program);
-    g_state.u_render_mode = glGetUniformLocation(g_state.program, "u_render_mode");
+    g_state.u_render_mode =
+        glGetUniformLocation(g_state.program, "u_render_mode");
     g_state.u_snake_clearing_phase =
         glGetUniformLocation(g_state.program, "u_snake_clearing_phase");
     g_state.u_snake_phase_completed =
         glGetUniformLocation(g_state.program, "u_snake_phase_completed");
-    g_state.u_snake_cursor = glGetUniformLocation(g_state.program, "u_snake_cursor");
+    g_state.u_snake_cursor =
+        glGetUniformLocation(g_state.program, "u_snake_cursor");
     g_state.u_snake_batch_size =
         glGetUniformLocation(g_state.program, "u_snake_batch_size");
-    g_state.u_snake_cols = glGetUniformLocation(g_state.program, "u_snake_cols");
+    g_state.u_snake_cols =
+        glGetUniformLocation(g_state.program, "u_snake_cols");
     g_state.u_snake_base_color =
         glGetUniformLocation(g_state.program, "u_snake_base_color");
     g_state.u_snake_target_color =
@@ -291,9 +298,9 @@ void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
     g_state.uniform_snake_batch_size_cache = UINT32_MAX;
 
     if (g_state.u_render_mode >= 0) {
-        const int render_mode =
-            (g_state.pattern == DB_PATTERN_SNAKE_GRID) ? RENDER_MODE_SNAKE_GRID
-                                                       : RENDER_MODE_BANDS;
+        const int render_mode = (g_state.pattern == DB_PATTERN_SNAKE_GRID)
+                                    ? RENDER_MODE_SNAKE_GRID
+                                    : RENDER_MODE_BANDS;
         glUniform1i(g_state.u_render_mode, render_mode);
     }
     glUniform3f(g_state.u_snake_base_color, BENCH_GRID_PHASE0_R,
@@ -317,9 +324,10 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                                     &g_state.uniform_snake_clearing_phase_cache,
                                     g_state.snake_clearing_phase);
         db_advance_snake_grid_state();
-        db_set_uniform1i_if_changed(g_state.u_snake_phase_completed,
-                                    &g_state.uniform_snake_phase_completed_cache,
-                                    g_state.snake_phase_completed);
+        db_set_uniform1i_if_changed(
+            g_state.u_snake_phase_completed,
+            &g_state.uniform_snake_phase_completed_cache,
+            g_state.snake_phase_completed);
         db_set_uniform1f_u32_if_changed(g_state.u_snake_cursor,
                                         &g_state.uniform_snake_cursor_cache,
                                         active_cursor);
