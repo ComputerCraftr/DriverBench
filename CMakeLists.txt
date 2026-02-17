@@ -24,6 +24,7 @@ option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
 option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
+option(DB_ENABLE_SANITIZERS "Enable sanitizers for debug builds" ON)
 
 set(DB_OPENGL_RENDERER "auto" CACHE STRING
   "OpenGL renderer: auto, gl1_5_gles1_1, or gl3_3")
@@ -70,6 +71,22 @@ endif()
 function(db_apply_perf_options target_name)
   if(NOT TARGET ${target_name})
     return()
+  endif()
+
+  if(DB_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang|GNU)$")
+      set(DB_SANITIZER_FLAGS -fsanitize=address,undefined)
+      if(NOT APPLE)
+        list(APPEND DB_SANITIZER_FLAGS -fsanitize=leak)
+      endif()
+      target_compile_options(${target_name} PRIVATE
+        -fno-omit-frame-pointer
+        ${DB_SANITIZER_FLAGS}
+      )
+      if(COMMAND target_link_options)
+        target_link_options(${target_name} PRIVATE ${DB_SANITIZER_FLAGS})
+      endif()
+    endif()
   endif()
 
   if(DB_IS_RELEASE_LIKE AND DB_ENABLE_AGGRESSIVE_OPT)

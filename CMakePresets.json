@@ -20,6 +20,20 @@
             }
         },
         {
+            "name": "ninja-debug",
+            "displayName": "Ninja (Debug + ASan/UBSan)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "DB_ENABLE_SANITIZERS": "ON",
+                "DB_OPENGL_RENDERER": "auto",
+                "DB_OPENGL_DISPLAY": "auto",
+                "DB_VULKAN_DISPLAY": "auto"
+            }
+        },
+        {
             "name": "ninja-opengl-gl1_5-gles1_1-glfw",
             "displayName": "Ninja OpenGL GL1.5/GLES1.1 + GLFW",
             "inherits": "ninja",
@@ -71,6 +85,11 @@
         {
             "name": "ninja",
             "configurePreset": "ninja",
+            "jobs": 8
+        },
+        {
+            "name": "ninja-debug",
+            "configurePreset": "ninja-debug",
             "jobs": 8
         },
         {
