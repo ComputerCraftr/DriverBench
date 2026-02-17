@@ -10,16 +10,15 @@
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
 #else
+#define GL_GLEXT_PROTOTYPES
 #ifdef __has_include
 #if __has_include(<GL/glcorearb.h>)
 #include <GL/glcorearb.h>
 #else
-#define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
 #include <GL/glext.h>
 #endif
 #else
-#define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
 #include <GL/glext.h>
 #endif

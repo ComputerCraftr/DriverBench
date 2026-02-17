@@ -1,4 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
+
+# Prefer Clang for better default LTO support when no compiler is specified.
+if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
+  find_program(DB_DEFAULT_CLANG NAMES clang)
+  if(DB_DEFAULT_CLANG)
+    set(CMAKE_C_COMPILER "${DB_DEFAULT_CLANG}" CACHE FILEPATH
+      "C compiler selected by DriverBench default preference (clang)"
+    )
+    message(STATUS "No C compiler specified; defaulting to clang: ${DB_DEFAULT_CLANG}")
+  endif()
+endif()
+
 project(DriverBench C)
 
 set(CMAKE_C_STANDARD 11)
@@ -152,7 +164,7 @@ if(DB_BUILD_VULKAN)
 
     add_custom_command(
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
-      COMMAND ${GLSLC} -DVULKAN=1
+      COMMAND ${GLSLC}
               ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.vert -o
               ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.vert
@@ -161,7 +173,7 @@ if(DB_BUILD_VULKAN)
 
     add_custom_command(
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
-      COMMAND ${GLSLC} -DVULKAN=1
+      COMMAND ${GLSLC}
               ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.frag -o
               ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.frag
@@ -180,8 +192,26 @@ if(DB_BUILD_VULKAN)
     )
     set(HAVE_BACKEND ON)
   else()
+    set(DB_VULKAN_MISSING_DEPS "")
+    if(NOT DB_VULKAN_SOURCE)
+      list(APPEND DB_VULKAN_MISSING_DEPS "display backend")
+    endif()
+    if(NOT Vulkan_FOUND OR NOT DB_VULKAN_LIB)
+      list(APPEND DB_VULKAN_MISSING_DEPS "Vulkan SDK/loader")
+    endif()
+    if(NOT DB_GLFW_TARGET)
+      list(APPEND DB_VULKAN_MISSING_DEPS "glfw3")
+    endif()
+    if(NOT GLSLC)
+      list(APPEND DB_VULKAN_MISSING_DEPS "glslc")
+    endif()
+    if(DB_VULKAN_MISSING_DEPS)
+      list(JOIN DB_VULKAN_MISSING_DEPS ", " DB_VULKAN_MISSING_DEPS_STR)
+    else()
+      set(DB_VULKAN_MISSING_DEPS_STR "unknown")
+    endif()
     message(WARNING
-      "Skipping Vulkan backend: requires Vulkan SDK, glfw, and glslc."
+      "Skipping Vulkan backend: missing ${DB_VULKAN_MISSING_DEPS_STR}."
     )
   endif()
 endif()

@@ -11,7 +11,9 @@
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
 #else
+#define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
+#include <GL/glext.h>
 #endif
 
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
