@@ -1,6 +1,3 @@
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -156,27 +153,76 @@ typedef struct {
     VkFramebuffer *framebuffers;
 } SwapchainState;
 
-static void db_vk_wait_for_nonzero_framebuffer(GLFWwindow *win,
-                                               VkExtent2D *extent) {
-    int width = 0;
-    int height = 0;
-    do {
-        glfwGetFramebufferSize(win, &width, &height);
-        if ((width > 0) && (height > 0)) {
-            extent->width = (uint32_t)width;
-            extent->height = (uint32_t)height;
-            return;
-        }
-        glfwPollEvents();
-    } while (!glfwWindowShouldClose(win) && !db_should_stop());
-}
+typedef struct {
+    int initialized;
+    db_vk_wsi_config_t wsi_config;
+    VkInstance instance;
+    VkSurfaceKHR surface;
+    DeviceSelectionState selection;
+    int have_group;
+    uint32_t gpu_count;
+    VkPhysicalDevice present_phys;
+    VkDevice device;
+    VkQueue queue;
+    VkSurfaceFormatKHR surface_format;
+    VkPresentModeKHR present_mode;
+    VkRenderPass render_pass;
+    SwapchainState swapchain_state;
+    VkBuffer vertex_buffer;
+    VkDeviceMemory vertex_memory;
+    VkPipeline pipeline;
+    VkPipelineLayout pipeline_layout;
+    VkCommandPool command_pool;
+    VkCommandBuffer command_buffer;
+    VkSemaphore image_available;
+    VkSemaphore render_done;
+    VkFence in_flight;
+    VkQueryPool timing_query_pool;
+    int gpu_timing_enabled;
+    db_pattern_t pattern;
+    uint32_t work_unit_count;
+    const char *capability_mode;
+    uint32_t band_owner[MAX_BAND_OWNER];
+    double ema_ms_per_band[MAX_GPU_COUNT];
+    uint64_t bench_start_ns;
+    uint64_t bench_frames;
+    double next_progress_log_due_ms;
+    uint64_t frame_index;
+    uint32_t snake_cursor;
+    int snake_clearing_phase;
+    uint32_t prev_frame_work_units[MAX_GPU_COUNT];
+    uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
+    int have_prev_timing_frame;
+    double timestamp_period_ns;
+} VulkanRendererState;
+
+static VulkanRendererState g_state = {0};
 
 static VkExtent2D
-db_vk_choose_surface_extent(GLFWwindow *win,
+db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
                             const VkSurfaceCapabilitiesKHR *caps) {
     VkExtent2D extent = caps->currentExtent;
     if (extent.width == SURFACE_EXTENT_UNDEFINED) {
-        db_vk_wait_for_nonzero_framebuffer(win, &extent);
+        int width = 0;
+        int height = 0;
+        wsi_config->get_framebuffer_size(wsi_config->window_handle, &width,
+                                         &height, wsi_config->user_data);
+        if ((width <= 0) || (height <= 0)) {
+            width = BENCH_WINDOW_WIDTH_PX;
+            height = BENCH_WINDOW_HEIGHT_PX;
+        }
+        extent.width = (uint32_t)width;
+        extent.height = (uint32_t)height;
+        if (extent.width < caps->minImageExtent.width) {
+            extent.width = caps->minImageExtent.width;
+        } else if (extent.width > caps->maxImageExtent.width) {
+            extent.width = caps->maxImageExtent.width;
+        }
+        if (extent.height < caps->minImageExtent.height) {
+            extent.height = caps->minImageExtent.height;
+        } else if (extent.height > caps->maxImageExtent.height) {
+            extent.height = caps->maxImageExtent.height;
+        }
     }
     return extent;
 }
@@ -234,14 +280,17 @@ static void db_vk_destroy_swapchain_state(VkDevice device,
     state->swapchain = VK_NULL_HANDLE;
 }
 
-static void db_vk_create_swapchain_state(
-    GLFWwindow *win, VkPhysicalDevice present_phys, VkDevice device,
-    VkSurfaceKHR surface, VkSurfaceFormatKHR fmt, VkPresentModeKHR present_mode,
-    VkRenderPass render_pass, SwapchainState *state) {
+static void db_vk_create_swapchain_state(const db_vk_wsi_config_t *wsi_config,
+                                         VkPhysicalDevice present_phys,
+                                         VkDevice device, VkSurfaceKHR surface,
+                                         VkSurfaceFormatKHR fmt,
+                                         VkPresentModeKHR present_mode,
+                                         VkRenderPass render_pass,
+                                         SwapchainState *state) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(present_phys, surface,
                                                        &caps));
-    const VkExtent2D extent = db_vk_choose_surface_extent(win, &caps);
+    const VkExtent2D extent = db_vk_choose_surface_extent(wsi_config, &caps);
     if ((extent.width == 0U) || (extent.height == 0U)) {
         failf("Window framebuffer size is zero; cannot create swapchain");
     }
@@ -318,12 +367,13 @@ static void db_vk_create_swapchain_state(
 }
 
 static void db_vk_recreate_swapchain_state(
-    GLFWwindow *win, VkPhysicalDevice present_phys, VkDevice device,
-    VkSurfaceKHR surface, VkSurfaceFormatKHR fmt, VkPresentModeKHR present_mode,
-    VkRenderPass render_pass, SwapchainState *state) {
+    const db_vk_wsi_config_t *wsi_config, VkPhysicalDevice present_phys,
+    VkDevice device, VkSurfaceKHR surface, VkSurfaceFormatKHR fmt,
+    VkPresentModeKHR present_mode, VkRenderPass render_pass,
+    SwapchainState *state) {
     VK_CHECK(vkDeviceWaitIdle(device));
     db_vk_destroy_swapchain_state(device, state);
-    db_vk_create_swapchain_state(win, present_phys, device, surface, fmt,
+    db_vk_create_swapchain_state(wsi_config, present_phys, device, surface, fmt,
                                  present_mode, render_pass, state);
 }
 
@@ -435,6 +485,68 @@ static void db_vk_owner_timing_end(VkCommandBuffer cmd, int timing_enabled,
                         (owner * TIMESTAMP_QUERIES_PER_GPU) + 1U);
 }
 
+static void db_vk_update_ema_fallback(db_pattern_t pattern, uint32_t gpu_count,
+                                      const uint32_t *band_owner,
+                                      const uint32_t *snake_tiles_per_gpu,
+                                      uint32_t snake_tiles_drawn,
+                                      double frame_ms,
+                                      double *ema_ms_per_band) {
+    if (pattern == DB_PATTERN_BANDS) {
+        const double ms_per_band = frame_ms / (double)BENCH_BANDS;
+        uint32_t bands_per_gpu[MAX_GPU_COUNT] = {0};
+        for (uint32_t b = 0; b < BENCH_BANDS; b++) {
+            bands_per_gpu[band_owner[b]]++;
+        }
+        for (uint32_t g = 0; g < gpu_count; g++) {
+            if (bands_per_gpu[g] == 0U) {
+                continue;
+            }
+            ema_ms_per_band[g] =
+                (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * ms_per_band);
+        }
+        return;
+    }
+
+    const double ms_per_tile =
+        frame_ms / (double)((snake_tiles_drawn > 0U) ? snake_tiles_drawn : 1U);
+    for (uint32_t g = 0; g < gpu_count; g++) {
+        if (snake_tiles_per_gpu[g] == 0U) {
+            continue;
+        }
+        ema_ms_per_band[g] =
+            (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * ms_per_tile);
+    }
+}
+
+static void
+db_vk_cleanup_runtime(VkDevice device, VkFence in_flight,
+                      VkSemaphore image_available, VkSemaphore render_done,
+                      VkBuffer vertex_buffer, VkDeviceMemory vertex_memory,
+                      VkPipeline pipeline, VkPipelineLayout pipeline_layout,
+                      SwapchainState *swapchain_state, VkRenderPass render_pass,
+                      VkCommandPool command_pool, VkQueryPool timing_query_pool,
+                      VkInstance instance, VkSurfaceKHR surface,
+                      DeviceSelectionState *selection) {
+    vkDestroyFence(device, in_flight, NULL);
+    vkDestroySemaphore(device, image_available, NULL);
+    vkDestroySemaphore(device, render_done, NULL);
+    vkDestroyBuffer(device, vertex_buffer, NULL);
+    vkFreeMemory(device, vertex_memory, NULL);
+    vkDestroyPipeline(device, pipeline, NULL);
+    vkDestroyPipelineLayout(device, pipeline_layout, NULL);
+    db_vk_destroy_swapchain_state(device, swapchain_state);
+    vkDestroyRenderPass(device, render_pass, NULL);
+    vkDestroyCommandPool(device, command_pool, NULL);
+    if (timing_query_pool != VK_NULL_HANDLE) {
+        vkDestroyQueryPool(device, timing_query_pool, NULL);
+    }
+    vkDestroyDevice(device, NULL);
+    vkDestroySurfaceKHR(instance, surface, NULL);
+    vkDestroyInstance(instance, NULL);
+    free((void *)selection->phys);
+    free((void *)selection->groups);
+}
+
 static DeviceSelectionState
 db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface) {
     DeviceSelectionState selection = {0};
@@ -528,17 +640,28 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface) {
     return selection;
 }
 
-int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
-    db_install_signal_handlers();
+void db_renderer_vulkan_1_2_multi_gpu_init(
+    const db_vk_wsi_config_t *wsi_config) {
+    if ((wsi_config == NULL) || (wsi_config->window_handle == NULL) ||
+        (wsi_config->get_required_instance_extensions == NULL) ||
+        (wsi_config->create_window_surface == NULL) ||
+        (wsi_config->get_framebuffer_size == NULL)) {
+        failf("Invalid Vulkan WSI config provided to renderer init");
+    }
 
     // ---------------- Instance ----------------
-    uint32_t glfwExtCount = 0;
-    const char **glfwExts = glfwGetRequiredInstanceExtensions(&glfwExtCount);
+    uint32_t required_ext_count = 0;
+    const char *const *required_exts =
+        wsi_config->get_required_instance_extensions(&required_ext_count,
+                                                     wsi_config->user_data);
+    if ((required_ext_count == 0U) || (required_exts == NULL)) {
+        failf("Windowing backend did not provide Vulkan instance extensions");
+    }
 
     const char *instExts[MAX_INSTANCE_EXTS];
     uint32_t instExtN = 0;
-    for (uint32_t i = 0; i < glfwExtCount; i++) {
-        instExts[instExtN++] = glfwExts[i];
+    for (uint32_t i = 0; i < required_ext_count; i++) {
+        instExts[instExtN++] = required_exts[i];
     }
     instExts[instExtN++] =
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
@@ -557,7 +680,12 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     VK_CHECK(vkCreateInstance(&ici, NULL, &instance));
 
     VkSurfaceKHR surface;
-    VK_CHECK(glfwCreateWindowSurface(instance, win, NULL, &surface));
+    VkResult create_surface_result = wsi_config->create_window_surface(
+        instance, wsi_config->window_handle, &surface, wsi_config->user_data);
+    if (create_surface_result != VK_SUCCESS) {
+        vk_fail("create_window_surface", create_surface_result, __FILE__,
+                __LINE__);
+    }
 
     // ---------------- Enumerate physical devices + groups ----------------
     DeviceSelectionState selection =
@@ -687,7 +815,7 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
 
     // ---------------- Swapchain state ----------------
     SwapchainState swapchain_state = {0};
-    db_vk_create_swapchain_state(win, presentPhys, device, surface, fmt,
+    db_vk_create_swapchain_state(wsi_config, presentPhys, device, surface, fmt,
                                  presentMode, renderPass, &swapchain_state);
 
     // ---------------- Pipeline (rectangles) ----------------
@@ -941,506 +1069,474 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     uint8_t prev_frame_owner_used[MAX_GPU_COUNT] = {0};
     int have_prev_timing_frame = 0;
 
-    // ---------------- Main loop ----------------
-    uint64_t bench_start = now_ns();
-    uint64_t bench_frames = 0;
-    double next_progress_log_due_ms = 0.0;
-    uint32_t snake_cursor = 0U;
-    int snake_clearing_phase = 0;
-    for (uint64_t frame = 0; !glfwWindowShouldClose(win) && !db_should_stop();
-         frame++) {
-        glfwPollEvents();
+    g_state.initialized = 1;
+    g_state.wsi_config = *wsi_config;
+    g_state.instance = instance;
+    g_state.surface = surface;
+    g_state.selection = selection;
+    g_state.have_group = haveGroup;
+    g_state.gpu_count = gpuCount;
+    g_state.present_phys = presentPhys;
+    g_state.device = device;
+    g_state.queue = queue;
+    g_state.surface_format = fmt;
+    g_state.present_mode = presentMode;
+    g_state.render_pass = renderPass;
+    g_state.swapchain_state = swapchain_state;
+    g_state.vertex_buffer = vbuf;
+    g_state.vertex_memory = vmem;
+    g_state.pipeline = pipeline;
+    g_state.pipeline_layout = layout;
+    g_state.command_pool = cmdPool;
+    g_state.command_buffer = cmd;
+    g_state.image_available = imageAvail;
+    g_state.render_done = renderDone;
+    g_state.in_flight = inFlight;
+    g_state.timing_query_pool = timing_query_pool;
+    g_state.gpu_timing_enabled = gpu_timing_enabled;
+    g_state.pattern = pattern;
+    g_state.work_unit_count = work_unit_count;
+    g_state.capability_mode = capability_mode;
+    memcpy(g_state.band_owner, band_owner, sizeof(g_state.band_owner));
+    memcpy(g_state.ema_ms_per_band, ema_ms_per_band,
+           sizeof(g_state.ema_ms_per_band));
+    memset(g_state.prev_frame_work_units, 0,
+           sizeof(g_state.prev_frame_work_units));
+    memset(g_state.prev_frame_owner_used, 0,
+           sizeof(g_state.prev_frame_owner_used));
+    g_state.have_prev_timing_frame = have_prev_timing_frame;
+    g_state.timestamp_period_ns = timestamp_period_ns;
+    g_state.bench_start_ns = now_ns();
+    g_state.bench_frames = 0U;
+    g_state.next_progress_log_due_ms = 0.0;
+    g_state.frame_index = 0U;
+    g_state.snake_cursor = 0U;
+    g_state.snake_clearing_phase = 0;
+}
 
-        int should_exit = 0;
-        while (1) {
-            VkResult wait_result =
-                vkWaitForFences(device, 1, &inFlight, VK_TRUE, WAIT_TIMEOUT_NS);
-            if (wait_result == VK_SUCCESS) {
-                break;
+db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
+    if (!g_state.initialized) {
+        return DB_VK_FRAME_STOP;
+    }
+
+    const uint64_t budget_ns = FRAME_BUDGET_NS;
+    const uint64_t safety_ns = FRAME_SAFETY_NS;
+    const uint32_t gpuCount = g_state.gpu_count;
+    const int haveGroup = g_state.have_group;
+
+    VkResult wait_result = vkWaitForFences(
+        g_state.device, 1, &g_state.in_flight, VK_TRUE, WAIT_TIMEOUT_NS);
+    if (wait_result == VK_TIMEOUT) {
+        return DB_VK_FRAME_RETRY;
+    }
+    if (wait_result != VK_SUCCESS) {
+        vk_fail("vkWaitForFences", wait_result, __FILE__, __LINE__);
+    }
+
+    if (g_state.gpu_timing_enabled && g_state.have_prev_timing_frame) {
+        uint64_t query_results[TIMESTAMP_QUERY_COUNT] = {0};
+        VkResult query_result = vkGetQueryPoolResults(
+            g_state.device, g_state.timing_query_pool, 0,
+            gpuCount * TIMESTAMP_QUERIES_PER_GPU,
+            sizeof(uint64_t) * gpuCount * TIMESTAMP_QUERIES_PER_GPU,
+            query_results, sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        if (query_result == VK_SUCCESS) {
+            for (uint32_t g = 0; g < gpuCount; g++) {
+                if ((g_state.prev_frame_owner_used[g] == 0U) ||
+                    (g_state.prev_frame_work_units[g] == 0U)) {
+                    continue;
+                }
+                const size_t base_query =
+                    (size_t)g * (size_t)TIMESTAMP_QUERIES_PER_GPU;
+                const uint64_t start = query_results[base_query];
+                const uint64_t end = query_results[base_query + 1U];
+                if (end <= start) {
+                    continue;
+                }
+                const double elapsed_ms =
+                    ((double)(end - start) * g_state.timestamp_period_ns) /
+                    NS_TO_MS_D;
+                const double ms_per_unit =
+                    elapsed_ms / (double)g_state.prev_frame_work_units[g];
+                g_state.ema_ms_per_band[g] =
+                    (EMA_KEEP * g_state.ema_ms_per_band[g]) +
+                    (EMA_NEW * ms_per_unit);
             }
-            if (wait_result == VK_TIMEOUT) {
-                glfwPollEvents();
-                if (glfwWindowShouldClose(win) || db_should_stop()) {
-                    should_exit = 1;
-                    break;
-                }
-                continue;
+        }
+    }
+
+    VK_CHECK(vkResetFences(g_state.device, 1, &g_state.in_flight));
+
+    uint32_t imgIndex = 0;
+    VkResult ar = vkAcquireNextImageKHR(
+        g_state.device, g_state.swapchain_state.swapchain, WAIT_TIMEOUT_NS,
+        g_state.image_available, VK_NULL_HANDLE, &imgIndex);
+    if (ar == VK_TIMEOUT) {
+        return DB_VK_FRAME_RETRY;
+    }
+    if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
+        db_vk_recreate_swapchain_state(
+            &g_state.wsi_config, g_state.present_phys, g_state.device,
+            g_state.surface, g_state.surface_format, g_state.present_mode,
+            g_state.render_pass, &g_state.swapchain_state);
+        g_state.frame_index++;
+        return DB_VK_FRAME_RETRY;
+    }
+    if ((ar != VK_SUCCESS) && (ar != VK_SUBOPTIMAL_KHR)) {
+        infof("AcquireNextImage returned %s (%d), ending benchmark loop",
+              vk_result_name(ar), (int)ar);
+        return DB_VK_FRAME_STOP;
+    }
+    const int acquire_suboptimal = (ar == VK_SUBOPTIMAL_KHR);
+
+    VK_CHECK(vkResetCommandBuffer(g_state.command_buffer, 0));
+    VkCommandBufferBeginInfo cbi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VK_CHECK(vkBeginCommandBuffer(g_state.command_buffer, &cbi));
+    uint32_t frame_work_units[MAX_GPU_COUNT] = {0};
+    uint8_t frame_owner_used[MAX_GPU_COUNT] = {0};
+    if (g_state.gpu_timing_enabled) {
+        vkCmdResetQueryPool(g_state.command_buffer, g_state.timing_query_pool,
+                            0, gpuCount * TIMESTAMP_QUERIES_PER_GPU);
+    }
+
+    VkClearValue clear;
+    if (g_state.pattern == DB_PATTERN_BANDS) {
+        clear.color.float32[0] = BG_COLOR_R_F;
+        clear.color.float32[1] = BG_COLOR_G_F;
+        clear.color.float32[2] = BG_COLOR_B_F;
+    } else if (g_state.snake_clearing_phase == 0) {
+        clear.color.float32[0] = BENCH_GRID_PHASE0_R;
+        clear.color.float32[1] = BENCH_GRID_PHASE0_G;
+        clear.color.float32[2] = BENCH_GRID_PHASE0_B;
+    } else {
+        clear.color.float32[0] = BENCH_GRID_PHASE1_R;
+        clear.color.float32[1] = BENCH_GRID_PHASE1_G;
+        clear.color.float32[2] = BENCH_GRID_PHASE1_B;
+    }
+    clear.color.float32[COLOR_CHANNEL_ALPHA] = BG_COLOR_A_F;
+
+    VkRenderPassBeginInfo rbi = {.sType =
+                                     VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = g_state.render_pass;
+    rbi.framebuffer = g_state.swapchain_state.framebuffers[imgIndex];
+    rbi.renderArea.extent = g_state.swapchain_state.extent;
+    rbi.clearValueCount = 1;
+    rbi.pClearValues = &clear;
+    vkCmdBeginRenderPass(g_state.command_buffer, &rbi,
+                         VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(g_state.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      g_state.pipeline);
+
+    VkDeviceSize off = 0;
+    vkCmdBindVertexBuffers(g_state.command_buffer, 0, 1, &g_state.vertex_buffer,
+                           &off);
+
+    double time_s = (double)g_state.frame_index / BENCH_TARGET_FPS_D;
+    uint64_t frameStart = now_ns();
+    uint32_t snake_tiles_per_gpu[MAX_GPU_COUNT] = {0};
+    uint32_t snake_tiles_drawn = 0U;
+
+    if (g_state.pattern == DB_PATTERN_BANDS) {
+        const float inv_extent_width =
+            1.0F / (float)g_state.swapchain_state.extent.width;
+        for (uint32_t b = 0; b < BENCH_BANDS; b++) {
+            uint32_t owner = g_state.band_owner[b];
+            if (owner >= gpuCount) {
+                owner = 0U;
             }
-            vk_fail("vkWaitForFences", wait_result, __FILE__, __LINE__);
-        }
-        if (should_exit) {
-            break;
-        }
-
-        if (gpu_timing_enabled && have_prev_timing_frame) {
-            uint64_t query_results[TIMESTAMP_QUERY_COUNT] = {0};
-            VkResult query_result = vkGetQueryPoolResults(
-                device, timing_query_pool, 0,
-                gpuCount * TIMESTAMP_QUERIES_PER_GPU,
-                sizeof(uint64_t) * gpuCount * TIMESTAMP_QUERIES_PER_GPU,
-                query_results, sizeof(uint64_t),
-                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-            if (query_result == VK_SUCCESS) {
-                for (uint32_t g = 0; g < gpuCount; g++) {
-                    if ((prev_frame_owner_used[g] == 0U) ||
-                        (prev_frame_work_units[g] == 0U)) {
-                        continue;
-                    }
-                    const size_t base_query =
-                        (size_t)g * (size_t)TIMESTAMP_QUERIES_PER_GPU;
-                    const uint64_t start = query_results[base_query];
-                    const uint64_t end = query_results[base_query + 1U];
-                    if (end <= start) {
-                        continue;
-                    }
-                    const double elapsed_ms =
-                        ((double)(end - start) * timestamp_period_ns) /
-                        NS_TO_MS_D;
-                    const double ms_per_unit =
-                        elapsed_ms / (double)prev_frame_work_units[g];
-                    ema_ms_per_band[g] = (EMA_KEEP * ema_ms_per_band[g]) +
-                                         (EMA_NEW * ms_per_unit);
-                }
+            owner = db_vk_select_owner_for_work(owner, gpuCount, 1U, frameStart,
+                                                budget_ns, safety_ns,
+                                                g_state.ema_ms_per_band);
+            if (owner == 0U) {
+                g_state.band_owner[b] = 0U;
             }
-        }
-        VK_CHECK(vkResetFences(device, 1, &inFlight));
-
-        uint32_t imgIndex = 0;
-        VkResult ar = VK_TIMEOUT;
-        while (ar == VK_TIMEOUT) {
-            ar = vkAcquireNextImageKHR(device, swapchain_state.swapchain,
-                                       WAIT_TIMEOUT_NS, imageAvail,
-                                       VK_NULL_HANDLE, &imgIndex);
-            if (ar == VK_TIMEOUT) {
-                glfwPollEvents();
-                if (glfwWindowShouldClose(win) || db_should_stop()) {
-                    should_exit = 1;
-                    break;
-                }
+            if (haveGroup) {
+                vkCmdSetDeviceMask(g_state.command_buffer,
+                                   (MASK_GPU0 << owner));
             }
-        }
-        if (should_exit) {
-            break;
-        }
-        if ((ar != VK_SUCCESS) && (ar != VK_SUBOPTIMAL_KHR) &&
-            (ar != VK_ERROR_OUT_OF_DATE_KHR)) {
-            infof("AcquireNextImage returned %s (%d), ending benchmark loop",
-                  vk_result_name(ar), (int)ar);
-            break;
-        }
-        if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
-            db_vk_recreate_swapchain_state(win, presentPhys, device, surface,
-                                           fmt, presentMode, renderPass,
-                                           &swapchain_state);
-            continue;
-        }
-        const int acquire_suboptimal = (ar == VK_SUBOPTIMAL_KHR);
+            db_vk_owner_timing_begin(
+                g_state.command_buffer, g_state.gpu_timing_enabled,
+                g_state.timing_query_pool, owner, frame_owner_used);
 
-        VK_CHECK(vkResetCommandBuffer(cmd, 0));
-
-        VkCommandBufferBeginInfo cbi = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        VK_CHECK(vkBeginCommandBuffer(cmd, &cbi));
-        uint32_t frame_work_units[MAX_GPU_COUNT] = {0};
-        uint8_t frame_owner_used[MAX_GPU_COUNT] = {0};
-        if (gpu_timing_enabled) {
-            vkCmdResetQueryPool(cmd, timing_query_pool, 0,
-                                gpuCount * TIMESTAMP_QUERIES_PER_GPU);
-        }
-
-        VkClearValue clear;
-        if (pattern == DB_PATTERN_BANDS) {
-            clear.color.float32[0] = BG_COLOR_R_F;
-            clear.color.float32[1] = BG_COLOR_G_F;
-            clear.color.float32[2] = BG_COLOR_B_F;
-        } else if (snake_clearing_phase == 0) {
-            clear.color.float32[0] = BENCH_GRID_PHASE0_R;
-            clear.color.float32[1] = BENCH_GRID_PHASE0_G;
-            clear.color.float32[2] = BENCH_GRID_PHASE0_B;
-        } else {
-            clear.color.float32[0] = BENCH_GRID_PHASE1_R;
-            clear.color.float32[1] = BENCH_GRID_PHASE1_G;
-            clear.color.float32[2] = BENCH_GRID_PHASE1_B;
-        }
-        clear.color.float32[COLOR_CHANNEL_ALPHA] = BG_COLOR_A_F;
-
-        VkRenderPassBeginInfo rbi = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        rbi.renderPass = renderPass;
-        rbi.framebuffer = swapchain_state.framebuffers[imgIndex];
-        rbi.renderArea.extent = swapchain_state.extent;
-        rbi.clearValueCount = 1;
-        rbi.pClearValues = &clear;
-
-        vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-
-        VkDeviceSize off = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &off);
-
-        // Time for animation uses the same nominal frame cadence as OpenGL.
-        double time_s = (double)frame / BENCH_TARGET_FPS_D;
-
-        // Compute current “eligibility” based on predicted finish time
-        uint64_t frameStart = now_ns();
-        uint32_t snake_tiles_per_gpu[MAX_GPU_COUNT] = {0};
-        uint32_t snake_tiles_drawn = 0U;
-        if (pattern == DB_PATTERN_BANDS) {
-            for (uint32_t g = 1; g < gpuCount; g++) {
-                // If this GPU is worse than GPU0 by a lot, drift bands away
-                // from it.
-                double ratio = ema_ms_per_band[g] / ema_ms_per_band[0];
-                if (ratio > SLOW_GPU_RATIO_THRESHOLD) {
-                    // Opportunistic skip: reassign its bands to GPU0.
-                    for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-                        if (band_owner[b] == g) {
-                            band_owner[b] = 0;
-                        }
-                    }
-                }
-            }
-            // Draw bands.
-            const float inv_extent_width =
-                1.0F / (float)swapchain_state.extent.width;
-            for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-                uint32_t owner = band_owner[b];
-                if (owner >= gpuCount) {
-                    owner = 0;
-                }
-
-                owner = db_vk_select_owner_for_work(owner, gpuCount, 1U,
-                                                    frameStart, budget_ns,
-                                                    safety_ns, ema_ms_per_band);
-                if (owner == 0U) {
-                    band_owner[b] = 0;
-                }
-
-                if (haveGroup) {
-                    // Device mask selects which physical device executes
-                    // subsequent commands.
-                    vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
-                }
-                db_vk_owner_timing_begin(cmd, gpu_timing_enabled,
-                                         timing_query_pool, owner,
-                                         frame_owner_used);
-
-                // Viewport/scissor for this band.
-                uint32_t x0 = (swapchain_state.extent.width * b) / BENCH_BANDS;
-                uint32_t x1 =
-                    (swapchain_state.extent.width * (b + 1)) / BENCH_BANDS;
-
-                VkViewport vpo;
-                vpo.x = 0;
-                vpo.y = 0;
-                vpo.width = (float)swapchain_state.extent.width;
-                vpo.height = (float)swapchain_state.extent.height;
-                vpo.minDepth = 0.0F;
-                vpo.maxDepth = 1.0F;
-                vkCmdSetViewport(cmd, 0, 1, &vpo);
-
-                VkRect2D sc;
-                sc.offset.x = (int32_t)x0;
-                sc.offset.y = 0;
-                sc.extent.width = x1 - x0;
-                sc.extent.height = swapchain_state.extent.height;
-                vkCmdSetScissor(cmd, 0, 1, &sc);
-
-                // Push constants map quad into this band in NDC.
-                float ndc_x0 = (NDC_HEIGHT * (float)x0 * inv_extent_width) +
-                               NDC_TOP_LEFT_Y;
-                float ndc_x1 = (NDC_HEIGHT * (float)x1 * inv_extent_width) +
-                               NDC_TOP_LEFT_Y;
-
-                PushConstants pc;
-                pc.offsetNDC[0] = ndc_x0;
-                pc.offsetNDC[1] = NDC_TOP_LEFT_Y;
-                pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
-                pc.scaleNDC[1] = NDC_HEIGHT;
-
-                float color_r = 0.0F;
-                float color_g = 0.0F;
-                float color_b = 0.0F;
-                db_band_color_rgb(b, BENCH_BANDS, time_s, &color_r, &color_g,
-                                  &color_b);
-                pc.color[0] = color_r;
-                pc.color[1] = color_g;
-                pc.color[2] = color_b;
-                pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
-
-                vkCmdPushConstants(cmd, layout,
-                                   VK_SHADER_STAGE_VERTEX_BIT |
-                                       VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0, sizeof(pc), &pc);
-                vkCmdDraw(cmd, DB_BAND_TRI_VERTS_PER_BAND, 1, 0, 0);
-                db_vk_owner_timing_end(cmd, gpu_timing_enabled,
-                                       timing_query_pool, owner);
-                frame_work_units[owner] += 1U;
-            }
-        } else {
-            // Draw a deterministic snake window each frame.
-            const uint32_t snake_rows = db_snake_grid_rows_effective();
-            const uint32_t snake_cols = db_snake_grid_cols_effective();
-            const uint32_t tiles_per_step =
-                db_snake_grid_tiles_per_step(work_unit_count);
-            const uint32_t batch_size = db_snake_grid_step_batch_size(
-                snake_cursor, work_unit_count, tiles_per_step);
-            float target_r = 0.0F;
-            float target_g = 0.0F;
-            float target_b = 0.0F;
-            db_snake_grid_target_color_rgb(snake_clearing_phase, &target_r,
-                                           &target_g, &target_b);
-
-            VkViewport vpo;
-            vpo.x = 0;
-            vpo.y = 0;
-            vpo.width = (float)swapchain_state.extent.width;
-            vpo.height = (float)swapchain_state.extent.height;
-            vpo.minDepth = 0.0F;
+            uint32_t x0 =
+                (g_state.swapchain_state.extent.width * b) / BENCH_BANDS;
+            uint32_t x1 =
+                (g_state.swapchain_state.extent.width * (b + 1U)) / BENCH_BANDS;
+            VkViewport vpo = {0};
+            vpo.width = (float)g_state.swapchain_state.extent.width;
+            vpo.height = (float)g_state.swapchain_state.extent.height;
             vpo.maxDepth = 1.0F;
-            vkCmdSetViewport(cmd, 0, 1, &vpo);
+            vkCmdSetViewport(g_state.command_buffer, 0, 1, &vpo);
+            VkRect2D sc = {0};
+            sc.offset.x = (int32_t)x0;
+            sc.extent.width = x1 - x0;
+            sc.extent.height = g_state.swapchain_state.extent.height;
+            vkCmdSetScissor(g_state.command_buffer, 0, 1, &sc);
 
-            const float target_color[3] = {target_r, target_g, target_b};
+            float ndc_x0 =
+                (NDC_HEIGHT * (float)x0 * inv_extent_width) + NDC_TOP_LEFT_Y;
+            float ndc_x1 =
+                (NDC_HEIGHT * (float)x1 * inv_extent_width) + NDC_TOP_LEFT_Y;
+            PushConstants pc = {0};
+            pc.offsetNDC[0] = ndc_x0;
+            pc.offsetNDC[1] = NDC_TOP_LEFT_Y;
+            pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
+            pc.scaleNDC[1] = NDC_HEIGHT;
+            db_band_color_rgb(b, BENCH_BANDS, time_s, &pc.color[0],
+                              &pc.color[1], &pc.color[2]);
+            pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+            vkCmdPushConstants(g_state.command_buffer, g_state.pipeline_layout,
+                               VK_SHADER_STAGE_VERTEX_BIT |
+                                   VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(pc), &pc);
+            vkCmdDraw(g_state.command_buffer, DB_BAND_TRI_VERTS_PER_BAND, 1, 0,
+                      0);
+            db_vk_owner_timing_end(g_state.command_buffer,
+                                   g_state.gpu_timing_enabled,
+                                   g_state.timing_query_pool, owner);
+            frame_work_units[owner] += 1U;
+        }
+    } else {
+        const uint32_t snake_rows = db_snake_grid_rows_effective();
+        const uint32_t snake_cols = db_snake_grid_cols_effective();
+        const uint32_t tiles_per_step =
+            db_snake_grid_tiles_per_step(g_state.work_unit_count);
+        const uint32_t batch_size = db_snake_grid_step_batch_size(
+            g_state.snake_cursor, g_state.work_unit_count, tiles_per_step);
+        float target_r = 0.0F;
+        float target_g = 0.0F;
+        float target_b = 0.0F;
+        db_snake_grid_target_color_rgb(g_state.snake_clearing_phase, &target_r,
+                                       &target_g, &target_b);
+        VkViewport vpo = {0};
+        vpo.width = (float)g_state.swapchain_state.extent.width;
+        vpo.height = (float)g_state.swapchain_state.extent.height;
+        vpo.maxDepth = 1.0F;
+        vkCmdSetViewport(g_state.command_buffer, 0, 1, &vpo);
+        const float target_color[3] = {target_r, target_g, target_b};
+        const uint32_t full_rows = g_state.snake_cursor / snake_cols;
+        const uint32_t row_remainder = g_state.snake_cursor % snake_cols;
 
-            // Draw the completed snake prefix as solid target color so the
-            // background transitions uniformly behind the gradient head.
-            const uint32_t full_rows = snake_cursor / snake_cols;
-            const uint32_t row_remainder = snake_cursor % snake_cols;
-            for (uint32_t row = 0; row < full_rows; row++) {
-                const uint32_t span_units = snake_cols;
-                uint32_t owner = db_vk_select_owner_for_work(
-                    row % gpuCount, gpuCount, span_units, frameStart, budget_ns,
-                    safety_ns, ema_ms_per_band);
-                snake_tiles_per_gpu[owner] += span_units;
-                snake_tiles_drawn += span_units;
-                if (haveGroup) {
-                    vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
-                }
-                db_vk_owner_timing_begin(cmd, gpu_timing_enabled,
-                                         timing_query_pool, owner,
-                                         frame_owner_used);
-                db_vk_draw_snake_span(cmd, layout, swapchain_state.extent,
-                                      snake_rows, snake_cols, row, 0U,
-                                      snake_cols, target_color);
-                db_vk_owner_timing_end(cmd, gpu_timing_enabled,
-                                       timing_query_pool, owner);
-                frame_work_units[owner] += span_units;
+        for (uint32_t row = 0; row < full_rows; row++) {
+            const uint32_t span_units = snake_cols;
+            uint32_t owner = db_vk_select_owner_for_work(
+                row % gpuCount, gpuCount, span_units, frameStart, budget_ns,
+                safety_ns, g_state.ema_ms_per_band);
+            snake_tiles_per_gpu[owner] += span_units;
+            snake_tiles_drawn += span_units;
+            if (haveGroup) {
+                vkCmdSetDeviceMask(g_state.command_buffer,
+                                   (MASK_GPU0 << owner));
             }
-            if ((row_remainder > 0U) && (full_rows < snake_rows)) {
-                const uint32_t span_units = row_remainder;
-                uint32_t owner = db_vk_select_owner_for_work(
-                    full_rows % gpuCount, gpuCount, span_units, frameStart,
-                    budget_ns, safety_ns, ema_ms_per_band);
-                snake_tiles_per_gpu[owner] += span_units;
-                snake_tiles_drawn += span_units;
-                if (haveGroup) {
-                    vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
-                }
-                db_vk_owner_timing_begin(cmd, gpu_timing_enabled,
-                                         timing_query_pool, owner,
-                                         frame_owner_used);
-                uint32_t col_start = 0U;
-                uint32_t col_end = row_remainder;
-                if ((full_rows & 1U) != 0U) {
-                    col_start = snake_cols - row_remainder;
-                    col_end = snake_cols;
-                }
-                db_vk_draw_snake_span(cmd, layout, swapchain_state.extent,
-                                      snake_rows, snake_cols, full_rows,
-                                      col_start, col_end, target_color);
-                db_vk_owner_timing_end(cmd, gpu_timing_enabled,
-                                       timing_query_pool, owner);
-                frame_work_units[owner] += span_units;
-            }
+            db_vk_owner_timing_begin(
+                g_state.command_buffer, g_state.gpu_timing_enabled,
+                g_state.timing_query_pool, owner, frame_owner_used);
+            db_vk_draw_snake_span(
+                g_state.command_buffer, g_state.pipeline_layout,
+                g_state.swapchain_state.extent, snake_rows, snake_cols, row, 0U,
+                snake_cols, target_color);
+            db_vk_owner_timing_end(g_state.command_buffer,
+                                   g_state.gpu_timing_enabled,
+                                   g_state.timing_query_pool, owner);
+            frame_work_units[owner] += span_units;
+        }
 
+        if ((row_remainder > 0U) && (full_rows < snake_rows)) {
+            const uint32_t span_units = row_remainder;
+            uint32_t owner = db_vk_select_owner_for_work(
+                full_rows % gpuCount, gpuCount, span_units, frameStart,
+                budget_ns, safety_ns, g_state.ema_ms_per_band);
+            snake_tiles_per_gpu[owner] += span_units;
+            snake_tiles_drawn += span_units;
+            if (haveGroup) {
+                vkCmdSetDeviceMask(g_state.command_buffer,
+                                   (MASK_GPU0 << owner));
+            }
+            db_vk_owner_timing_begin(
+                g_state.command_buffer, g_state.gpu_timing_enabled,
+                g_state.timing_query_pool, owner, frame_owner_used);
+            uint32_t col_start = 0U;
+            uint32_t col_end = row_remainder;
+            if ((full_rows & 1U) != 0U) {
+                col_start = snake_cols - row_remainder;
+                col_end = snake_cols;
+            }
+            db_vk_draw_snake_span(
+                g_state.command_buffer, g_state.pipeline_layout,
+                g_state.swapchain_state.extent, snake_rows, snake_cols,
+                full_rows, col_start, col_end, target_color);
+            db_vk_owner_timing_end(g_state.command_buffer,
+                                   g_state.gpu_timing_enabled,
+                                   g_state.timing_query_pool, owner);
+            frame_work_units[owner] += span_units;
+        }
+
+        for (uint32_t update_index = 0; update_index < batch_size;
+             update_index++) {
+            const uint32_t tile_step = g_state.snake_cursor + update_index;
+            const uint32_t tile_index =
+                db_snake_grid_tile_index_from_step(tile_step);
+            const uint32_t row = tile_index / snake_cols;
+            const uint32_t col = tile_index % snake_cols;
+            uint32_t owner = db_vk_select_owner_for_work(
+                tile_step % gpuCount, gpuCount, 1U, frameStart, budget_ns,
+                safety_ns, g_state.ema_ms_per_band);
+            snake_tiles_per_gpu[owner]++;
+            snake_tiles_drawn++;
+            if (haveGroup) {
+                vkCmdSetDeviceMask(g_state.command_buffer,
+                                   (MASK_GPU0 << owner));
+            }
+            db_vk_owner_timing_begin(
+                g_state.command_buffer, g_state.gpu_timing_enabled,
+                g_state.timing_query_pool, owner, frame_owner_used);
+            float grad_color[3];
+            db_snake_grid_window_color_rgb(
+                update_index, batch_size, g_state.snake_clearing_phase,
+                &grad_color[0], &grad_color[1], &grad_color[2]);
+            db_vk_draw_snake_span(g_state.command_buffer,
+                                  g_state.pipeline_layout,
+                                  g_state.swapchain_state.extent, snake_rows,
+                                  snake_cols, row, col, col + 1U, grad_color);
+            db_vk_owner_timing_end(g_state.command_buffer,
+                                   g_state.gpu_timing_enabled,
+                                   g_state.timing_query_pool, owner);
+            frame_work_units[owner] += 1U;
+        }
+
+        const int phase_completed =
+            (g_state.snake_cursor + batch_size) >= g_state.work_unit_count;
+        if (phase_completed) {
             for (uint32_t update_index = 0; update_index < batch_size;
                  update_index++) {
-                const uint32_t tile_step = snake_cursor + update_index;
+                const uint32_t tile_step = g_state.snake_cursor + update_index;
                 const uint32_t tile_index =
                     db_snake_grid_tile_index_from_step(tile_step);
                 const uint32_t row = tile_index / snake_cols;
                 const uint32_t col = tile_index % snake_cols;
                 uint32_t owner = db_vk_select_owner_for_work(
                     tile_step % gpuCount, gpuCount, 1U, frameStart, budget_ns,
-                    safety_ns, ema_ms_per_band);
+                    safety_ns, g_state.ema_ms_per_band);
                 snake_tiles_per_gpu[owner]++;
                 snake_tiles_drawn++;
                 if (haveGroup) {
-                    vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
+                    vkCmdSetDeviceMask(g_state.command_buffer,
+                                       (MASK_GPU0 << owner));
                 }
-                db_vk_owner_timing_begin(cmd, gpu_timing_enabled,
-                                         timing_query_pool, owner,
-                                         frame_owner_used);
-                float grad_color[3];
-                db_snake_grid_window_color_rgb(
-                    update_index, batch_size, snake_clearing_phase,
-                    &grad_color[0], &grad_color[1], &grad_color[2]);
-                db_vk_draw_snake_span(cmd, layout, swapchain_state.extent,
-                                      snake_rows, snake_cols, row, col,
-                                      col + 1U, grad_color);
-                db_vk_owner_timing_end(cmd, gpu_timing_enabled,
-                                       timing_query_pool, owner);
+                db_vk_owner_timing_begin(
+                    g_state.command_buffer, g_state.gpu_timing_enabled,
+                    g_state.timing_query_pool, owner, frame_owner_used);
+                db_vk_draw_snake_span(
+                    g_state.command_buffer, g_state.pipeline_layout,
+                    g_state.swapchain_state.extent, snake_rows, snake_cols, row,
+                    col, col + 1U, target_color);
+                db_vk_owner_timing_end(g_state.command_buffer,
+                                       g_state.gpu_timing_enabled,
+                                       g_state.timing_query_pool, owner);
                 frame_work_units[owner] += 1U;
             }
-
-            const int phase_completed =
-                (snake_cursor + batch_size) >= work_unit_count;
-            if (phase_completed) {
-                for (uint32_t update_index = 0; update_index < batch_size;
-                     update_index++) {
-                    const uint32_t tile_step = snake_cursor + update_index;
-                    const uint32_t tile_index =
-                        db_snake_grid_tile_index_from_step(tile_step);
-                    const uint32_t row = tile_index / snake_cols;
-                    const uint32_t col = tile_index % snake_cols;
-                    uint32_t owner = db_vk_select_owner_for_work(
-                        tile_step % gpuCount, gpuCount, 1U, frameStart,
-                        budget_ns, safety_ns, ema_ms_per_band);
-                    snake_tiles_per_gpu[owner]++;
-                    snake_tiles_drawn++;
-                    if (haveGroup) {
-                        vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
-                    }
-                    db_vk_owner_timing_begin(cmd, gpu_timing_enabled,
-                                             timing_query_pool, owner,
-                                             frame_owner_used);
-                    db_vk_draw_snake_span(cmd, layout, swapchain_state.extent,
-                                          snake_rows, snake_cols, row, col,
-                                          col + 1U, target_color);
-                    db_vk_owner_timing_end(cmd, gpu_timing_enabled,
-                                           timing_query_pool, owner);
-                    frame_work_units[owner] += 1U;
-                }
-            }
-
-            snake_cursor += batch_size;
-            if (snake_cursor >= work_unit_count) {
-                snake_cursor = 0U;
-                snake_clearing_phase = !snake_clearing_phase;
-            }
         }
 
-        // Reset mask back to GPU0 before ending, for sanity
-        if (haveGroup) {
-            vkCmdSetDeviceMask(cmd, MASK_GPU0);
+        g_state.snake_cursor += batch_size;
+        if (g_state.snake_cursor >= g_state.work_unit_count) {
+            g_state.snake_cursor = 0U;
+            g_state.snake_clearing_phase = !g_state.snake_clearing_phase;
         }
-
-        vkCmdEndRenderPass(cmd);
-        VK_CHECK(vkEndCommandBuffer(cmd));
-
-        VkPipelineStageFlags waitStage =
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        si.waitSemaphoreCount = 1;
-        si.pWaitSemaphores = &imageAvail;
-        si.pWaitDstStageMask = &waitStage;
-        si.commandBufferCount = 1;
-        si.pCommandBuffers = &cmd;
-        si.signalSemaphoreCount = 1;
-        si.pSignalSemaphores = &renderDone;
-
-        // Submit + fence, then present
-        VK_CHECK(vkQueueSubmit(queue, 1, &si, inFlight));
-        if (gpu_timing_enabled) {
-            for (uint32_t g = 0; g < gpuCount; g++) {
-                prev_frame_work_units[g] = frame_work_units[g];
-                prev_frame_owner_used[g] = frame_owner_used[g];
-            }
-            have_prev_timing_frame = 1;
-        }
-
-        VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = &renderDone;
-        pi.swapchainCount = 1;
-        pi.pSwapchains = &swapchain_state.swapchain;
-        pi.pImageIndices = &imgIndex;
-        VkResult present_result = vkQueuePresentKHR(queue, &pi);
-        if ((present_result != VK_SUCCESS) &&
-            (present_result != VK_SUBOPTIMAL_KHR) &&
-            (present_result != VK_ERROR_OUT_OF_DATE_KHR)) {
-            infof("QueuePresent returned %s (%d), ending benchmark loop",
-                  vk_result_name(present_result), (int)present_result);
-            break;
-        }
-        if (acquire_suboptimal || (present_result == VK_SUBOPTIMAL_KHR) ||
-            (present_result == VK_ERROR_OUT_OF_DATE_KHR)) {
-            db_vk_recreate_swapchain_state(win, presentPhys, device, surface,
-                                           fmt, presentMode, renderPass,
-                                           &swapchain_state);
-            continue;
-        }
-
-        if (!gpu_timing_enabled) {
-            // Fallback EMA when timestamp queries are unavailable.
-            uint64_t frameEnd = now_ns();
-            double frame_ms = (double)(frameEnd - frameStart) / NS_TO_MS_D;
-            if (pattern == DB_PATTERN_BANDS) {
-                double ms_per_band = frame_ms / (double)BENCH_BANDS;
-                uint32_t bandsPerGpu[MAX_GPU_COUNT] = {0};
-                for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-                    bandsPerGpu[band_owner[b]]++;
-                }
-
-                for (uint32_t g = 0; g < gpuCount; g++) {
-                    if (bandsPerGpu[g] == 0) {
-                        continue;
-                    }
-                    ema_ms_per_band[g] = (EMA_KEEP * ema_ms_per_band[g]) +
-                                         (EMA_NEW * ms_per_band);
-                }
-            } else {
-                const double ms_per_tile =
-                    frame_ms /
-                    (double)((snake_tiles_drawn > 0U) ? snake_tiles_drawn : 1U);
-                for (uint32_t g = 0; g < gpuCount; g++) {
-                    if (snake_tiles_per_gpu[g] == 0U) {
-                        continue;
-                    }
-                    ema_ms_per_band[g] = (EMA_KEEP * ema_ms_per_band[g]) +
-                                         (EMA_NEW * ms_per_tile);
-                }
-            }
-        }
-
-        bench_frames++;
-        double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
-        db_benchmark_log_periodic("Vulkan", RENDERER_NAME, BACKEND_NAME,
-                                  bench_frames, work_unit_count, bench_ms,
-                                  capability_mode, &next_progress_log_due_ms,
-                                  BENCH_LOG_INTERVAL_MS_D);
     }
 
+    if (haveGroup) {
+        vkCmdSetDeviceMask(g_state.command_buffer, MASK_GPU0);
+    }
+    vkCmdEndRenderPass(g_state.command_buffer);
+    VK_CHECK(vkEndCommandBuffer(g_state.command_buffer));
+
+    VkPipelineStageFlags waitStage =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &g_state.image_available;
+    si.pWaitDstStageMask = &waitStage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &g_state.command_buffer;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &g_state.render_done;
+    VK_CHECK(vkQueueSubmit(g_state.queue, 1, &si, g_state.in_flight));
+    if (g_state.gpu_timing_enabled) {
+        for (uint32_t g = 0; g < gpuCount; g++) {
+            g_state.prev_frame_work_units[g] = frame_work_units[g];
+            g_state.prev_frame_owner_used[g] = frame_owner_used[g];
+        }
+        g_state.have_prev_timing_frame = 1;
+    }
+
+    VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &g_state.render_done;
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &g_state.swapchain_state.swapchain;
+    pi.pImageIndices = &imgIndex;
+    VkResult present_result = vkQueuePresentKHR(g_state.queue, &pi);
+    if ((present_result != VK_SUCCESS) &&
+        (present_result != VK_SUBOPTIMAL_KHR) &&
+        (present_result != VK_ERROR_OUT_OF_DATE_KHR)) {
+        infof("QueuePresent returned %s (%d), ending benchmark loop",
+              vk_result_name(present_result), (int)present_result);
+        return DB_VK_FRAME_STOP;
+    }
+    if (acquire_suboptimal || (present_result == VK_SUBOPTIMAL_KHR) ||
+        (present_result == VK_ERROR_OUT_OF_DATE_KHR)) {
+        db_vk_recreate_swapchain_state(
+            &g_state.wsi_config, g_state.present_phys, g_state.device,
+            g_state.surface, g_state.surface_format, g_state.present_mode,
+            g_state.render_pass, &g_state.swapchain_state);
+        g_state.frame_index++;
+        return DB_VK_FRAME_RETRY;
+    }
+
+    if (!g_state.gpu_timing_enabled) {
+        uint64_t frameEnd = now_ns();
+        double frame_ms = (double)(frameEnd - frameStart) / NS_TO_MS_D;
+        db_vk_update_ema_fallback(g_state.pattern, gpuCount, g_state.band_owner,
+                                  snake_tiles_per_gpu, snake_tiles_drawn,
+                                  frame_ms, g_state.ema_ms_per_band);
+    }
+
+    g_state.bench_frames++;
+    double bench_ms = (double)(now_ns() - g_state.bench_start_ns) / NS_TO_MS_D;
+    db_benchmark_log_periodic(
+        "Vulkan", RENDERER_NAME, BACKEND_NAME, g_state.bench_frames,
+        g_state.work_unit_count, bench_ms, g_state.capability_mode,
+        &g_state.next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
+    g_state.frame_index++;
+    return DB_VK_FRAME_OK;
+}
+
+void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
+    if (!g_state.initialized) {
+        return;
+    }
     uint64_t bench_end = now_ns();
-    double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
-    db_benchmark_log_final("Vulkan", RENDERER_NAME, BACKEND_NAME, bench_frames,
-                           work_unit_count, bench_ms, capability_mode);
+    double bench_ms = (double)(bench_end - g_state.bench_start_ns) / NS_TO_MS_D;
+    db_benchmark_log_final("Vulkan", RENDERER_NAME, BACKEND_NAME,
+                           g_state.bench_frames, g_state.work_unit_count,
+                           bench_ms, g_state.capability_mode);
+    vkDeviceWaitIdle(g_state.device);
+    db_vk_cleanup_runtime(
+        g_state.device, g_state.in_flight, g_state.image_available,
+        g_state.render_done, g_state.vertex_buffer, g_state.vertex_memory,
+        g_state.pipeline, g_state.pipeline_layout, &g_state.swapchain_state,
+        g_state.render_pass, g_state.command_pool, g_state.timing_query_pool,
+        g_state.instance, g_state.surface, &g_state.selection);
+    g_state = (VulkanRendererState){0};
+}
 
-    vkDeviceWaitIdle(device);
+const char *db_renderer_vulkan_1_2_multi_gpu_capability_mode(void) {
+    return (g_state.capability_mode != NULL) ? g_state.capability_mode
+                                             : CAPABILITY_MODE_SINGLE_GPU;
+}
 
-    // ---------------- Cleanup ----------------
-    vkDestroyFence(device, inFlight, NULL);
-    vkDestroySemaphore(device, imageAvail, NULL);
-    vkDestroySemaphore(device, renderDone, NULL);
-
-    vkDestroyBuffer(device, vbuf, NULL);
-    vkFreeMemory(device, vmem, NULL);
-
-    vkDestroyPipeline(device, pipeline, NULL);
-    vkDestroyPipelineLayout(device, layout, NULL);
-
-    db_vk_destroy_swapchain_state(device, &swapchain_state);
-    vkDestroyRenderPass(device, renderPass, NULL);
-
-    vkDestroyCommandPool(device, cmdPool, NULL);
-    if (timing_query_pool != VK_NULL_HANDLE) {
-        vkDestroyQueryPool(device, timing_query_pool, NULL);
-    }
-
-    vkDestroyDevice(device, NULL);
-    vkDestroySurfaceKHR(instance, surface, NULL);
-    vkDestroyInstance(instance, NULL);
-
-    free((void *)selection.phys);
-    free((void *)selection.groups);
-    return 0;
+uint32_t db_renderer_vulkan_1_2_multi_gpu_work_unit_count(void) {
+    return g_state.work_unit_count;
 }
