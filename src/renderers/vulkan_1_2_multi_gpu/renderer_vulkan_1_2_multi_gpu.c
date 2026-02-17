@@ -1,7 +1,6 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +8,7 @@
 
 #include "../../core/db_core.h"
 #include "../../displays/bench_config.h"
+#include "../renderer_benchmark_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 
 #ifndef VERT_SPV_PATH
@@ -25,7 +25,6 @@
 #define NS_TO_MS_D 1e6
 #define MAX_GPU_COUNT 8U
 #define MAX_BAND_OWNER 64U
-#define TRIANGLE_VERT_COUNT 6U
 #define QUAD_VERT_FLOAT_COUNT 12U
 #define DEFAULT_EMA_MS_PER_BAND 0.2
 #define FRAME_BUDGET_NS 16666666ULL
@@ -136,6 +135,7 @@ typedef struct {
                               // surface (bitmask)
 } DeviceGroupInfo;
 
+// NOLINTNEXTLINE(readability-function-size)
 int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     db_install_signal_handlers();
 
@@ -672,13 +672,29 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     // ---------------- Opportunistic scheduler state ----------------
     uint32_t band_owner[MAX_BAND_OWNER];
     uint32_t gpuCount = haveGroup ? chosenCount : 1;
-    const char *capability_mode = (haveGroup && (gpuCount > 1U))
-                                      ? CAPABILITY_MODE_DEVICE_GROUP
-                                      : CAPABILITY_MODE_SINGLE_GPU;
+    db_pattern_t pattern = DB_PATTERN_BANDS;
+    if (!db_parse_benchmark_pattern_from_env(&pattern)) {
+        const char *mode = getenv(DB_BENCHMARK_MODE_ENV);
+        infof("Invalid %s='%s'; using '%s'", DB_BENCHMARK_MODE_ENV,
+              (mode != NULL) ? mode : "", DB_BENCHMARK_MODE_BANDS);
+    }
+    uint32_t work_unit_count = db_pattern_work_unit_count(pattern);
+    if (work_unit_count == 0U) {
+        infof("Invalid work-unit geometry for mode '%s'; falling back to '%s'",
+              DB_BENCHMARK_MODE_SNAKE_GRID, DB_BENCHMARK_MODE_BANDS);
+        pattern = DB_PATTERN_BANDS;
+        work_unit_count = db_pattern_work_unit_count(pattern);
+    }
+    const int multi_gpu = haveGroup && (gpuCount > 1U);
+    const char *capability_mode = NULL;
+    capability_mode =
+        multi_gpu ? CAPABILITY_MODE_DEVICE_GROUP : CAPABILITY_MODE_SINGLE_GPU;
 
     // Start: round robin across GPUs
-    for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-        band_owner[b] = b % gpuCount;
+    if (pattern == DB_PATTERN_BANDS) {
+        for (uint32_t b = 0; b < BENCH_BANDS; b++) {
+            band_owner[b] = b % gpuCount;
+        }
     }
 
     // EMA ms per band per GPU
@@ -695,6 +711,10 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     uint64_t bench_start = now_ns();
     uint64_t bench_frames = 0;
     double next_progress_log_due_ms = 0.0;
+    uint32_t snake_cursor = 0U;
+    uint32_t snake_prev_start = 0U;
+    uint32_t snake_prev_count = 0U;
+    int snake_clearing_phase = 0;
     for (uint64_t frame = 0; !glfwWindowShouldClose(win) && !db_should_stop();
          frame++) {
         glfwPollEvents();
@@ -774,46 +794,108 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
 
         // Compute current “eligibility” based on predicted finish time
         uint64_t frameStart = now_ns();
-        for (uint32_t g = 1; g < gpuCount; g++) {
-            // If this GPU is worse than GPU0 by a lot, drift bands away from it
-            double ratio = ema_ms_per_band[g] / ema_ms_per_band[0];
-            if (ratio > SLOW_GPU_RATIO_THRESHOLD) {
-                // Opportunistic skip: reassign its bands to GPU0
-                for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-                    if (band_owner[b] == g) {
-                        band_owner[b] = 0;
+        uint32_t snake_tiles_per_gpu[MAX_GPU_COUNT] = {0};
+        uint32_t snake_tiles_drawn = 0U;
+        if (pattern == DB_PATTERN_BANDS) {
+            for (uint32_t g = 1; g < gpuCount; g++) {
+                // If this GPU is worse than GPU0 by a lot, drift bands away
+                // from it.
+                double ratio = ema_ms_per_band[g] / ema_ms_per_band[0];
+                if (ratio > SLOW_GPU_RATIO_THRESHOLD) {
+                    // Opportunistic skip: reassign its bands to GPU0.
+                    for (uint32_t b = 0; b < BENCH_BANDS; b++) {
+                        if (band_owner[b] == g) {
+                            band_owner[b] = 0;
+                        }
                     }
                 }
             }
-        }
+            // Draw bands.
+            const float inv_extent_width = 1.0F / (float)extent.width;
+            for (uint32_t b = 0; b < BENCH_BANDS; b++) {
+                uint32_t owner = band_owner[b];
+                if (owner >= gpuCount) {
+                    owner = 0;
+                }
 
-        // Draw bands
-        const float inv_extent_width = 1.0F / (float)extent.width;
-        for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-            uint32_t owner = band_owner[b];
-            if (owner >= gpuCount) {
-                owner = 0;
+                // Deadline-aware: if predicted completion too late, give it to
+                // GPU0.
+                uint64_t now = now_ns();
+                uint64_t predicted_ns = (uint64_t)(ema_ms_per_band[owner] *
+                                                   HOST_COHERENT_MSCALE_NS);
+                if (owner != 0 && (now + predicted_ns) >
+                                      (frameStart + budget_ns - safety_ns)) {
+                    owner = 0;
+                    band_owner[b] = 0;
+                }
+
+                if (haveGroup) {
+                    // Device mask selects which physical device executes
+                    // subsequent commands.
+                    vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
+                }
+
+                // Viewport/scissor for this band.
+                uint32_t x0 = (extent.width * b) / BENCH_BANDS;
+                uint32_t x1 = (extent.width * (b + 1)) / BENCH_BANDS;
+
+                VkViewport vpo;
+                vpo.x = 0;
+                vpo.y = 0;
+                vpo.width = (float)extent.width;
+                vpo.height = (float)extent.height;
+                vpo.minDepth = 0.0F;
+                vpo.maxDepth = 1.0F;
+                vkCmdSetViewport(cmd, 0, 1, &vpo);
+
+                VkRect2D sc;
+                sc.offset.x = (int32_t)x0;
+                sc.offset.y = 0;
+                sc.extent.width = x1 - x0;
+                sc.extent.height = extent.height;
+                vkCmdSetScissor(cmd, 0, 1, &sc);
+
+                // Push constants map quad into this band in NDC.
+                float ndc_x0 = (NDC_HEIGHT * (float)x0 * inv_extent_width) +
+                               NDC_TOP_LEFT_Y;
+                float ndc_x1 = (NDC_HEIGHT * (float)x1 * inv_extent_width) +
+                               NDC_TOP_LEFT_Y;
+
+                PushConstants pc;
+                pc.offsetNDC[0] = ndc_x0;
+                pc.offsetNDC[1] = NDC_TOP_LEFT_Y;
+                pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
+                pc.scaleNDC[1] = NDC_HEIGHT;
+
+                float color_r = 0.0F;
+                float color_g = 0.0F;
+                float color_b = 0.0F;
+                db_band_color_rgb(b, BENCH_BANDS, time_s, &color_r, &color_g,
+                                  &color_b);
+                pc.color[0] = color_r;
+                pc.color[1] = color_g;
+                pc.color[2] = color_b;
+                pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+
+                vkCmdPushConstants(cmd, layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT |
+                                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(pc), &pc);
+                vkCmdDraw(cmd, DB_BAND_TRI_VERTS_PER_BAND, 1, 0, 0);
             }
-
-            // Deadline-aware: if predicted completion too late, give it to GPU0
-            uint64_t now = now_ns();
-            uint64_t predicted_ns =
-                (uint64_t)(ema_ms_per_band[owner] * HOST_COHERENT_MSCALE_NS);
-            if (owner != 0 &&
-                (now + predicted_ns) > (frameStart + budget_ns - safety_ns)) {
-                owner = 0;
-                band_owner[b] = 0;
-            }
-
-            if (haveGroup) {
-                // Device mask selects which physical device executes subsequent
-                // commands
-                vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
-            }
-
-            // Viewport/scissor for this band
-            uint32_t x0 = (extent.width * b) / BENCH_BANDS;
-            uint32_t x1 = (extent.width * (b + 1)) / BENCH_BANDS;
+        } else {
+            // Draw a deterministic snake window each frame.
+            const uint32_t snake_rows = db_snake_grid_rows_effective();
+            const uint32_t snake_cols = db_snake_grid_cols_effective();
+            const uint32_t tiles_per_step =
+                db_snake_grid_tiles_per_step(work_unit_count);
+            const uint32_t batch_size = db_snake_grid_step_batch_size(
+                snake_cursor, work_unit_count, tiles_per_step);
+            float target_r = 0.0F;
+            float target_g = 0.0F;
+            float target_b = 0.0F;
+            db_snake_grid_target_color_rgb(snake_clearing_phase, &target_r,
+                                           &target_g, &target_b);
 
             VkViewport vpo;
             vpo.x = 0;
@@ -824,43 +906,168 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
             vpo.maxDepth = 1.0F;
             vkCmdSetViewport(cmd, 0, 1, &vpo);
 
-            VkRect2D sc;
-            sc.offset.x = (int32_t)x0;
-            sc.offset.y = 0;
-            sc.extent.width = x1 - x0;
-            sc.extent.height = extent.height;
-            vkCmdSetScissor(cmd, 0, 1, &sc);
+            for (uint32_t update_index = 0; update_index < snake_prev_count;
+                 update_index++) {
+                const uint32_t tile_step = snake_prev_start + update_index;
+                const uint32_t tile_index =
+                    db_snake_grid_tile_index_from_step(tile_step);
+                const uint32_t row = tile_index / snake_cols;
+                const uint32_t col = tile_index % snake_cols;
+                uint32_t owner = tile_step % gpuCount;
+                snake_tiles_per_gpu[owner]++;
+                snake_tiles_drawn++;
+                if (haveGroup) {
+                    vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
+                }
 
-            // Push constants map quad into this band in NDC
-            float ndc_x0 =
-                (NDC_HEIGHT * (float)x0 * inv_extent_width) + NDC_TOP_LEFT_Y;
-            float ndc_x1 =
-                (NDC_HEIGHT * (float)x1 * inv_extent_width) + NDC_TOP_LEFT_Y;
+                uint32_t x0 = (extent.width * col) / snake_cols;
+                uint32_t x1 = (extent.width * (col + 1U)) / snake_cols;
+                uint32_t y0 = (extent.height * row) / snake_rows;
+                uint32_t y1 = (extent.height * (row + 1U)) / snake_rows;
 
-            PushConstants pc;
-            pc.offsetNDC[0] = ndc_x0;
-            pc.offsetNDC[1] = NDC_TOP_LEFT_Y;
-            pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
-            pc.scaleNDC[1] = NDC_HEIGHT;
+                VkRect2D sc;
+                sc.offset.x = (int32_t)x0;
+                sc.offset.y = (int32_t)y0;
+                sc.extent.width = x1 - x0;
+                sc.extent.height = y1 - y0;
+                vkCmdSetScissor(cmd, 0, 1, &sc);
 
-            // Color varies per band + animated pulse
-            const float band_f = (float)b;
-            float pulse = BENCH_PULSE_BASE_F +
-                          (BENCH_PULSE_AMP_F *
-                           (float)sin((time_s * BENCH_PULSE_FREQ_F) +
-                                      (band_f * BENCH_PULSE_PHASE_F)));
-            pc.color[0] =
-                pulse * (BENCH_COLOR_R_BASE_F +
-                         BENCH_COLOR_R_SCALE_F * band_f / (float)BENCH_BANDS);
-            pc.color[1] = pulse * BENCH_COLOR_G_SCALE_F;
-            pc.color[2] = 1.0F - pc.color[0];
-            pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+                float ndc_x0 = 0.0F;
+                float ndc_y0 = 0.0F;
+                float ndc_x1 = 0.0F;
+                float ndc_y1 = 0.0F;
+                db_snake_grid_tile_bounds_ndc(tile_index, &ndc_x0, &ndc_y0,
+                                              &ndc_x1, &ndc_y1);
 
-            vkCmdPushConstants(cmd, layout,
-                               VK_SHADER_STAGE_VERTEX_BIT |
-                                   VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(pc), &pc);
-            vkCmdDraw(cmd, TRIANGLE_VERT_COUNT, 1, 0, 0);
+                PushConstants pc;
+                pc.offsetNDC[0] = ndc_x0;
+                pc.offsetNDC[1] = ndc_y0;
+                pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
+                pc.scaleNDC[1] = (ndc_y1 - ndc_y0);
+                pc.color[0] = target_r;
+                pc.color[1] = target_g;
+                pc.color[2] = target_b;
+                pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+
+                vkCmdPushConstants(cmd, layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT |
+                                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(pc), &pc);
+                vkCmdDraw(cmd, DB_BAND_TRI_VERTS_PER_BAND, 1, 0, 0);
+            }
+
+            for (uint32_t update_index = 0; update_index < batch_size;
+                 update_index++) {
+                const uint32_t tile_step = snake_cursor + update_index;
+                const uint32_t tile_index =
+                    db_snake_grid_tile_index_from_step(tile_step);
+                const uint32_t row = tile_index / snake_cols;
+                const uint32_t col = tile_index % snake_cols;
+                uint32_t owner = tile_step % gpuCount;
+                snake_tiles_per_gpu[owner]++;
+                snake_tiles_drawn++;
+                if (haveGroup) {
+                    vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
+                }
+
+                uint32_t x0 = (extent.width * col) / snake_cols;
+                uint32_t x1 = (extent.width * (col + 1U)) / snake_cols;
+                uint32_t y0 = (extent.height * row) / snake_rows;
+                uint32_t y1 = (extent.height * (row + 1U)) / snake_rows;
+
+                VkRect2D sc;
+                sc.offset.x = (int32_t)x0;
+                sc.offset.y = (int32_t)y0;
+                sc.extent.width = x1 - x0;
+                sc.extent.height = y1 - y0;
+                vkCmdSetScissor(cmd, 0, 1, &sc);
+
+                float ndc_x0 = 0.0F;
+                float ndc_y0 = 0.0F;
+                float ndc_x1 = 0.0F;
+                float ndc_y1 = 0.0F;
+                db_snake_grid_tile_bounds_ndc(tile_index, &ndc_x0, &ndc_y0,
+                                              &ndc_x1, &ndc_y1);
+
+                PushConstants pc;
+                pc.offsetNDC[0] = ndc_x0;
+                pc.offsetNDC[1] = ndc_y0;
+                pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
+                pc.scaleNDC[1] = (ndc_y1 - ndc_y0);
+
+                db_snake_grid_window_color_rgb(
+                    update_index, batch_size, snake_clearing_phase,
+                    &pc.color[0], &pc.color[1], &pc.color[2]);
+                pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+
+                vkCmdPushConstants(cmd, layout,
+                                   VK_SHADER_STAGE_VERTEX_BIT |
+                                       VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(pc), &pc);
+                vkCmdDraw(cmd, DB_BAND_TRI_VERTS_PER_BAND, 1, 0, 0);
+            }
+
+            const int phase_completed =
+                (snake_cursor + batch_size) >= work_unit_count;
+            if (phase_completed) {
+                for (uint32_t update_index = 0; update_index < batch_size;
+                     update_index++) {
+                    const uint32_t tile_step = snake_cursor + update_index;
+                    const uint32_t tile_index =
+                        db_snake_grid_tile_index_from_step(tile_step);
+                    const uint32_t row = tile_index / snake_cols;
+                    const uint32_t col = tile_index % snake_cols;
+                    uint32_t owner = tile_step % gpuCount;
+                    snake_tiles_per_gpu[owner]++;
+                    snake_tiles_drawn++;
+                    if (haveGroup) {
+                        vkCmdSetDeviceMask(cmd, (MASK_GPU0 << owner));
+                    }
+
+                    uint32_t x0 = (extent.width * col) / snake_cols;
+                    uint32_t x1 = (extent.width * (col + 1U)) / snake_cols;
+                    uint32_t y0 = (extent.height * row) / snake_rows;
+                    uint32_t y1 = (extent.height * (row + 1U)) / snake_rows;
+
+                    VkRect2D sc;
+                    sc.offset.x = (int32_t)x0;
+                    sc.offset.y = (int32_t)y0;
+                    sc.extent.width = x1 - x0;
+                    sc.extent.height = y1 - y0;
+                    vkCmdSetScissor(cmd, 0, 1, &sc);
+
+                    float ndc_x0 = 0.0F;
+                    float ndc_y0 = 0.0F;
+                    float ndc_x1 = 0.0F;
+                    float ndc_y1 = 0.0F;
+                    db_snake_grid_tile_bounds_ndc(tile_index, &ndc_x0, &ndc_y0,
+                                                  &ndc_x1, &ndc_y1);
+
+                    PushConstants pc;
+                    pc.offsetNDC[0] = ndc_x0;
+                    pc.offsetNDC[1] = ndc_y0;
+                    pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
+                    pc.scaleNDC[1] = (ndc_y1 - ndc_y0);
+                    pc.color[0] = target_r;
+                    pc.color[1] = target_g;
+                    pc.color[2] = target_b;
+                    pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+
+                    vkCmdPushConstants(cmd, layout,
+                                       VK_SHADER_STAGE_VERTEX_BIT |
+                                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(pc), &pc);
+                    vkCmdDraw(cmd, DB_BAND_TRI_VERTS_PER_BAND, 1, 0, 0);
+                }
+            }
+
+            snake_prev_start = snake_cursor;
+            snake_prev_count = phase_completed ? 0U : batch_size;
+            snake_cursor += batch_size;
+            if (snake_cursor >= work_unit_count) {
+                snake_cursor = 0U;
+                snake_clearing_phase = !snake_clearing_phase;
+            }
         }
 
         // Reset mask back to GPU0 before ending, for sanity
@@ -898,29 +1105,43 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
         // accuracy use GPU timestamp queries.)
         uint64_t frameEnd = now_ns();
         double frame_ms = (double)(frameEnd - frameStart) / NS_TO_MS_D;
-        double ms_per_band = frame_ms / (double)BENCH_BANDS;
+        if (pattern == DB_PATTERN_BANDS) {
+            double ms_per_band = frame_ms / (double)BENCH_BANDS;
 
-        // We don’t know actual per-GPU contributions without query pools;
-        // approximate: GPUs with more assigned bands get credit for more work.
-        uint32_t bandsPerGpu[MAX_GPU_COUNT] = {0};
-        for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-            bandsPerGpu[band_owner[b]]++;
-        }
-
-        for (uint32_t g = 0; g < gpuCount; g++) {
-            if (bandsPerGpu[g] == 0) {
-                continue;
+            // We don’t know actual per-GPU contributions without query pools;
+            // approximate: GPUs with more assigned bands get credit for more
+            // work.
+            uint32_t bandsPerGpu[MAX_GPU_COUNT] = {0};
+            for (uint32_t b = 0; b < BENCH_BANDS; b++) {
+                bandsPerGpu[band_owner[b]]++;
             }
-            // Heuristic: assume ms scales with number of bands per GPU
-            double est = ms_per_band;
-            ema_ms_per_band[g] =
-                (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * est);
+
+            for (uint32_t g = 0; g < gpuCount; g++) {
+                if (bandsPerGpu[g] == 0) {
+                    continue;
+                }
+                // Heuristic: assume ms scales with number of bands per GPU.
+                double est = ms_per_band;
+                ema_ms_per_band[g] =
+                    (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * est);
+            }
+        } else {
+            const double ms_per_tile =
+                frame_ms /
+                (double)((snake_tiles_drawn > 0U) ? snake_tiles_drawn : 1U);
+            for (uint32_t g = 0; g < gpuCount; g++) {
+                if (snake_tiles_per_gpu[g] == 0U) {
+                    continue;
+                }
+                ema_ms_per_band[g] =
+                    (EMA_KEEP * ema_ms_per_band[g]) + (EMA_NEW * ms_per_tile);
+            }
         }
 
         bench_frames++;
         double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
         db_benchmark_log_periodic("Vulkan", RENDERER_NAME, BACKEND_NAME,
-                                  bench_frames, BENCH_BANDS, bench_ms,
+                                  bench_frames, work_unit_count, bench_ms,
                                   capability_mode, &next_progress_log_due_ms,
                                   BENCH_LOG_INTERVAL_MS_D);
     }
@@ -928,7 +1149,7 @@ int db_renderer_vulkan_1_2_multi_gpu_run(GLFWwindow *win) {
     uint64_t bench_end = now_ns();
     double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
     db_benchmark_log_final("Vulkan", RENDERER_NAME, BACKEND_NAME, bench_frames,
-                           BENCH_BANDS, bench_ms, capability_mode);
+                           work_unit_count, bench_ms, capability_mode);
 
     vkDeviceWaitIdle(device);
 

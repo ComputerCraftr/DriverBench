@@ -82,8 +82,7 @@ void db_validate_runtime_environment(const char *backend,
 }
 
 void db_install_signal_handlers(void) {
-    struct sigaction sa;
-    (void)memset(&sa, 0, sizeof(sa));
+    struct sigaction sa = {0};
     sa.sa_handler = db_signal_handler;
     (void)sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
@@ -148,15 +147,17 @@ char *db_read_text_file_or_fail(const char *backend, const char *path) {
         free(buffer_u8);
         db_failf(backend, "Failed to allocate text buffer for %s", path);
     }
-    (void)memcpy(text, buffer_u8, file_size);
+    for (size_t i = 0; i < file_size; i++) {
+        text[i] = (char)buffer_u8[i];
+    }
     free(buffer_u8);
     return text;
 }
 
 static void db_benchmark_log(const char *api_name, const char *renderer_name,
                              const char *backend_name, uint64_t frames,
-                             uint32_t bands, double elapsed_ms, const char *tag,
-                             const char *capability_mode) {
+                             uint32_t work_units, double elapsed_ms,
+                             const char *tag, const char *capability_mode) {
     if (frames == 0U) {
         return;
     }
@@ -172,14 +173,15 @@ static void db_benchmark_log(const char *api_name, const char *renderer_name,
         return;
     }
     printf("%s benchmark (%s): renderer=%s backend=%s mode=%s frames=%llu "
-           "bands=%u total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
+           "work_units=%u total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
            api_name, tag, renderer_name, backend_name, mode,
-           (unsigned long long)frames, bands, elapsed_ms, ms_per_frame, fps);
+           (unsigned long long)frames, work_units, elapsed_ms, ms_per_frame,
+           fps);
 }
 
 void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
                                const char *backend_name, uint64_t frames,
-                               uint32_t bands, double elapsed_ms,
+                               uint32_t work_units, double elapsed_ms,
                                const char *capability_mode,
                                double *next_log_due_ms, double interval_ms) {
     if ((next_log_due_ms == NULL) || (interval_ms <= 0.0)) {
@@ -193,7 +195,7 @@ void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
         return;
     }
 
-    db_benchmark_log(api_name, renderer_name, backend_name, frames, bands,
+    db_benchmark_log(api_name, renderer_name, backend_name, frames, work_units,
                      elapsed_ms, "progress", capability_mode);
     do {
         *next_log_due_ms += interval_ms;
@@ -202,8 +204,8 @@ void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
 
 void db_benchmark_log_final(const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
-                            uint32_t bands, double elapsed_ms,
+                            uint32_t work_units, double elapsed_ms,
                             const char *capability_mode) {
-    db_benchmark_log(api_name, renderer_name, backend_name, frames, bands,
+    db_benchmark_log(api_name, renderer_name, backend_name, frames, work_units,
                      elapsed_ms, "final", capability_mode);
 }

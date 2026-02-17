@@ -45,20 +45,21 @@
 #define BG_G 0.04F
 #define BG_B 0.07F
 #define BG_A 1.0F
-#define CAPABILITY_MODE "shader_vbo"
-
 int main(void) {
     db_validate_runtime_environment(BACKEND_NAME, REMOTE_DISPLAY_OVERRIDE_ENV);
     db_install_signal_handlers();
 
+    int swap_interval = db_glfw_resolve_swap_interval();
     GLFWwindow *window = db_glfw_create_opengl_window(
         BACKEND_NAME, "OpenGL 3.3 Shader GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
         OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 1,
-        BENCH_GLFW_SWAP_INTERVAL);
+        swap_interval);
 
     db_renderer_opengl_gl3_3_init(OPENGL_GL3_3_VERT_SHADER_PATH,
                                   OPENGL_GL3_3_FRAG_SHADER_PATH);
+    const char *capability_mode = db_renderer_opengl_gl3_3_capability_mode();
+    const uint32_t work_unit_count = db_renderer_opengl_gl3_3_work_unit_count();
 
     uint64_t frames = 0;
     double bench_start = db_glfw_time_seconds();
@@ -83,7 +84,7 @@ int main(void) {
         double bench_ms =
             (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
         db_benchmark_log_periodic("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
-                                  BENCH_BANDS, bench_ms, CAPABILITY_MODE,
+                                  work_unit_count, bench_ms, capability_mode,
                                   &next_progress_log_due_ms,
                                   BENCH_LOG_INTERVAL_MS_D);
     }
@@ -91,7 +92,7 @@ int main(void) {
     double bench_ms =
         (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
     db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
-                           BENCH_BANDS, bench_ms, CAPABILITY_MODE);
+                           work_unit_count, bench_ms, capability_mode);
 
     db_renderer_opengl_gl3_3_shutdown();
     db_glfw_destroy_window(window);

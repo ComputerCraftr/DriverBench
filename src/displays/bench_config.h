@@ -10,7 +10,8 @@
 #define BENCH_TARGET_FPS_D 60.0
 #define BENCH_MS_PER_SEC_D 1000.0
 #define BENCH_LOG_INTERVAL_MS_D 5000.0
-#define BENCH_VSYNC_ENABLED 1 // vsync on to prevent tearing and rapid flashing
+// Can be overridden at runtime with DRIVERBENCH_VSYNC=1|0|on|off|true|false.
+#define BENCH_VSYNC_ENABLED 1
 #define BENCH_GLFW_SWAP_INTERVAL (BENCH_VSYNC_ENABLED ? 1 : 0)
 
 #define BENCH_PULSE_BASE_F 0.5F
@@ -20,5 +21,13 @@
 #define BENCH_COLOR_R_BASE_F 0.2F
 #define BENCH_COLOR_R_SCALE_F 0.8F
 #define BENCH_COLOR_G_SCALE_F 0.6F
+
+#define BENCH_GRID_PHASE0_R 0.22F
+#define BENCH_GRID_PHASE0_G 0.22F
+#define BENCH_GRID_PHASE0_B 0.22F
+#define BENCH_GRID_PHASE1_R 0.12F
+#define BENCH_GRID_PHASE1_G 0.85F
+#define BENCH_GRID_PHASE1_B 0.20F
+#define BENCH_SNAKE_PHASE_WINDOW_TILES 64U
 
 #endif

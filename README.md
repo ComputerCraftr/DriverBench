@@ -41,3 +41,18 @@ Build outputs use versioned, display-aware target names only:
 - `driverbench_glfw_window_opengl_gl3_3`
 - `driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1`
 - `driverbench_glfw_window_vulkan_1_2_multi_gpu`
+
+## Runtime Options
+
+- `DRIVERBENCH_VSYNC=1|0|on|off|true|false`
+  - Overrides GLFW swap interval at runtime (default follows `BENCH_VSYNC_ENABLED`).
+- `DRIVERBENCH_BENCHMARK_MODE=bands|snake_grid`
+  - `bands` is an animated color-changing vertical-band workload.
+    Warning: this mode can produce intense rapid flashing, especially with
+    `DRIVERBENCH_VSYNC=off` and high FPS.
+  - `snake_grid` uses a deterministic S-pattern sweep over a tile grid sized
+    to the benchmark window (`BENCH_WINDOW_WIDTH_PX x BENCH_WINDOW_HEIGHT_PX`)
+    and updates a deterministic window of tiles per frame
+    (`BENCH_SNAKE_PHASE_WINDOW_TILES`, default `64`) with progressive
+    green-over-grey phasing. The sweep paints from top to bottom, then restarts
+    at the top and clears back to grey.
