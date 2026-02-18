@@ -16,6 +16,7 @@
 #define DRIVERBENCH_VSYNC_ENV "DRIVERBENCH_VSYNC"
 #define DRIVERBENCH_FPS_CAP_ENV "DRIVERBENCH_FPS_CAP"
 #define NS_PER_SECOND_D 1000000000.0
+#define MAX_SLEEP_NS_D 100000000.0
 
 GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
                                          int width_px, int height_px) {
@@ -171,22 +172,21 @@ void db_glfw_sleep_to_fps_cap(double frame_start_s, double fps_cap) {
     double remaining_s =
         frame_budget_s - (db_glfw_time_seconds() - frame_start_s);
     while (remaining_s > 0.0) {
-        const double remaining_ns = remaining_s * NS_PER_SECOND_D;
-        struct timespec request = {0};
-        request.tv_sec = (time_t)(remaining_ns / NS_PER_SECOND_D);
-        request.tv_nsec =
-            (long)(remaining_ns - ((double)request.tv_sec * NS_PER_SECOND_D));
-        if ((request.tv_sec == 0) && (request.tv_nsec <= 0)) {
+        const double remaining_ns_d = remaining_s * NS_PER_SECOND_D;
+        const double sleep_ns_d =
+            (remaining_ns_d > MAX_SLEEP_NS_D) ? MAX_SLEEP_NS_D : remaining_ns_d;
+        const long sleep_ns = db_checked_double_to_long(
+            "display_glfw_window_common", "sleep_ns", sleep_ns_d);
+        if (sleep_ns <= 0L) {
             break;
         }
 
-        struct timespec remaining = {0};
-        const int sleep_result = nanosleep(&request, &remaining);
+        struct timespec request = {0};
+        request.tv_nsec = sleep_ns;
         // NOLINTNEXTLINE(misc-include-cleaner)
-        if ((sleep_result == 0) || (errno != EINTR)) {
+        if ((nanosleep(&request, NULL) != 0) && (errno != EINTR)) {
             break;
         }
-        remaining_s = ((double)remaining.tv_sec) +
-                      ((double)remaining.tv_nsec / NS_PER_SECOND_D);
+        remaining_s = frame_budget_s - (db_glfw_time_seconds() - frame_start_s);
     }
 }

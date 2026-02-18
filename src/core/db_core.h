@@ -46,12 +46,20 @@ static inline int32_t db_checked_u32_to_i32(const char *backend,
 }
 
 static inline int32_t db_checked_int_to_i32(const char *backend,
-                                            const char *field_name,
-                                            int value) {
+                                            const char *field_name, int value) {
     if ((value < INT32_MIN) || (value > INT32_MAX)) {
         db_failf(backend, "%s out of i32 range: %d", field_name, value);
     }
     return (int32_t)value;
+}
+
+static inline long db_checked_double_to_long(const char *backend,
+                                             const char *field_name,
+                                             double value) {
+    if (!(value >= (double)LONG_MIN) || (value > (double)LONG_MAX)) {
+        db_failf(backend, "%s out of long range: %.3f", field_name, value);
+    }
+    return (long)value;
 }
 
 #endif
