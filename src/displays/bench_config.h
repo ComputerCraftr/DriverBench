@@ -8,6 +8,7 @@
 #define BENCH_WINDOW_HEIGHT_PX 600
 
 #define BENCH_TARGET_FPS_D 60.0
+#define BENCH_FPS_CAP_D 0.0
 #define BENCH_MS_PER_SEC_D 1000.0
 #define BENCH_LOG_INTERVAL_MS_D 5000.0
 // Can be overridden at runtime with DRIVERBENCH_VSYNC=1|0|on|off|true|false.

@@ -46,6 +46,9 @@ Build outputs use versioned, display-aware target names only:
 
 - `DRIVERBENCH_VSYNC=1|0|on|off|true|false`
   - Overrides GLFW swap interval at runtime (default follows `BENCH_VSYNC_ENABLED`).
+- `DRIVERBENCH_FPS_CAP=<number>|0|off|uncapped`
+  - Caps render loop rate for GLFW backends when set to a positive FPS value.
+  - `0`, `off`, `false`, `uncapped`, or unset keeps rendering uncapped.
 - `DRIVERBENCH_BENCHMARK_MODE=bands|snake_grid`
   - `bands` is an animated color-changing vertical-band workload.
     Warning: this mode can produce intense rapid flashing, especially with

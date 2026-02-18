@@ -34,6 +34,7 @@ static void db_glfw_vk_get_framebuffer_size(void *window_handle, int *width,
 int main(void) {
     db_validate_runtime_environment(BACKEND_NAME, REMOTE_DISPLAY_OVERRIDE_ENV);
     db_install_signal_handlers();
+    const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME);
 
     GLFWwindow *window = db_glfw_create_no_api_window(
         BACKEND_NAME, "Vulkan 1.2 opportunistic multi-GPU (device groups)",
@@ -49,12 +50,14 @@ int main(void) {
     };
     db_renderer_vulkan_1_2_multi_gpu_init(&wsi_config);
     while (!glfwWindowShouldClose(window) && !db_should_stop()) {
+        const double frame_start_s = db_glfw_time_seconds();
         db_glfw_poll_events();
         const db_vk_frame_result_t frame_result =
             db_renderer_vulkan_1_2_multi_gpu_render_frame();
         if (frame_result == DB_VK_FRAME_STOP) {
             break;
         }
+        db_glfw_sleep_to_fps_cap(frame_start_s, fps_cap);
     }
     db_renderer_vulkan_1_2_multi_gpu_shutdown();
     db_glfw_destroy_window(window);

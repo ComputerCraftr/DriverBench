@@ -13,5 +13,7 @@ void db_glfw_destroy_window(GLFWwindow *window);
 void db_glfw_poll_events(void);
 double db_glfw_time_seconds(void);
 int db_glfw_resolve_swap_interval(void);
+double db_glfw_resolve_fps_cap(const char *backend);
+void db_glfw_sleep_to_fps_cap(double frame_start_s, double fps_cap);
 
 #endif

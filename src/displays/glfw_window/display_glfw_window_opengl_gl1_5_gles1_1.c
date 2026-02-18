@@ -31,6 +31,7 @@ int main(void) {
     db_install_signal_handlers();
 
     int swap_interval = db_glfw_resolve_swap_interval();
+    const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME);
     GLFWwindow *window = db_glfw_create_opengl_window(
         BACKEND_NAME, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
@@ -48,6 +49,7 @@ int main(void) {
     double next_progress_log_due_ms = 0.0;
 
     while (!glfwWindowShouldClose(window) && !db_should_stop()) {
+        const double frame_start_s = db_glfw_time_seconds();
         db_glfw_poll_events();
         int framebuffer_width_px = 0;
         int framebuffer_height_px = 0;
@@ -61,6 +63,7 @@ int main(void) {
         db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_time_s);
 
         glfwSwapBuffers(window);
+        db_glfw_sleep_to_fps_cap(frame_start_s, fps_cap);
         frames++;
 
         double bench_ms =
