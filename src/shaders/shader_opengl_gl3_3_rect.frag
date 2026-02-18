@@ -13,8 +13,18 @@ uniform int u_grid_rows;
 uniform int u_gradient_head_row;
 uniform int u_gradient_window_rows;
 uniform int u_gradient_fill_window_rows;
+uniform int u_rect_seed;
 uniform vec3 u_grid_base_color;
 uniform vec3 u_grid_target_color;
+uniform sampler2D u_history_tex;
+
+struct RectSnakeDesc {
+    int x;
+    int y;
+    int w;
+    int h;
+    vec3 color;
+};
 
 vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
@@ -65,11 +75,89 @@ vec4 db_gradient_fill_color(int row_i) {
     return db_rgba(mix(source_color, target_color, float(delta_i) / float(window_i)));
 }
 
+uint db_mix_u32(uint value) {
+    value ^= (value >> 16u);
+    value *= 0x7FEB352Du;
+    value ^= (value >> 15u);
+    value *= 0x846CA68Bu;
+    value ^= (value >> 16u);
+    return value;
+}
+
+int db_u32_range(uint seed, int min_v, int max_v) {
+    if(max_v <= min_v) {
+        return min_v;
+    }
+    uint span = uint((max_v - min_v) + 1);
+    return min_v + int(seed % span);
+}
+
+float db_rect_channel(uint seed) {
+    return 0.25 + ((float(seed & 255u) / 255.0) * 0.70);
+}
+
+RectSnakeDesc db_rect_snake_desc(int rect_seed, uint rect_index, int rows_i, int cols_i) {
+    RectSnakeDesc rect;
+    uint seed_base = db_mix_u32(uint(max(rect_seed, 0)) + (rect_index * 0x85EBCA77u) + 1u);
+    int min_w = (cols_i >= 16) ? 8 : 1;
+    int min_h = (rows_i >= 16) ? 8 : 1;
+    int max_w = (cols_i >= min_w) ? ((cols_i / 3) + min_w) : min_w;
+    int max_h = (rows_i >= min_h) ? ((rows_i / 3) + min_h) : min_h;
+    rect.w = db_u32_range(db_mix_u32(seed_base ^ 0xA511E9B3u), min_w, min(max_w, cols_i));
+    rect.h = db_u32_range(db_mix_u32(seed_base ^ 0x63D83595u), min_h, min(max_h, rows_i));
+    int max_x = (cols_i > rect.w) ? (cols_i - rect.w) : 0;
+    int max_y = (rows_i > rect.h) ? (rows_i - rect.h) : 0;
+    rect.x = db_u32_range(db_mix_u32(seed_base ^ 0x9E3779B9u), 0, max_x);
+    rect.y = db_u32_range(db_mix_u32(seed_base ^ 0xC2B2AE35u), 0, max_y);
+    rect.color.r = db_rect_channel(db_mix_u32(seed_base ^ 0x27D4EB2Fu));
+    rect.color.g = db_rect_channel(db_mix_u32(seed_base ^ 0x165667B1u));
+    rect.color.b = db_rect_channel(db_mix_u32(seed_base ^ 0x85EBCA77u));
+    return rect;
+}
+
+bool db_rect_contains(RectSnakeDesc rect, int row_i, int col_i) {
+    return (row_i >= rect.y) && (row_i < (rect.y + rect.h)) && (col_i >= rect.x) && (col_i < (rect.x + rect.w));
+}
+
+int db_rect_snake_step(RectSnakeDesc rect, int row_i, int col_i) {
+    int local_row = row_i - rect.y;
+    int local_col = col_i - rect.x;
+    int snake_col = ((local_row & 1) == 0) ? local_col : ((rect.w - 1) - local_col);
+    return (local_row * rect.w) + snake_col;
+}
+
+vec4 db_rect_snake_color(int row_i, int col_i, vec3 prior_color) {
+    int rows_i = max(u_grid_rows, 1);
+    int cols_i = max(u_grid_cols, 1);
+    int rect_seed = max(u_rect_seed, 0);
+    uint rect_index_u = uint(max(u_gradient_head_row, 0));
+    RectSnakeDesc current_rect = db_rect_snake_desc(rect_seed, rect_index_u, rows_i, cols_i);
+    if(!db_rect_contains(current_rect, row_i, col_i)) {
+        return db_rgba(prior_color);
+    }
+
+    int step = db_rect_snake_step(current_rect, row_i, col_i);
+    int cursor = max(u_grid_cursor, 0);
+    int batch_size = max(u_grid_batch_size, 1);
+    if(step < cursor) {
+        return db_rgba(current_rect.color);
+    }
+    if(step < (cursor + batch_size)) {
+        float blend = float((cursor + batch_size) - step) / float(batch_size);
+        return db_rgba(mix(prior_color, current_rect.color, blend));
+    }
+    if(u_grid_phase_completed != 0) {
+        return db_rgba(current_rect.color);
+    }
+    return db_rgba(prior_color);
+}
+
 void main() {
     const int RENDER_MODE_GRADIENT_SWEEP = 0;
     const int RENDER_MODE_BANDS = 1;
     const int RENDER_MODE_SNAKE_GRID = 2;
     const int RENDER_MODE_GRADIENT_FILL = 3;
+    const int RENDER_MODE_RECT_SNAKE = 4;
     if(u_render_mode == RENDER_MODE_BANDS) {
         out_color = db_rgba(v_color);
         return;
@@ -84,6 +172,13 @@ void main() {
     }
     if(u_render_mode == RENDER_MODE_GRADIENT_FILL) {
         out_color = db_gradient_fill_color(row);
+        return;
+    }
+    if(u_render_mode == RENDER_MODE_RECT_SNAKE) {
+        int col = tile_index - (row * cols);
+        ivec2 history_coord = ivec2(gl_FragCoord.xy);
+        vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
+        out_color = db_rect_snake_color(row, col, prior_color);
         return;
     }
     if(u_render_mode != RENDER_MODE_SNAKE_GRID) {

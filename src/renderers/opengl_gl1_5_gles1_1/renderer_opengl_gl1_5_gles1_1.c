@@ -42,6 +42,9 @@ typedef struct {
     uint32_t snake_cursor;
     uint32_t snake_prev_start;
     uint32_t snake_prev_count;
+    uint32_t rect_snake_rect_index;
+    uint32_t rect_snake_seed;
+    int rect_snake_reset_pending;
     int snake_clearing_phase;
     uint32_t gradient_head_row;
     db_pattern_t pattern;
@@ -114,6 +117,7 @@ static int db_init_vertices_for_mode(void) {
     g_state.snake_cursor = init_state.snake_cursor;
     g_state.snake_prev_start = init_state.snake_prev_start;
     g_state.snake_prev_count = init_state.snake_prev_count;
+    g_state.rect_snake_seed = init_state.rect_snake_seed;
     g_state.snake_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
     return 1;
@@ -191,6 +195,120 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
     g_state.snake_clearing_phase = plan->next_clearing_phase;
 }
 
+static void db_fill_grid_all_rgb(float color_r, float color_g, float color_b) {
+    for (uint32_t tile_index = 0U; tile_index < g_state.work_unit_count;
+         tile_index++) {
+        const size_t tile_float_offset =
+            (size_t)tile_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
+        float *unit = &g_state.vertices[tile_float_offset];
+        db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
+                             DB_VERTEX_POSITION_FLOAT_COUNT, color_r, color_g,
+                             color_b);
+        if (g_state.is_es_context != 0) {
+            db_update_es_color_array_tile(tile_index);
+        }
+    }
+}
+
+static void db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
+    if (plan == NULL) {
+        return;
+    }
+
+    if (g_state.rect_snake_reset_pending != 0) {
+        db_fill_grid_all_rgb(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                             BENCH_GRID_PHASE0_B);
+        g_state.rect_snake_reset_pending = 0;
+    }
+
+    const db_rect_snake_rect_t rect = db_rect_snake_rect_from_index(
+        g_state.rect_snake_seed, plan->active_rect_index);
+    if ((rect.width == 0U) || (rect.height == 0U)) {
+        return;
+    }
+
+    for (uint32_t update_index = 0U; update_index < g_state.snake_prev_count;
+         update_index++) {
+        const uint32_t step = g_state.snake_prev_start + update_index;
+        if (step >= plan->rect_tile_count) {
+            break;
+        }
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(&rect, step);
+        const size_t tile_float_offset =
+            (size_t)tile_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
+        float *unit = &g_state.vertices[tile_float_offset];
+        db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
+                             DB_VERTEX_POSITION_FLOAT_COUNT, rect.color_r,
+                             rect.color_g, rect.color_b);
+        if (g_state.is_es_context != 0) {
+            db_update_es_color_array_tile(tile_index);
+        }
+    }
+
+    const uint32_t span = (plan->batch_size > 0U) ? plan->batch_size : 1U;
+    for (uint32_t update_index = 0U; update_index < plan->batch_size;
+         update_index++) {
+        const uint32_t step = plan->active_cursor + update_index;
+        if (step >= plan->rect_tile_count) {
+            break;
+        }
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(&rect, step);
+        const float blend_factor = (float)(span - update_index) / (float)span;
+        const float color_r =
+            BENCH_GRID_PHASE0_R +
+            ((rect.color_r - BENCH_GRID_PHASE0_R) * blend_factor);
+        const float color_g =
+            BENCH_GRID_PHASE0_G +
+            ((rect.color_g - BENCH_GRID_PHASE0_G) * blend_factor);
+        const float color_b =
+            BENCH_GRID_PHASE0_B +
+            ((rect.color_b - BENCH_GRID_PHASE0_B) * blend_factor);
+        const size_t tile_float_offset =
+            (size_t)tile_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
+        float *unit = &g_state.vertices[tile_float_offset];
+        db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
+                             DB_VERTEX_POSITION_FLOAT_COUNT, color_r, color_g,
+                             color_b);
+        if (g_state.is_es_context != 0) {
+            db_update_es_color_array_tile(tile_index);
+        }
+    }
+
+    if (plan->rect_completed != 0) {
+        for (uint32_t update_index = 0U; update_index < plan->batch_size;
+             update_index++) {
+            const uint32_t step = plan->active_cursor + update_index;
+            if (step >= plan->rect_tile_count) {
+                break;
+            }
+            const uint32_t tile_index =
+                db_rect_snake_tile_index_from_step(&rect, step);
+            const size_t tile_float_offset = (size_t)tile_index *
+                                             DB_RECT_VERTEX_COUNT *
+                                             DB_VERTEX_FLOAT_STRIDE;
+            float *unit = &g_state.vertices[tile_float_offset];
+            db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
+                                 DB_VERTEX_POSITION_FLOAT_COUNT, rect.color_r,
+                                 rect.color_g, rect.color_b);
+            if (g_state.is_es_context != 0) {
+                db_update_es_color_array_tile(tile_index);
+            }
+        }
+    }
+
+    g_state.snake_prev_start = plan->active_cursor;
+    g_state.snake_prev_count =
+        (plan->rect_completed != 0) ? 0U : plan->batch_size;
+    g_state.snake_cursor = plan->next_cursor;
+    g_state.rect_snake_rect_index = plan->next_rect_index;
+    if (plan->wrapped != 0) {
+        g_state.rect_snake_reset_pending = 1;
+        g_state.snake_prev_count = 0U;
+    }
+}
+
 static size_t db_rect_tile_bytes(size_t floats_per_vertex) {
     return (size_t)DB_RECT_VERTEX_COUNT * sizeof(float) * floats_per_vertex;
 }
@@ -231,24 +349,18 @@ db_append_snake_step_ranges(db_gl_upload_range_t *ranges, size_t max_ranges,
     }
 
     const uint32_t cols = db_grid_cols_effective();
-    uint32_t remaining = step_count;
-    uint32_t step_cursor = step_start;
-
-    while (remaining > 0U) {
-        const uint32_t row = step_cursor / cols;
-        const uint32_t col_step = step_cursor % cols;
-        const uint32_t steps_left_in_row = cols - col_step;
-        const uint32_t chunk_steps =
-            (remaining < steps_left_in_row) ? remaining : steps_left_in_row;
-
-        uint32_t first_col = 0U;
-        if ((row & 1U) == 0U) {
-            first_col = col_step;
-        } else {
-            first_col = (cols - 1U) - (col_step + chunk_steps - 1U);
-        }
-
-        const uint32_t first_tile = (row * cols) + first_col;
+    const uint32_t rows = db_grid_rows_effective();
+    db_snake_col_span_t spans[DB_MAX_SNAKE_UPLOAD_RANGES];
+    size_t span_count = 0U;
+    db_snake_append_step_spans_for_rect(spans, DB_MAX_SNAKE_UPLOAD_RANGES,
+                                        &span_count, 0U, 0U, cols, rows,
+                                        step_start, step_count);
+    for (size_t i = 0U; i < span_count; i++) {
+        const uint32_t row = spans[i].row;
+        const uint32_t col_start = spans[i].col_start;
+        const uint32_t col_end = spans[i].col_end;
+        const uint32_t chunk_steps = col_end - col_start;
+        const uint32_t first_tile = (row * cols) + col_start;
         const size_t dst_byte_offset = (size_t)first_tile * dst_tile_bytes;
         const size_t src_byte_offset = (size_t)first_tile * src_tile_bytes;
         const size_t byte_count = (size_t)chunk_steps * dst_tile_bytes;
@@ -261,9 +373,6 @@ db_append_snake_step_ranges(db_gl_upload_range_t *ranges, size_t max_ranges,
             .size_bytes = byte_count,
         };
         (*inout_range_count)++;
-
-        step_cursor += chunk_steps;
-        remaining -= chunk_steps;
     }
 }
 
@@ -388,6 +497,7 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
 
 void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
     db_snake_damage_plan_t snake_plan = {0};
+    db_rect_snake_plan_t rect_snake_plan = {0};
     uint32_t gradient_row_start = 0U;
     uint32_t gradient_row_count = 0U;
     const uint32_t rows = db_grid_rows_effective();
@@ -405,6 +515,11 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
             g_state.snake_prev_count, g_state.snake_clearing_phase,
             g_state.work_unit_count);
         db_render_snake_grid_step(&snake_plan);
+    } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
+        rect_snake_plan = db_rect_snake_plan_next_step(
+            g_state.rect_snake_seed, g_state.rect_snake_rect_index,
+            g_state.snake_cursor);
+        db_render_rect_snake_step(&rect_snake_plan);
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
         const db_gradient_sweep_damage_plan_t plan =
             db_gradient_sweep_plan_next_frame(g_state.gradient_head_row);

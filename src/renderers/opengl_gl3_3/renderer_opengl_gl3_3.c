@@ -59,8 +59,10 @@ typedef struct {
     GLint u_gradient_head_row;
     GLint u_gradient_window_rows;
     GLint u_gradient_fill_window_rows;
+    GLint u_rect_seed;
     GLint u_grid_base_color;
     GLint u_grid_target_color;
+    GLint u_history_tex;
     int uniform_grid_clearing_phase_cache;
     int uniform_grid_phase_completed_cache;
     int uniform_grid_cursor_cache;
@@ -73,6 +75,12 @@ typedef struct {
     int grid_phase_completed;
     int grid_clearing_phase;
     uint32_t gradient_head_row;
+    uint32_t rect_snake_rect_index;
+    uint32_t rect_snake_seed;
+    GLuint history_tex;
+    int history_tex_width;
+    int history_tex_height;
+    int history_tex_initialized;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
     size_t vbo_bytes;
@@ -103,6 +111,41 @@ static void db_set_uniform1i_u32_if_changed(GLint location, int *cache,
     if ((location >= 0) && (*cache != as_i32)) {
         glUniform1i(location, as_i32);
         *cache = as_i32;
+    }
+}
+
+static void db_gl3_ensure_history_texture(void) {
+    if (g_state.pattern != DB_PATTERN_RECT_SNAKE) {
+        return;
+    }
+
+    GLint viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    if ((viewport[2] <= 0) || (viewport[3] <= 0)) {
+        return;
+    }
+
+    if (g_state.history_tex == 0U) {
+        glGenTextures(1, &g_state.history_tex);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    } else {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
+    }
+
+    if ((g_state.history_tex_width != viewport[2]) ||
+        (g_state.history_tex_height != viewport[3])) {
+        g_state.history_tex_width = viewport[2];
+        g_state.history_tex_height = viewport[3];
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, g_state.history_tex_width,
+                     g_state.history_tex_height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                     NULL);
+        g_state.history_tex_initialized = 0;
     }
 }
 
@@ -167,6 +210,7 @@ static int db_init_vertices_for_mode(void) {
     g_state.grid_phase_completed = init_state.snake_phase_completed;
     g_state.grid_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
+    g_state.rect_snake_seed = init_state.rect_snake_seed;
     return 1;
 }
 
@@ -229,10 +273,13 @@ void db_renderer_opengl_gl3_3_init(void) {
         glGetUniformLocation(g_state.program, "u_gradient_window_rows");
     g_state.u_gradient_fill_window_rows =
         glGetUniformLocation(g_state.program, "u_gradient_fill_window_rows");
+    g_state.u_rect_seed = glGetUniformLocation(g_state.program, "u_rect_seed");
     g_state.u_grid_base_color =
         glGetUniformLocation(g_state.program, "u_grid_base_color");
     g_state.u_grid_target_color =
         glGetUniformLocation(g_state.program, "u_grid_target_color");
+    g_state.u_history_tex =
+        glGetUniformLocation(g_state.program, "u_history_tex");
     g_state.uniform_grid_clearing_phase_cache = -1;
     g_state.uniform_grid_phase_completed_cache = -1;
     g_state.uniform_grid_cursor_cache = -1;
@@ -247,6 +294,8 @@ void db_renderer_opengl_gl3_3_init(void) {
             render_mode = DB_RENDER_MODE_SNAKE_GRID;
         } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
             render_mode = DB_RENDER_MODE_GRADIENT_FILL;
+        } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
+            render_mode = DB_RENDER_MODE_RECT_SNAKE;
         }
         glUniform1i(g_state.u_render_mode, render_mode);
     }
@@ -268,6 +317,12 @@ void db_renderer_opengl_gl3_3_init(void) {
         g_state.u_gradient_fill_window_rows,
         db_checked_u32_to_i32(BACKEND_NAME, "u_gradient_fill_window_rows",
                               db_gradient_fill_window_rows_effective()));
+    glUniform1i(g_state.u_rect_seed,
+                db_checked_u32_to_i32(BACKEND_NAME, "u_rect_seed",
+                                      g_state.rect_snake_seed));
+    if (g_state.u_history_tex >= 0) {
+        glUniform1i(g_state.u_history_tex, 0);
+    }
     db_set_uniform1i_u32_if_changed(g_state.u_gradient_head_row,
                                     &g_state.uniform_gradient_head_row_cache,
                                     g_state.gradient_head_row);
@@ -277,6 +332,8 @@ void db_renderer_opengl_gl3_3_init(void) {
 }
 
 void db_renderer_opengl_gl3_3_render_frame(double time_s) {
+    db_gl3_ensure_history_texture();
+
     if (g_state.pattern == DB_PATTERN_BANDS) {
         db_fill_band_vertices_pos_rgb(g_state.vertices, g_state.work_unit_count,
                                       time_s);
@@ -313,7 +370,7 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                 g_state.u_gradient_head_row,
                 &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
         }
-    } else {
+    } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
         const db_gradient_fill_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
                                              g_state.grid_clearing_phase);
@@ -328,15 +385,63 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                 &g_state.uniform_grid_clearing_phase_cache,
                 plan.render_clearing_phase);
         }
+    } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
+        if ((g_state.history_tex != 0U) &&
+            (g_state.history_tex_initialized == 0) &&
+            (g_state.history_tex_width > 0) &&
+            (g_state.history_tex_height > 0)) {
+            glClearColor(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                         BENCH_GRID_PHASE0_B, 1.0F);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
+            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
+                                g_state.history_tex_width,
+                                g_state.history_tex_height);
+            g_state.history_tex_initialized = 1;
+        }
+        if (g_state.history_tex != 0U) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
+        }
+
+        const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
+            g_state.rect_snake_seed, g_state.rect_snake_rect_index,
+            g_state.grid_cursor);
+        db_set_uniform1i_u32_if_changed(
+            g_state.u_gradient_head_row,
+            &g_state.uniform_gradient_head_row_cache, plan.active_rect_index);
+        db_set_uniform1i_u32_if_changed(g_state.u_grid_cursor,
+                                        &g_state.uniform_grid_cursor_cache,
+                                        plan.active_cursor);
+        db_set_uniform1i_u32_if_changed(g_state.u_grid_batch_size,
+                                        &g_state.uniform_grid_batch_size_cache,
+                                        plan.batch_size);
+        db_set_uniform1i_if_changed(g_state.u_grid_phase_completed,
+                                    &g_state.uniform_grid_phase_completed_cache,
+                                    plan.rect_completed);
+        g_state.grid_cursor = plan.next_cursor;
+        g_state.rect_snake_rect_index = plan.next_rect_index;
     }
 
     glDrawArrays(GL_TRIANGLES, 0, g_state.draw_vertex_count);
+
+    if ((g_state.pattern == DB_PATTERN_RECT_SNAKE) &&
+        (g_state.history_tex != 0U) && (g_state.history_tex_width > 0) &&
+        (g_state.history_tex_height > 0)) {
+        glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
+                            g_state.history_tex_width,
+                            g_state.history_tex_height);
+    }
 }
 
 void db_renderer_opengl_gl3_3_shutdown(void) {
     if (g_state.persistent_mapped_ptr != NULL) {
         glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
         glUnmapBuffer(GL_ARRAY_BUFFER);
+    }
+    if (g_state.history_tex != 0U) {
+        glDeleteTextures(1, &g_state.history_tex);
     }
     glDeleteProgram(g_state.program);
     glDeleteBuffers(1, &g_state.vbo);
