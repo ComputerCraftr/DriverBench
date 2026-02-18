@@ -6,6 +6,11 @@ layout(push_constant) uniform PC {
     vec2 offsetNDC;  // in NDC
     vec2 scaleNDC;   // in NDC
     vec4 color;
+    ivec4 renderParams;   // x=mode, y=gridRows, z=headRow, w=clearingPhase
+    ivec4 gradientParams; // x=sweepWindowRows, y=fillWindowRows, z=viewportHeight, w=gridCols
+    ivec4 snakeParams;    // x=activeCursor, y=batchSize, z=phaseCompleted, w=viewportWidth
+    vec4 baseColor;
+    vec4 targetColor;
 } pc;
 #else
 // OpenGL-mode GLSL tools reject push constants; keep a compatible fallback
@@ -14,6 +19,11 @@ layout(std140, binding = 0) uniform PC {
     vec2 offsetNDC;
     vec2 scaleNDC;
     vec4 color;
+    ivec4 renderParams;
+    ivec4 gradientParams;
+    ivec4 snakeParams;
+    vec4 baseColor;
+    vec4 targetColor;
 } pc;
 #endif
 

@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_DB_CORE_H
 #define DRIVERBENCH_DB_CORE_H
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,5 +35,23 @@ void db_benchmark_log_final(const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
                             uint32_t work_units, double elapsed_ms,
                             const char *capability_mode);
+
+static inline int32_t db_checked_u32_to_i32(const char *backend,
+                                            const char *field_name,
+                                            uint32_t value) {
+    if (value > (uint32_t)INT32_MAX) {
+        db_failf(backend, "%s out of i32 range: %u", field_name, value);
+    }
+    return (int32_t)value;
+}
+
+static inline int32_t db_checked_int_to_i32(const char *backend,
+                                            const char *field_name,
+                                            int value) {
+    if ((value < INT32_MIN) || (value > INT32_MAX)) {
+        db_failf(backend, "%s out of i32 range: %d", field_name, value);
+    }
+    return (int32_t)value;
+}
 
 #endif
