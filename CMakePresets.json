@@ -34,6 +34,20 @@
             }
         },
         {
+            "name": "ninja-relwithdebinfo",
+            "displayName": "Ninja (RelWithDebInfo)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/relwithdebinfo",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "DB_ENABLE_SANITIZERS": "OFF",
+                "DB_OPENGL_RENDERER": "auto",
+                "DB_OPENGL_DISPLAY": "auto",
+                "DB_VULKAN_DISPLAY": "auto"
+            }
+        },
+        {
             "name": "ninja-opengl-gl1_5-gles1_1-glfw",
             "displayName": "Ninja OpenGL GL1.5/GLES1.1 + GLFW",
             "inherits": "ninja",
@@ -90,6 +104,11 @@
         {
             "name": "ninja-debug",
             "configurePreset": "ninja-debug",
+            "jobs": 8
+        },
+        {
+            "name": "ninja-relwithdebinfo",
+            "configurePreset": "ninja-relwithdebinfo",
             "jobs": 8
         },
         {

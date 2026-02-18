@@ -27,7 +27,10 @@ option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
 option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
+option(DB_ENABLE_LTO_RELWITHDEBINFO
+  "Enable LTO specifically for RelWithDebInfo builds" OFF)
 option(DB_ENABLE_SANITIZERS "Enable sanitizers for debug builds" ON)
+option(DB_ENABLE_DSYM "Generate dSYM bundles for Apple debug-like builds" ON)
 
 set(DB_OPENGL_RENDERER "auto" CACHE STRING
   "OpenGL renderer: auto, gl1_5_gles1_1, or gl3_3")
@@ -53,7 +56,13 @@ endif()
 
 set(DB_EFFECTIVE_LTO OFF)
 if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LTO)
-  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+  if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" AND
+     NOT DB_ENABLE_LTO_RELWITHDEBINFO)
+    message(STATUS
+      "RelWithDebInfo build: disabling LTO by default to preserve profiler symbols "
+      "(set DB_ENABLE_LTO_RELWITHDEBINFO=ON to override)."
+    )
+  elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
     set(DB_EFFECTIVE_LTO ON)
   else()
     message(WARNING
@@ -110,6 +119,35 @@ function(db_apply_perf_options target_name)
       target_link_options(${target_name} PRIVATE -flto)
       if(DB_USE_LLD)
         target_link_options(${target_name} PRIVATE -fuse-ld=lld)
+      endif()
+    endif()
+  endif()
+
+  if(APPLE AND DB_ENABLE_DSYM)
+    if(CMAKE_BUILD_TYPE MATCHES "^(Debug|RelWithDebInfo)$")
+      find_program(DB_DSYMUTIL_PROGRAM NAMES dsymutil xcrun)
+      if(DB_DSYMUTIL_PROGRAM)
+        if(DB_DSYMUTIL_PROGRAM MATCHES ".*/xcrun$")
+          add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${DB_DSYMUTIL_PROGRAM} dsymutil
+                    $<TARGET_FILE:${target_name}>
+                    -o $<TARGET_FILE:${target_name}>.dSYM
+            COMMENT "Generating dSYM for ${target_name}"
+            VERBATIM
+          )
+        else()
+          add_custom_command(TARGET ${target_name} POST_BUILD
+            COMMAND ${DB_DSYMUTIL_PROGRAM}
+                    $<TARGET_FILE:${target_name}>
+                    -o $<TARGET_FILE:${target_name}>.dSYM
+            COMMENT "Generating dSYM for ${target_name}"
+            VERBATIM
+          )
+        endif()
+      else()
+        message(WARNING
+          "DB_ENABLE_DSYM is ON, but dsymutil was not found; profiler symbols may be incomplete."
+        )
       endif()
     endif()
   endif()
