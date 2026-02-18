@@ -12,6 +12,7 @@
 
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
+#include <OpenGL/gltypes.h>
 #else
 #define GL_GLEXT_PROTOTYPES
 #ifdef __has_include
@@ -160,8 +161,10 @@ static GLuint compile_shader(GLenum shader_type, const char *source) {
         char log_msg[SHADER_LOG_MSG_CAPACITY];
         GLsizei msg_len = 0;
         glGetShaderInfoLog(shader, (GLsizei)sizeof(log_msg), &msg_len, log_msg);
+        const int msg_len_i32 =
+            db_checked_int_to_i32(BACKEND_NAME, "shader_log_msg_len", msg_len);
         failf("Shader compile failed (%u): %.*s", (unsigned)shader_type,
-              (int)msg_len, log_msg);
+              msg_len_i32, log_msg);
     }
     return shader;
 }
@@ -190,7 +193,9 @@ static GLuint build_program_from_files(const char *vert_shader_path,
         GLsizei msg_len = 0;
         glGetProgramInfoLog(program, (GLsizei)sizeof(log_msg), &msg_len,
                             log_msg);
-        failf("Program link failed: %.*s", (int)msg_len, log_msg);
+        const int msg_len_i32 =
+            db_checked_int_to_i32(BACKEND_NAME, "program_log_msg_len", msg_len);
+        failf("Program link failed: %.*s", msg_len_i32, log_msg);
     }
     return program;
 }

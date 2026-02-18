@@ -8,6 +8,7 @@
 
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
+#include <OpenGL/gltypes.h>
 #else
 #define GL_GLEXT_PROTOTYPES
 #ifdef __has_include

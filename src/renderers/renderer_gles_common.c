@@ -2,30 +2,27 @@
 
 #include <stdint.h>
 #include <string.h>
-#ifdef __APPLE__
-#include <dlfcn.h>
-#define DB_HAS_DLSYM_PROC_ADDRESS 1
-#endif
 
 #include "../core/db_core.h"
-#ifdef __has_include
-#if defined(__linux__) && __has_include(<EGL/egl.h>)
+
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#include <OpenGL/gltypes.h>
+#include <dlfcn.h>
+#define DB_HAS_DLSYM_PROC_ADDRESS 1
+#elifdef __linux__
 #include <EGL/egl.h>
 #define DB_HAS_EGL_GET_PROC_ADDRESS 1
-#elifdef __linux__
-#error "renderer_gles_common.c requires <EGL/egl.h> on Linux"
 #endif
-#if __has_include(<GLES/gl.h>)
-#include <GLES/gl.h>
-#elif __has_include(<GL/gl.h>)
+
+#ifndef __APPLE__
+#if defined(__has_include) && __has_include(<GL/gl.h>)
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
 #include <GL/glext.h>
 #else
-#error "No suitable OpenGL headers found for renderer_gles_common.c"
-#endif
-#else // __has_include
 #include <GLES/gl.h>
+#endif
 #endif
 
 #ifndef GL_MAP_WRITE_BIT
@@ -157,6 +154,7 @@ static int db_gl_supports_map_buffer(const char *exts) {
     if (db_gl_is_es_context((const char *)glGetString(GL_VERSION)) != 0) {
         return db_has_gl_extension_token(exts, "GL_OES_mapbuffer");
     }
+
     return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
            db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
                                        5);
@@ -168,6 +166,7 @@ static int db_gl_supports_vbo(const char *exts) {
         return db_gl_version_text_at_least(
             (const char *)glGetString(GL_VERSION), 1, 1);
     }
+
     return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
            db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
                                        5);
