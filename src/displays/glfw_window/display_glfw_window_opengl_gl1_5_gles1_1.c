@@ -35,7 +35,7 @@ int main(void) {
     int swap_interval = db_glfw_resolve_swap_interval();
     const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME);
     int is_gles = 0;
-    GLFWwindow *window = db_glfw_create_gl15_or_gles11_window(
+    GLFWwindow *window = db_glfw_create_gl1_5_or_gles1_1_window(
         BACKEND_NAME, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
         OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR,

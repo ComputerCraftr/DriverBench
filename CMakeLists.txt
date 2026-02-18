@@ -387,48 +387,102 @@ if(DB_BUILD_OPENGL)
         pkg_check_modules(DRM QUIET libdrm)
       endif()
 
-      if(PkgConfig_FOUND AND GBM_FOUND AND EGL_FOUND AND GLES_FOUND AND DRM_FOUND)
-        list(FIND DB_OPENGL_RENDERER_LIST "gl1_5_gles1_1" DB_HAS_GL15_RENDERER_INDEX)
-        if(NOT DB_HAS_GL15_RENDERER_INDEX EQUAL -1)
-          set(DB_OPENGL_TARGET driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1)
+      if(PkgConfig_FOUND AND GBM_FOUND AND EGL_FOUND AND DRM_FOUND)
+        foreach(DB_RENDERER IN LISTS DB_OPENGL_RENDERER_LIST)
+          if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
+            if(NOT GLES_FOUND)
+              message(WARNING
+                "Skipping OpenGL gl1_5_gles1_1 on linux_kms_atomic: requires glesv1_cm."
+              )
+              continue()
+            endif()
+            set(DB_OPENGL_TARGET driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1)
+            set(DB_OPENGL_DISPLAY_SOURCE src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl1_5_gles1_1.c)
+            set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c)
+            set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_GLES_COMMON_SOURCES})
+          elseif(DB_RENDERER STREQUAL "gl3_3")
+            set(DB_OPENGL_TARGET driverbench_linux_kms_atomic_opengl_gl3_3)
+            set(DB_OPENGL_DISPLAY_SOURCE src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl3_3.c)
+            set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c)
+            set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_OPENGL_COMMON_SOURCES})
+          else()
+            continue()
+          endif()
+
           add_executable(${DB_OPENGL_TARGET}
-            src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl1_5_gles1_1.c
-            src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
-            ${DB_RENDERER_GLES_COMMON_SOURCES}
+            ${DB_OPENGL_DISPLAY_SOURCE}
+            src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
+            ${DB_OPENGL_RENDERER_SOURCE}
+            ${DB_OPENGL_COMMON_SOURCE_LIST}
             ${DB_CORE_SOURCES}
           )
           db_apply_perf_options(${DB_OPENGL_TARGET})
 
+          if(DB_RENDERER STREQUAL "gl3_3")
+            target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
+              OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
+              OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+            )
+          endif()
+
           target_include_directories(${DB_OPENGL_TARGET} PRIVATE
             ${GBM_INCLUDE_DIRS}
             ${EGL_INCLUDE_DIRS}
-            ${GLES_INCLUDE_DIRS}
             ${DRM_INCLUDE_DIRS}
           )
           target_compile_options(${DB_OPENGL_TARGET} PRIVATE
             ${GBM_CFLAGS_OTHER}
             ${EGL_CFLAGS_OTHER}
-            ${GLES_CFLAGS_OTHER}
             ${DRM_CFLAGS_OTHER}
           )
           target_link_directories(${DB_OPENGL_TARGET} PRIVATE
             ${GBM_LIBRARY_DIRS}
             ${EGL_LIBRARY_DIRS}
-            ${GLES_LIBRARY_DIRS}
             ${DRM_LIBRARY_DIRS}
           )
-          target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
-            ${GBM_LIBRARIES}
-            ${EGL_LIBRARIES}
-            ${GLES_LIBRARIES}
-            ${DRM_LIBRARIES}
-            m
-          )
+
+          if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
+            target_include_directories(${DB_OPENGL_TARGET} PRIVATE
+              ${GLES_INCLUDE_DIRS}
+            )
+            target_compile_options(${DB_OPENGL_TARGET} PRIVATE
+              ${GLES_CFLAGS_OTHER}
+            )
+            target_link_directories(${DB_OPENGL_TARGET} PRIVATE
+              ${GLES_LIBRARY_DIRS}
+            )
+            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
+              ${GBM_LIBRARIES}
+              ${EGL_LIBRARIES}
+              ${GLES_LIBRARIES}
+              ${DRM_LIBRARIES}
+              m
+            )
+          else()
+            find_package(OpenGL QUIET)
+            if(TARGET OpenGL::GL)
+              target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
+                ${GBM_LIBRARIES}
+                ${EGL_LIBRARIES}
+                ${DRM_LIBRARIES}
+                OpenGL::GL
+                m
+              )
+            else()
+              target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
+                ${GBM_LIBRARIES}
+                ${EGL_LIBRARIES}
+                ${DRM_LIBRARIES}
+                GL
+                m
+              )
+            endif()
+          endif()
           set(HAVE_BACKEND ON)
-        endif()
+        endforeach()
       else()
         message(WARNING
-          "Skipping OpenGL backend on Linux: requires pkg-config with gbm, egl, glesv1_cm, and libdrm."
+          "Skipping OpenGL backend on Linux: requires pkg-config with gbm, egl, and libdrm."
         )
       endif()
     endif()

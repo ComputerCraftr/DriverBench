@@ -8,6 +8,8 @@ while draw/compute logic lives under `src/renderers/`.
 
 - `linux_kms_atomic/display_linux_kms_atomic_opengl_gl1_5_gles1_1.c`
     - OpenGL 1.5 / GLES 1.1 benchmark on Linux DRM/KMS + GBM/EGL.
+- `linux_kms_atomic/display_linux_kms_atomic_opengl_gl3_3.c`
+    - OpenGL 3.3 benchmark on Linux DRM/KMS + GBM/EGL.
 - `glfw_window/display_glfw_window_opengl_gl1_5_gles1_1.c`
     - GLFW display entrypoint for the OpenGL GL1.5/GLES1.1 renderer.
 - `glfw_window/display_glfw_window_opengl_gl3_3.c`
