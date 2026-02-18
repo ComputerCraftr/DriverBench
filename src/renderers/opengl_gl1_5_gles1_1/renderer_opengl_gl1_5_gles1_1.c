@@ -20,13 +20,14 @@
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
 #define STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_BAND_VERT_FLOATS))
 #define POS_OFFSET_FLOATS 0U
-#define MODE_VBO_MAP_RANGE "vbo_map_range"
-#define MODE_VBO_MAP_BUFFER "vbo_map_buffer"
-#define MODE_VBO "vbo"
-#define MODE_CLIENT_ARRAY "client_array"
+#define DB_CAP_MODE_OPENGL_VBO_MAP_RANGE "opengl_vbo_map_range"
+#define DB_CAP_MODE_OPENGL_VBO_MAP_BUFFER "opengl_vbo_map_buffer"
+#define DB_CAP_MODE_OPENGL_VBO "opengl_vbo"
+#define DB_CAP_MODE_OPENGL_CLIENT_ARRAY "opengl_client_array"
+#define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
+#define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
-    int use_vbo;
     int use_map_range_upload;
     int use_map_buffer_upload;
     GLuint vbo;
@@ -179,14 +180,13 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     glDisable(GL_CULL_FACE);
 
     if (!db_init_vertices_for_mode()) {
-        db_failf(BACKEND_NAME, "failed to allocate benchmark vertex buffers");
+        failf("failed to allocate benchmark vertex buffers");
     }
 
-    db_gl15_upload_probe_result_t probe_result = {0};
+    db_gl_upload_probe_result_t probe_result = {0};
     const size_t vbo_bytes =
         (size_t)g_state.draw_vertex_count * DB_BAND_VERT_FLOATS * sizeof(float);
 
-    g_state.use_vbo = db_gl15_has_vbo_support();
     g_state.use_map_range_upload = 0;
     g_state.use_map_buffer_upload = 0;
     g_state.vbo = 0U;
@@ -194,29 +194,29 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
 
-    if (g_state.use_vbo) {
+    if (db_gl_has_vbo_support() != 0) {
         glGenBuffers(1, &g_state.vbo);
         if (g_state.vbo != 0U) {
             glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
-            db_gl15_probe_upload_capabilities(vbo_bytes, g_state.vertices,
-                                              &probe_result);
-            g_state.use_vbo = probe_result.has_vbo;
-            g_state.use_map_range_upload = probe_result.use_map_range_upload;
-            g_state.use_map_buffer_upload = probe_result.use_map_buffer_upload;
+            db_gl_probe_upload_capabilities(vbo_bytes, g_state.vertices, 0,
+                                            &probe_result);
+            g_state.use_map_range_upload =
+                (probe_result.use_map_range_upload != 0);
+            g_state.use_map_buffer_upload =
+                (probe_result.use_map_buffer_upload != 0);
             glVertexPointer(2, GL_FLOAT, STRIDE_BYTES,
                             vbo_offset_ptr(sizeof(float) * POS_OFFSET_FLOATS));
             glColorPointer(3, GL_FLOAT, STRIDE_BYTES,
                            vbo_offset_ptr(sizeof(float) * DB_BAND_POS_FLOATS));
-            db_infof(BACKEND_NAME, "using capability mode: %s",
-                     db_renderer_opengl_gl1_5_gles1_1_capability_mode());
+            infof("using capability mode: %s",
+                  db_renderer_opengl_gl1_5_gles1_1_capability_mode());
             return;
         }
     }
 
-    g_state.use_vbo = 0;
     glBindBuffer(GL_ARRAY_BUFFER, 0);
-    db_infof(BACKEND_NAME, "using capability mode: %s",
-             db_renderer_opengl_gl1_5_gles1_1_capability_mode());
+    infof("using capability mode: %s",
+          db_renderer_opengl_gl1_5_gles1_1_capability_mode());
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
@@ -233,7 +233,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         db_render_snake_grid_step(&snake_plan);
     }
 
-    if (g_state.use_vbo) {
+    if (g_state.vbo != 0U) {
         glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
         const size_t vbo_bytes = (size_t)g_state.draw_vertex_count *
                                  DB_BAND_VERT_FLOATS * sizeof(float);
@@ -294,16 +294,16 @@ void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
 }
 
 const char *db_renderer_opengl_gl1_5_gles1_1_capability_mode(void) {
-    if (!g_state.use_vbo) {
-        return MODE_CLIENT_ARRAY;
+    if (g_state.vbo == 0U) {
+        return DB_CAP_MODE_OPENGL_CLIENT_ARRAY;
     }
-    if (g_state.use_map_range_upload) {
-        return MODE_VBO_MAP_RANGE;
+    if (g_state.use_map_range_upload != 0) {
+        return DB_CAP_MODE_OPENGL_VBO_MAP_RANGE;
     }
-    if (g_state.use_map_buffer_upload) {
-        return MODE_VBO_MAP_BUFFER;
+    if (g_state.use_map_buffer_upload != 0) {
+        return DB_CAP_MODE_OPENGL_VBO_MAP_BUFFER;
     }
-    return MODE_VBO;
+    return DB_CAP_MODE_OPENGL_VBO;
 }
 
 uint32_t db_renderer_opengl_gl1_5_gles1_1_work_unit_count(void) {

@@ -40,8 +40,9 @@
 #define COLOR_WRITE_MASK_RGBA 0xFU
 #define TIMESTAMP_QUERIES_PER_GPU 2U
 #define TIMESTAMP_QUERY_COUNT (MAX_GPU_COUNT * TIMESTAMP_QUERIES_PER_GPU)
-#define CAPABILITY_MODE_SINGLE_GPU "single_gpu"
-#define CAPABILITY_MODE_DEVICE_GROUP "device_group_multi_gpu"
+#define DB_CAP_MODE_VULKAN_SINGLE_GPU "vulkan_single_gpu"
+#define DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU                              \
+    "vulkan_device_group_multi_gpu"
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
@@ -194,9 +195,9 @@ typedef struct {
     uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
     int have_prev_timing_frame;
     double timestamp_period_ns;
-} VulkanRendererState;
+} renderer_state_t;
 
-static VulkanRendererState g_state = {0};
+static renderer_state_t g_state = {0};
 
 static VkExtent2D
 db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
@@ -1066,8 +1067,8 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     }
     const int multi_gpu = haveGroup && (gpuCount > 1U);
     const char *capability_mode = NULL;
-    capability_mode =
-        multi_gpu ? CAPABILITY_MODE_DEVICE_GROUP : CAPABILITY_MODE_SINGLE_GPU;
+    capability_mode = multi_gpu ? DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU
+                                : DB_CAP_MODE_VULKAN_SINGLE_GPU;
 
     // Start: round robin across GPUs
     if (pattern == DB_PATTERN_BANDS) {
@@ -1546,12 +1547,12 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
         g_state.pipeline, g_state.pipeline_layout, &g_state.swapchain_state,
         g_state.render_pass, g_state.command_pool, g_state.timing_query_pool,
         g_state.instance, g_state.surface, &g_state.selection);
-    g_state = (VulkanRendererState){0};
+    g_state = (renderer_state_t){0};
 }
 
 const char *db_renderer_vulkan_1_2_multi_gpu_capability_mode(void) {
     return (g_state.capability_mode != NULL) ? g_state.capability_mode
-                                             : CAPABILITY_MODE_SINGLE_GPU;
+                                             : DB_CAP_MODE_VULKAN_SINGLE_GPU;
 }
 
 uint32_t db_renderer_vulkan_1_2_multi_gpu_work_unit_count(void) {

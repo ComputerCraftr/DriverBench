@@ -25,11 +25,6 @@
 #endif
 #endif
 
-#if !defined(OPENGL_GL3_3_VERT_SHADER_PATH) ||                                 \
-    !defined(OPENGL_GL3_3_FRAG_SHADER_PATH)
-#error "OpenGL GL3.3 shader paths must be provided by the build system."
-#endif
-
 #define BACKEND_NAME "display_glfw_window_opengl_gl3_3"
 #define RENDERER_NAME "renderer_opengl_gl3_3"
 #define REMOTE_DISPLAY_OVERRIDE_ENV "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
@@ -54,8 +49,7 @@ int main(void) {
         OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 1,
         swap_interval);
 
-    db_renderer_opengl_gl3_3_init(OPENGL_GL3_3_VERT_SHADER_PATH,
-                                  OPENGL_GL3_3_FRAG_SHADER_PATH);
+    db_renderer_opengl_gl3_3_init();
     const char *capability_mode = db_renderer_opengl_gl3_3_capability_mode();
     const uint32_t work_unit_count = db_renderer_opengl_gl3_3_work_unit_count();
 

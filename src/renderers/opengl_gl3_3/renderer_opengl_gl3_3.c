@@ -27,18 +27,25 @@
 #endif
 #endif
 
+#if !defined(OPENGL_GL3_3_VERT_SHADER_PATH) ||                                 \
+    !defined(OPENGL_GL3_3_FRAG_SHADER_PATH)
+#error "OpenGL GL3.3 shader paths must be provided by the build system."
+#endif
+
 #define BACKEND_NAME "renderer_opengl_gl3_3"
 #define SHADER_LOG_MSG_CAPACITY 1024
 #define ATTR_POSITION_LOC 0U
 #define ATTR_COLOR_LOC 1U
 #define ATTR_POSITION_COMPONENTS 2
 #define ATTR_COLOR_COMPONENTS 3
+#define DB_CAP_MODE_OPENGL_SHADER_VBO "opengl_shader_vbo"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE "opengl_shader_vbo_map_range"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER "opengl_shader_vbo_map_buffer"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT "opengl_shader_vbo_persistent"
+#define DB_RENDER_MODE_BANDS 0
+#define DB_RENDER_MODE_SNAKE_GRID 1
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
-#define CAPABILITY_MODE_SHADER_VBO "shader_vbo"
-#define CAPABILITY_MODE_SHADER_VBO_MAP_RANGE "shader_vbo_map_range"
-#define CAPABILITY_MODE_SHADER_VBO_PERSISTENT "shader_vbo_persistent"
-#define RENDER_MODE_BANDS 0
-#define RENDER_MODE_SNAKE_GRID 1
+#define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
     GLuint vao;
@@ -66,12 +73,12 @@ typedef struct {
     GLsizei draw_vertex_count;
     size_t vbo_bytes;
     int use_map_range_upload;
+    int use_map_buffer_upload;
     int use_persistent_upload;
     void *persistent_mapped_ptr;
-    const char *capability_mode;
-} ShaderRendererState;
+} renderer_state_t;
 
-static ShaderRendererState g_state = {0};
+static renderer_state_t g_state = {0};
 
 // NOLINTBEGIN(performance-no-int-to-ptr)
 static const void *vbo_offset_ptr(size_t byte_offset) {
@@ -154,12 +161,10 @@ static int db_init_vertices_for_mode(void) {
     g_state.snake_batch_size = init_state.snake_batch_size;
     g_state.snake_phase_completed = init_state.snake_phase_completed;
     g_state.snake_clearing_phase = init_state.snake_clearing_phase;
-    g_state.capability_mode = CAPABILITY_MODE_SHADER_VBO;
     return 1;
 }
 
-void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
-                                   const char *frag_shader_path) {
+void db_renderer_opengl_gl3_3_init(void) {
     if (!db_init_vertices_for_mode()) {
         failf("failed to allocate benchmark vertex buffers");
     }
@@ -184,26 +189,21 @@ void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
                           vbo_offset_ptr(DB_BAND_POS_FLOATS * sizeof(float)));
 
     g_state.use_map_range_upload = 0;
+    g_state.use_map_buffer_upload = 0;
     g_state.use_persistent_upload = 0;
     g_state.persistent_mapped_ptr = NULL;
-    db_gl3_upload_probe_result_t probe_result = {0};
-    db_gl3_probe_upload_capabilities(g_state.vbo_bytes, g_state.vertices,
-                                     &probe_result);
-    g_state.use_map_range_upload = probe_result.use_map_range_upload;
-    g_state.use_persistent_upload = probe_result.use_persistent_upload;
+    db_gl_upload_probe_result_t probe_result = {0};
+    db_gl_probe_upload_capabilities(g_state.vbo_bytes, g_state.vertices, 1,
+                                    &probe_result);
+    g_state.use_map_range_upload = (probe_result.use_map_range_upload != 0);
+    g_state.use_map_buffer_upload = (probe_result.use_map_buffer_upload != 0);
+    g_state.use_persistent_upload = (probe_result.use_persistent_upload != 0);
     g_state.persistent_mapped_ptr = probe_result.persistent_mapped_ptr;
-    if (g_state.use_persistent_upload != 0) {
-        g_state.use_persistent_upload = 1;
-        g_state.capability_mode = CAPABILITY_MODE_SHADER_VBO_PERSISTENT;
-    } else if (g_state.use_map_range_upload != 0) {
-        g_state.use_map_range_upload = 1;
-        g_state.capability_mode = CAPABILITY_MODE_SHADER_VBO_MAP_RANGE;
-    }
-    db_infof(BACKEND_NAME, "using capability mode: %s",
-             db_renderer_opengl_gl3_3_capability_mode());
+    infof("using capability mode: %s",
+          db_renderer_opengl_gl3_3_capability_mode());
 
-    g_state.program =
-        build_program_from_files(vert_shader_path, frag_shader_path);
+    g_state.program = build_program_from_files(OPENGL_GL3_3_VERT_SHADER_PATH,
+                                               OPENGL_GL3_3_FRAG_SHADER_PATH);
     glUseProgram(g_state.program);
     g_state.u_render_mode =
         glGetUniformLocation(g_state.program, "u_render_mode");
@@ -228,8 +228,8 @@ void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
 
     if (g_state.u_render_mode >= 0) {
         const int render_mode = (g_state.pattern == DB_PATTERN_SNAKE_GRID)
-                                    ? RENDER_MODE_SNAKE_GRID
-                                    : RENDER_MODE_BANDS;
+                                    ? DB_RENDER_MODE_SNAKE_GRID
+                                    : DB_RENDER_MODE_BANDS;
         glUniform1i(g_state.u_render_mode, render_mode);
     }
     glUniform3f(g_state.u_snake_base_color, BENCH_GRID_PHASE0_R,
@@ -252,6 +252,10 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                 GL_ARRAY_BUFFER, 0, (GLsizeiptr)g_state.vbo_bytes,
                 GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
                     GL_MAP_UNSYNCHRONIZED_BIT);
+            db_gl_upload_mapped_or_subdata(g_state.vertices, g_state.vbo_bytes,
+                                           dst);
+        } else if (g_state.use_map_buffer_upload != 0) {
+            void *dst = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
             db_gl_upload_mapped_or_subdata(g_state.vertices, g_state.vbo_bytes,
                                            dst);
         } else {
@@ -293,12 +297,20 @@ void db_renderer_opengl_gl3_3_shutdown(void) {
     glDeleteBuffers(1, &g_state.vbo);
     glDeleteVertexArrays(1, &g_state.vao);
     free(g_state.vertices);
-    g_state = (ShaderRendererState){0};
+    g_state = (renderer_state_t){0};
 }
 
 const char *db_renderer_opengl_gl3_3_capability_mode(void) {
-    return (g_state.capability_mode != NULL) ? g_state.capability_mode
-                                             : CAPABILITY_MODE_SHADER_VBO;
+    if (g_state.use_persistent_upload != 0) {
+        return DB_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT;
+    }
+    if (g_state.use_map_range_upload != 0) {
+        return DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE;
+    }
+    if (g_state.use_map_buffer_upload != 0) {
+        return DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER;
+    }
+    return DB_CAP_MODE_OPENGL_SHADER_VBO;
 }
 
 uint32_t db_renderer_opengl_gl3_3_work_unit_count(void) {

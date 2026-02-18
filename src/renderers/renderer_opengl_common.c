@@ -220,7 +220,7 @@ static int db_gl_probe_map_buffer_upload(size_t bytes,
     return glGetError() == GL_NO_ERROR;
 }
 
-int db_gl15_has_vbo_support(void) {
+int db_gl_has_vbo_support(void) {
     const char *exts = (const char *)glGetString(GL_EXTENSIONS);
     if (db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
         db_has_gl_extension_token(exts, "GL_OES_vertex_buffer_object")) {
@@ -229,50 +229,23 @@ int db_gl15_has_vbo_support(void) {
     return db_gl_version_at_least(1, 5);
 }
 
-void db_gl15_probe_upload_capabilities(size_t bytes,
-                                       const float *initial_vertices,
-                                       db_gl15_upload_probe_result_t *out) {
+void db_gl_probe_upload_capabilities(size_t bytes,
+                                     const float *initial_vertices,
+                                     int allow_persistent_upload,
+                                     db_gl_upload_probe_result_t *out) {
     if (out == NULL) {
-        db_failf("renderer_opengl_gl1_5_gles1_1",
-                 "db_gl15_probe_upload_capabilities: output is null");
+        db_failf("renderer_opengl_common",
+                 "db_gl_probe_upload_capabilities: output is null");
     }
 
-    *out = (db_gl15_upload_probe_result_t){0};
-    out->has_vbo = db_gl15_has_vbo_support();
-    if (out->has_vbo == 0) {
-        return;
-    }
-
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, initial_vertices,
-                 GL_STREAM_DRAW);
-    if (glGetError() != GL_NO_ERROR) {
+    *out = (db_gl_upload_probe_result_t){0};
+    if (db_gl_has_vbo_support() == 0) {
         return;
     }
 
     const char *exts = (const char *)glGetString(GL_EXTENSIONS);
-    if (db_gl_supports_map_buffer_range(exts) &&
-        db_gl_probe_map_range_upload(bytes, initial_vertices)) {
-        out->use_map_range_upload = 1;
-        return;
-    }
 
-    if (db_gl_probe_map_buffer_upload(bytes, initial_vertices)) {
-        out->use_map_buffer_upload = 1;
-    }
-}
-
-void db_gl3_probe_upload_capabilities(size_t bytes,
-                                      const float *initial_vertices,
-                                      db_gl3_upload_probe_result_t *out) {
-    if (out == NULL) {
-        db_failf("renderer_opengl_gl3_3",
-                 "db_gl3_probe_upload_capabilities: output is null");
-    }
-
-    *out = (db_gl3_upload_probe_result_t){0};
-    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
-
-    if (db_gl_supports_buffer_storage(exts) &&
+    if ((allow_persistent_upload != 0) && db_gl_supports_buffer_storage(exts) &&
         db_gl_supports_map_buffer_range(exts) &&
         db_gl_try_init_persistent_upload(bytes, initial_vertices,
                                          &out->persistent_mapped_ptr)) {
@@ -289,6 +262,11 @@ void db_gl3_probe_upload_capabilities(size_t bytes,
     if (db_gl_supports_map_buffer_range(exts) &&
         db_gl_probe_map_range_upload(bytes, initial_vertices)) {
         out->use_map_range_upload = 1;
+        return;
+    }
+
+    if (db_gl_probe_map_buffer_upload(bytes, initial_vertices)) {
+        out->use_map_buffer_upload = 1;
     }
 }
 
