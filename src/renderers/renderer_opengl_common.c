@@ -24,44 +24,14 @@
 #endif
 #endif
 
-#define BASE10 10
 #define PROBE_PREFIX_BYTES 64U
 #define MAP_RANGE_PROBE_XOR_SEED 0xA5U
-
-static int db_gl_parse_version(int *major_out, int *minor_out) {
-    const char *version_text = (const char *)glGetString(GL_VERSION);
-    if (version_text == NULL) {
-        return 0;
-    }
-
-    const char *cursor = version_text;
-    while ((*cursor != '\0') && (*cursor < '0' || *cursor > '9')) {
-        cursor++;
-    }
-    if (*cursor == '\0') {
-        return 0;
-    }
-
-    char *parse_end = NULL;
-    const long major_l = strtol(cursor, &parse_end, BASE10);
-    if ((parse_end == cursor) || (*parse_end != '.')) {
-        return 0;
-    }
-    const char *minor_start = parse_end + 1;
-    const long minor_l = strtol(minor_start, &parse_end, BASE10);
-    if (parse_end == minor_start) {
-        return 0;
-    }
-
-    *major_out = (int)major_l;
-    *minor_out = (int)minor_l;
-    return 1;
-}
 
 static int db_gl_version_at_least(int req_major, int req_minor) {
     int major = 0;
     int minor = 0;
-    if (!db_gl_parse_version(&major, &minor)) {
+    if (!db_parse_gl_version_numbers((const char *)glGetString(GL_VERSION),
+                                     &major, &minor)) {
         return 0;
     }
     return (major > req_major) ||
@@ -270,16 +240,82 @@ void db_gl_probe_upload_capabilities(size_t bytes,
     }
 }
 
-void db_gl_upload_mapped_or_subdata(const void *source, size_t bytes,
-                                    void *mapped_ptr) {
-    if (mapped_ptr != NULL) {
-        // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-        memcpy(mapped_ptr, source, bytes);
-        if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
-            glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, source);
+static void *db_gl_try_map_upload_buffer(size_t bytes, int try_map_range,
+                                         int try_map_buffer) {
+    if (try_map_range != 0) {
+#if defined(GL_MAP_INVALIDATE_BUFFER_BIT) && defined(GL_MAP_UNSYNCHRONIZED_BIT)
+        return glMapBufferRange(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes,
+                                GL_MAP_WRITE_BIT |
+                                    GL_MAP_INVALIDATE_BUFFER_BIT |
+                                    GL_MAP_UNSYNCHRONIZED_BIT);
+#endif
+    }
+
+    if (try_map_buffer != 0) {
+        return glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    }
+
+    return NULL;
+}
+
+static void db_gl_upload_ranges_subdata(const void *source_base,
+                                        const db_gl_upload_range_t *ranges,
+                                        size_t range_count) {
+    const uint8_t *src_base = (const uint8_t *)source_base;
+    for (size_t i = 0; i < range_count; i++) {
+        const db_gl_upload_range_t *range = &ranges[i];
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)range->dst_offset_bytes,
+                        (GLsizeiptr)range->size_bytes,
+                        src_base + range->src_offset_bytes);
+    }
+}
+
+void db_gl_upload_ranges(const void *source_base, size_t total_bytes,
+                         int use_persistent_upload, void *persistent_mapped_ptr,
+                         int use_map_range_upload, int use_map_buffer_upload,
+                         const db_gl_upload_range_t *ranges,
+                         size_t range_count) {
+    if ((source_base == NULL) || (ranges == NULL) || (range_count == 0U)) {
+        return;
+    }
+
+    if ((use_persistent_upload != 0) && (persistent_mapped_ptr != NULL)) {
+        uint8_t *dst_base = (uint8_t *)persistent_mapped_ptr;
+        const uint8_t *src_base = (const uint8_t *)source_base;
+        for (size_t i = 0; i < range_count; i++) {
+            const db_gl_upload_range_t *range = &ranges[i];
+            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+            memcpy(dst_base + range->dst_offset_bytes,
+                   src_base + range->src_offset_bytes, range->size_bytes);
         }
         return;
     }
 
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, source);
+    void *mapped_ptr = db_gl_try_map_upload_buffer(
+        total_bytes, use_map_range_upload, use_map_buffer_upload);
+    if (mapped_ptr != NULL) {
+        uint8_t *dst_base = (uint8_t *)mapped_ptr;
+        const uint8_t *src_base = (const uint8_t *)source_base;
+        for (size_t i = 0; i < range_count; i++) {
+            const db_gl_upload_range_t *range = &ranges[i];
+            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+            memcpy(dst_base + range->dst_offset_bytes,
+                   src_base + range->src_offset_bytes, range->size_bytes);
+        }
+        if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
+            db_gl_upload_ranges_subdata(source_base, ranges, range_count);
+        }
+        return;
+    }
+
+    db_gl_upload_ranges_subdata(source_base, ranges, range_count);
+}
+
+void db_gl_upload_buffer(const void *source, size_t bytes,
+                         int use_persistent_upload, void *persistent_mapped_ptr,
+                         int use_map_range_upload, int use_map_buffer_upload) {
+    const db_gl_upload_range_t full_range = {0U, 0U, bytes};
+    db_gl_upload_ranges(source, bytes, use_persistent_upload,
+                        persistent_mapped_ptr, use_map_range_upload,
+                        use_map_buffer_upload, &full_range, 1U);
 }

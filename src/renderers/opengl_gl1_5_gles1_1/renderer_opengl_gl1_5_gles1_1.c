@@ -24,6 +24,8 @@
 #define DB_CAP_MODE_OPENGL_VBO_MAP_BUFFER "opengl_vbo_map_buffer"
 #define DB_CAP_MODE_OPENGL_VBO "opengl_vbo"
 #define DB_CAP_MODE_OPENGL_CLIENT_ARRAY "opengl_client_array"
+#define DB_MAX_SNAKE_UPLOAD_RANGES                                             \
+    ((size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U)
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
@@ -136,9 +138,12 @@ static size_t db_snake_tile_bytes(void) {
            sizeof(float);
 }
 
-static void db_upload_snake_step_range(uint32_t step_start, uint32_t step_count,
-                                       size_t tile_bytes) {
-    if (step_count == 0U || tile_bytes == 0U) {
+static void
+db_append_snake_step_ranges(db_gl_upload_range_t *ranges, size_t max_ranges,
+                            size_t *inout_range_count, uint32_t step_start,
+                            uint32_t step_count, size_t tile_bytes) {
+    if ((ranges == NULL) || (inout_range_count == NULL) || (step_count == 0U) ||
+        (tile_bytes == 0U)) {
         return;
     }
 
@@ -166,9 +171,15 @@ static void db_upload_snake_step_range(uint32_t step_start, uint32_t step_count,
                                     DB_BAND_VERT_FLOATS;
         const size_t byte_offset = (size_t)first_tile * tile_bytes;
         const size_t byte_count = (size_t)chunk_steps * tile_bytes;
-        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)byte_offset,
-                        (GLsizeiptr)byte_count,
-                        &g_state.vertices[float_offset]);
+        if (*inout_range_count >= max_ranges) {
+            failf("snake upload range overflow (max=%zu)", max_ranges);
+        }
+        ranges[*inout_range_count] = (db_gl_upload_range_t){
+            .dst_offset_bytes = byte_offset,
+            .src_offset_bytes = float_offset * sizeof(float),
+            .size_bytes = byte_count,
+        };
+        (*inout_range_count)++;
 
         step_cursor += chunk_steps;
         remaining -= chunk_steps;
@@ -214,7 +225,6 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         }
     }
 
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
     infof("using capability mode: %s",
           db_renderer_opengl_gl1_5_gles1_1_capability_mode());
 }
@@ -239,40 +249,28 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                                  DB_BAND_VERT_FLOATS * sizeof(float);
         if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
             const size_t tile_bytes = db_snake_tile_bytes();
-            db_upload_snake_step_range(snake_plan.prev_start,
-                                       snake_plan.prev_count, tile_bytes);
-            db_upload_snake_step_range(snake_plan.active_cursor,
-                                       snake_plan.batch_size, tile_bytes);
+            db_gl_upload_range_t ranges[DB_MAX_SNAKE_UPLOAD_RANGES];
+            size_t range_count = 0U;
+            db_append_snake_step_ranges(ranges, DB_MAX_SNAKE_UPLOAD_RANGES,
+                                        &range_count, snake_plan.prev_start,
+                                        snake_plan.prev_count, tile_bytes);
+            db_append_snake_step_ranges(ranges, DB_MAX_SNAKE_UPLOAD_RANGES,
+                                        &range_count, snake_plan.active_cursor,
+                                        snake_plan.batch_size, tile_bytes);
+            db_gl_upload_ranges(g_state.vertices, vbo_bytes, 0, NULL,
+                                g_state.use_map_range_upload,
+                                g_state.use_map_buffer_upload, ranges,
+                                range_count);
         } else {
-            void *mapped_dst = NULL;
-            int attempted_map_upload = 0;
-            if (g_state.use_map_range_upload) {
-#if defined(GL_MAP_INVALIDATE_BUFFER_BIT) && defined(GL_MAP_UNSYNCHRONIZED_BIT)
-                mapped_dst = glMapBufferRange(
-                    GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
-                    GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
-                        GL_MAP_UNSYNCHRONIZED_BIT);
-                attempted_map_upload = 1;
-#endif
-            }
-            if (!attempted_map_upload && g_state.use_map_buffer_upload) {
-                mapped_dst = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-                attempted_map_upload = 1;
-            }
-            if (attempted_map_upload) {
-                db_gl_upload_mapped_or_subdata(g_state.vertices, vbo_bytes,
-                                               mapped_dst);
-            } else {
-                glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
-                                g_state.vertices);
-            }
+            db_gl_upload_buffer(g_state.vertices, vbo_bytes, 0, NULL,
+                                g_state.use_map_range_upload,
+                                g_state.use_map_buffer_upload);
         }
         glVertexPointer(2, GL_FLOAT, STRIDE_BYTES,
                         vbo_offset_ptr(sizeof(float) * POS_OFFSET_FLOATS));
         glColorPointer(3, GL_FLOAT, STRIDE_BYTES,
                        vbo_offset_ptr(sizeof(float) * DB_BAND_POS_FLOATS));
     } else {
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
         glVertexPointer(2, GL_FLOAT, STRIDE_BYTES, &g_state.vertices[0]);
         glColorPointer(3, GL_FLOAT, STRIDE_BYTES,
                        &g_state.vertices[DB_BAND_POS_FLOATS]);
@@ -286,7 +284,6 @@ void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
         glDeleteBuffers(1, &g_state.vbo);
         g_state.vbo = 0U;
     }
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
     glDisableClientState(GL_VERTEX_ARRAY);
     glDisableClientState(GL_COLOR_ARRAY);
     free(g_state.vertices);

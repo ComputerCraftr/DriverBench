@@ -19,8 +19,11 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(DB_CORE_SOURCES src/core/db_core.c)
 set(DB_GLFW_DISPLAY_SOURCES src/displays/glfw_window/display_glfw_window_common.c)
-set(DB_OPENGL_RENDERER_COMMON_SOURCES
+set(DB_RENDERER_OPENGL_COMMON_SOURCES
   src/renderers/renderer_opengl_common.c
+)
+set(DB_RENDERER_GLES_COMMON_SOURCES
+  src/renderers/renderer_gles_common.c
 )
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
@@ -325,7 +328,7 @@ if(DB_BUILD_OPENGL)
         add_executable(${DB_OPENGL_TARGET}
           ${DB_OPENGL_SOURCE}
           ${DB_OPENGL_RENDERER_SOURCE}
-          ${DB_OPENGL_RENDERER_COMMON_SOURCES}
+          ${DB_RENDERER_OPENGL_COMMON_SOURCES}
           ${DB_GLFW_DISPLAY_SOURCES}
           ${DB_CORE_SOURCES}
         )
@@ -385,6 +388,8 @@ if(DB_BUILD_OPENGL)
           set(DB_OPENGL_TARGET driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1)
           add_executable(${DB_OPENGL_TARGET}
             src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl1_5_gles1_1.c
+            src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
+            ${DB_RENDERER_GLES_COMMON_SOURCES}
             ${DB_CORE_SOURCES}
           )
           db_apply_perf_options(${DB_OPENGL_TARGET})

@@ -243,25 +243,10 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
     if (g_state.pattern == DB_PATTERN_BANDS) {
         db_fill_band_vertices_pos_rgb(g_state.vertices, g_state.work_unit_count,
                                       time_s);
-        if (g_state.use_persistent_upload != 0) {
-            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-            memcpy(g_state.persistent_mapped_ptr, g_state.vertices,
-                   g_state.vbo_bytes);
-        } else if (g_state.use_map_range_upload != 0) {
-            void *dst = glMapBufferRange(
-                GL_ARRAY_BUFFER, 0, (GLsizeiptr)g_state.vbo_bytes,
-                GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
-                    GL_MAP_UNSYNCHRONIZED_BIT);
-            db_gl_upload_mapped_or_subdata(g_state.vertices, g_state.vbo_bytes,
-                                           dst);
-        } else if (g_state.use_map_buffer_upload != 0) {
-            void *dst = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-            db_gl_upload_mapped_or_subdata(g_state.vertices, g_state.vbo_bytes,
-                                           dst);
-        } else {
-            glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)g_state.vbo_bytes,
-                            g_state.vertices);
-        }
+        db_gl_upload_buffer(
+            g_state.vertices, g_state.vbo_bytes, g_state.use_persistent_upload,
+            g_state.persistent_mapped_ptr, g_state.use_map_range_upload,
+            g_state.use_map_buffer_upload);
     } else {
         const db_snake_damage_plan_t snake_plan = db_snake_grid_plan_next_step(
             g_state.snake_cursor, 0U, 0U, g_state.snake_clearing_phase,

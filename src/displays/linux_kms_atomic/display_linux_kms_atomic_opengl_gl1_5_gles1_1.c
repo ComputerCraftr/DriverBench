@@ -1,58 +1,45 @@
 // kms_atomic_egl_gl15_or_gles11.c
 #define _GNU_SOURCE // NOLINT(bugprone-reserved-identifier)
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <gbm.h>
-#include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/errno.h>
+#include <sys/select.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "../../core/db_core.h"
+#include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
+#include "../../renderers/renderer_benchmark_common.h"
 #include "../bench_config.h"
 
+#include <drm/drm.h>
+#include <drm/drm_mode.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
 #include <EGL/egl.h>
-#include <EGL/eglext.h>
+#include <EGL/eglplatform.h>
 
-// We will include both headers but only use fixed-function style calls.
-// On many systems <GL/gl.h> isn't compatible with EGL+GBM unless you link
-// correctly. We'll use GLES 1.x header for common fixed-function entry points.
-// For desktop GL 1.5, those functions still exist; we just bind the right API
-// in EGL.
+// Keep GLES 1.x headers for cross-driver GL entry points in this KMS/EGL path.
+// Rendering itself is delegated to the shared OpenGL 1.5/GLES1.1 renderer.
 #include <GLES/gl.h>
 
 #define BACKEND_NAME "display_linux_kms_atomic_opengl_gl1_5_gles1_1"
 #define RENDERER_NAME "renderer_opengl_gl1_5_gles1_1"
 #define NS_PER_SECOND_U64 1000000000ULL
-#define USCALE_255_F 255.0F
 #define BG_COLOR_R_F 0.04F
 #define BG_COLOR_G_F 0.04F
 #define BG_COLOR_B_F 0.07F
 #define BG_COLOR_A_F 1.0F
-#define TRI_VERTS_PER_BAND 6U
 #define DRM_SRC_FP_SHIFT 16U
 #define NS_TO_MS_D 1e6
 #define LOG_MSG_CAPACITY 2048U
-#define VERT_IDX_0 0U
-#define VERT_IDX_1 1U
-#define VERT_IDX_2 2U
-#define VERT_IDX_3 3U
-#define VERT_IDX_4 4U
-#define VERT_IDX_5 5U
-#define CAPABILITY_MODE "client_array"
-
-typedef struct {
-    GLfloat x, y;
-    GLubyte r, g, b, a;
-} V;
 
 static __attribute__((noreturn)) void failf(const char *fmt, ...) {
     char message[LOG_MSG_CAPACITY];
@@ -62,7 +49,7 @@ static __attribute__((noreturn)) void failf(const char *fmt, ...) {
     (void)vsnprintf_s(message, sizeof(message), _TRUNCATE, fmt, ap);
 #else
     // Fallback for platforms without Annex K bounds-checked APIs.
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,clang-analyzer-valist.Uninitialized)
     (void)vsnprintf(message, sizeof(message), fmt, ap);
 #endif
     va_end(ap);
@@ -77,66 +64,11 @@ static __attribute__((noreturn)) void failf(const char *fmt, ...) {
 static void die(const char *msg) { failf("%s: %s", msg, strerror(errno)); }
 static void diex(const char *msg) { failf("%s", msg); }
 
-static int has_ext(const char *exts, const char *needle) {
-    if (!exts || !needle) {
-        return 0;
-    }
-    const char *ext_ptr = exts;
-    size_t needle_len = strlen(needle);
-    while ((ext_ptr = strstr(ext_ptr, needle))) {
-        // ensure token boundaries
-        if ((ext_ptr == exts || ext_ptr[-1] == ' ') &&
-            (ext_ptr[needle_len] == '\0' || ext_ptr[needle_len] == ' ')) {
-            return 1;
-        }
-        ext_ptr += needle_len;
-    }
-    return 0;
-}
-
 static uint64_t now_ns(void) {
     struct timespec ts;
+    // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ((uint64_t)ts.tv_sec * NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
-}
-
-static void fill_band_vertices(V *verts, uint32_t width, uint32_t height,
-                               float time_s) {
-    for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-        float x0 = ((float)width * (float)b) / (float)BENCH_BANDS;
-        float x1 = ((float)width * (float)(b + 1)) / (float)BENCH_BANDS;
-        float y0 = 0.0F;
-        float y1 = (float)height;
-
-        float pulse =
-            BENCH_PULSE_BASE_F +
-            (BENCH_PULSE_AMP_F * sinf((time_s * BENCH_PULSE_FREQ_F) +
-                                      ((float)b * BENCH_PULSE_PHASE_F)));
-        float rf =
-            pulse * (BENCH_COLOR_R_BASE_F +
-                     BENCH_COLOR_R_SCALE_F * (float)b / (float)BENCH_BANDS);
-        float gf = pulse * BENCH_COLOR_G_SCALE_F;
-        float bf = 1.0F - rf;
-
-        GLubyte red_u8 = (GLubyte)(USCALE_255_F * rf);
-        GLubyte green_u8 = (GLubyte)(USCALE_255_F * gf);
-        GLubyte blue_u8 = (GLubyte)(USCALE_255_F * bf);
-        GLubyte alpha_u8 = 255;
-
-        uint32_t vert_index = b * TRI_VERTS_PER_BAND;
-        verts[vert_index + VERT_IDX_0] =
-            (V){x0, y0, red_u8, green_u8, blue_u8, alpha_u8};
-        verts[vert_index + VERT_IDX_1] =
-            (V){x1, y0, red_u8, green_u8, blue_u8, alpha_u8};
-        verts[vert_index + VERT_IDX_2] =
-            (V){x1, y1, red_u8, green_u8, blue_u8, alpha_u8};
-        verts[vert_index + VERT_IDX_3] =
-            (V){x0, y0, red_u8, green_u8, blue_u8, alpha_u8};
-        verts[vert_index + VERT_IDX_4] =
-            (V){x1, y1, red_u8, green_u8, blue_u8, alpha_u8};
-        verts[vert_index + VERT_IDX_5] =
-            (V){x0, y1, red_u8, green_u8, blue_u8, alpha_u8};
-    }
 }
 
 struct kms_atomic {
@@ -421,10 +353,11 @@ static void page_flip_handler(int fd, unsigned frame, unsigned sec,
     *waiting = 0;
 }
 
-static EGLDisplay
-egl_init_try_gl15_then_gles11(struct gbm_device *gbm, EGLConfig *out_cfg,
-                              EGLContext *out_ctx, EGLSurface *out_surf,
-                              struct gbm_surface *gbm_surf, int *out_is_gl15) {
+static EGLDisplay egl_init_try_gl15_then_gles11(struct gbm_device *gbm,
+                                                EGLConfig *out_cfg,
+                                                EGLContext *out_ctx,
+                                                EGLSurface *out_surf,
+                                                struct gbm_surface *gbm_surf) {
     EGLDisplay dpy = eglGetDisplay((EGLNativeDisplayType)gbm);
     if (dpy == EGL_NO_DISPLAY) {
         die("eglGetDisplay");
@@ -465,15 +398,12 @@ egl_init_try_gl15_then_gles11(struct gbm_device *gbm, EGLConfig *out_cfg,
                     dpy, cfg, (EGLNativeWindowType)gbm_surf, NULL);
                 if (surf != EGL_NO_SURFACE &&
                     eglMakeCurrent(dpy, surf, surf, ctx)) {
-                    // Check version string contains at least "1.5" (or higher
-                    // compatibility)
                     const char *ver = (const char *)glGetString(GL_VERSION);
-                    if (ver) {
+                    if (db_gl_version_text_at_least(ver, 1, 5)) {
                         printf("GL_VERSION (EGL_OPENGL_API): %s\n", ver);
                         *out_cfg = cfg;
                         *out_ctx = ctx;
                         *out_surf = surf;
-                        *out_is_gl15 = 1;
                         return dpy;
                     }
                 }
@@ -524,12 +454,15 @@ egl_init_try_gl15_then_gles11(struct gbm_device *gbm, EGLConfig *out_cfg,
         die("eglMakeCurrent ES1");
     }
 
-    printf("GL_VERSION (EGL_OPENGL_ES_API): %s\n", glGetString(GL_VERSION));
+    const char *es_ver = (const char *)glGetString(GL_VERSION);
+    if (!db_gl_version_text_at_least(es_ver, 1, 1)) {
+        diex("EGL_OPENGL_ES_API reported unsupported GL_VERSION");
+    }
+    printf("GL_VERSION (EGL_OPENGL_ES_API): %s\n", es_ver);
 
     *out_cfg = cfg;
     *out_ctx = ctx;
     *out_surf = surf;
-    *out_is_gl15 = 0;
     return dpy;
 }
 
@@ -561,36 +494,17 @@ int main(int argc, char **argv) {
     EGLConfig cfg;
     EGLContext ctx;
     EGLSurface surf;
-    int is_gl15 = 0;
-    EGLDisplay dpy = egl_init_try_gl15_then_gles11(gbm, &cfg, &ctx, &surf,
-                                                   gbm_surf, &is_gl15);
+    EGLDisplay dpy =
+        egl_init_try_gl15_then_gles11(gbm, &cfg, &ctx, &surf, gbm_surf);
 
     printf("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
-    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
-    int has_vbo_es = has_ext(exts, "GL_OES_vertex_buffer_object");
-    if (!is_gl15) {
-        printf("ES1 extensions include OES VBO? %s\n",
-               has_vbo_es ? "yes" : "no");
-    }
-
-    // Fixed-function 2D
     glViewport(0, 0, (GLint)width, (GLint)height);
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrthof(0, (GLfloat)width, (GLfloat)height, 0, -1, 1);
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    glDisable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    V verts[BENCH_BANDS * TRI_VERTS_PER_BAND];
-    fill_band_vertices(verts, width, height, 0.0F);
-
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_COLOR_ARRAY);
-    glVertexPointer(2, GL_FLOAT, sizeof(V), &verts[0].x);
-    glColorPointer(4, GL_UNSIGNED_BYTE, sizeof(V), &verts[0].r);
+    db_renderer_opengl_gl1_5_gles1_1_init();
+    const char *capability_mode =
+        db_renderer_opengl_gl1_5_gles1_1_capability_mode();
+    const uint32_t work_unit_count =
+        db_renderer_opengl_gl1_5_gles1_1_work_unit_count();
 
     drmEventContext ev = {0};
     ev.version = DRM_EVENT_CONTEXT_VERSION;
@@ -601,7 +515,7 @@ int main(int argc, char **argv) {
     // First render + lock front buffer
     glClearColor(BG_COLOR_R_F, BG_COLOR_G_F, BG_COLOR_B_F, BG_COLOR_A_F);
     glClear(GL_COLOR_BUFFER_BIT);
-    glDrawArrays(GL_TRIANGLES, 0, (GLint)(BENCH_BANDS * TRI_VERTS_PER_BAND));
+    db_renderer_opengl_gl1_5_gles1_1_render_frame(0.0);
     eglSwapBuffers(dpy, surf);
 
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbm_surf);
@@ -655,13 +569,11 @@ int main(int argc, char **argv) {
     uint64_t bench_frames = 0;
     double next_progress_log_due_ms = 0.0;
     while (!db_should_stop()) {
-        float time_s = (float)bench_frames / (float)BENCH_TARGET_FPS_D;
-        fill_band_vertices(verts, width, height, time_s);
+        double time_s = (double)bench_frames / BENCH_TARGET_FPS_D;
 
         glClearColor(BG_COLOR_R_F, BG_COLOR_G_F, BG_COLOR_B_F, BG_COLOR_A_F);
         glClear(GL_COLOR_BUFFER_BIT);
-        glDrawArrays(GL_TRIANGLES, 0,
-                     (GLint)(BENCH_BANDS * TRI_VERTS_PER_BAND));
+        db_renderer_opengl_gl1_5_gles1_1_render_frame(time_s);
         eglSwapBuffers(dpy, surf);
 
         struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm_surf);
@@ -691,6 +603,7 @@ int main(int argc, char **argv) {
             FD_ZERO(&fds);
             FD_SET(kms.fd, &fds);
             if (select(kms.fd + 1, &fds, NULL, NULL, NULL) < 0) {
+                // NOLINTNEXTLINE(misc-include-cleaner)
                 if (errno == EINTR) {
                     continue;
                 }
@@ -708,15 +621,17 @@ int main(int argc, char **argv) {
 
         double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
         db_benchmark_log_periodic("OpenGL", RENDERER_NAME, BACKEND_NAME,
-                                  bench_frames, BENCH_BANDS, bench_ms,
-                                  CAPABILITY_MODE, &next_progress_log_due_ms,
+                                  bench_frames, work_unit_count, bench_ms,
+                                  capability_mode, &next_progress_log_due_ms,
                                   BENCH_LOG_INTERVAL_MS_D);
     }
 
     uint64_t bench_end = now_ns();
     double bench_ms = (double)(bench_end - bench_start) / NS_TO_MS_D;
     db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, bench_frames,
-                           BENCH_BANDS, bench_ms, CAPABILITY_MODE);
+                           work_unit_count, bench_ms, capability_mode);
+
+    db_renderer_opengl_gl1_5_gles1_1_shutdown();
 
     // Cleanup current
     if (cur) {

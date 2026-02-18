@@ -90,6 +90,36 @@ static inline int db_has_gl_extension_token(const char *exts,
     return 0;
 }
 
+static inline int db_parse_gl_version_numbers(const char *version_text,
+                                              int *major_out, int *minor_out) {
+    if ((version_text == NULL) || (major_out == NULL) || (minor_out == NULL)) {
+        return 0;
+    }
+
+    const char *cursor = version_text;
+    while ((*cursor != '\0') && ((*cursor < '0') || (*cursor > '9'))) {
+        cursor++;
+    }
+    if (*cursor == '\0') {
+        return 0;
+    }
+
+    char *parse_end = NULL;
+    const long major_l = strtol(cursor, &parse_end, 10);
+    if ((parse_end == cursor) || (*parse_end != '.')) {
+        return 0;
+    }
+    const char *minor_start = parse_end + 1;
+    const long minor_l = strtol(minor_start, &parse_end, 10);
+    if (parse_end == minor_start) {
+        return 0;
+    }
+
+    *major_out = (int)major_l;
+    *minor_out = (int)minor_l;
+    return 1;
+}
+
 static inline uint32_t db_pattern_work_unit_count(db_pattern_t pattern) {
     if (pattern == DB_PATTERN_SNAKE_GRID) {
         const uint32_t rows = db_snake_grid_rows_effective();
