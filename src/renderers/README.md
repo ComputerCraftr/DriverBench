@@ -12,3 +12,9 @@ Current renderer modules:
     - Vulkan 1.2 multi-GPU renderer logic.
 
 Display entrypoints live in `src/displays/`.
+
+Benchmark modes are shared across renderers:
+
+- `gradient_sweep` (default): 32-row green/gray/green window sweeping downward.
+- `bands`: animated full-height vertical color bands (high flash intensity).
+- `snake_grid`: deterministic S-pattern tile sweep with phased recolor.

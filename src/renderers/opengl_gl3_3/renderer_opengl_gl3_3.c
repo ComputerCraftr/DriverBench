@@ -42,8 +42,9 @@
 #define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE "opengl_shader_vbo_map_range"
 #define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER "opengl_shader_vbo_map_buffer"
 #define DB_CAP_MODE_OPENGL_SHADER_VBO "opengl_shader_vbo"
-#define DB_RENDER_MODE_BANDS 0
-#define DB_RENDER_MODE_SNAKE_GRID 1
+#define DB_RENDER_MODE_GRADIENT_SWEEP ((int)DB_PATTERN_GRADIENT_SWEEP)
+#define DB_RENDER_MODE_BANDS ((int)DB_PATTERN_BANDS)
+#define DB_RENDER_MODE_SNAKE_GRID ((int)DB_PATTERN_SNAKE_GRID)
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
@@ -57,18 +58,23 @@ typedef struct {
     GLint u_snake_cursor;
     GLint u_snake_batch_size;
     GLint u_snake_cols;
+    GLint u_grid_rows;
+    GLint u_gradient_head_row;
+    GLint u_gradient_window_rows;
     GLint u_snake_base_color;
     GLint u_snake_target_color;
     int uniform_snake_clearing_phase_cache;
     int uniform_snake_phase_completed_cache;
     uint32_t uniform_snake_cursor_cache;
     uint32_t uniform_snake_batch_size_cache;
+    uint32_t uniform_gradient_head_row_cache;
     float *vertices;
     uint32_t work_unit_count;
     uint32_t snake_cursor;
     uint32_t snake_batch_size;
     int snake_phase_completed;
     int snake_clearing_phase;
+    uint32_t gradient_head_row;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
     size_t vbo_bytes;
@@ -161,6 +167,7 @@ static int db_init_vertices_for_mode(void) {
     g_state.snake_batch_size = init_state.snake_batch_size;
     g_state.snake_phase_completed = init_state.snake_phase_completed;
     g_state.snake_clearing_phase = init_state.snake_clearing_phase;
+    g_state.gradient_head_row = init_state.gradient_head_row;
     return 1;
 }
 
@@ -217,6 +224,11 @@ void db_renderer_opengl_gl3_3_init(void) {
         glGetUniformLocation(g_state.program, "u_snake_batch_size");
     g_state.u_snake_cols =
         glGetUniformLocation(g_state.program, "u_snake_cols");
+    g_state.u_grid_rows = glGetUniformLocation(g_state.program, "u_grid_rows");
+    g_state.u_gradient_head_row =
+        glGetUniformLocation(g_state.program, "u_gradient_head_row");
+    g_state.u_gradient_window_rows =
+        glGetUniformLocation(g_state.program, "u_gradient_window_rows");
     g_state.u_snake_base_color =
         glGetUniformLocation(g_state.program, "u_snake_base_color");
     g_state.u_snake_target_color =
@@ -225,18 +237,28 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.uniform_snake_phase_completed_cache = -1;
     g_state.uniform_snake_cursor_cache = UINT32_MAX;
     g_state.uniform_snake_batch_size_cache = UINT32_MAX;
+    g_state.uniform_gradient_head_row_cache = UINT32_MAX;
 
     if (g_state.u_render_mode >= 0) {
-        const int render_mode = (g_state.pattern == DB_PATTERN_SNAKE_GRID)
-                                    ? DB_RENDER_MODE_SNAKE_GRID
-                                    : DB_RENDER_MODE_BANDS;
+        int render_mode = DB_RENDER_MODE_BANDS;
+        if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
+            render_mode = DB_RENDER_MODE_GRADIENT_SWEEP;
+        } else if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
+            render_mode = DB_RENDER_MODE_SNAKE_GRID;
+        }
         glUniform1i(g_state.u_render_mode, render_mode);
     }
     glUniform3f(g_state.u_snake_base_color, BENCH_GRID_PHASE0_R,
                 BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B);
     glUniform3f(g_state.u_snake_target_color, BENCH_GRID_PHASE1_R,
                 BENCH_GRID_PHASE1_G, BENCH_GRID_PHASE1_B);
-    glUniform1f(g_state.u_snake_cols, (float)db_snake_grid_cols_effective());
+    glUniform1f(g_state.u_snake_cols, (float)db_grid_cols_effective());
+    glUniform1f(g_state.u_grid_rows, (float)db_grid_rows_effective());
+    glUniform1f(g_state.u_gradient_window_rows,
+                (float)db_gradient_sweep_window_rows_effective());
+    db_set_uniform1f_u32_if_changed(g_state.u_gradient_head_row,
+                                    &g_state.uniform_gradient_head_row_cache,
+                                    g_state.gradient_head_row);
 }
 
 void db_renderer_opengl_gl3_3_render_frame(double time_s) {
@@ -247,7 +269,7 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
             g_state.vertices, g_state.vbo_bytes, g_state.use_persistent_upload,
             g_state.persistent_mapped_ptr, g_state.use_map_range_upload,
             g_state.use_map_buffer_upload);
-    } else {
+    } else if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
         const db_snake_damage_plan_t snake_plan = db_snake_grid_plan_next_step(
             g_state.snake_cursor, 0U, 0U, g_state.snake_clearing_phase,
             g_state.work_unit_count);
@@ -268,6 +290,15 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
         db_set_uniform1f_u32_if_changed(g_state.u_snake_batch_size,
                                         &g_state.uniform_snake_batch_size_cache,
                                         g_state.snake_batch_size);
+    } else {
+        const uint32_t rows = db_grid_rows_effective();
+        if (rows > 0U) {
+            const uint32_t next_head = (g_state.gradient_head_row + 1U) % rows;
+            g_state.gradient_head_row = next_head;
+            db_set_uniform1f_u32_if_changed(
+                g_state.u_gradient_head_row,
+                &g_state.uniform_gradient_head_row_cache, next_head);
+        }
     }
 
     glDrawArrays(GL_TRIANGLES, 0, g_state.draw_vertex_count);

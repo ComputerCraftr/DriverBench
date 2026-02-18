@@ -13,7 +13,7 @@ Choose backend combinations with CMake cache variables:
 Notes:
 
 - `vk_khr_display` is reserved and not implemented yet.
-- `linux_kms_atomic` is Linux-only and currently supports `gl1_5_gles1_1`.
+- `linux_kms_atomic` is Linux-only and supports `gl1_5_gles1_1` and `gl3_3`.
 - Default `auto` values opportunistically build as many valid targets as your platform/dependencies allow.
 
 ## Build Defaults
@@ -40,6 +40,7 @@ Build outputs use versioned, display-aware target names only:
 - `driverbench_glfw_window_opengl_gl1_5_gles1_1`
 - `driverbench_glfw_window_opengl_gl3_3`
 - `driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1`
+- `driverbench_linux_kms_atomic_opengl_gl3_3`
 - `driverbench_glfw_window_vulkan_1_2_multi_gpu`
 
 ## Runtime Options
@@ -49,7 +50,11 @@ Build outputs use versioned, display-aware target names only:
 - `DRIVERBENCH_FPS_CAP=<number>|0|off|uncapped`
   - Caps render loop rate for GLFW backends when set to a positive FPS value.
   - `0`, `off`, `false`, `uncapped`, or unset keeps rendering uncapped.
-- `DRIVERBENCH_BENCHMARK_MODE=bands|snake_grid`
+- `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid`
+  - Default is `gradient_sweep` (mode index `0`).
+  - `gradient_sweep` renders a full-grid workload with a moving `32`-row
+    vertical window that cycles green -> gray -> green as it sweeps downward.
+    It is intended as the safer default visual mode.
   - `bands` is an animated color-changing vertical-band workload.
     Warning: this mode can produce intense rapid flashing, especially with
     `DRIVERBENCH_VSYNC=off` and high FPS.
