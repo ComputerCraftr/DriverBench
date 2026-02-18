@@ -1,4 +1,4 @@
-#include "renderer_opengl_capabilities.h"
+#include "renderer_opengl_common.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -288,4 +288,18 @@ void db_gl3_probe_upload_capabilities(size_t bytes, const float *initial_vertice
         db_gl_probe_map_range_upload(bytes, initial_vertices)) {
         out->use_map_range_upload = 1;
     }
+}
+
+void db_gl_upload_mapped_or_subdata(const void *source, size_t bytes,
+                                    void *mapped_ptr) {
+    if (mapped_ptr != NULL) {
+        // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+        memcpy(mapped_ptr, source, bytes);
+        if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
+            glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, source);
+        }
+        return;
+    }
+
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, source);
 }

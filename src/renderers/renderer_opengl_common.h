@@ -1,5 +1,5 @@
-#ifndef RENDERER_OPENGL_CAPABILITIES_H
-#define RENDERER_OPENGL_CAPABILITIES_H
+#ifndef RENDERER_OPENGL_COMMON_H
+#define RENDERER_OPENGL_COMMON_H
 
 #include <stddef.h>
 
@@ -21,5 +21,8 @@ void db_gl15_probe_upload_capabilities(size_t bytes, const float *initial_vertic
 
 void db_gl3_probe_upload_capabilities(size_t bytes, const float *initial_vertices,
                                       db_gl3_upload_probe_result_t *out);
+
+void db_gl_upload_mapped_or_subdata(const void *source, size_t bytes,
+                                    void *mapped_ptr);
 
 #endif

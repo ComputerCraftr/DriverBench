@@ -6,8 +6,8 @@
 #include <string.h>
 
 #include "../../core/db_core.h"
-#include "../renderer_opengl_capabilities.h"
 #include "../renderer_benchmark_common.h"
+#include "../renderer_opengl_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
@@ -349,19 +349,8 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                 GL_ARRAY_BUFFER, 0, (GLsizeiptr)g_state.vbo_bytes,
                 GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
                     GL_MAP_UNSYNCHRONIZED_BIT);
-            if (dst != NULL) {
-                // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-                memcpy(dst, g_state.vertices, g_state.vbo_bytes);
-                if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
-                    glBufferSubData(GL_ARRAY_BUFFER, 0,
-                                    (GLsizeiptr)g_state.vbo_bytes,
-                                    g_state.vertices);
-                }
-            } else {
-                glBufferSubData(GL_ARRAY_BUFFER, 0,
-                                (GLsizeiptr)g_state.vbo_bytes,
-                                g_state.vertices);
-            }
+            db_gl_upload_mapped_or_subdata(g_state.vertices, g_state.vbo_bytes,
+                                           dst);
         } else {
             glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)g_state.vbo_bytes,
                             g_state.vertices);

@@ -5,8 +5,8 @@
 #include <stdlib.h>
 
 #include "../../core/db_core.h"
-#include "../renderer_opengl_capabilities.h"
 #include "../renderer_benchmark_common.h"
+#include "../renderer_opengl_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
@@ -187,7 +187,6 @@ static void db_render_snake_grid_step(void) {
         float *unit = &g_state.vertices[tile_float_offset];
         db_set_rect_unit_rgb(unit, DB_BAND_VERT_FLOATS, DB_BAND_POS_FLOATS,
                              color_r, color_g, color_b);
-
     }
 
     const int phase_completed =
@@ -225,8 +224,8 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     }
 
     db_gl15_upload_probe_result_t probe_result = {0};
-    const size_t vbo_bytes = (size_t)g_state.draw_vertex_count *
-                             DB_BAND_VERT_FLOATS * sizeof(float);
+    const size_t vbo_bytes =
+        (size_t)g_state.draw_vertex_count * DB_BAND_VERT_FLOATS * sizeof(float);
 
     g_state.use_vbo = db_gl15_has_vbo_support();
     g_state.use_map_range_upload = 0;
@@ -273,43 +272,26 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
         const size_t vbo_bytes = (size_t)g_state.draw_vertex_count *
                                  DB_BAND_VERT_FLOATS * sizeof(float);
+        void *mapped_dst = NULL;
+        int attempted_map_upload = 0;
         if (g_state.use_map_range_upload) {
 #if defined(GL_MAP_INVALIDATE_BUFFER_BIT) && defined(GL_MAP_UNSYNCHRONIZED_BIT)
-            void *dst = glMapBufferRange(
+            mapped_dst = glMapBufferRange(
                 GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
                 GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
                     GL_MAP_UNSYNCHRONIZED_BIT);
-            if (dst != NULL) {
-                // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-                memcpy(dst, g_state.vertices, vbo_bytes);
-                if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
-                    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
-                                    g_state.vertices);
-                }
-            } else {
-                glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
-                                g_state.vertices);
-            }
-#else
-            glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
-                            g_state.vertices);
+            attempted_map_upload = 1;
 #endif
-        } else if (g_state.use_map_buffer_upload) {
-            void *dst = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-            if (dst != NULL) {
-                // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-                memcpy(dst, g_state.vertices, vbo_bytes);
-                if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
-                    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
-                                    g_state.vertices);
-                }
-            } else {
-                glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
-                                g_state.vertices);
-            }
+        }
+        if (!attempted_map_upload && g_state.use_map_buffer_upload) {
+            mapped_dst = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+            attempted_map_upload = 1;
+        }
+        if (attempted_map_upload) {
+            db_gl_upload_mapped_or_subdata(g_state.vertices, vbo_bytes,
+                                           mapped_dst);
         } else {
-            glBufferSubData(GL_ARRAY_BUFFER, 0,
-                            (GLsizeiptr)vbo_bytes,
+            glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)vbo_bytes,
                             g_state.vertices);
         }
         glVertexPointer(2, GL_FLOAT, STRIDE_BYTES,
