@@ -3,6 +3,9 @@
 #include <GLFW/glfw3.h>
 
 #include <errno.h>
+#ifndef __APPLE__
+#include <sys/errno.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>

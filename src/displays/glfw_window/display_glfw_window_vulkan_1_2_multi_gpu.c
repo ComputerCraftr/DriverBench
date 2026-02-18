@@ -1,6 +1,8 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
+#include <stdint.h>
+
 #include "../../core/db_core.h"
 #include "../../renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.h"
 #include "../bench_config.h"
@@ -9,6 +11,8 @@
 #define BACKEND_NAME "display_glfw_window_vulkan_1_2_multi_gpu"
 #define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
 #define REMOTE_DISPLAY_OVERRIDE_ENV "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
+
+// NOLINTBEGIN(misc-include-cleaner)
 
 static const char *const *
 db_glfw_vk_required_instance_extensions(uint32_t *count, void *user_data) {
@@ -63,3 +67,4 @@ int main(void) {
     db_glfw_destroy_window(window);
     return 0;
 }
+// NOLINTEND(misc-include-cleaner)

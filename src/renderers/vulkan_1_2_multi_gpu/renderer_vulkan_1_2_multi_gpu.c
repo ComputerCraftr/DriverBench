@@ -12,6 +12,8 @@
 #error "Vulkan SPIR-V shader paths must be provided by the build system."
 #endif
 
+// NOLINTBEGIN(misc-include-cleaner)
+
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
 #define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
 #define NS_PER_SECOND_U64 1000000000ULL
@@ -1558,3 +1560,4 @@ const char *db_renderer_vulkan_1_2_multi_gpu_capability_mode(void) {
 uint32_t db_renderer_vulkan_1_2_multi_gpu_work_unit_count(void) {
     return g_state.work_unit_count;
 }
+// NOLINTEND(misc-include-cleaner)

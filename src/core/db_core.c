@@ -25,6 +25,7 @@ void db_failf(const char *backend, const char *fmt, ...) {
     fputs(backend, stderr);
     fputs("][error] ", stderr);
     va_start(ap, fmt);
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
     (void)vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
@@ -37,6 +38,7 @@ void db_infof(const char *backend, const char *fmt, ...) {
     fputs(backend, stdout);
     fputs("][info] ", stdout);
     va_start(ap, fmt);
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
     (void)vfprintf(stdout, fmt, ap);
     va_end(ap);
     fputc('\n', stdout);
