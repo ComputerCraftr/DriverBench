@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "../../core/db_core.h"
+#include "../../displays/bench_config.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_opengl_common.h"
 
@@ -139,104 +140,21 @@ static GLuint build_program_from_files(const char *vert_shader_path,
     return program;
 }
 
-static int db_init_band_vertices(void) {
-    const size_t vertex_count =
-        (size_t)BENCH_BANDS * DB_BAND_TRI_VERTS_PER_BAND;
-    const size_t float_count = vertex_count * DB_BAND_VERT_FLOATS;
-
-    g_state.vertices = (float *)calloc(float_count, sizeof(float));
-    if (g_state.vertices == NULL) {
-        return 0;
-    }
-
-    g_state.pattern = DB_PATTERN_BANDS;
-    g_state.work_unit_count = BENCH_BANDS;
-    g_state.draw_vertex_count = (GLsizei)vertex_count;
-    g_state.capability_mode = CAPABILITY_MODE_SHADER_VBO;
-    return 1;
-}
-
-static int db_init_snake_grid_vertices(void) {
-    const uint64_t tile_count_u64 =
-        (uint64_t)db_pattern_work_unit_count(DB_PATTERN_SNAKE_GRID);
-    if (tile_count_u64 == 0U || tile_count_u64 > UINT32_MAX) {
-        return 0;
-    }
-
-    const uint64_t vertex_count_u64 =
-        tile_count_u64 * DB_BAND_TRI_VERTS_PER_BAND;
-    if (vertex_count_u64 > (uint64_t)INT32_MAX) {
-        return 0;
-    }
-
-    const uint64_t float_count_u64 = vertex_count_u64 * DB_BAND_VERT_FLOATS;
-    if (float_count_u64 > ((uint64_t)SIZE_MAX / sizeof(float))) {
-        return 0;
-    }
-
-    const size_t float_count = (size_t)float_count_u64;
-    const uint32_t tile_count = (uint32_t)tile_count_u64;
-
-    g_state.vertices = (float *)calloc(float_count, sizeof(float));
-    if (g_state.vertices == NULL) {
-        return 0;
-    }
-
-    for (uint32_t tile_index = 0; tile_index < tile_count; tile_index++) {
-        float x0 = 0.0F;
-        float y0 = 0.0F;
-        float x1 = 0.0F;
-        float y1 = 0.0F;
-        db_snake_grid_tile_bounds_ndc(tile_index, &x0, &y0, &x1, &y1);
-
-        const size_t base = (size_t)tile_index * DB_BAND_TRI_VERTS_PER_BAND *
-                            DB_BAND_VERT_FLOATS;
-        float *unit = &g_state.vertices[base];
-        db_fill_rect_unit_pos(unit, x0, y0, x1, y1, DB_BAND_VERT_FLOATS);
-        db_set_rect_unit_rgb(unit, DB_BAND_VERT_FLOATS, DB_BAND_POS_FLOATS,
-                             BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
-                             BENCH_GRID_PHASE0_B);
-    }
-
-    g_state.pattern = DB_PATTERN_SNAKE_GRID;
-    g_state.work_unit_count = tile_count;
-    g_state.draw_vertex_count = (GLsizei)vertex_count_u64;
-    g_state.snake_cursor = 0U;
-    g_state.snake_batch_size = 0U;
-    g_state.snake_phase_completed = 0;
-    g_state.snake_clearing_phase = 0;
-    g_state.capability_mode = CAPABILITY_MODE_SHADER_VBO;
-    return 1;
-}
-
 static int db_init_vertices_for_mode(void) {
-    db_pattern_t requested = DB_PATTERN_BANDS;
-    if (!db_parse_benchmark_pattern_from_env(&requested)) {
-        const char *mode = getenv(DB_BENCHMARK_MODE_ENV);
-        db_infof(BACKEND_NAME, "Invalid %s='%s'; using '%s'",
-                 DB_BENCHMARK_MODE_ENV, (mode != NULL) ? mode : "",
-                 DB_BENCHMARK_MODE_BANDS);
-    }
-    if ((requested == DB_PATTERN_SNAKE_GRID) && db_init_snake_grid_vertices()) {
-        db_infof(BACKEND_NAME,
-                 "benchmark mode: %s (%ux%u tiles, deterministic snake sweep)",
-                 DB_BENCHMARK_MODE_SNAKE_GRID, db_snake_grid_rows_effective(),
-                 db_snake_grid_cols_effective());
-        return 1;
-    }
-
-    if (requested == DB_PATTERN_SNAKE_GRID) {
-        db_infof(
-            BACKEND_NAME,
-            "snake_grid initialization failed; falling back to bands mode");
-    }
-
-    if (!db_init_band_vertices()) {
+    db_pattern_vertex_init_t init_state = {0};
+    if (!db_init_vertices_for_mode_common(BACKEND_NAME, &init_state)) {
         return 0;
     }
 
-    db_infof(BACKEND_NAME, "benchmark mode: %s (%u vertical bands)",
-             DB_BENCHMARK_MODE_BANDS, BENCH_BANDS);
+    g_state.vertices = init_state.vertices;
+    g_state.pattern = init_state.pattern;
+    g_state.work_unit_count = init_state.work_unit_count;
+    g_state.draw_vertex_count = (GLsizei)init_state.draw_vertex_count;
+    g_state.snake_cursor = init_state.snake_cursor;
+    g_state.snake_batch_size = init_state.snake_batch_size;
+    g_state.snake_phase_completed = init_state.snake_phase_completed;
+    g_state.snake_clearing_phase = init_state.snake_clearing_phase;
+    g_state.capability_mode = CAPABILITY_MODE_SHADER_VBO;
     return 1;
 }
 

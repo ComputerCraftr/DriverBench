@@ -16,10 +16,12 @@ typedef struct {
 } db_gl15_upload_probe_result_t;
 
 int db_gl15_has_vbo_support(void);
-void db_gl15_probe_upload_capabilities(size_t bytes, const float *initial_vertices,
+void db_gl15_probe_upload_capabilities(size_t bytes,
+                                       const float *initial_vertices,
                                        db_gl15_upload_probe_result_t *out);
 
-void db_gl3_probe_upload_capabilities(size_t bytes, const float *initial_vertices,
+void db_gl3_probe_upload_capabilities(size_t bytes,
+                                      const float *initial_vertices,
                                       db_gl3_upload_probe_result_t *out);
 
 void db_gl_upload_mapped_or_subdata(const void *source, size_t bytes,

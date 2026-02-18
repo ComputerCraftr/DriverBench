@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../core/db_core.h"
 #include "../displays/bench_config.h"
 
 #define DB_BAND_TRI_VERTS_PER_BAND 6U
@@ -35,6 +36,19 @@ typedef struct {
     uint32_t next_prev_count;
     int next_clearing_phase;
 } db_snake_damage_plan_t;
+
+typedef struct {
+    float *vertices;
+    db_pattern_t pattern;
+    uint32_t work_unit_count;
+    uint32_t draw_vertex_count;
+    uint32_t snake_cursor;
+    uint32_t snake_prev_start;
+    uint32_t snake_prev_count;
+    uint32_t snake_batch_size;
+    int snake_phase_completed;
+    int snake_clearing_phase;
+} db_pattern_vertex_init_t;
 
 static inline uint32_t db_snake_grid_rows_effective(void) {
     return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
@@ -249,6 +263,108 @@ static inline void db_snake_grid_window_color_rgb(uint32_t window_index,
     *out_r = from_r + ((to_r - from_r) * blend_factor);
     *out_g = from_g + ((to_g - from_g) * blend_factor);
     *out_b = from_b + ((to_b - from_b) * blend_factor);
+}
+
+static inline int
+db_init_band_vertices_common(db_pattern_vertex_init_t *out_state) {
+    const size_t vertex_count =
+        (size_t)BENCH_BANDS * DB_BAND_TRI_VERTS_PER_BAND;
+    const size_t float_count = vertex_count * DB_BAND_VERT_FLOATS;
+
+    float *vertices = (float *)calloc(float_count, sizeof(float));
+    if (vertices == NULL) {
+        return 0;
+    }
+
+    *out_state = (db_pattern_vertex_init_t){0};
+    out_state->vertices = vertices;
+    out_state->pattern = DB_PATTERN_BANDS;
+    out_state->work_unit_count = BENCH_BANDS;
+    out_state->draw_vertex_count = (uint32_t)vertex_count;
+    return 1;
+}
+
+static inline int
+db_init_snake_grid_vertices_common(db_pattern_vertex_init_t *out_state) {
+    const uint64_t tile_count_u64 =
+        (uint64_t)db_pattern_work_unit_count(DB_PATTERN_SNAKE_GRID);
+    if ((tile_count_u64 == 0U) || (tile_count_u64 > UINT32_MAX)) {
+        return 0;
+    }
+
+    const uint64_t vertex_count_u64 =
+        tile_count_u64 * DB_BAND_TRI_VERTS_PER_BAND;
+    if (vertex_count_u64 > (uint64_t)INT32_MAX) {
+        return 0;
+    }
+
+    const uint64_t float_count_u64 = vertex_count_u64 * DB_BAND_VERT_FLOATS;
+    if (float_count_u64 > ((uint64_t)SIZE_MAX / sizeof(float))) {
+        return 0;
+    }
+
+    const size_t float_count = (size_t)float_count_u64;
+    const uint32_t tile_count = (uint32_t)tile_count_u64;
+    float *vertices = (float *)calloc(float_count, sizeof(float));
+    if (vertices == NULL) {
+        return 0;
+    }
+
+    for (uint32_t tile_index = 0; tile_index < tile_count; tile_index++) {
+        float x0 = 0.0F;
+        float y0 = 0.0F;
+        float x1 = 0.0F;
+        float y1 = 0.0F;
+        db_snake_grid_tile_bounds_ndc(tile_index, &x0, &y0, &x1, &y1);
+        const size_t base = (size_t)tile_index * DB_BAND_TRI_VERTS_PER_BAND *
+                            DB_BAND_VERT_FLOATS;
+        float *unit = &vertices[base];
+        db_fill_rect_unit_pos(unit, x0, y0, x1, y1, DB_BAND_VERT_FLOATS);
+        db_set_rect_unit_rgb(unit, DB_BAND_VERT_FLOATS, DB_BAND_POS_FLOATS,
+                             BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                             BENCH_GRID_PHASE0_B);
+    }
+
+    *out_state = (db_pattern_vertex_init_t){0};
+    out_state->vertices = vertices;
+    out_state->pattern = DB_PATTERN_SNAKE_GRID;
+    out_state->work_unit_count = tile_count;
+    out_state->draw_vertex_count = (uint32_t)vertex_count_u64;
+    return 1;
+}
+
+static inline int
+db_init_vertices_for_mode_common(const char *backend_name,
+                                 db_pattern_vertex_init_t *out_state) {
+    db_pattern_t requested = DB_PATTERN_BANDS;
+    if (!db_parse_benchmark_pattern_from_env(&requested)) {
+        const char *mode = getenv(DB_BENCHMARK_MODE_ENV);
+        db_infof(backend_name, "Invalid %s='%s'; using '%s'",
+                 DB_BENCHMARK_MODE_ENV, (mode != NULL) ? mode : "",
+                 DB_BENCHMARK_MODE_BANDS);
+    }
+    if ((requested == DB_PATTERN_SNAKE_GRID) &&
+        db_init_snake_grid_vertices_common(out_state)) {
+        db_infof(backend_name,
+                 "benchmark mode: %s (%ux%u tiles, deterministic snake sweep)",
+                 DB_BENCHMARK_MODE_SNAKE_GRID, db_snake_grid_rows_effective(),
+                 db_snake_grid_cols_effective());
+        return 1;
+    }
+
+    if (requested == DB_PATTERN_SNAKE_GRID) {
+        db_infof(
+            backend_name,
+            "snake_grid initialization failed; falling back to bands mode");
+    }
+
+    if (!db_init_band_vertices_common(out_state)) {
+        return 0;
+    }
+
+    db_infof(backend_name, "benchmark mode: %s (%u vertical bands)",
+             DB_BENCHMARK_MODE_BANDS, BENCH_BANDS);
+    return 1;
 }
 
 static inline void db_fill_band_vertices_pos_rgb(float *out_vertices,

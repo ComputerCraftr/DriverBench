@@ -1,7 +1,7 @@
 #ifndef DRIVERBENCH_DISPLAY_GLFW_WINDOW_COMMON_H
 #define DRIVERBENCH_DISPLAY_GLFW_WINDOW_COMMON_H
 
-#include <GLFW/glfw3.h>
+typedef struct GLFWwindow GLFWwindow;
 
 GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
                                          int width_px, int height_px);

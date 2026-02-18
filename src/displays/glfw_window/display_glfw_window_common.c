@@ -1,4 +1,5 @@
 #define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 #include "display_glfw_window_common.h"
 
 #include <stdlib.h>

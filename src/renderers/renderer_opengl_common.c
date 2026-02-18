@@ -64,7 +64,8 @@ static int db_gl_version_at_least(int req_major, int req_minor) {
     if (!db_gl_parse_version(&major, &minor)) {
         return 0;
     }
-    return (major > req_major) || ((major == req_major) && (minor >= req_minor));
+    return (major > req_major) ||
+           ((major == req_major) && (minor >= req_minor));
 }
 
 static int db_gl_supports_map_buffer_range(const char *exts) {
@@ -260,7 +261,8 @@ void db_gl15_probe_upload_capabilities(size_t bytes,
     }
 }
 
-void db_gl3_probe_upload_capabilities(size_t bytes, const float *initial_vertices,
+void db_gl3_probe_upload_capabilities(size_t bytes,
+                                      const float *initial_vertices,
                                       db_gl3_upload_probe_result_t *out) {
     if (out == NULL) {
         db_failf("renderer_opengl_gl3_3",
