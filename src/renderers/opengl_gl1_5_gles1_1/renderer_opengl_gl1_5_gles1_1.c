@@ -286,7 +286,14 @@ static void db_upload_vbo_source(const float *source, size_t total_bytes,
         db_gl_upload_ranges(source, total_bytes, 0, NULL,
                             g_state.use_map_range_upload,
                             g_state.use_map_buffer_upload, ranges, range_count);
-    } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
+    } else if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
+               (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
+        if (gradient_row_count > DB_MAX_GRADIENT_UPLOAD_RANGES) {
+            db_gl_upload_buffer(source, total_bytes, 0, NULL,
+                                g_state.use_map_range_upload,
+                                g_state.use_map_buffer_upload);
+            return;
+        }
         db_gl_upload_range_t ranges[DB_MAX_GRADIENT_UPLOAD_RANGES];
         size_t range_count = 0U;
         const size_t row_bytes = (size_t)db_grid_cols_effective() * tile_bytes;
@@ -333,6 +340,10 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         db_gradient_sweep_set_rows_color(g_state.vertices,
                                          g_state.gradient_head_row, 0U,
                                          db_grid_rows_effective());
+    } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
+        db_gradient_fill_set_rows_color(
+            g_state.vertices, g_state.gradient_head_row,
+            g_state.snake_clearing_phase, 0U, db_grid_rows_effective());
     }
     if (g_state.is_es_context != 0) {
         db_update_es_color_array_full();
@@ -391,7 +402,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
             g_state.snake_prev_count, g_state.snake_clearing_phase,
             g_state.work_unit_count);
         db_render_snake_grid_step(&snake_plan);
-    } else {
+    } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
         const uint32_t rows = db_grid_rows_effective();
         const uint32_t window_rows = db_gradient_sweep_window_rows_effective();
         if (rows > 0U) {
@@ -404,6 +415,44 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                                              gradient_row_start,
                                              gradient_row_count);
             g_state.gradient_head_row = next_head;
+            if (g_state.is_es_context != 0) {
+                for (uint32_t i = 0U; i < gradient_row_count; i++) {
+                    const uint32_t row = (gradient_row_start + i) % rows;
+                    const uint32_t cols = db_grid_cols_effective();
+                    for (uint32_t col = 0U; col < cols; col++) {
+                        db_update_es_color_array_tile((row * cols) + col);
+                    }
+                }
+            }
+        }
+    } else {
+        const uint32_t rows = db_grid_rows_effective();
+        if (rows > 0U) {
+            const int prev_phase = g_state.snake_clearing_phase;
+            uint32_t next_head = g_state.gradient_head_row + 1U;
+            int next_phase = prev_phase;
+            if (next_head >= rows) {
+                next_head = 0U;
+                next_phase = !next_phase;
+            }
+            g_state.gradient_head_row = next_head;
+            g_state.snake_clearing_phase = next_phase;
+            if ((next_head == 0U) && (next_phase != prev_phase)) {
+                gradient_row_start = 0U;
+                gradient_row_count = rows;
+            } else {
+                const uint32_t window_rows =
+                    db_gradient_fill_window_rows_effective();
+                uint32_t dirty_span = window_rows + 1U;
+                if (dirty_span > rows) {
+                    dirty_span = rows;
+                }
+                gradient_row_count = dirty_span;
+                gradient_row_start = (next_head + rows - dirty_span) % rows;
+            }
+            db_gradient_fill_set_rows_color(g_state.vertices, next_head,
+                                            next_phase, gradient_row_start,
+                                            gradient_row_count);
             if (g_state.is_es_context != 0) {
                 for (uint32_t i = 0U; i < gradient_row_count; i++) {
                     const uint32_t row = (gradient_row_start + i) % rows;

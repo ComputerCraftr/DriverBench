@@ -18,3 +18,4 @@ Benchmark modes are shared across renderers:
 - `gradient_sweep` (default): 32-row green/gray/green window sweeping downward.
 - `bands`: animated full-height vertical color bands (high flash intensity).
 - `snake_grid`: deterministic S-pattern tile sweep with phased recolor.
+- `gradient_fill`: top-down gray->green conversion sweep, then restart.

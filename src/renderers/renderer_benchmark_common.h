@@ -20,12 +20,15 @@
 #define DB_BENCHMARK_MODE_BANDS "bands"
 #define DB_BENCHMARK_MODE_SNAKE_GRID "snake_grid"
 #define DB_BENCHMARK_MODE_GRADIENT_SWEEP "gradient_sweep"
+#define DB_BENCHMARK_MODE_GRADIENT_FILL "gradient_fill"
 #define DB_GRADIENT_SWEEP_WINDOW_ROWS 32U
+#define DB_GRADIENT_FILL_WINDOW_ROWS 32U
 
 typedef enum {
     DB_PATTERN_GRADIENT_SWEEP = 0,
     DB_PATTERN_BANDS = 1,
     DB_PATTERN_SNAKE_GRID = 2,
+    DB_PATTERN_GRADIENT_FILL = 3,
 } db_pattern_t;
 
 typedef struct {
@@ -79,6 +82,10 @@ db_parse_benchmark_pattern_from_env(db_pattern_t *out_pattern) {
         *out_pattern = DB_PATTERN_SNAKE_GRID;
         return 1;
     }
+    if (strcmp(mode, DB_BENCHMARK_MODE_GRADIENT_FILL) == 0) {
+        *out_pattern = DB_PATTERN_GRADIENT_FILL;
+        return 1;
+    }
     *out_pattern = DB_PATTERN_GRADIENT_SWEEP;
     return 0;
 }
@@ -91,6 +98,8 @@ static inline const char *db_pattern_mode_name(db_pattern_t pattern) {
         return DB_BENCHMARK_MODE_BANDS;
     case DB_PATTERN_SNAKE_GRID:
         return DB_BENCHMARK_MODE_SNAKE_GRID;
+    case DB_PATTERN_GRADIENT_FILL:
+        return DB_BENCHMARK_MODE_GRADIENT_FILL;
     default:
         return "unknown";
     }
@@ -98,7 +107,8 @@ static inline const char *db_pattern_mode_name(db_pattern_t pattern) {
 
 static inline uint32_t db_pattern_work_unit_count(db_pattern_t pattern) {
     if ((pattern == DB_PATTERN_SNAKE_GRID) ||
-        (pattern == DB_PATTERN_GRADIENT_SWEEP)) {
+        (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
+        (pattern == DB_PATTERN_GRADIENT_FILL)) {
         const uint32_t rows = db_grid_rows_effective();
         const uint32_t cols = db_grid_cols_effective();
         const uint64_t count = (uint64_t)rows * cols;
@@ -357,6 +367,106 @@ static inline void db_gradient_sweep_set_rows_color(float *vertices,
     }
 }
 
+static inline uint32_t db_gradient_fill_window_rows_effective(void) {
+    const uint32_t rows = db_grid_rows_effective();
+    if (rows == 0U) {
+        return 1U;
+    }
+    return (rows < DB_GRADIENT_FILL_WINDOW_ROWS) ? rows
+                                                 : DB_GRADIENT_FILL_WINDOW_ROWS;
+}
+
+static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
+                                                  uint32_t head_row,
+                                                  int clearing_phase,
+                                                  float *out_r, float *out_g,
+                                                  float *out_b) {
+    const uint32_t rows = db_grid_rows_effective();
+    const uint32_t window_rows = db_gradient_fill_window_rows_effective();
+    if ((rows == 0U) || (window_rows == 0U)) {
+        *out_r = BENCH_GRID_PHASE0_R;
+        *out_g = BENCH_GRID_PHASE0_G;
+        *out_b = BENCH_GRID_PHASE0_B;
+        return;
+    }
+
+    const uint32_t head = head_row % rows;
+    const uint32_t row = row_index % rows;
+    const float source_r =
+        (clearing_phase != 0) ? BENCH_GRID_PHASE1_R : BENCH_GRID_PHASE0_R;
+    const float source_g =
+        (clearing_phase != 0) ? BENCH_GRID_PHASE1_G : BENCH_GRID_PHASE0_G;
+    const float source_b =
+        (clearing_phase != 0) ? BENCH_GRID_PHASE1_B : BENCH_GRID_PHASE0_B;
+    const float target_r =
+        (clearing_phase != 0) ? BENCH_GRID_PHASE0_R : BENCH_GRID_PHASE1_R;
+    const float target_g =
+        (clearing_phase != 0) ? BENCH_GRID_PHASE0_G : BENCH_GRID_PHASE1_G;
+    const float target_b =
+        (clearing_phase != 0) ? BENCH_GRID_PHASE0_B : BENCH_GRID_PHASE1_B;
+    if (row >= head) {
+        *out_r = source_r;
+        *out_g = source_g;
+        *out_b = source_b;
+        return;
+    }
+
+    const uint32_t delta = head - row;
+    if (delta >= window_rows) {
+        *out_r = target_r;
+        *out_g = target_g;
+        *out_b = target_b;
+        return;
+    }
+
+    const float blend = (float)delta / (float)window_rows;
+    *out_r = source_r + ((target_r - source_r) * blend);
+    *out_g = source_g + ((target_g - source_g) * blend);
+    *out_b = source_b + ((target_b - source_b) * blend);
+}
+
+static inline void db_gradient_fill_set_row_color(float *vertices,
+                                                  uint32_t row_index,
+                                                  uint32_t head_row,
+                                                  int clearing_phase) {
+    const uint32_t cols = db_grid_cols_effective();
+    const uint32_t rows = db_grid_rows_effective();
+    if ((vertices == NULL) || (cols == 0U) || (rows == 0U)) {
+        return;
+    }
+
+    float color_r = 0.0F;
+    float color_g = 0.0F;
+    float color_b = 0.0F;
+    db_gradient_fill_row_color_rgb(row_index % rows, head_row, clearing_phase,
+                                   &color_r, &color_g, &color_b);
+
+    const uint32_t row = row_index % rows;
+    const uint32_t first_tile = row * cols;
+    for (uint32_t col = 0U; col < cols; col++) {
+        const size_t base = (size_t)(first_tile + col) * DB_RECT_VERTEX_COUNT *
+                            DB_VERTEX_FLOAT_STRIDE;
+        db_set_rect_unit_rgb(&vertices[base], DB_VERTEX_FLOAT_STRIDE,
+                             DB_VERTEX_POSITION_FLOAT_COUNT, color_r, color_g,
+                             color_b);
+    }
+}
+
+static inline void db_gradient_fill_set_rows_color(float *vertices,
+                                                   uint32_t head_row,
+                                                   int clearing_phase,
+                                                   uint32_t row_start,
+                                                   uint32_t row_count) {
+    const uint32_t rows = db_grid_rows_effective();
+    if ((vertices == NULL) || (rows == 0U) || (row_count == 0U)) {
+        return;
+    }
+    for (uint32_t i = 0U; i < row_count; i++) {
+        const uint32_t row = (row_start + i) % rows;
+        db_gradient_fill_set_row_color(vertices, row, head_row, clearing_phase);
+    }
+}
+
 static inline int
 db_init_band_vertices_common(db_pattern_vertex_init_t *out_state) {
     const size_t vertex_count = (size_t)BENCH_BANDS * DB_RECT_VERTEX_COUNT;
@@ -430,13 +540,14 @@ db_init_vertices_for_mode_common(const char *backend_name,
     db_pattern_t requested = DB_PATTERN_GRADIENT_SWEEP;
     if (!db_parse_benchmark_pattern_from_env(&requested)) {
         const char *mode = getenv(DB_BENCHMARK_MODE_ENV);
-        db_failf(backend_name, "Invalid %s='%s' (expected: %s|%s|%s)",
+        db_failf(backend_name, "Invalid %s='%s' (expected: %s|%s|%s|%s)",
                  DB_BENCHMARK_MODE_ENV, (mode != NULL) ? mode : "",
                  DB_BENCHMARK_MODE_GRADIENT_SWEEP, DB_BENCHMARK_MODE_BANDS,
-                 DB_BENCHMARK_MODE_SNAKE_GRID);
+                 DB_BENCHMARK_MODE_SNAKE_GRID, DB_BENCHMARK_MODE_GRADIENT_FILL);
     }
     if ((requested == DB_PATTERN_SNAKE_GRID) ||
-        (requested == DB_PATTERN_GRADIENT_SWEEP)) {
+        (requested == DB_PATTERN_GRADIENT_SWEEP) ||
+        (requested == DB_PATTERN_GRADIENT_FILL)) {
         if (!db_init_grid_vertices_common(out_state)) {
             db_failf(backend_name, "benchmark mode '%s' initialization failed",
                      db_pattern_mode_name(requested));
@@ -449,6 +560,13 @@ db_init_vertices_for_mode_common(const char *backend_name,
                      DB_BENCHMARK_MODE_GRADIENT_SWEEP,
                      db_gradient_sweep_window_rows_effective(),
                      db_grid_rows_effective(), db_grid_cols_effective());
+        } else if (requested == DB_PATTERN_GRADIENT_FILL) {
+            db_infof(backend_name,
+                     "benchmark mode: %s (top-down gray->green sweep over "
+                     "%ux%u tiles, %u-row transition)",
+                     DB_BENCHMARK_MODE_GRADIENT_FILL, db_grid_rows_effective(),
+                     db_grid_cols_effective(),
+                     db_gradient_fill_window_rows_effective());
         } else {
             db_infof(
                 backend_name,

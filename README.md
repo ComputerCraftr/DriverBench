@@ -50,7 +50,7 @@ Build outputs use versioned, display-aware target names only:
 - `DRIVERBENCH_FPS_CAP=<number>|0|off|uncapped`
   - Caps render loop rate for GLFW backends when set to a positive FPS value.
   - `0`, `off`, `false`, `uncapped`, or unset keeps rendering uncapped.
-- `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid`
+- `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid|gradient_fill`
   - Default is `gradient_sweep` (mode index `0`).
   - `gradient_sweep` renders a full-grid workload with a moving `32`-row
     vertical window that cycles green -> gray -> green as it sweeps downward.
@@ -64,3 +64,6 @@ Build outputs use versioned, display-aware target names only:
     (`BENCH_SNAKE_PHASE_WINDOW_TILES`, default `64`) with progressive
     green-over-grey phasing. The sweep paints from top to bottom, then restarts
     at the top and clears back to grey.
+  - `gradient_fill` performs a full-screen top-down gray->green conversion with
+    a moving row transition; once the sweep reaches the bottom it restarts from
+    the top in gray.
