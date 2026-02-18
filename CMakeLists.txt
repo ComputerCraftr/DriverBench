@@ -13,8 +13,9 @@ endif()
 
 project(DriverBench C)
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(DB_CORE_SOURCES src/core/db_core.c)
 set(DB_GLFW_DISPLAY_SOURCES src/displays/glfw_window/display_glfw_window_common.c)
@@ -83,6 +84,10 @@ endif()
 function(db_apply_perf_options target_name)
   if(NOT TARGET ${target_name})
     return()
+  endif()
+
+  if(UNIX AND NOT APPLE)
+    target_compile_definitions(${target_name} PRIVATE _POSIX_C_SOURCE=200809L)
   endif()
 
   if(DB_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")

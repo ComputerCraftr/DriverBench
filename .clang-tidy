@@ -2,6 +2,7 @@ Checks: >
   clang-analyzer-*,
   bugprone-*,
   performance-*,
+  misc-include-cleaner,
   portability-*,
   readability-*,
   -bugprone-easily-swappable-parameters,
