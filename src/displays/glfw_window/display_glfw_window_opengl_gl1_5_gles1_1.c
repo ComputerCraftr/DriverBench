@@ -2,9 +2,11 @@
 #include <GLFW/glfw3.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #include "../../core/db_core.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
+#include "../../renderers/renderer_gl_common.h"
 #include "../bench_config.h"
 #include "display_glfw_window_common.h"
 
@@ -32,11 +34,27 @@ int main(void) {
 
     int swap_interval = db_glfw_resolve_swap_interval();
     const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME);
-    GLFWwindow *window = db_glfw_create_opengl_window(
+    int is_gles = 0;
+    GLFWwindow *window = db_glfw_create_gl15_or_gles11_window(
         BACKEND_NAME, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
-        OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 0,
-        swap_interval);
+        OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR,
+        swap_interval, &is_gles);
+    db_gl_set_proc_address_loader(
+        (db_gl_get_proc_address_fn_t)glfwGetProcAddress);
+
+    const char *runtime_version = (const char *)glGetString(GL_VERSION);
+    const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
+    const int runtime_is_gles = (runtime_version != NULL) &&
+                                (strstr(runtime_version, "OpenGL ES") != NULL);
+    db_infof(BACKEND_NAME, "runtime API: %s, GL_VERSION: %s, GL_RENDERER: %s",
+             (runtime_is_gles != 0) ? "OpenGL ES" : "OpenGL",
+             (runtime_version != NULL) ? runtime_version : "(null)",
+             (runtime_renderer != NULL) ? runtime_renderer : "(null)");
+    if ((is_gles != 0) && (runtime_is_gles == 0)) {
+        db_infof(BACKEND_NAME, "context creation reported GLES fallback, but "
+                               "runtime API is OpenGL");
+    }
 
     db_renderer_opengl_gl1_5_gles1_1_init();
     const char *capability_mode =

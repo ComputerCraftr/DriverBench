@@ -1,11 +1,10 @@
-#include "renderer_opengl_common.h"
+#include "renderer_gl_common.h"
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../core/db_core.h"
-#include "renderer_benchmark_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
@@ -24,38 +23,28 @@
 #endif
 #endif
 
-#define PROBE_PREFIX_BYTES 64U
-#define MAP_RANGE_PROBE_XOR_SEED 0xA5U
-
-static int db_gl_version_at_least(int req_major, int req_minor) {
-    int major = 0;
-    int minor = 0;
-    if (!db_parse_gl_version_numbers((const char *)glGetString(GL_VERSION),
-                                     &major, &minor)) {
-        return 0;
-    }
-    return (major > req_major) ||
-           ((major == req_major) && (minor >= req_minor));
+void db_gl_set_proc_address_loader(
+    db_gl_get_proc_address_fn_t get_proc_address) {
+    (void)get_proc_address;
 }
 
 static int db_gl_supports_map_buffer_range(const char *exts) {
     return db_has_gl_extension_token(exts, "GL_ARB_map_buffer_range") ||
            db_has_gl_extension_token(exts, "GL_EXT_map_buffer_range") ||
-           db_gl_version_at_least(3, 0);
+           db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 3,
+                                       0);
+}
+
+static int db_gl_supports_map_buffer(const char *exts) {
+    return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
+           db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
+                                       5);
 }
 
 static int db_gl_supports_buffer_storage(const char *exts) {
     return db_has_gl_extension_token(exts, "GL_ARB_buffer_storage") ||
-           db_gl_version_at_least(4, 4);
-}
-
-static void db_gl_clear_errors(void) {
-    while (glGetError() != GL_NO_ERROR) {
-    }
-}
-
-static size_t db_gl_probe_size(size_t bytes) {
-    return (bytes < PROBE_PREFIX_BYTES) ? bytes : PROBE_PREFIX_BYTES;
+           db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 4,
+                                       4);
 }
 
 static int db_gl_verify_buffer_prefix(const uint8_t *expected,
@@ -63,12 +52,15 @@ static int db_gl_verify_buffer_prefix(const uint8_t *expected,
     if (expected_size == 0U) {
         return 0;
     }
-    uint8_t actual[PROBE_PREFIX_BYTES] = {0};
-    db_gl_clear_errors();
+
+    uint8_t actual[DB_GL_PROBE_PREFIX_BYTES] = {0};
+    db_gl_clear_errors((db_gl_get_error_fn_t)glGetError);
     glGetBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)expected_size, actual);
+
     if (glGetError() != GL_NO_ERROR) {
         return 0;
     }
+
     return memcmp(expected, actual, expected_size) == 0;
 }
 
@@ -82,7 +74,7 @@ static int db_gl_try_init_persistent_upload(size_t bytes,
         GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
     const GLbitfield map_flags = storage_flags;
 
-    db_gl_clear_errors();
+    db_gl_clear_errors((db_gl_get_error_fn_t)glGetError);
     glBufferStorage(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, NULL, storage_flags);
     if (glGetError() != GL_NO_ERROR) {
         return 0;
@@ -122,12 +114,11 @@ static int db_gl_probe_map_range_upload(size_t bytes,
     if (probe_size == 0U) {
         return 0;
     }
-    uint8_t pattern[PROBE_PREFIX_BYTES] = {0};
-    for (size_t i = 0; i < probe_size; i++) {
-        pattern[i] = (uint8_t)(MAP_RANGE_PROBE_XOR_SEED ^ (uint8_t)i);
-    }
 
-    db_gl_clear_errors();
+    uint8_t pattern[DB_GL_PROBE_PREFIX_BYTES] = {0};
+    db_gl_fill_probe_pattern(pattern, probe_size);
+
+    db_gl_clear_errors((db_gl_get_error_fn_t)glGetError);
     void *dst =
         glMapBufferRange(GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size,
                          GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
@@ -163,12 +154,11 @@ static int db_gl_probe_map_buffer_upload(size_t bytes,
     if (probe_size == 0U) {
         return 0;
     }
-    uint8_t pattern[PROBE_PREFIX_BYTES] = {0};
-    for (size_t i = 0; i < probe_size; i++) {
-        pattern[i] = (uint8_t)(MAP_RANGE_PROBE_XOR_SEED ^ (uint8_t)i);
-    }
 
-    db_gl_clear_errors();
+    uint8_t pattern[DB_GL_PROBE_PREFIX_BYTES] = {0};
+    db_gl_fill_probe_pattern(pattern, probe_size);
+
+    db_gl_clear_errors((db_gl_get_error_fn_t)glGetError);
     void *dst = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     if ((dst == NULL) || (glGetError() != GL_NO_ERROR)) {
         return 0;
@@ -196,7 +186,8 @@ int db_gl_has_vbo_support(void) {
         db_has_gl_extension_token(exts, "GL_OES_vertex_buffer_object")) {
         return 1;
     }
-    return db_gl_version_at_least(1, 5);
+    return db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
+                                       5);
 }
 
 void db_gl_probe_upload_capabilities(size_t bytes,
@@ -235,7 +226,8 @@ void db_gl_probe_upload_capabilities(size_t bytes,
         return;
     }
 
-    if (db_gl_probe_map_buffer_upload(bytes, initial_vertices)) {
+    if (db_gl_supports_map_buffer(exts) &&
+        db_gl_probe_map_buffer_upload(bytes, initial_vertices)) {
         out->use_map_buffer_upload = 1;
     }
 }

@@ -39,6 +39,8 @@ GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
     if (!glfwInit()) {
         db_failf(backend, "glfwInit failed");
     }
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, context_major);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, context_minor);
     if (core_profile) {
@@ -57,6 +59,50 @@ GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(swap_interval);
+    return window;
+}
+
+GLFWwindow *
+db_glfw_create_gl15_or_gles11_window(const char *backend, const char *title,
+                                     int width_px, int height_px,
+                                     int gl_context_major, int gl_context_minor,
+                                     int swap_interval, int *out_is_gles) {
+    if (out_is_gles != NULL) {
+        *out_is_gles = 0;
+    }
+    if (!glfwInit()) {
+        db_failf(backend, "glfwInit failed");
+    }
+
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, gl_context_major);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, gl_context_minor);
+    GLFWwindow *window =
+        glfwCreateWindow(width_px, height_px, title, NULL, NULL);
+    if (window != NULL) {
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(swap_interval);
+        return window;
+    }
+
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 1);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    window = glfwCreateWindow(width_px, height_px, title, NULL, NULL);
+    if (window == NULL) {
+        glfwTerminate();
+        db_failf(backend,
+                 "glfwCreateWindow failed for both OpenGL and OpenGL ES");
+    }
+
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(swap_interval);
+    if (out_is_gles != NULL) {
+        *out_is_gles = 1;
+    }
+    db_infof(backend, "OpenGL context creation failed; fell back to GLES 1.1");
     return window;
 }
 
@@ -137,6 +183,7 @@ void db_glfw_sleep_to_fps_cap(double frame_start_s, double fps_cap) {
 
         struct timespec remaining = {0};
         const int sleep_result = nanosleep(&request, &remaining);
+        // NOLINTNEXTLINE(misc-include-cleaner)
         if ((sleep_result == 0) || (errno != EINTR)) {
             break;
         }

@@ -7,7 +7,7 @@
 #include "../../core/db_core.h"
 #include "../../displays/bench_config.h"
 #include "../renderer_benchmark_common.h"
-#include "../renderer_opengl_common.h"
+#include "../renderer_gl_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl.h>

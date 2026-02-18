@@ -8,7 +8,7 @@
 #include "../../core/db_core.h"
 #include "../../displays/bench_config.h"
 #include "../renderer_benchmark_common.h"
-#include "../renderer_opengl_common.h"
+#include "../renderer_gl_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
@@ -38,10 +38,10 @@
 #define ATTR_COLOR_LOC 1U
 #define ATTR_POSITION_COMPONENTS 2
 #define ATTR_COLOR_COMPONENTS 3
-#define DB_CAP_MODE_OPENGL_SHADER_VBO "opengl_shader_vbo"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT "opengl_shader_vbo_persistent"
 #define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE "opengl_shader_vbo_map_range"
 #define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER "opengl_shader_vbo_map_buffer"
-#define DB_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT "opengl_shader_vbo_persistent"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO "opengl_shader_vbo"
 #define DB_RENDER_MODE_BANDS 0
 #define DB_RENDER_MODE_SNAKE_GRID 1
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)

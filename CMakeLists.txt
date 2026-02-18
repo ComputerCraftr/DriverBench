@@ -317,10 +317,12 @@ if(DB_BUILD_OPENGL)
           set(DB_OPENGL_TARGET driverbench_glfw_window_opengl_gl1_5_gles1_1)
           set(DB_OPENGL_SOURCE src/displays/glfw_window/display_glfw_window_opengl_gl1_5_gles1_1.c)
           set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c)
+          set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_GLES_COMMON_SOURCES})
         elseif(DB_RENDERER STREQUAL "gl3_3")
           set(DB_OPENGL_TARGET driverbench_glfw_window_opengl_gl3_3)
           set(DB_OPENGL_SOURCE src/displays/glfw_window/display_glfw_window_opengl_gl3_3.c)
           set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c)
+          set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_OPENGL_COMMON_SOURCES})
         else()
           continue()
         endif()
@@ -328,7 +330,7 @@ if(DB_BUILD_OPENGL)
         add_executable(${DB_OPENGL_TARGET}
           ${DB_OPENGL_SOURCE}
           ${DB_OPENGL_RENDERER_SOURCE}
-          ${DB_RENDERER_OPENGL_COMMON_SOURCES}
+          ${DB_OPENGL_COMMON_SOURCE_LIST}
           ${DB_GLFW_DISPLAY_SOURCES}
           ${DB_CORE_SOURCES}
         )
@@ -360,6 +362,9 @@ if(DB_BUILD_OPENGL)
               GL
               m
             )
+          endif()
+          if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
+            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE EGL)
           endif()
         endif()
         set(HAVE_BACKEND ON)

@@ -15,7 +15,7 @@
 
 #include "../../core/db_core.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
-#include "../../renderers/renderer_benchmark_common.h"
+#include "../../renderers/renderer_gl_common.h"
 #include "../bench_config.h"
 
 #include <drm/drm.h>
@@ -400,7 +400,6 @@ static EGLDisplay egl_init_try_gl15_then_gles11(struct gbm_device *gbm,
                     eglMakeCurrent(dpy, surf, surf, ctx)) {
                     const char *ver = (const char *)glGetString(GL_VERSION);
                     if (db_gl_version_text_at_least(ver, 1, 5)) {
-                        printf("GL_VERSION (EGL_OPENGL_API): %s\n", ver);
                         *out_cfg = cfg;
                         *out_ctx = ctx;
                         *out_surf = surf;
@@ -458,7 +457,6 @@ static EGLDisplay egl_init_try_gl15_then_gles11(struct gbm_device *gbm,
     if (!db_gl_version_text_at_least(es_ver, 1, 1)) {
         diex("EGL_OPENGL_ES_API reported unsupported GL_VERSION");
     }
-    printf("GL_VERSION (EGL_OPENGL_ES_API): %s\n", es_ver);
 
     *out_cfg = cfg;
     *out_ctx = ctx;
@@ -497,7 +495,17 @@ int main(int argc, char **argv) {
     EGLDisplay dpy =
         egl_init_try_gl15_then_gles11(gbm, &cfg, &ctx, &surf, gbm_surf);
 
-    printf("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
+    db_gl_set_proc_address_loader(
+        (db_gl_get_proc_address_fn_t)eglGetProcAddress);
+
+    const char *runtime_version = (const char *)glGetString(GL_VERSION);
+    const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
+    const int runtime_is_gles = (runtime_version != NULL) &&
+                                (strstr(runtime_version, "OpenGL ES") != NULL);
+    db_infof(BACKEND_NAME, "runtime API: %s, GL_VERSION: %s, GL_RENDERER: %s",
+             (runtime_is_gles != 0) ? "OpenGL ES" : "OpenGL",
+             (runtime_version != NULL) ? runtime_version : "(null)",
+             (runtime_renderer != NULL) ? runtime_renderer : "(null)");
     glViewport(0, 0, (GLint)width, (GLint)height);
 
     db_renderer_opengl_gl1_5_gles1_1_init();
