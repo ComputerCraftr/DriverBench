@@ -6,6 +6,7 @@
 #include "../../core/db_core.h"
 #include "../../renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.h"
 #include "../bench_config.h"
+#include "../display_gl_runtime_common.h"
 #include "display_glfw_window_common.h"
 
 #define BACKEND_NAME "display_glfw_window_vulkan_1_2_multi_gpu"
@@ -43,6 +44,14 @@ int main(void) {
     GLFWwindow *window = db_glfw_create_no_api_window(
         BACKEND_NAME, "Vulkan 1.2 opportunistic multi-GPU (device groups)",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX);
+    uint32_t runtime_api_version = VK_API_VERSION_1_0;
+    const VkResult version_result =
+        vkEnumerateInstanceVersion(&runtime_api_version);
+    if (version_result != VK_SUCCESS) {
+        runtime_api_version = VK_API_VERSION_1_0;
+    }
+    db_display_log_vulkan_runtime_api(BACKEND_NAME, runtime_api_version,
+                                      "(selected by renderer)");
 
     const db_vk_wsi_config_t wsi_config = {
         .window_handle = window,

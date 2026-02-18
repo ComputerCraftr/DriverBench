@@ -45,15 +45,12 @@ int main(void) {
 
     const char *runtime_version = (const char *)glGetString(GL_VERSION);
     const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
-    const int runtime_is_gles = db_gl_is_es_context(runtime_version);
+    const int runtime_is_gles = db_display_log_gl_runtime_api(
+        BACKEND_NAME, runtime_version, runtime_renderer);
     if (runtime_is_gles != 0) {
         db_display_validate_gles_1x_runtime_or_fail(BACKEND_NAME,
                                                     runtime_version);
     }
-    db_infof(BACKEND_NAME, "runtime API: %s, GL_VERSION: %s, GL_RENDERER: %s",
-             (runtime_is_gles != 0) ? "OpenGL ES" : "OpenGL",
-             (runtime_version != NULL) ? runtime_version : "(null)",
-             (runtime_renderer != NULL) ? runtime_renderer : "(null)");
     if ((is_gles != 0) && (runtime_is_gles == 0)) {
         db_infof(BACKEND_NAME, "context creation reported GLES fallback, but "
                                "runtime API is OpenGL");

@@ -46,13 +46,7 @@ static __attribute__((noreturn)) void failf(const char *fmt, ...) {
     char message[LOG_MSG_CAPACITY];
     va_list ap;
     va_start(ap, fmt);
-#ifdef __STDC_LIB_EXT1__
-    (void)vsnprintf_s(message, sizeof(message), _TRUNCATE, fmt, ap);
-#else
-    // Fallback for platforms without Annex K bounds-checked APIs.
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,clang-analyzer-valist.Uninitialized)
-    (void)vsnprintf(message, sizeof(message), fmt, ap);
-#endif
+    (void)db_vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
     fputs("[", stderr);
     fputs(BACKEND_NAME, stderr);
@@ -496,15 +490,12 @@ int main(int argc, char **argv) {
 
     const char *runtime_version = (const char *)glGetString(GL_VERSION);
     const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
-    const int runtime_is_gles = db_gl_is_es_context(runtime_version);
+    const int runtime_is_gles = db_display_log_gl_runtime_api(
+        BACKEND_NAME, runtime_version, runtime_renderer);
     if (runtime_is_gles != 0) {
         db_display_validate_gles_1x_runtime_or_fail(BACKEND_NAME,
                                                     runtime_version);
     }
-    db_infof(BACKEND_NAME, "runtime API: %s, GL_VERSION: %s, GL_RENDERER: %s",
-             (runtime_is_gles != 0) ? "OpenGL ES" : "OpenGL",
-             (runtime_version != NULL) ? runtime_version : "(null)",
-             (runtime_renderer != NULL) ? runtime_renderer : "(null)");
     glViewport(0, 0, (GLint)width, (GLint)height);
 
     db_renderer_opengl_gl1_5_gles1_1_init();

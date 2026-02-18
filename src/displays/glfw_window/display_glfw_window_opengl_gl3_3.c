@@ -6,6 +6,7 @@
 #include "../../core/db_core.h"
 #include "../../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
 #include "../bench_config.h"
+#include "../display_gl_runtime_common.h"
 #include "display_glfw_window_common.h"
 
 #ifdef __APPLE__
@@ -48,6 +49,10 @@ int main(void) {
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
         OPENGL_CONTEXT_VERSION_MAJOR, OPENGL_CONTEXT_VERSION_MINOR, 1,
         swap_interval);
+    const char *runtime_version = (const char *)glGetString(GL_VERSION);
+    const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
+    (void)db_display_log_gl_runtime_api(BACKEND_NAME, runtime_version,
+                                        runtime_renderer);
 
     db_renderer_opengl_gl3_3_init();
     const char *capability_mode = db_renderer_opengl_gl3_3_capability_mode();

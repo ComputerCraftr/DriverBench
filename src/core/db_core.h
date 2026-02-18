@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_DB_CORE_H
 #define DRIVERBENCH_DB_CORE_H
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -8,6 +9,9 @@ void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
 void db_infof(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
+int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt, va_list ap);
+int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
 
 int db_env_is_truthy(const char *name);
 int db_has_ssh_env(void);

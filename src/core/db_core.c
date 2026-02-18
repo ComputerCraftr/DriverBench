@@ -44,6 +44,25 @@ void db_infof(const char *backend, const char *fmt, ...) {
     fputc('\n', stdout);
 }
 
+int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt,
+                 va_list ap) {
+#ifdef __STDC_LIB_EXT1__
+    return vsnprintf_s(buffer, buffer_size, _TRUNCATE, fmt, ap);
+#else
+    // Fallback for platforms without Annex K bounds-checked APIs.
+    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,clang-analyzer-valist.Uninitialized)
+    return vsnprintf(buffer, buffer_size, fmt, ap);
+#endif
+}
+
+int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    const int result = db_vsnprintf(buffer, buffer_size, fmt, ap);
+    va_end(ap);
+    return result;
+}
+
 int db_env_is_truthy(const char *name) {
     const char *value = getenv(name);
     if (value == NULL) {
