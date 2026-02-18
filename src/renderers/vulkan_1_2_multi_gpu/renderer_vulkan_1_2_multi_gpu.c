@@ -554,6 +554,129 @@ static void db_vk_recreate_history_target(VkPhysicalDevice phys,
                                 device_group_mask, target);
 }
 
+static int db_vk_copy_history_image_preserve(VkDevice device,
+                                             VkCommandPool command_pool,
+                                             VkQueue queue, VkImage src_image,
+                                             VkExtent2D src_extent,
+                                             VkImage dst_image,
+                                             VkExtent2D dst_extent) {
+    if ((src_image == VK_NULL_HANDLE) || (dst_image == VK_NULL_HANDLE) ||
+        (src_extent.width == 0U) || (src_extent.height == 0U) ||
+        (dst_extent.width == 0U) || (dst_extent.height == 0U)) {
+        return 0;
+    }
+
+    VkCommandBufferAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    alloc_info.commandPool = command_pool;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = 1U;
+    VkCommandBuffer copy_cmd = VK_NULL_HANDLE;
+    VK_CHECK(vkAllocateCommandBuffers(device, &alloc_info, &copy_cmd));
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(copy_cmd, &begin_info));
+
+    VkImageMemoryBarrier pre_copy[2] = {{0}, {0}};
+    pre_copy[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    pre_copy[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    pre_copy[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    pre_copy[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    pre_copy[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    pre_copy[0].image = src_image;
+    pre_copy[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    pre_copy[0].subresourceRange.levelCount = 1U;
+    pre_copy[0].subresourceRange.layerCount = 1U;
+    pre_copy[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    pre_copy[1].srcAccessMask = 0;
+    pre_copy[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    pre_copy[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    pre_copy[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    pre_copy[1].image = dst_image;
+    pre_copy[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    pre_copy[1].subresourceRange.levelCount = 1U;
+    pre_copy[1].subresourceRange.layerCount = 1U;
+    vkCmdPipelineBarrier(copy_cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL,
+                         2U, pre_copy);
+
+    VkImageCopy region = {0};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1U;
+    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.layerCount = 1U;
+    region.extent.width = (src_extent.width < dst_extent.width)
+                              ? src_extent.width
+                              : dst_extent.width;
+    region.extent.height = (src_extent.height < dst_extent.height)
+                               ? src_extent.height
+                               : dst_extent.height;
+    region.extent.depth = 1U;
+    vkCmdCopyImage(copy_cmd, src_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   dst_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U,
+                   &region);
+
+    VkImageMemoryBarrier post_copy[2] = {{0}, {0}};
+    post_copy[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    post_copy[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    post_copy[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    post_copy[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    post_copy[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    post_copy[0].image = src_image;
+    post_copy[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    post_copy[0].subresourceRange.levelCount = 1U;
+    post_copy[0].subresourceRange.layerCount = 1U;
+    post_copy[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    post_copy[1].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    post_copy[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    post_copy[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    post_copy[1].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    post_copy[1].image = dst_image;
+    post_copy[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    post_copy[1].subresourceRange.levelCount = 1U;
+    post_copy[1].subresourceRange.layerCount = 1U;
+    vkCmdPipelineBarrier(copy_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                         NULL, 2U, post_copy);
+
+    VK_CHECK(vkEndCommandBuffer(copy_cmd));
+    VkSubmitInfo submit_info = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit_info.commandBufferCount = 1U;
+    submit_info.pCommandBuffers = &copy_cmd;
+    VK_CHECK(vkQueueSubmit(queue, 1U, &submit_info, VK_NULL_HANDLE));
+    VK_CHECK(vkQueueWaitIdle(queue));
+    vkFreeCommandBuffers(device, command_pool, 1U, &copy_cmd);
+    return 1;
+}
+
+static int db_vk_recreate_history_target_preserve(
+    VkPhysicalDevice phys, VkDevice device, VkFormat format, VkExtent2D extent,
+    VkRenderPass render_pass, uint32_t device_group_mask,
+    VkCommandPool command_pool, VkQueue queue, VkExtent2D old_extent,
+    HistoryTargetState *target) {
+    if (target == NULL) {
+        return 0;
+    }
+
+    VK_CHECK(vkDeviceWaitIdle(device));
+    HistoryTargetState old_target = *target;
+    *target = (HistoryTargetState){0};
+    db_vk_create_history_target(phys, device, format, extent, render_pass,
+                                device_group_mask, target);
+
+    int copied = 0;
+    if (old_target.layout_initialized != 0) {
+        copied = db_vk_copy_history_image_preserve(device, command_pool, queue,
+                                                   old_target.image, old_extent,
+                                                   target->image, extent);
+    }
+    target->layout_initialized = copied;
+    db_vk_destroy_history_target(device, &old_target);
+    return copied;
+}
+
 static void db_vk_update_history_descriptor(VkDevice device,
                                             VkDescriptorSet descriptor_set,
                                             VkSampler sampler,
@@ -2446,18 +2569,22 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     }
     if (acquire_suboptimal || (present_result == VK_SUBOPTIMAL_KHR) ||
         (present_result == VK_ERROR_OUT_OF_DATE_KHR)) {
+        const VkExtent2D old_extent = g_state.swapchain_state.extent;
         db_vk_recreate_swapchain_state(
             &g_state.wsi_config, g_state.present_phys, g_state.device,
             g_state.surface, g_state.surface_format, g_state.present_mode,
             g_state.render_pass, &g_state.swapchain_state);
-        db_vk_recreate_history_target(
+        const int preserved = db_vk_recreate_history_target_preserve(
             g_state.present_phys, g_state.device, g_state.surface_format.format,
             g_state.swapchain_state.extent, g_state.history_render_pass,
-            g_state.device_group_mask, &g_state.history_target);
+            g_state.device_group_mask, g_state.command_pool, g_state.queue,
+            old_extent, &g_state.history_target);
         db_vk_update_history_descriptor(g_state.device, g_state.descriptor_set,
                                         g_state.history_sampler,
                                         g_state.history_target.view);
-        g_state.rect_snake_reset_pending = 1;
+        if ((g_state.pattern == DB_PATTERN_RECT_SNAKE) && (preserved == 0)) {
+            g_state.rect_snake_reset_pending = 1;
+        }
         g_state.frame_index++;
         return DB_VK_FRAME_RETRY;
     }
