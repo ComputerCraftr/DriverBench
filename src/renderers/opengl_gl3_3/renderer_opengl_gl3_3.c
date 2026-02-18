@@ -78,10 +78,12 @@ typedef struct {
     uint32_t gradient_head_row;
     uint32_t rect_snake_rect_index;
     uint32_t rect_snake_seed;
-    GLuint history_tex;
-    int history_tex_width;
-    int history_tex_height;
-    int history_tex_initialized;
+    GLuint history_tex[2];
+    GLuint history_fbo[2];
+    int history_width;
+    int history_height;
+    int history_initialized;
+    int history_read_index;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
     size_t vbo_bytes;
@@ -115,7 +117,24 @@ static void db_set_uniform1i_u32_if_changed(GLint location, int *cache,
     }
 }
 
-static void db_gl3_ensure_history_texture(void) {
+static void db_gl3_destroy_history_targets(void) {
+    for (size_t i = 0U; i < 2U; i++) {
+        if (g_state.history_fbo[i] != 0U) {
+            glDeleteFramebuffers(1, &g_state.history_fbo[i]);
+            g_state.history_fbo[i] = 0U;
+        }
+        if (g_state.history_tex[i] != 0U) {
+            glDeleteTextures(1, &g_state.history_tex[i]);
+            g_state.history_tex[i] = 0U;
+        }
+    }
+    g_state.history_width = 0;
+    g_state.history_height = 0;
+    g_state.history_initialized = 0;
+    g_state.history_read_index = -1;
+}
+
+static void db_gl3_ensure_history_targets(void) {
     if (g_state.pattern != DB_PATTERN_RECT_SNAKE) {
         return;
     }
@@ -125,28 +144,33 @@ static void db_gl3_ensure_history_texture(void) {
     if ((viewport[2] <= 0) || (viewport[3] <= 0)) {
         return;
     }
-
-    glActiveTexture(GL_TEXTURE0);
-    if (g_state.history_tex == 0U) {
-        glGenTextures(1, &g_state.history_tex);
-        glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    } else {
-        glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
+    GLint prev_read_fbo = 0;
+    GLint prev_draw_fbo = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fbo);
+    if ((g_state.history_width == viewport[2]) &&
+        (g_state.history_height == viewport[3]) &&
+        (g_state.history_tex[0] != 0U) && (g_state.history_tex[1] != 0U) &&
+        (g_state.history_fbo[0] != 0U) && (g_state.history_fbo[1] != 0U) &&
+        (g_state.history_read_index >= 0)) {
+        return;
     }
 
-    if ((g_state.history_tex_width != viewport[2]) ||
-        (g_state.history_tex_height != viewport[3])) {
-        const int old_width = g_state.history_tex_width;
-        const int old_height = g_state.history_tex_height;
-        const GLuint old_tex = g_state.history_tex;
+    const int old_width = g_state.history_width;
+    const int old_height = g_state.history_height;
+    const int old_read_index = g_state.history_read_index;
+    const int old_initialized = g_state.history_initialized;
+    const GLuint old_tex0 = g_state.history_tex[0];
+    const GLuint old_tex1 = g_state.history_tex[1];
+    const GLuint old_fbo0 = g_state.history_fbo[0];
+    const GLuint old_fbo1 = g_state.history_fbo[1];
 
-        GLuint new_tex = 0U;
-        glGenTextures(1, &new_tex);
-        glBindTexture(GL_TEXTURE_2D, new_tex);
+    GLuint new_tex[2] = {0U, 0U};
+    GLuint new_fbo[2] = {0U, 0U};
+    for (size_t i = 0U; i < 2U; i++) {
+        glGenTextures(1, &new_tex[i]);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, new_tex[i]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -154,52 +178,80 @@ static void db_gl3_ensure_history_texture(void) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, viewport[2], viewport[3], 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
-        int copied_history = 0;
-        if ((old_tex != 0U) && (g_state.history_tex_initialized != 0) &&
-            (old_width > 0) && (old_height > 0)) {
-            GLuint read_fbo = 0U;
-            GLuint draw_fbo = 0U;
-            GLint prev_read_fbo = 0;
-            GLint prev_draw_fbo = 0;
-            glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
-            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fbo);
+        glGenFramebuffers(1, &new_fbo[i]);
+        glBindFramebuffer(GL_FRAMEBUFFER, new_fbo[i]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, new_tex[i], 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+            GL_FRAMEBUFFER_COMPLETE) {
+            failf("history framebuffer incomplete");
+        }
+    }
 
+    int copied_history = 0;
+    if ((old_initialized != 0) && (old_width > 0) && (old_height > 0) &&
+        ((old_read_index == 0) || (old_read_index == 1))) {
+        const GLuint old_read_tex = (old_read_index == 0) ? old_tex0 : old_tex1;
+        if (old_read_tex != 0U) {
+            GLuint read_fbo = 0U;
             glGenFramebuffers(1, &read_fbo);
-            glGenFramebuffers(1, &draw_fbo);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
             glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                   GL_TEXTURE_2D, old_tex, 0);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo);
-            glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                   GL_TEXTURE_2D, new_tex, 0);
-            if ((glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) ==
-                 GL_FRAMEBUFFER_COMPLETE) &&
-                (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) ==
-                 GL_FRAMEBUFFER_COMPLETE)) {
-                glBlitFramebuffer(0, 0, old_width, old_height, 0, 0,
-                                  viewport[2], viewport[3], GL_COLOR_BUFFER_BIT,
-                                  GL_NEAREST);
-                copied_history = (glGetError() == GL_NO_ERROR);
+                                   GL_TEXTURE_2D, old_read_tex, 0);
+            if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) ==
+                GL_FRAMEBUFFER_COMPLETE) {
+                copied_history = 1;
+                for (size_t i = 0U; i < 2U; i++) {
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, new_fbo[i]);
+                    glBlitFramebuffer(0, 0, old_width, old_height, 0, 0,
+                                      viewport[2], viewport[3],
+                                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                    if (glGetError() != GL_NO_ERROR) {
+                        copied_history = 0;
+                        break;
+                    }
+                }
             }
             glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev_draw_fbo);
             if (read_fbo != 0U) {
                 glDeleteFramebuffers(1, &read_fbo);
             }
-            if (draw_fbo != 0U) {
-                glDeleteFramebuffers(1, &draw_fbo);
-            }
         }
-
-        if (old_tex != 0U) {
-            glDeleteTextures(1, &old_tex);
-        }
-        g_state.history_tex = new_tex;
-        g_state.history_tex_width = viewport[2];
-        g_state.history_tex_height = viewport[3];
-        g_state.history_tex_initialized = copied_history;
-        glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
     }
+
+    if (copied_history == 0) {
+        for (size_t i = 0U; i < 2U; i++) {
+            glBindFramebuffer(GL_FRAMEBUFFER, new_fbo[i]);
+            glClearColor(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                         BENCH_GRID_PHASE0_B, 1.0F);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+    }
+
+    if (old_fbo0 != 0U) {
+        glDeleteFramebuffers(1, &old_fbo0);
+    }
+    if (old_fbo1 != 0U) {
+        glDeleteFramebuffers(1, &old_fbo1);
+    }
+    if (old_tex0 != 0U) {
+        glDeleteTextures(1, &old_tex0);
+    }
+    if (old_tex1 != 0U) {
+        glDeleteTextures(1, &old_tex1);
+    }
+
+    g_state.history_tex[0] = new_tex[0];
+    g_state.history_tex[1] = new_tex[1];
+    g_state.history_fbo[0] = new_fbo[0];
+    g_state.history_fbo[1] = new_fbo[1];
+    g_state.history_width = viewport[2];
+    g_state.history_height = viewport[3];
+    g_state.history_initialized = 1;
+    g_state.history_read_index = 0;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev_draw_fbo);
 }
 
 static GLuint compile_shader(GLenum shader_type, const char *source) {
@@ -389,7 +441,7 @@ void db_renderer_opengl_gl3_3_init(void) {
 }
 
 void db_renderer_opengl_gl3_3_render_frame(double time_s) {
-    db_gl3_ensure_history_texture();
+    db_gl3_ensure_history_targets();
 
     if (g_state.pattern == DB_PATTERN_BANDS) {
         db_fill_band_vertices_pos_rgb(g_state.vertices, g_state.work_unit_count,
@@ -443,23 +495,14 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                 plan.render_clearing_phase);
         }
     } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
-        if ((g_state.history_tex != 0U) &&
-            (g_state.history_tex_initialized == 0) &&
-            (g_state.history_tex_width > 0) &&
-            (g_state.history_tex_height > 0)) {
-            glClearColor(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
-                         BENCH_GRID_PHASE0_B, 1.0F);
-            glClear(GL_COLOR_BUFFER_BIT);
-            glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
-            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
-                                g_state.history_tex_width,
-                                g_state.history_tex_height);
-            g_state.history_tex_initialized = 1;
+        if ((g_state.history_read_index < 0) || (g_state.history_width <= 0) ||
+            (g_state.history_height <= 0)) {
+            return;
         }
-        if (g_state.history_tex != 0U) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
-        }
+        const int read_index = g_state.history_read_index;
+        const int write_index = (read_index == 0) ? 1 : 0;
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_state.history_tex[read_index]);
 
         const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
             g_state.rect_snake_seed, g_state.rect_snake_rect_index,
@@ -478,18 +521,34 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                                     plan.rect_completed);
         g_state.grid_cursor = plan.next_cursor;
         g_state.rect_snake_rect_index = plan.next_rect_index;
+
+        GLint prev_read_fbo = 0;
+        GLint prev_draw_fbo = 0;
+        GLint prev_viewport[4] = {0, 0, 0, 0};
+        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
+        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fbo);
+        glGetIntegerv(GL_VIEWPORT, prev_viewport);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, g_state.history_fbo[write_index]);
+        glViewport(0, 0, g_state.history_width, g_state.history_height);
+        glDrawArrays(GL_TRIANGLES, 0, g_state.draw_vertex_count);
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER,
+                          g_state.history_fbo[write_index]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, g_state.history_width, g_state.history_height,
+                          0, 0, g_state.history_width, g_state.history_height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev_draw_fbo);
+        glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2],
+                   prev_viewport[3]);
+        g_state.history_read_index = write_index;
+        return;
     }
 
     glDrawArrays(GL_TRIANGLES, 0, g_state.draw_vertex_count);
-
-    if ((g_state.pattern == DB_PATTERN_RECT_SNAKE) &&
-        (g_state.history_tex != 0U) && (g_state.history_tex_width > 0) &&
-        (g_state.history_tex_height > 0)) {
-        glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
-        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0,
-                            g_state.history_tex_width,
-                            g_state.history_tex_height);
-    }
 }
 
 void db_renderer_opengl_gl3_3_shutdown(void) {
@@ -497,9 +556,7 @@ void db_renderer_opengl_gl3_3_shutdown(void) {
         glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
-    if (g_state.history_tex != 0U) {
-        glDeleteTextures(1, &g_state.history_tex);
-    }
+    db_gl3_destroy_history_targets();
     glDeleteProgram(g_state.program);
     glDeleteBuffers(1, &g_state.vbo);
     glDeleteVertexArrays(1, &g_state.vao);

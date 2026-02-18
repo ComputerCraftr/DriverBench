@@ -189,7 +189,9 @@ typedef struct {
     VkRenderPass render_pass;
     VkRenderPass history_render_pass;
     SwapchainState swapchain_state;
-    HistoryTargetState history_target;
+    HistoryTargetState history_targets[2];
+    int history_read_index;
+    int history_descriptor_index;
     uint32_t device_group_mask;
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_memory;
@@ -233,6 +235,17 @@ typedef struct {
 
 static renderer_state_t g_state = {0};
 
+static uint32_t db_vk_clamp_u32(uint32_t value, uint32_t min_v,
+                                uint32_t max_v) {
+    if (value < min_v) {
+        return min_v;
+    }
+    if (value > max_v) {
+        return max_v;
+    }
+    return value;
+}
+
 static VkExtent2D
 db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
                             const VkSurfaceCapabilitiesKHR *caps) {
@@ -248,16 +261,11 @@ db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
         }
         extent.width = (uint32_t)width;
         extent.height = (uint32_t)height;
-        if (extent.width < caps->minImageExtent.width) {
-            extent.width = caps->minImageExtent.width;
-        } else if (extent.width > caps->maxImageExtent.width) {
-            extent.width = caps->maxImageExtent.width;
-        }
-        if (extent.height < caps->minImageExtent.height) {
-            extent.height = caps->minImageExtent.height;
-        } else if (extent.height > caps->maxImageExtent.height) {
-            extent.height = caps->maxImageExtent.height;
-        }
+        extent.width = db_vk_clamp_u32(extent.width, caps->minImageExtent.width,
+                                       caps->maxImageExtent.width);
+        extent.height =
+            db_vk_clamp_u32(extent.height, caps->minImageExtent.height,
+                            caps->maxImageExtent.height);
     }
     return extent;
 }
@@ -542,18 +550,6 @@ static void db_vk_recreate_swapchain_state(
                                  present_mode, render_pass, state);
 }
 
-static void db_vk_recreate_history_target(VkPhysicalDevice phys,
-                                          VkDevice device, VkFormat format,
-                                          VkExtent2D extent,
-                                          VkRenderPass render_pass,
-                                          uint32_t device_group_mask,
-                                          HistoryTargetState *target) {
-    VK_CHECK(vkDeviceWaitIdle(device));
-    db_vk_destroy_history_target(device, target);
-    db_vk_create_history_target(phys, device, format, extent, render_pass,
-                                device_group_mask, target);
-}
-
 static int db_vk_copy_history_image_preserve(VkDevice device,
                                              VkCommandPool command_pool,
                                              VkQueue queue, VkImage src_image,
@@ -651,29 +647,42 @@ static int db_vk_copy_history_image_preserve(VkDevice device,
     return 1;
 }
 
-static int db_vk_recreate_history_target_preserve(
+static int db_vk_recreate_history_targets_preserve(
     VkPhysicalDevice phys, VkDevice device, VkFormat format, VkExtent2D extent,
     VkRenderPass render_pass, uint32_t device_group_mask,
     VkCommandPool command_pool, VkQueue queue, VkExtent2D old_extent,
-    HistoryTargetState *target) {
-    if (target == NULL) {
+    HistoryTargetState *targets, int *read_index) {
+    if ((targets == NULL) || (read_index == NULL)) {
         return 0;
     }
 
     VK_CHECK(vkDeviceWaitIdle(device));
-    HistoryTargetState old_target = *target;
-    *target = (HistoryTargetState){0};
+    HistoryTargetState old_targets[2] = {targets[0], targets[1]};
+    const int old_read = *read_index;
+    targets[0] = (HistoryTargetState){0};
+    targets[1] = (HistoryTargetState){0};
     db_vk_create_history_target(phys, device, format, extent, render_pass,
-                                device_group_mask, target);
+                                device_group_mask, &targets[0]);
+    db_vk_create_history_target(phys, device, format, extent, render_pass,
+                                device_group_mask, &targets[1]);
 
     int copied = 0;
-    if (old_target.layout_initialized != 0) {
-        copied = db_vk_copy_history_image_preserve(device, command_pool, queue,
-                                                   old_target.image, old_extent,
-                                                   target->image, extent);
+    if ((old_read == 0 || old_read == 1) &&
+        (old_targets[old_read].layout_initialized != 0)) {
+        copied = db_vk_copy_history_image_preserve(
+            device, command_pool, queue, old_targets[old_read].image,
+            old_extent, targets[0].image, extent);
+        copied = copied &&
+                 db_vk_copy_history_image_preserve(
+                     device, command_pool, queue, old_targets[old_read].image,
+                     old_extent, targets[1].image, extent);
     }
-    target->layout_initialized = copied;
-    db_vk_destroy_history_target(device, &old_target);
+    targets[0].layout_initialized = copied;
+    targets[1].layout_initialized = copied;
+    *read_index = 0;
+
+    db_vk_destroy_history_target(device, &old_targets[0]);
+    db_vk_destroy_history_target(device, &old_targets[1]);
     return copied;
 }
 
@@ -1148,7 +1157,7 @@ static void db_vk_cleanup_runtime(
     VkSemaphore render_done, VkBuffer vertex_buffer,
     VkDeviceMemory vertex_memory, VkPipeline pipeline,
     VkPipelineLayout pipeline_layout, SwapchainState *swapchain_state,
-    HistoryTargetState *history_target, VkRenderPass render_pass,
+    HistoryTargetState *history_targets, VkRenderPass render_pass,
     VkRenderPass history_render_pass, VkCommandPool command_pool,
     VkQueryPool timing_query_pool, VkDescriptorSetLayout descriptor_set_layout,
     VkDescriptorPool descriptor_pool, VkSampler history_sampler,
@@ -1171,7 +1180,8 @@ static void db_vk_cleanup_runtime(
         vkDestroyDescriptorSetLayout(device, descriptor_set_layout, NULL);
     }
     db_vk_destroy_swapchain_state(device, swapchain_state);
-    db_vk_destroy_history_target(device, history_target);
+    db_vk_destroy_history_target(device, &history_targets[0]);
+    db_vk_destroy_history_target(device, &history_targets[1]);
     vkDestroyRenderPass(device, history_render_pass, NULL);
     vkDestroyRenderPass(device, render_pass, NULL);
     vkDestroyCommandPool(device, command_pool, NULL);
@@ -1487,10 +1497,13 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     SwapchainState swapchain_state = {0};
     db_vk_create_swapchain_state(wsi_config, presentPhys, device, surface, fmt,
                                  presentMode, renderPass, &swapchain_state);
-    HistoryTargetState history_target = {0};
+    HistoryTargetState history_targets[2] = {{0}, {0}};
     db_vk_create_history_target(presentPhys, device, fmt.format,
                                 swapchain_state.extent, historyRenderPass,
-                                device_group_mask, &history_target);
+                                device_group_mask, &history_targets[0]);
+    db_vk_create_history_target(presentPhys, device, fmt.format,
+                                swapchain_state.extent, historyRenderPass,
+                                device_group_mask, &history_targets[1]);
 
     // ---------------- Pipeline (rectangles) ----------------
     size_t vsz = 0;
@@ -1705,7 +1718,7 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
     VK_CHECK(vkAllocateDescriptorSets(device, &dsai, &descriptor_set));
     db_vk_update_history_descriptor(device, descriptor_set, history_sampler,
-                                    history_target.view);
+                                    history_targets[0].view);
 
     vkDestroyShaderModule(device, vs, NULL);
     vkDestroyShaderModule(device, fs, NULL);
@@ -1808,7 +1821,10 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     g_state.render_pass = renderPass;
     g_state.history_render_pass = historyRenderPass;
     g_state.swapchain_state = swapchain_state;
-    g_state.history_target = history_target;
+    g_state.history_targets[0] = history_targets[0];
+    g_state.history_targets[1] = history_targets[1];
+    g_state.history_read_index = 0;
+    g_state.history_descriptor_index = 0;
     g_state.device_group_mask = device_group_mask;
     g_state.vertex_buffer = vbuf;
     g_state.vertex_memory = vmem;
@@ -1921,18 +1937,23 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         return DB_VK_FRAME_RETRY;
     }
     if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
+        const VkExtent2D old_extent = g_state.swapchain_state.extent;
         db_vk_recreate_swapchain_state(
             &g_state.wsi_config, g_state.present_phys, g_state.device,
             g_state.surface, g_state.surface_format, g_state.present_mode,
             g_state.render_pass, &g_state.swapchain_state);
-        db_vk_recreate_history_target(
+        const int preserved = db_vk_recreate_history_targets_preserve(
             g_state.present_phys, g_state.device, g_state.surface_format.format,
             g_state.swapchain_state.extent, g_state.history_render_pass,
-            g_state.device_group_mask, &g_state.history_target);
-        db_vk_update_history_descriptor(g_state.device, g_state.descriptor_set,
-                                        g_state.history_sampler,
-                                        g_state.history_target.view);
-        g_state.rect_snake_reset_pending = 1;
+            g_state.device_group_mask, g_state.command_pool, g_state.queue,
+            old_extent, g_state.history_targets, &g_state.history_read_index);
+        db_vk_update_history_descriptor(
+            g_state.device, g_state.descriptor_set, g_state.history_sampler,
+            g_state.history_targets[g_state.history_read_index].view);
+        g_state.history_descriptor_index = g_state.history_read_index;
+        if ((g_state.pattern == DB_PATTERN_RECT_SNAKE) && (preserved == 0)) {
+            g_state.rect_snake_reset_pending = 1;
+        }
         g_state.frame_index++;
         return DB_VK_FRAME_RETRY;
     }
@@ -1943,6 +1964,15 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     }
     const int acquire_suboptimal = (ar == VK_SUBOPTIMAL_KHR);
     const int rect_mode = (g_state.pattern == DB_PATTERN_RECT_SNAKE);
+    const int read_index = g_state.history_read_index;
+    const int write_index = (read_index == 0) ? 1 : 0;
+    if (rect_mode && (g_state.history_descriptor_index != read_index) &&
+        ((read_index == 0) || (read_index == 1))) {
+        db_vk_update_history_descriptor(
+            g_state.device, g_state.descriptor_set, g_state.history_sampler,
+            g_state.history_targets[read_index].view);
+        g_state.history_descriptor_index = read_index;
+    }
 
     VK_CHECK(vkResetCommandBuffer(g_state.command_buffer, 0));
     VkCommandBufferBeginInfo cbi = {
@@ -1956,41 +1986,49 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                             0, gpuCount * TIMESTAMP_QUERIES_PER_GPU);
     }
 
-    VkClearValue clear;
+    VkClearValue clear = {0};
+    const int use_base_color = ((g_state.pattern == DB_PATTERN_GRADIENT_FILL) ||
+                                (g_state.pattern == DB_PATTERN_SNAKE_GRID)) &&
+                               (g_state.grid_clearing_phase == 0);
+    const float *clear_rgb = NULL;
     if (g_state.pattern == DB_PATTERN_BANDS) {
-        clear.color.float32[0] = BG_COLOR_R_F;
-        clear.color.float32[1] = BG_COLOR_G_F;
-        clear.color.float32[2] = BG_COLOR_B_F;
-    } else if (((g_state.pattern == DB_PATTERN_GRADIENT_FILL) &&
-                (g_state.grid_clearing_phase == 0)) ||
-               ((g_state.pattern == DB_PATTERN_SNAKE_GRID) &&
-                (g_state.grid_clearing_phase == 0))) {
-        clear.color.float32[0] = BENCH_GRID_PHASE0_R;
-        clear.color.float32[1] = BENCH_GRID_PHASE0_G;
-        clear.color.float32[2] = BENCH_GRID_PHASE0_B;
+        static const float bands_rgb[3] = {BG_COLOR_R_F, BG_COLOR_G_F,
+                                           BG_COLOR_B_F};
+        clear_rgb = bands_rgb;
+    } else if (use_base_color) {
+        static const float base_rgb[3] = {
+            BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B};
+        clear_rgb = base_rgb;
     } else {
-        clear.color.float32[0] = BENCH_GRID_PHASE1_R;
-        clear.color.float32[1] = BENCH_GRID_PHASE1_G;
-        clear.color.float32[2] = BENCH_GRID_PHASE1_B;
+        static const float target_rgb[3] = {
+            BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G, BENCH_GRID_PHASE1_B};
+        clear_rgb = target_rgb;
     }
+    clear.color.float32[0] = clear_rgb[0];
+    clear.color.float32[1] = clear_rgb[1];
+    clear.color.float32[2] = clear_rgb[2];
     clear.color.float32[COLOR_CHANNEL_ALPHA] = BG_COLOR_A_F;
 
-    if (rect_mode && (g_state.history_target.layout_initialized == 0)) {
-        VkImageMemoryBarrier history_to_clear = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        history_to_clear.srcAccessMask = 0;
-        history_to_clear.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        history_to_clear.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        history_to_clear.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        history_to_clear.image = g_state.history_target.image;
-        history_to_clear.subresourceRange.aspectMask =
-            VK_IMAGE_ASPECT_COLOR_BIT;
-        history_to_clear.subresourceRange.levelCount = 1U;
-        history_to_clear.subresourceRange.layerCount = 1U;
+    if (rect_mode && ((g_state.history_targets[0].layout_initialized == 0) ||
+                      (g_state.history_targets[1].layout_initialized == 0))) {
+        VkImageMemoryBarrier history_to_clear[2] = {{0}, {0}};
+        for (size_t i = 0U; i < 2U; i++) {
+            history_to_clear[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            history_to_clear[i].srcAccessMask = 0;
+            history_to_clear[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            history_to_clear[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            history_to_clear[i].newLayout =
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            history_to_clear[i].image = g_state.history_targets[i].image;
+            history_to_clear[i].subresourceRange.aspectMask =
+                VK_IMAGE_ASPECT_COLOR_BIT;
+            history_to_clear[i].subresourceRange.levelCount = 1U;
+            history_to_clear[i].subresourceRange.layerCount = 1U;
+        }
         vkCmdPipelineBarrier(g_state.command_buffer,
                              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0,
-                             NULL, 1, &history_to_clear);
+                             NULL, 2U, history_to_clear);
 
         VkClearColorValue history_clear = {
             .float32 = {BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
@@ -1999,109 +2037,58 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         history_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         history_range.levelCount = 1U;
         history_range.layerCount = 1U;
-        vkCmdClearColorImage(g_state.command_buffer,
-                             g_state.history_target.image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                             &history_clear, 1U, &history_range);
+        for (size_t i = 0U; i < 2U; i++) {
+            vkCmdClearColorImage(g_state.command_buffer,
+                                 g_state.history_targets[i].image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 &history_clear, 1U, &history_range);
+        }
 
-        VkImageMemoryBarrier history_to_read = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        history_to_read.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        history_to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        history_to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        history_to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        history_to_read.image = g_state.history_target.image;
-        history_to_read.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        history_to_read.subresourceRange.levelCount = 1U;
-        history_to_read.subresourceRange.layerCount = 1U;
+        VkImageMemoryBarrier history_to_read[2] = {{0}, {0}};
+        for (size_t i = 0U; i < 2U; i++) {
+            history_to_read[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            history_to_read[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            history_to_read[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            history_to_read[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            history_to_read[i].newLayout =
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            history_to_read[i].image = g_state.history_targets[i].image;
+            history_to_read[i].subresourceRange.aspectMask =
+                VK_IMAGE_ASPECT_COLOR_BIT;
+            history_to_read[i].subresourceRange.levelCount = 1U;
+            history_to_read[i].subresourceRange.layerCount = 1U;
+            g_state.history_targets[i].layout_initialized = 1;
+        }
         vkCmdPipelineBarrier(g_state.command_buffer,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL,
-                             0, NULL, 1, &history_to_read);
-        g_state.history_target.layout_initialized = 1;
+                             0, NULL, 2U, history_to_read);
     }
 
     if (rect_mode) {
-        VkImageMemoryBarrier history_to_src = {
+        VkImageMemoryBarrier write_to_color = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        history_to_src.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        history_to_src.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        history_to_src.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        history_to_src.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        history_to_src.image = g_state.history_target.image;
-        history_to_src.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        history_to_src.subresourceRange.levelCount = 1U;
-        history_to_src.subresourceRange.layerCount = 1U;
-
-        VkImageMemoryBarrier swap_to_dst = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        swap_to_dst.srcAccessMask = 0;
-        swap_to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        swap_to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        swap_to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        swap_to_dst.image = g_state.swapchain_state.images[imgIndex];
-        swap_to_dst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        swap_to_dst.subresourceRange.levelCount = 1U;
-        swap_to_dst.subresourceRange.layerCount = 1U;
-
-        VkImageMemoryBarrier pre_copy_barriers[2] = {history_to_src,
-                                                     swap_to_dst};
+        write_to_color.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        write_to_color.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        write_to_color.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        write_to_color.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        write_to_color.image = g_state.history_targets[write_index].image;
+        write_to_color.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        write_to_color.subresourceRange.levelCount = 1U;
+        write_to_color.subresourceRange.layerCount = 1U;
         vkCmdPipelineBarrier(g_state.command_buffer,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0,
-                             NULL, 2U, pre_copy_barriers);
-
-        VkImageCopy init_region = {0};
-        init_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        init_region.srcSubresource.layerCount = 1U;
-        init_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        init_region.dstSubresource.layerCount = 1U;
-        init_region.extent.width = g_state.swapchain_state.extent.width;
-        init_region.extent.height = g_state.swapchain_state.extent.height;
-        init_region.extent.depth = 1U;
-        vkCmdCopyImage(g_state.command_buffer, g_state.history_target.image,
-                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       g_state.swapchain_state.images[imgIndex],
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &init_region);
-
-        VkImageMemoryBarrier history_back_to_read = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        history_back_to_read.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        history_back_to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        history_back_to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        history_back_to_read.newLayout =
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        history_back_to_read.image = g_state.history_target.image;
-        history_back_to_read.subresourceRange.aspectMask =
-            VK_IMAGE_ASPECT_COLOR_BIT;
-        history_back_to_read.subresourceRange.levelCount = 1U;
-        history_back_to_read.subresourceRange.layerCount = 1U;
-
-        VkImageMemoryBarrier swap_to_color = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        swap_to_color.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        swap_to_color.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        swap_to_color.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        swap_to_color.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        swap_to_color.image = g_state.swapchain_state.images[imgIndex];
-        swap_to_color.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        swap_to_color.subresourceRange.levelCount = 1U;
-        swap_to_color.subresourceRange.layerCount = 1U;
-
-        VkImageMemoryBarrier after_init_barriers[2] = {history_back_to_read,
-                                                       swap_to_color};
-        vkCmdPipelineBarrier(g_state.command_buffer,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                             0, 0, NULL, 0, NULL, 2U, after_init_barriers);
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+                             0, NULL, 0, NULL, 1U, &write_to_color);
     }
 
     VkRenderPassBeginInfo rbi = {.sType =
                                      VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass =
         rect_mode ? g_state.history_render_pass : g_state.render_pass;
-    rbi.framebuffer = g_state.swapchain_state.framebuffers[imgIndex];
+    rbi.framebuffer = rect_mode
+                          ? g_state.history_targets[write_index].framebuffer
+                          : g_state.swapchain_state.framebuffers[imgIndex];
     rbi.renderArea.extent = g_state.swapchain_state.extent;
     rbi.clearValueCount = rect_mode ? 0U : 1U;
     rbi.pClearValues = rect_mode ? NULL : &clear;
@@ -2453,33 +2440,31 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     vkCmdEndRenderPass(g_state.command_buffer);
 
     if (rect_mode) {
-        VkImageMemoryBarrier swap_to_src = {
+        VkImageMemoryBarrier write_to_src = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        swap_to_src.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        swap_to_src.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        swap_to_src.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        swap_to_src.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        swap_to_src.image = g_state.swapchain_state.images[imgIndex];
-        swap_to_src.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        swap_to_src.subresourceRange.levelCount = 1U;
-        swap_to_src.subresourceRange.layerCount = 1U;
+        write_to_src.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        write_to_src.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        write_to_src.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        write_to_src.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        write_to_src.image = g_state.history_targets[write_index].image;
+        write_to_src.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        write_to_src.subresourceRange.levelCount = 1U;
+        write_to_src.subresourceRange.layerCount = 1U;
 
-        VkImageMemoryBarrier history_to_dst = {
+        VkImageMemoryBarrier swap_to_dst = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        history_to_dst.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        history_to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        history_to_dst.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        history_to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        history_to_dst.image = g_state.history_target.image;
-        history_to_dst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        history_to_dst.subresourceRange.levelCount = 1U;
-        history_to_dst.subresourceRange.layerCount = 1U;
+        swap_to_dst.srcAccessMask = 0;
+        swap_to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        swap_to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        swap_to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        swap_to_dst.image = g_state.swapchain_state.images[imgIndex];
+        swap_to_dst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        swap_to_dst.subresourceRange.levelCount = 1U;
+        swap_to_dst.subresourceRange.layerCount = 1U;
 
-        VkImageMemoryBarrier pre_copy_barriers[2] = {swap_to_src,
-                                                     history_to_dst};
+        VkImageMemoryBarrier pre_copy_barriers[2] = {write_to_src, swap_to_dst};
         vkCmdPipelineBarrier(g_state.command_buffer,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0,
                              NULL, 2U, pre_copy_barriers);
 
@@ -2491,23 +2476,23 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         region.extent.width = g_state.swapchain_state.extent.width;
         region.extent.height = g_state.swapchain_state.extent.height;
         region.extent.depth = 1U;
-        vkCmdCopyImage(
-            g_state.command_buffer, g_state.swapchain_state.images[imgIndex],
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_state.history_target.image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &region);
+        vkCmdCopyImage(g_state.command_buffer,
+                       g_state.history_targets[write_index].image,
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       g_state.swapchain_state.images[imgIndex],
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &region);
 
-        VkImageMemoryBarrier history_back_to_read = {
+        VkImageMemoryBarrier write_back_to_read = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        history_back_to_read.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        history_back_to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        history_back_to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        history_back_to_read.newLayout =
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        history_back_to_read.image = g_state.history_target.image;
-        history_back_to_read.subresourceRange.aspectMask =
+        write_back_to_read.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        write_back_to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        write_back_to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        write_back_to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        write_back_to_read.image = g_state.history_targets[write_index].image;
+        write_back_to_read.subresourceRange.aspectMask =
             VK_IMAGE_ASPECT_COLOR_BIT;
-        history_back_to_read.subresourceRange.levelCount = 1U;
-        history_back_to_read.subresourceRange.layerCount = 1U;
+        write_back_to_read.subresourceRange.levelCount = 1U;
+        write_back_to_read.subresourceRange.layerCount = 1U;
 
         VkImageMemoryBarrier swap_to_present = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -2520,12 +2505,14 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         swap_to_present.subresourceRange.levelCount = 1U;
         swap_to_present.subresourceRange.layerCount = 1U;
 
-        VkImageMemoryBarrier post_copy_barriers[2] = {history_back_to_read,
+        VkImageMemoryBarrier post_copy_barriers[2] = {write_back_to_read,
                                                       swap_to_present};
         vkCmdPipelineBarrier(g_state.command_buffer,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL,
                              0, NULL, 2U, post_copy_barriers);
+        g_state.history_targets[write_index].layout_initialized = 1;
+        g_state.history_read_index = write_index;
     }
     VK_CHECK(vkEndCommandBuffer(g_state.command_buffer));
 
@@ -2574,14 +2561,15 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             &g_state.wsi_config, g_state.present_phys, g_state.device,
             g_state.surface, g_state.surface_format, g_state.present_mode,
             g_state.render_pass, &g_state.swapchain_state);
-        const int preserved = db_vk_recreate_history_target_preserve(
+        const int preserved = db_vk_recreate_history_targets_preserve(
             g_state.present_phys, g_state.device, g_state.surface_format.format,
             g_state.swapchain_state.extent, g_state.history_render_pass,
             g_state.device_group_mask, g_state.command_pool, g_state.queue,
-            old_extent, &g_state.history_target);
-        db_vk_update_history_descriptor(g_state.device, g_state.descriptor_set,
-                                        g_state.history_sampler,
-                                        g_state.history_target.view);
+            old_extent, g_state.history_targets, &g_state.history_read_index);
+        db_vk_update_history_descriptor(
+            g_state.device, g_state.descriptor_set, g_state.history_sampler,
+            g_state.history_targets[g_state.history_read_index].view);
+        g_state.history_descriptor_index = g_state.history_read_index;
         if ((g_state.pattern == DB_PATTERN_RECT_SNAKE) && (preserved == 0)) {
             g_state.rect_snake_reset_pending = 1;
         }
@@ -2621,7 +2609,7 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
         g_state.device, g_state.in_flight, g_state.image_available,
         g_state.render_done, g_state.vertex_buffer, g_state.vertex_memory,
         g_state.pipeline, g_state.pipeline_layout, &g_state.swapchain_state,
-        &g_state.history_target, g_state.render_pass,
+        g_state.history_targets, g_state.render_pass,
         g_state.history_render_pass, g_state.command_pool,
         g_state.timing_query_pool, g_state.descriptor_set_layout,
         g_state.descriptor_pool, g_state.history_sampler, g_state.instance,
