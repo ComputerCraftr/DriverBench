@@ -240,21 +240,6 @@ static int db_init_vertices_for_mode(void) {
     return 1;
 }
 
-static void db_advance_snake_grid_state(void) {
-    const uint32_t tiles_per_step =
-        db_snake_grid_tiles_per_step(g_state.work_unit_count);
-    g_state.snake_batch_size = db_snake_grid_step_batch_size(
-        g_state.snake_cursor, g_state.work_unit_count, tiles_per_step);
-    g_state.snake_phase_completed =
-        ((g_state.snake_cursor + g_state.snake_batch_size) >=
-         g_state.work_unit_count);
-    g_state.snake_cursor += g_state.snake_batch_size;
-    if (g_state.snake_cursor >= g_state.work_unit_count) {
-        g_state.snake_cursor = 0U;
-        g_state.snake_clearing_phase = !g_state.snake_clearing_phase;
-    }
-}
-
 void db_renderer_opengl_gl3_3_init(const char *vert_shader_path,
                                    const char *frag_shader_path) {
     if (!db_init_vertices_for_mode()) {
@@ -356,18 +341,23 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                             g_state.vertices);
         }
     } else {
-        const uint32_t active_cursor = g_state.snake_cursor;
+        const db_snake_damage_plan_t snake_plan = db_snake_grid_plan_next_step(
+            g_state.snake_cursor, 0U, 0U, g_state.snake_clearing_phase,
+            g_state.work_unit_count);
         db_set_uniform1i_if_changed(g_state.u_snake_clearing_phase,
                                     &g_state.uniform_snake_clearing_phase_cache,
-                                    g_state.snake_clearing_phase);
-        db_advance_snake_grid_state();
+                                    snake_plan.clearing_phase);
+        g_state.snake_batch_size = snake_plan.batch_size;
+        g_state.snake_phase_completed = snake_plan.phase_completed;
+        g_state.snake_cursor = snake_plan.next_cursor;
+        g_state.snake_clearing_phase = snake_plan.next_clearing_phase;
         db_set_uniform1i_if_changed(
             g_state.u_snake_phase_completed,
             &g_state.uniform_snake_phase_completed_cache,
             g_state.snake_phase_completed);
         db_set_uniform1f_u32_if_changed(g_state.u_snake_cursor,
                                         &g_state.uniform_snake_cursor_cache,
-                                        active_cursor);
+                                        snake_plan.active_cursor);
         db_set_uniform1f_u32_if_changed(g_state.u_snake_batch_size,
                                         &g_state.uniform_snake_batch_size_cache,
                                         g_state.snake_batch_size);

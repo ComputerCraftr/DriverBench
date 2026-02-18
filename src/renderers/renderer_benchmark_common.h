@@ -23,6 +23,19 @@ typedef enum {
     DB_PATTERN_SNAKE_GRID = 1,
 } db_pattern_t;
 
+typedef struct {
+    uint32_t active_cursor;
+    uint32_t prev_start;
+    uint32_t prev_count;
+    uint32_t batch_size;
+    int clearing_phase;
+    int phase_completed;
+    uint32_t next_cursor;
+    uint32_t next_prev_start;
+    uint32_t next_prev_count;
+    int next_clearing_phase;
+} db_snake_damage_plan_t;
+
 static inline uint32_t db_snake_grid_rows_effective(void) {
     return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
 }
@@ -171,6 +184,34 @@ static inline uint32_t db_snake_grid_step_batch_size(uint32_t cursor,
     }
     const uint32_t remaining = work_unit_count - cursor;
     return (tiles_per_step < remaining) ? tiles_per_step : remaining;
+}
+
+static inline db_snake_damage_plan_t
+db_snake_grid_plan_next_step(uint32_t snake_cursor, uint32_t snake_prev_start,
+                             uint32_t snake_prev_count, int clearing_phase,
+                             uint32_t work_unit_count) {
+    db_snake_damage_plan_t plan = {0};
+    plan.active_cursor = snake_cursor;
+    plan.prev_start = snake_prev_start;
+    plan.prev_count = snake_prev_count;
+    plan.clearing_phase = clearing_phase;
+
+    const uint32_t tiles_per_step =
+        db_snake_grid_tiles_per_step(work_unit_count);
+    plan.batch_size = db_snake_grid_step_batch_size(
+        snake_cursor, work_unit_count, tiles_per_step);
+    plan.phase_completed =
+        ((snake_cursor + plan.batch_size) >= work_unit_count) ? 1 : 0;
+
+    plan.next_prev_start = snake_cursor;
+    plan.next_prev_count = plan.phase_completed ? 0U : plan.batch_size;
+    plan.next_cursor = snake_cursor + plan.batch_size;
+    plan.next_clearing_phase = clearing_phase;
+    if (plan.next_cursor >= work_unit_count) {
+        plan.next_cursor = 0U;
+        plan.next_clearing_phase = !clearing_phase;
+    }
+    return plan;
 }
 
 static inline void db_snake_grid_target_color_rgb(int clearing_phase,

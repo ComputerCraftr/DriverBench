@@ -1322,14 +1322,15 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     } else {
         const uint32_t snake_rows = db_snake_grid_rows_effective();
         const uint32_t snake_cols = db_snake_grid_cols_effective();
-        const uint32_t tiles_per_step =
-            db_snake_grid_tiles_per_step(g_state.work_unit_count);
-        const uint32_t batch_size = db_snake_grid_step_batch_size(
-            g_state.snake_cursor, g_state.work_unit_count, tiles_per_step);
+        const db_snake_damage_plan_t snake_plan = db_snake_grid_plan_next_step(
+            g_state.snake_cursor, 0U, 0U, g_state.snake_clearing_phase,
+            g_state.work_unit_count);
+        const uint32_t batch_size = snake_plan.batch_size;
+        const uint32_t active_cursor = snake_plan.active_cursor;
         float target_r = 0.0F;
         float target_g = 0.0F;
         float target_b = 0.0F;
-        db_snake_grid_target_color_rgb(g_state.snake_clearing_phase, &target_r,
+        db_snake_grid_target_color_rgb(snake_plan.clearing_phase, &target_r,
                                        &target_g, &target_b);
         VkViewport vpo = {0};
         vpo.width = (float)g_state.swapchain_state.extent.width;
@@ -1337,8 +1338,8 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         vpo.maxDepth = 1.0F;
         vkCmdSetViewport(g_state.command_buffer, 0, 1, &vpo);
         const float target_color[3] = {target_r, target_g, target_b};
-        const uint32_t full_rows = g_state.snake_cursor / snake_cols;
-        const uint32_t row_remainder = g_state.snake_cursor % snake_cols;
+        const uint32_t full_rows = active_cursor / snake_cols;
+        const uint32_t row_remainder = active_cursor % snake_cols;
 
         for (uint32_t row = 0; row < full_rows; row++) {
             const uint32_t span_units = snake_cols;
@@ -1396,7 +1397,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
 
         for (uint32_t update_index = 0; update_index < batch_size;
              update_index++) {
-            const uint32_t tile_step = g_state.snake_cursor + update_index;
+            const uint32_t tile_step = active_cursor + update_index;
             const uint32_t tile_index =
                 db_snake_grid_tile_index_from_step(tile_step);
             const uint32_t row = tile_index / snake_cols;
@@ -1415,7 +1416,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 g_state.timing_query_pool, owner, frame_owner_used);
             float grad_color[3];
             db_snake_grid_window_color_rgb(
-                update_index, batch_size, g_state.snake_clearing_phase,
+                update_index, batch_size, snake_plan.clearing_phase,
                 &grad_color[0], &grad_color[1], &grad_color[2]);
             db_vk_draw_snake_span(g_state.command_buffer,
                                   g_state.pipeline_layout,
@@ -1427,12 +1428,10 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             frame_work_units[owner] += 1U;
         }
 
-        const int phase_completed =
-            (g_state.snake_cursor + batch_size) >= g_state.work_unit_count;
-        if (phase_completed) {
+        if (snake_plan.phase_completed != 0) {
             for (uint32_t update_index = 0; update_index < batch_size;
                  update_index++) {
-                const uint32_t tile_step = g_state.snake_cursor + update_index;
+                const uint32_t tile_step = active_cursor + update_index;
                 const uint32_t tile_index =
                     db_snake_grid_tile_index_from_step(tile_step);
                 const uint32_t row = tile_index / snake_cols;
@@ -1460,11 +1459,8 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             }
         }
 
-        g_state.snake_cursor += batch_size;
-        if (g_state.snake_cursor >= g_state.work_unit_count) {
-            g_state.snake_cursor = 0U;
-            g_state.snake_clearing_phase = !g_state.snake_clearing_phase;
-        }
+        g_state.snake_cursor = snake_plan.next_cursor;
+        g_state.snake_clearing_phase = snake_plan.next_clearing_phase;
     }
 
     if (haveGroup) {
