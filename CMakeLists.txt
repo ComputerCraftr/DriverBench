@@ -28,6 +28,7 @@ set(DB_RENDERER_GLES_COMMON_SOURCES
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
+option(DB_BUILD_OFFSCREEN "Build offscreen sanitizer backend" ON)
 option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
@@ -487,6 +488,17 @@ if(DB_BUILD_OPENGL)
       endif()
     endif()
   endif()
+endif()
+
+if(DB_BUILD_OFFSCREEN)
+  set(DB_OFFSCREEN_TARGET driverbench_offscreen_sanitizer)
+  add_executable(${DB_OFFSCREEN_TARGET}
+    src/displays/offscreen/display_offscreen_sanitizer.c
+    ${DB_CORE_SOURCES}
+  )
+  db_apply_perf_options(${DB_OFFSCREEN_TARGET})
+  target_link_libraries(${DB_OFFSCREEN_TARGET} PRIVATE m)
+  set(HAVE_BACKEND ON)
 endif()
 
 if(NOT HAVE_BACKEND)
