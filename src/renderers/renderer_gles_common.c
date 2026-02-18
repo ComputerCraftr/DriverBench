@@ -107,11 +107,19 @@ static void db_gl_load_upload_proc_table(void) {
         (db_gl_map_buffer_fn_t)(db_gl_get_proc("glMapBuffer"));
     if (g_upload_proc_table.map_buffer == NULL) {
         g_upload_proc_table.map_buffer =
+            (db_gl_map_buffer_fn_t)(db_gl_get_proc("glMapBufferARB"));
+    }
+    if (g_upload_proc_table.map_buffer == NULL) {
+        g_upload_proc_table.map_buffer =
             (db_gl_map_buffer_fn_t)(db_gl_get_proc("glMapBufferOES"));
     }
 
     g_upload_proc_table.unmap_buffer =
         (db_gl_unmap_buffer_fn_t)(db_gl_get_proc("glUnmapBuffer"));
+    if (g_upload_proc_table.unmap_buffer == NULL) {
+        g_upload_proc_table.unmap_buffer =
+            (db_gl_unmap_buffer_fn_t)(db_gl_get_proc("glUnmapBufferARB"));
+    }
     if (g_upload_proc_table.unmap_buffer == NULL) {
         g_upload_proc_table.unmap_buffer =
             (db_gl_unmap_buffer_fn_t)(db_gl_get_proc("glUnmapBufferOES"));
@@ -122,32 +130,52 @@ static void db_gl_load_upload_proc_table(void) {
     if (g_upload_proc_table.get_buffer_sub_data == NULL) {
         g_upload_proc_table.get_buffer_sub_data =
             (db_gl_get_buffer_sub_data_fn_t)(db_gl_get_proc(
+                "glGetBufferSubDataARB"));
+    }
+    if (g_upload_proc_table.get_buffer_sub_data == NULL) {
+        g_upload_proc_table.get_buffer_sub_data =
+            (db_gl_get_buffer_sub_data_fn_t)(db_gl_get_proc(
                 "glGetBufferSubDataEXT"));
     }
 
     g_upload_proc_table.loaded = 1;
 }
 
-static int db_gl_is_es_context(void) {
-    const char *version_text = (const char *)glGetString(GL_VERSION);
-    return (version_text != NULL) &&
-           (strstr(version_text, "OpenGL ES") != NULL);
-}
-
 static int db_gl_supports_map_buffer_range(const char *exts) {
+    const char *version = (const char *)glGetString(GL_VERSION);
+    if (db_gl_is_es_context(version) != 0) {
+        return db_has_gl_extension_token(exts, "GL_EXT_map_buffer_range") ||
+               db_gl_version_text_at_least(version, 3, 0);
+    }
+
     return db_has_gl_extension_token(exts, "GL_ARB_map_buffer_range") ||
            db_has_gl_extension_token(exts, "GL_EXT_map_buffer_range") ||
-           db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 3,
-                                       0);
+           db_gl_version_text_at_least(version, 3, 0);
 }
 
 static int db_gl_supports_map_buffer(const char *exts) {
-    if (db_gl_is_es_context()) {
+    if (db_gl_is_es_context((const char *)glGetString(GL_VERSION)) != 0) {
         return db_has_gl_extension_token(exts, "GL_OES_mapbuffer");
     }
     return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
            db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
                                        5);
+}
+
+static int db_gl_supports_vbo(const char *exts) {
+    if (db_gl_is_es_context((const char *)glGetString(GL_VERSION)) != 0) {
+        // GLES 1.1+ has buffer objects in core.
+        return db_gl_version_text_at_least(
+            (const char *)glGetString(GL_VERSION), 1, 1);
+    }
+    return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
+           db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
+                                       5);
+}
+
+int db_gl_has_vbo_support(void) {
+    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
+    return db_gl_supports_vbo(exts);
 }
 
 static int db_gl_verify_buffer_prefix(const uint8_t *expected,
@@ -248,22 +276,6 @@ static int db_gl_probe_map_buffer_upload(size_t bytes,
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size,
                     initial_vertices);
     return glGetError() == GL_NO_ERROR;
-}
-
-int db_gl_has_vbo_support(void) {
-    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
-    if (db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
-        db_has_gl_extension_token(exts, "GL_OES_vertex_buffer_object")) {
-        return 1;
-    }
-
-    if (db_gl_is_es_context()) {
-        // GLES 2.0+ has VBOs in core; GLES 1.x relies on OES extension above.
-        return db_gl_version_text_at_least(
-            (const char *)glGetString(GL_VERSION), 2, 0);
-    }
-    return db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
-                                       5);
 }
 
 void db_gl_probe_upload_capabilities(size_t bytes,

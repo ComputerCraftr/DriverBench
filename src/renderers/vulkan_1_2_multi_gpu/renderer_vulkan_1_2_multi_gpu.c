@@ -432,7 +432,7 @@ static void db_vk_draw_snake_span(VkCommandBuffer cmd, VkPipelineLayout layout,
     vkCmdPushConstants(
         cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         0, sizeof(pc), &pc);
-    vkCmdDraw(cmd, DB_BAND_TRI_VERTS_PER_BAND, 1, 0, 0);
+    vkCmdDraw(cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
 static uint32_t
@@ -1315,8 +1315,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                                VK_SHADER_STAGE_VERTEX_BIT |
                                    VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(pc), &pc);
-            vkCmdDraw(g_state.command_buffer, DB_BAND_TRI_VERTS_PER_BAND, 1, 0,
-                      0);
+            vkCmdDraw(g_state.command_buffer, DB_RECT_VERTEX_COUNT, 1, 0, 0);
             db_vk_owner_timing_end(g_state.command_buffer,
                                    g_state.gpu_timing_enabled,
                                    g_state.timing_query_pool, owner);

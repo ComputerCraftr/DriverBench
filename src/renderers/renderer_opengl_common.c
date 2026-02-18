@@ -47,6 +47,17 @@ static int db_gl_supports_buffer_storage(const char *exts) {
                                        4);
 }
 
+static int db_gl_supports_vbo(const char *exts) {
+    return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
+           db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
+                                       5);
+}
+
+int db_gl_has_vbo_support(void) {
+    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
+    return db_gl_supports_vbo(exts);
+}
+
 static int db_gl_verify_buffer_prefix(const uint8_t *expected,
                                       size_t expected_size) {
     if (expected_size == 0U) {
@@ -178,16 +189,6 @@ static int db_gl_probe_map_buffer_upload(size_t bytes,
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size,
                     initial_vertices);
     return glGetError() == GL_NO_ERROR;
-}
-
-int db_gl_has_vbo_support(void) {
-    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
-    if (db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
-        db_has_gl_extension_token(exts, "GL_OES_vertex_buffer_object")) {
-        return 1;
-    }
-    return db_gl_version_text_at_least((const char *)glGetString(GL_VERSION), 1,
-                                       5);
 }
 
 void db_gl_probe_upload_capabilities(size_t bytes,

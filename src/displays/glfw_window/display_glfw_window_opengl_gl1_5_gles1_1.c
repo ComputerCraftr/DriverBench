@@ -2,12 +2,12 @@
 #include <GLFW/glfw3.h>
 
 #include <stdint.h>
-#include <string.h>
 
 #include "../../core/db_core.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../bench_config.h"
+#include "../display_gl_runtime_common.h"
 #include "display_glfw_window_common.h"
 
 #ifdef __APPLE__
@@ -45,8 +45,11 @@ int main(void) {
 
     const char *runtime_version = (const char *)glGetString(GL_VERSION);
     const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
-    const int runtime_is_gles = (runtime_version != NULL) &&
-                                (strstr(runtime_version, "OpenGL ES") != NULL);
+    const int runtime_is_gles = db_gl_is_es_context(runtime_version);
+    if (runtime_is_gles != 0) {
+        db_display_validate_gles_1x_runtime_or_fail(BACKEND_NAME,
+                                                    runtime_version);
+    }
     db_infof(BACKEND_NAME, "runtime API: %s, GL_VERSION: %s, GL_RENDERER: %s",
              (runtime_is_gles != 0) ? "OpenGL ES" : "OpenGL",
              (runtime_version != NULL) ? runtime_version : "(null)",

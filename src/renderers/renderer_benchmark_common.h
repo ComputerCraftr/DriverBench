@@ -11,10 +11,11 @@
 #include "../core/db_core.h"
 #include "../displays/bench_config.h"
 
-#define DB_BAND_TRI_VERTS_PER_BAND 6U
-#define DB_BAND_POS_FLOATS 2U
-#define DB_BAND_COLOR_FLOATS 3U
-#define DB_BAND_VERT_FLOATS (DB_BAND_POS_FLOATS + DB_BAND_COLOR_FLOATS)
+#define DB_RECT_VERTEX_COUNT 6U
+#define DB_VERTEX_POSITION_FLOAT_COUNT 2U
+#define DB_VERTEX_COLOR_FLOAT_COUNT 3U
+#define DB_VERTEX_FLOAT_STRIDE                                                 \
+    (DB_VERTEX_POSITION_FLOAT_COUNT + DB_VERTEX_COLOR_FLOAT_COUNT)
 #define DB_BENCHMARK_MODE_ENV "DRIVERBENCH_BENCHMARK_MODE"
 #define DB_BENCHMARK_MODE_BANDS "bands"
 #define DB_BENCHMARK_MODE_SNAKE_GRID "snake_grid"
@@ -134,7 +135,7 @@ static inline void db_set_rect_unit_rgb(float *unit_base, size_t stride_floats,
                                         size_t color_offset_floats,
                                         float color_r, float color_g,
                                         float color_b) {
-    for (uint32_t v = 0; v < DB_BAND_TRI_VERTS_PER_BAND; v++) {
+    for (uint32_t v = 0; v < DB_RECT_VERTEX_COUNT; v++) {
         float *color =
             &unit_base[((size_t)v * stride_floats) + color_offset_floats];
         color[0] = color_r;
@@ -250,9 +251,8 @@ static inline void db_snake_grid_window_color_rgb(uint32_t window_index,
 
 static inline int
 db_init_band_vertices_common(db_pattern_vertex_init_t *out_state) {
-    const size_t vertex_count =
-        (size_t)BENCH_BANDS * DB_BAND_TRI_VERTS_PER_BAND;
-    const size_t float_count = vertex_count * DB_BAND_VERT_FLOATS;
+    const size_t vertex_count = (size_t)BENCH_BANDS * DB_RECT_VERTEX_COUNT;
+    const size_t float_count = vertex_count * DB_VERTEX_FLOAT_STRIDE;
 
     float *vertices = (float *)calloc(float_count, sizeof(float));
     if (vertices == NULL) {
@@ -275,13 +275,12 @@ db_init_snake_grid_vertices_common(db_pattern_vertex_init_t *out_state) {
         return 0;
     }
 
-    const uint64_t vertex_count_u64 =
-        tile_count_u64 * DB_BAND_TRI_VERTS_PER_BAND;
+    const uint64_t vertex_count_u64 = tile_count_u64 * DB_RECT_VERTEX_COUNT;
     if (vertex_count_u64 > (uint64_t)INT32_MAX) {
         return 0;
     }
 
-    const uint64_t float_count_u64 = vertex_count_u64 * DB_BAND_VERT_FLOATS;
+    const uint64_t float_count_u64 = vertex_count_u64 * DB_VERTEX_FLOAT_STRIDE;
     if (float_count_u64 > ((uint64_t)SIZE_MAX / sizeof(float))) {
         return 0;
     }
@@ -299,13 +298,13 @@ db_init_snake_grid_vertices_common(db_pattern_vertex_init_t *out_state) {
         float x1 = 0.0F;
         float y1 = 0.0F;
         db_snake_grid_tile_bounds_ndc(tile_index, &x0, &y0, &x1, &y1);
-        const size_t base = (size_t)tile_index * DB_BAND_TRI_VERTS_PER_BAND *
-                            DB_BAND_VERT_FLOATS;
+        const size_t base =
+            (size_t)tile_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
         float *unit = &vertices[base];
-        db_fill_rect_unit_pos(unit, x0, y0, x1, y1, DB_BAND_VERT_FLOATS);
-        db_set_rect_unit_rgb(unit, DB_BAND_VERT_FLOATS, DB_BAND_POS_FLOATS,
-                             BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
-                             BENCH_GRID_PHASE0_B);
+        db_fill_rect_unit_pos(unit, x0, y0, x1, y1, DB_VERTEX_FLOAT_STRIDE);
+        db_set_rect_unit_rgb(
+            unit, DB_VERTEX_FLOAT_STRIDE, DB_VERTEX_POSITION_FLOAT_COUNT,
+            BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B);
     }
 
     *out_state = (db_pattern_vertex_init_t){0};
@@ -364,9 +363,8 @@ static inline void db_fill_band_vertices_pos_rgb(float *out_vertices,
         db_band_color_rgb(band_index, band_count, time_s, &color_r, &color_g,
                           &color_b);
 
-        const size_t base_offset = (size_t)band_index *
-                                   DB_BAND_TRI_VERTS_PER_BAND *
-                                   DB_BAND_VERT_FLOATS;
+        const size_t base_offset =
+            (size_t)band_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
         float *out = &out_vertices[base_offset];
 
         // Triangle 1

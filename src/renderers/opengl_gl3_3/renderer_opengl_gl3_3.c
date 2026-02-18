@@ -173,20 +173,20 @@ void db_renderer_opengl_gl3_3_init(void) {
     glGenBuffers(1, &g_state.vbo);
     glBindVertexArray(g_state.vao);
     glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
-    g_state.vbo_bytes =
-        (size_t)g_state.draw_vertex_count * DB_BAND_VERT_FLOATS * sizeof(float);
+    g_state.vbo_bytes = (size_t)g_state.draw_vertex_count *
+                        DB_VERTEX_FLOAT_STRIDE * sizeof(float);
     glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)g_state.vbo_bytes,
                  g_state.vertices, GL_DYNAMIC_DRAW);
 
     glEnableVertexAttribArray(ATTR_POSITION_LOC);
     glVertexAttribPointer(
         ATTR_POSITION_LOC, ATTR_POSITION_COMPONENTS, GL_FLOAT, GL_FALSE,
-        (GLsizei)(DB_BAND_VERT_FLOATS * sizeof(float)), (const void *)0);
+        (GLsizei)(DB_VERTEX_FLOAT_STRIDE * sizeof(float)), (const void *)0);
     glEnableVertexAttribArray(ATTR_COLOR_LOC);
-    glVertexAttribPointer(ATTR_COLOR_LOC, ATTR_COLOR_COMPONENTS, GL_FLOAT,
-                          GL_FALSE,
-                          (GLsizei)(DB_BAND_VERT_FLOATS * sizeof(float)),
-                          vbo_offset_ptr(DB_BAND_POS_FLOATS * sizeof(float)));
+    glVertexAttribPointer(
+        ATTR_COLOR_LOC, ATTR_COLOR_COMPONENTS, GL_FLOAT, GL_FALSE,
+        (GLsizei)(DB_VERTEX_FLOAT_STRIDE * sizeof(float)),
+        vbo_offset_ptr(DB_VERTEX_POSITION_FLOAT_COUNT * sizeof(float)));
 
     g_state.use_map_range_upload = 0;
     g_state.use_map_buffer_upload = 0;

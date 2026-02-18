@@ -83,6 +83,11 @@ static inline int db_gl_version_text_at_least(const char *version_text,
            ((major == req_major) && (minor >= req_minor));
 }
 
+static inline int db_gl_is_es_context(const char *version_text) {
+    return (version_text != NULL) &&
+           (strstr(version_text, "OpenGL ES") != NULL);
+}
+
 typedef unsigned int (*db_gl_get_error_fn_t)(void);
 
 static inline void db_gl_clear_errors(db_gl_get_error_fn_t get_error) {

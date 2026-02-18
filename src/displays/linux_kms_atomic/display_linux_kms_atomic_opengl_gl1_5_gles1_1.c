@@ -17,6 +17,7 @@
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../bench_config.h"
+#include "../display_gl_runtime_common.h"
 
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
@@ -453,11 +454,6 @@ static EGLDisplay egl_init_try_gl15_then_gles11(struct gbm_device *gbm,
         die("eglMakeCurrent ES1");
     }
 
-    const char *es_ver = (const char *)glGetString(GL_VERSION);
-    if (!db_gl_version_text_at_least(es_ver, 1, 1)) {
-        diex("EGL_OPENGL_ES_API reported unsupported GL_VERSION");
-    }
-
     *out_cfg = cfg;
     *out_ctx = ctx;
     *out_surf = surf;
@@ -500,8 +496,11 @@ int main(int argc, char **argv) {
 
     const char *runtime_version = (const char *)glGetString(GL_VERSION);
     const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
-    const int runtime_is_gles = (runtime_version != NULL) &&
-                                (strstr(runtime_version, "OpenGL ES") != NULL);
+    const int runtime_is_gles = db_gl_is_es_context(runtime_version);
+    if (runtime_is_gles != 0) {
+        db_display_validate_gles_1x_runtime_or_fail(BACKEND_NAME,
+                                                    runtime_version);
+    }
     db_infof(BACKEND_NAME, "runtime API: %s, GL_VERSION: %s, GL_RENDERER: %s",
              (runtime_is_gles != 0) ? "OpenGL ES" : "OpenGL",
              (runtime_version != NULL) ? runtime_version : "(null)",
