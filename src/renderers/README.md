@@ -10,6 +10,8 @@ Current renderer modules:
     - OpenGL 3.3 shader renderer logic (GLSL loaded from files).
 - `vulkan_1_2_multi_gpu/`
     - Vulkan 1.2 multi-GPU renderer logic.
+- `cpu_renderer/`
+    - CPU offscreen BO renderer for CI hash/reference comparisons.
 
 Display entrypoints live in `src/displays/`.
 

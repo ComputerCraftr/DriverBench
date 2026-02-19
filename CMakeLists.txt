@@ -13,6 +13,9 @@ endif()
 
 project(DriverBench C)
 
+include(CheckIncludeFile)
+include(CheckSymbolExists)
+
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
@@ -28,7 +31,7 @@ set(DB_RENDERER_GLES_COMMON_SOURCES
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
-option(DB_BUILD_OFFSCREEN "Build offscreen sanitizer backend" ON)
+option(DB_BUILD_OFFSCREEN "Build CPU renderer backend" ON)
 option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
@@ -76,6 +79,19 @@ if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LTO)
     )
   endif()
 endif()
+
+# C23 checked integer arithmetic support (stdckdint.h + ckd_add)
+set(CMAKE_REQUIRED_QUIET TRUE)
+check_include_file(stdckdint.h DB_HAVE_STDCKDINT_H)
+set(DB_HAVE_STDCKDINT 0)
+if(DB_HAVE_STDCKDINT_H)
+  check_symbol_exists(ckd_add stdckdint.h DB_HAVE_STDCKDINT_CKD_ADD)
+  if(DB_HAVE_STDCKDINT_CKD_ADD)
+    set(DB_HAVE_STDCKDINT 1)
+  endif()
+endif()
+add_compile_definitions(DB_HAVE_STDCKDINT=${DB_HAVE_STDCKDINT})
+message(STATUS "C23 stdckdint support: ${DB_HAVE_STDCKDINT}")
 
 set(DB_USE_LLD OFF)
 if(DB_EFFECTIVE_LTO AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -491,9 +507,9 @@ if(DB_BUILD_OPENGL)
 endif()
 
 if(DB_BUILD_OFFSCREEN)
-  set(DB_OFFSCREEN_TARGET driverbench_offscreen_sanitizer)
+  set(DB_OFFSCREEN_TARGET driverbench_cpu_renderer)
   add_executable(${DB_OFFSCREEN_TARGET}
-    src/displays/offscreen/display_offscreen_sanitizer.c
+    src/renderers/cpu_renderer/renderer_cpu_renderer.c
     ${DB_CORE_SOURCES}
   )
   db_apply_perf_options(${DB_OFFSCREEN_TARGET})

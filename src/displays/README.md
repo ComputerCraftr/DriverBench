@@ -16,5 +16,5 @@ while draw/compute logic lives under `src/renderers/`.
     - GLFW display entrypoint for the OpenGL GL3.3 renderer.
 - `glfw_window/display_glfw_window_vulkan_1_2_multi_gpu.c`
     - GLFW display entrypoint for the Vulkan 1.2 multi-GPU renderer.
-- `offscreen/display_offscreen_sanitizer.c`
-    - Headless/offscreen CI entrypoint for debug+sanitizer runs (no windowing).
+
+`offscreen/` is reserved for future real GPU offscreen display backends.

@@ -1,6 +1,6 @@
-# DriverBench
+#DriverBench
 
-OpenGL and Vulkan driver benchmarks
+OpenGL and Vulkan benchmarks for comparing old vs new drivers and renderers.
 
 ## Configure Matrix
 
@@ -42,6 +42,7 @@ Build outputs use versioned, display-aware target names only:
 - `driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1`
 - `driverbench_linux_kms_atomic_opengl_gl3_3`
 - `driverbench_glfw_window_vulkan_1_2_multi_gpu`
+- `driverbench_cpu_renderer`
 
 ## Runtime Options
 
@@ -50,10 +51,19 @@ Build outputs use versioned, display-aware target names only:
 - `DRIVERBENCH_FPS_CAP=<number>|0|off|uncapped`
   - Caps render loop rate for GLFW backends when set to a positive FPS value.
   - `0`, `off`, `false`, `uncapped`, or unset keeps rendering uncapped.
-- `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid|gradient_fill`
+- `DRIVERBENCH_RANDOM_SEED=<number>`
+  - Optional shared seed for random-color/random-rect benchmark modes.
+  - When unset, a time-based seed is used.
+  - Set this for reproducible comparisons across renderers/drivers.
+- `DRIVERBENCH_OFFSCREEN_FRAMES=<number>`
+  - CPU renderer frame count override (default `600`).
+- `DRIVERBENCH_HASH_EVERY_FRAME=1|0`
+  - CPU renderer hash logging control. Default logs final+aggregate only.
+- `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid|gradient_fill|rect_snake`
   - Default is `gradient_sweep` (mode index `0`).
   - `gradient_sweep` renders a full-grid workload with a moving `32`-row
-    vertical window that cycles green -> gray -> green as it sweeps downward.
+    vertical window that blends between deterministic random palette colors
+    while sweeping top-to-bottom and back to top (ping-pong).
     It is intended as the safer default visual mode.
   - `bands` is an animated color-changing vertical-band workload.
     Warning: this mode can produce intense rapid flashing, especially with
@@ -64,6 +74,9 @@ Build outputs use versioned, display-aware target names only:
     (`BENCH_SNAKE_PHASE_WINDOW_TILES`, default `64`) with progressive
     green-over-grey phasing. The sweep paints from top to bottom, then restarts
     at the top and clears back to grey.
-  - `gradient_fill` performs a full-screen top-down gray->green conversion with
-    a moving row transition; once the sweep reaches the bottom it restarts from
-    the top in gray.
+  - `gradient_fill` performs a full-screen top-down random-palette conversion
+    with a moving row transition.
+    Once the sweep reaches the bottom it restarts from the top with the next
+    palette phase.
+  - `rect_snake` draws deterministic pseudo-random rectangles and fills each
+    rectangle in an S-pattern snake order.

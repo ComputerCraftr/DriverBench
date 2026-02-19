@@ -5,6 +5,12 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#ifdef DB_HAVE_STDCKDINT
+#if DB_HAVE_STDCKDINT
+#include <stdckdint.h>
+#define DB_CAN_USE_STDCKDINT 1
+#endif
+#endif
 
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
@@ -60,6 +66,63 @@ static inline long db_checked_double_to_long(const char *backend,
         db_failf(backend, "%s out of long range: %.3f", field_name, value);
     }
     return (long)value;
+}
+
+static inline uint32_t db_fold_u64_to_u32(uint64_t value) {
+    return (uint32_t)(value ^ (value >> 32U));
+}
+
+static inline uint32_t db_checked_add_u32(const char *backend,
+                                          const char *field_name, uint32_t lhs,
+                                          uint32_t rhs) {
+    uint32_t out = 0U;
+#ifdef DB_CAN_USE_STDCKDINT
+    if (ckd_add(&out, lhs, rhs)) {
+        db_failf(backend, "%s u32 add overflow: %u + %u", field_name, lhs, rhs);
+    }
+#else
+    if (rhs > (UINT32_MAX - lhs)) {
+        db_failf(backend, "%s u32 add overflow: %u + %u", field_name, lhs, rhs);
+    }
+    out = lhs + rhs;
+#endif
+    return out;
+}
+
+static inline uint32_t db_checked_sub_u32(const char *backend,
+                                          const char *field_name, uint32_t lhs,
+                                          uint32_t rhs) {
+    uint32_t out = 0U;
+#ifdef DB_CAN_USE_STDCKDINT
+    if (ckd_sub(&out, lhs, rhs)) {
+        db_failf(backend, "%s u32 sub underflow: %u - %u", field_name, lhs,
+                 rhs);
+    }
+#else
+    if (lhs < rhs) {
+        db_failf(backend, "%s u32 sub underflow: %u - %u", field_name, lhs,
+                 rhs);
+    }
+    out = lhs - rhs;
+#endif
+    return out;
+}
+
+static inline uint32_t db_checked_mul_u32(const char *backend,
+                                          const char *field_name, uint32_t lhs,
+                                          uint32_t rhs) {
+    uint32_t out = 0U;
+#ifdef DB_CAN_USE_STDCKDINT
+    if (ckd_mul(&out, lhs, rhs)) {
+        db_failf(backend, "%s u32 mul overflow: %u * %u", field_name, lhs, rhs);
+    }
+#else
+    if ((lhs != 0U) && (rhs > (UINT32_MAX / lhs))) {
+        db_failf(backend, "%s u32 mul overflow: %u * %u", field_name, lhs, rhs);
+    }
+    out = lhs * rhs;
+#endif
+    return out;
 }
 
 #endif

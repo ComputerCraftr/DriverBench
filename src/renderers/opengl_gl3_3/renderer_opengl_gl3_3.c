@@ -60,6 +60,7 @@ typedef struct {
     GLint u_gradient_head_row;
     GLint u_gradient_window_rows;
     GLint u_gradient_fill_window_rows;
+    GLint u_gradient_fill_cycle;
     GLint u_rect_seed;
     GLint u_grid_base_color;
     GLint u_grid_target_color;
@@ -69,6 +70,7 @@ typedef struct {
     int uniform_grid_cursor_cache;
     int uniform_grid_batch_size_cache;
     int uniform_gradient_head_row_cache;
+    int uniform_gradient_fill_cycle_cache;
     float *vertices;
     uint32_t work_unit_count;
     uint32_t grid_cursor;
@@ -76,6 +78,9 @@ typedef struct {
     int grid_phase_completed;
     int grid_clearing_phase;
     uint32_t gradient_head_row;
+    int gradient_sweep_direction_down;
+    uint32_t gradient_sweep_cycle;
+    uint32_t gradient_fill_cycle;
     uint32_t rect_snake_rect_index;
     uint32_t rect_snake_seed;
     GLuint fallback_tex;
@@ -339,6 +344,10 @@ static int db_init_vertices_for_mode(void) {
     g_state.grid_phase_completed = init_state.snake_phase_completed;
     g_state.grid_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
+    g_state.gradient_sweep_direction_down =
+        init_state.gradient_sweep_direction_down;
+    g_state.gradient_sweep_cycle = init_state.gradient_sweep_cycle;
+    g_state.gradient_fill_cycle = init_state.gradient_fill_cycle;
     g_state.rect_snake_seed = init_state.rect_snake_seed;
     return 1;
 }
@@ -402,6 +411,8 @@ void db_renderer_opengl_gl3_3_init(void) {
         glGetUniformLocation(g_state.program, "u_gradient_window_rows");
     g_state.u_gradient_fill_window_rows =
         glGetUniformLocation(g_state.program, "u_gradient_fill_window_rows");
+    g_state.u_gradient_fill_cycle =
+        glGetUniformLocation(g_state.program, "u_gradient_fill_cycle");
     g_state.u_rect_seed = glGetUniformLocation(g_state.program, "u_rect_seed");
     g_state.u_grid_base_color =
         glGetUniformLocation(g_state.program, "u_grid_base_color");
@@ -414,6 +425,7 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.uniform_grid_cursor_cache = -1;
     g_state.uniform_grid_batch_size_cache = -1;
     g_state.uniform_gradient_head_row_cache = -1;
+    g_state.uniform_gradient_fill_cycle_cache = -1;
 
     if (g_state.u_render_mode >= 0) {
         int render_mode = DB_RENDER_MODE_BANDS;
@@ -460,6 +472,12 @@ void db_renderer_opengl_gl3_3_init(void) {
     db_set_uniform1i_u32_if_changed(g_state.u_gradient_head_row,
                                     &g_state.uniform_gradient_head_row_cache,
                                     g_state.gradient_head_row);
+    db_set_uniform1i_u32_if_changed(
+        g_state.u_gradient_fill_cycle,
+        &g_state.uniform_gradient_fill_cycle_cache,
+        (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP)
+            ? g_state.gradient_sweep_cycle
+            : g_state.gradient_fill_cycle);
     db_set_uniform1i_if_changed(g_state.u_grid_clearing_phase,
                                 &g_state.uniform_grid_clearing_phase_cache,
                                 g_state.grid_clearing_phase);
@@ -497,23 +515,36 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                                         g_state.grid_batch_size);
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
         const db_gradient_sweep_damage_plan_t plan =
-            db_gradient_sweep_plan_next_frame(g_state.gradient_head_row);
+            db_gradient_sweep_plan_next_frame(
+                g_state.gradient_head_row,
+                g_state.gradient_sweep_direction_down,
+                g_state.gradient_sweep_cycle);
         g_state.gradient_head_row = plan.next_head_row;
-        db_set_uniform1i_u32_if_changed(
-            g_state.u_gradient_head_row,
-            &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
-    } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
-        const db_gradient_fill_damage_plan_t plan =
-            db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
-                                             g_state.grid_clearing_phase);
-        g_state.gradient_head_row = plan.next_head_row;
-        g_state.grid_clearing_phase = plan.next_clearing_phase;
+        g_state.gradient_sweep_direction_down = plan.next_direction_down;
+        g_state.gradient_sweep_cycle = plan.next_cycle_index;
         db_set_uniform1i_u32_if_changed(
             g_state.u_gradient_head_row,
             &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
         db_set_uniform1i_if_changed(g_state.u_grid_clearing_phase,
                                     &g_state.uniform_grid_clearing_phase_cache,
-                                    plan.render_clearing_phase);
+                                    plan.render_direction_down);
+        db_set_uniform1i_u32_if_changed(
+            g_state.u_gradient_fill_cycle,
+            &g_state.uniform_gradient_fill_cycle_cache,
+            plan.render_cycle_index);
+    } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
+        const db_gradient_fill_damage_plan_t plan =
+            db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
+                                             g_state.gradient_fill_cycle);
+        g_state.gradient_head_row = plan.next_head_row;
+        g_state.gradient_fill_cycle = plan.next_cycle_index;
+        db_set_uniform1i_u32_if_changed(
+            g_state.u_gradient_head_row,
+            &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
+        db_set_uniform1i_u32_if_changed(
+            g_state.u_gradient_fill_cycle,
+            &g_state.uniform_gradient_fill_cycle_cache,
+            plan.render_cycle_index);
     } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
         const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
             g_state.rect_snake_seed, g_state.rect_snake_rect_index,

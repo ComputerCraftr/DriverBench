@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_RENDERER_GL_COMMON_H
 #define DRIVERBENCH_RENDERER_GL_COMMON_H
 
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -64,6 +65,10 @@ static inline int db_parse_gl_version_numbers(const char *version_text,
     const char *minor_start = parse_end + 1;
     const long minor_l = strtol(minor_start, &parse_end, 10);
     if (parse_end == minor_start) {
+        return 0;
+    }
+    if ((major_l < 0L) || (minor_l < 0L) || (major_l > (long)INT_MAX) ||
+        (minor_l > (long)INT_MAX)) {
         return 0;
     }
 

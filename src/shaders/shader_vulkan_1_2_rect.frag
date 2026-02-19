@@ -43,6 +43,9 @@ struct RectSnakeDesc {
     vec3 color;
 };
 
+uint db_mix_u32(uint value);
+vec3 db_gradient_fill_palette_color_rgb(uint cycle_u);
+
 vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
 }
@@ -75,28 +78,35 @@ int db_row_from_frag_coord() {
 
 vec4 db_gradient_sweep_color(int row_i) {
     int rows_i = max(pc.renderParams.y, 1);
-    int head_i = max(pc.renderParams.z, 0);
     int window_i = clamp(pc.gradientParams.x, 1, rows_i);
-    if((head_i > row_i) || ((row_i - head_i) >= window_i)) {
-        return pc.targetColor;
+    int head_i = pc.renderParams.z - window_i;
+    uint cycle_u = uint(max(pc.renderParams.w, 0));
+    bool direction_down = (pc.snakeParams.z != 0);
+    vec3 sourceColor = db_gradient_fill_palette_color_rgb(cycle_u);
+    vec3 targetColor = db_gradient_fill_palette_color_rgb(cycle_u + 1u);
+    if(row_i < head_i) {
+        return db_rgba(direction_down ? targetColor : sourceColor);
+    }
+    if(row_i >= (head_i + window_i)) {
+        return db_rgba(direction_down ? sourceColor : targetColor);
     }
     int delta_i = row_i - head_i;
-    float halfSpan = (float(window_i) - 1.0) * 0.5;
-    float blend = 0.0;
-    if(halfSpan > 0.0) {
-        blend = abs(float(delta_i) - halfSpan) / halfSpan;
+    float blend = 1.0;
+    if(window_i > 1) {
+        float t = float(delta_i) / float(window_i - 1);
+        blend = direction_down ? (1.0 - t) : t;
     }
-    return mix(pc.baseColor, pc.targetColor, blend);
+    return db_rgba(mix(sourceColor, targetColor, blend));
 }
 
 vec4 db_gradient_fill_color(int row_i) {
     int rows_i = max(pc.renderParams.y, 1);
     int head_i = max(pc.renderParams.z, 0);
-    int clearingPhase = pc.renderParams.w;
-    vec4 sourceColor = (clearingPhase != 0) ? pc.targetColor : pc.baseColor;
-    vec3 targetColor = db_target_color_for_phase(clearingPhase);
+    uint cycle_u = uint(max(pc.snakeParams.z, 0));
+    vec3 sourceColor = db_gradient_fill_palette_color_rgb(cycle_u);
+    vec3 targetColor = db_gradient_fill_palette_color_rgb(cycle_u + 1u);
     if(row_i >= head_i) {
-        return sourceColor;
+        return db_rgba(sourceColor);
     }
     int delta_i = head_i - row_i;
     int window_i = clamp(pc.gradientParams.y, 1, rows_i);
@@ -107,7 +117,7 @@ vec4 db_gradient_fill_color(int row_i) {
         return db_rgba(targetColor);
     }
     float blend = float(delta_i) / float(window_i - 1);
-    return mix(sourceColor, vec4(targetColor, 1.0), blend);
+    return db_rgba(mix(sourceColor, targetColor, blend));
 }
 
 int db_col_from_frag_coord() {
@@ -166,6 +176,15 @@ int db_u32_range(uint seed, int min_v, int max_v) {
 
 float db_rect_channel(uint seed) {
     return 0.25 + ((float(seed & 255u) / 255.0) * 0.70);
+}
+
+float db_gradient_fill_color_channel(uint seed) {
+    return 0.20 + ((float(seed & 255u) / 255.0) * 0.75);
+}
+
+vec3 db_gradient_fill_palette_color_rgb(uint cycle_u) {
+    uint seed_base = db_mix_u32(((cycle_u + 1u) * 0x9E3779B9u) ^ 0xA511E9B3u);
+    return vec3(db_gradient_fill_color_channel(db_mix_u32(seed_base ^ 0x27D4EB2Fu)), db_gradient_fill_color_channel(db_mix_u32(seed_base ^ 0x165667B1u)), db_gradient_fill_color_channel(db_mix_u32(seed_base ^ 0x85EBCA77u)));
 }
 
 RectSnakeDesc db_rect_snake_desc(

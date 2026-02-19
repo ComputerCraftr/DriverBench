@@ -48,6 +48,9 @@ typedef struct {
     int rect_snake_reset_pending;
     int snake_clearing_phase;
     uint32_t gradient_head_row;
+    int gradient_sweep_direction_down;
+    uint32_t gradient_sweep_cycle;
+    uint32_t gradient_fill_cycle;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
 } renderer_state_t;
@@ -121,6 +124,10 @@ static int db_init_vertices_for_mode(void) {
     g_state.rect_snake_seed = init_state.rect_snake_seed;
     g_state.snake_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
+    g_state.gradient_sweep_direction_down =
+        init_state.gradient_sweep_direction_down;
+    g_state.gradient_sweep_cycle = init_state.gradient_sweep_cycle;
+    g_state.gradient_fill_cycle = init_state.gradient_fill_cycle;
     return 1;
 }
 
@@ -490,12 +497,14 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         }
     }
     if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
-        db_gradient_sweep_set_rows_color(g_state.vertices,
-                                         g_state.gradient_head_row, 0U, rows);
+        db_gradient_sweep_set_rows_color(
+            g_state.vertices, g_state.gradient_head_row,
+            g_state.gradient_sweep_direction_down, g_state.gradient_sweep_cycle,
+            0U, rows);
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
         db_gradient_fill_set_rows_color(g_state.vertices,
                                         g_state.gradient_head_row,
-                                        g_state.snake_clearing_phase, 0U, rows);
+                                        g_state.gradient_fill_cycle, 0U, rows);
     }
     if (g_state.is_es_context != 0) {
         db_update_es_color_array_full();
@@ -568,7 +577,10 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         rect_full_repaint = db_render_rect_snake_step(&rect_snake_plan);
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
         const db_gradient_sweep_damage_plan_t plan =
-            db_gradient_sweep_plan_next_frame(g_state.gradient_head_row);
+            db_gradient_sweep_plan_next_frame(
+                g_state.gradient_head_row,
+                g_state.gradient_sweep_direction_down,
+                g_state.gradient_sweep_cycle);
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
         if ((rows > 0U) && (gradient_row_count > 0U)) {
@@ -580,16 +592,19 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                 float row_r = 0.0F;
                 float row_g = 0.0F;
                 float row_b = 0.0F;
-                db_gradient_sweep_row_color_rgb(row, plan.render_head_row,
-                                                &row_r, &row_g, &row_b);
+                db_gradient_sweep_row_color_rgb(
+                    row, plan.render_head_row, plan.render_direction_down,
+                    plan.render_cycle_index, &row_r, &row_g, &row_b);
                 db_blend_grid_row_to_color(row, row_r, row_g, row_b, 1.0F);
             }
         }
         g_state.gradient_head_row = plan.next_head_row;
+        g_state.gradient_sweep_direction_down = plan.next_direction_down;
+        g_state.gradient_sweep_cycle = plan.next_cycle_index;
     } else {
         const db_gradient_fill_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
-                                             g_state.snake_clearing_phase);
+                                             g_state.gradient_fill_cycle);
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
         if ((rows > 0U) && (gradient_row_count > 0U)) {
@@ -602,13 +617,13 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                 float row_g = 0.0F;
                 float row_b = 0.0F;
                 db_gradient_fill_row_color_rgb(row, plan.render_head_row,
-                                               plan.render_clearing_phase,
-                                               &row_r, &row_g, &row_b);
+                                               plan.render_cycle_index, &row_r,
+                                               &row_g, &row_b);
                 db_blend_grid_row_to_color(row, row_r, row_g, row_b, 1.0F);
             }
         }
         g_state.gradient_head_row = plan.next_head_row;
-        g_state.snake_clearing_phase = plan.next_clearing_phase;
+        g_state.gradient_fill_cycle = plan.next_cycle_index;
     }
 
     if (g_state.vbo != 0U) {
