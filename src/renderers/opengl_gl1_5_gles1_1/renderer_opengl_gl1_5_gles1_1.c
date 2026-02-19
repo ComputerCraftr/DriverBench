@@ -44,7 +44,7 @@ typedef struct {
     uint32_t snake_prev_start;
     uint32_t snake_prev_count;
     uint32_t rect_snake_rect_index;
-    uint32_t rect_snake_seed;
+    uint32_t pattern_seed;
     int rect_snake_reset_pending;
     int snake_clearing_phase;
     uint32_t gradient_head_row;
@@ -121,7 +121,7 @@ static int db_init_vertices_for_mode(void) {
     g_state.snake_cursor = init_state.snake_cursor;
     g_state.snake_prev_start = init_state.snake_prev_start;
     g_state.snake_prev_count = init_state.snake_prev_count;
-    g_state.rect_snake_seed = init_state.rect_snake_seed;
+    g_state.pattern_seed = init_state.pattern_seed;
     g_state.snake_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
     g_state.gradient_sweep_direction_down =
@@ -258,7 +258,7 @@ static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
     }
 
     const db_rect_snake_rect_t rect = db_rect_snake_rect_from_index(
-        g_state.rect_snake_seed, plan->active_rect_index);
+        g_state.pattern_seed, plan->active_rect_index);
     if ((rect.width == 0U) || (rect.height == 0U)) {
         return full_repaint;
     }
@@ -424,7 +424,7 @@ db_upload_vbo_source(const float *source, size_t total_bytes, size_t tile_bytes,
         }
 
         const db_rect_snake_rect_t rect = db_rect_snake_rect_from_index(
-            g_state.rect_snake_seed, rect_plan->active_rect_index);
+            g_state.pattern_seed, rect_plan->active_rect_index);
         if ((rect.width == 0U) || (rect.height == 0U)) {
             return;
         }
@@ -572,7 +572,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         rect_prev_start = g_state.snake_prev_start;
         rect_prev_count = g_state.snake_prev_count;
         rect_snake_plan = db_rect_snake_plan_next_step(
-            g_state.rect_snake_seed, g_state.rect_snake_rect_index,
+            g_state.pattern_seed, g_state.rect_snake_rect_index,
             g_state.snake_cursor);
         rect_full_repaint = db_render_rect_snake_step(&rect_snake_plan);
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {

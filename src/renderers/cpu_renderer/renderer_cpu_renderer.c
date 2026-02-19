@@ -336,7 +336,7 @@ void db_renderer_cpu_renderer_init(void) {
     g_state.gradient_fill_cycle = init_state.gradient_fill_cycle;
     g_state.rect_snake_index = 0U;
     g_state.rect_snake_cursor = 0U;
-    g_state.rect_seed = init_state.rect_snake_seed;
+    g_state.rect_seed = init_state.pattern_seed;
 }
 
 void db_renderer_cpu_renderer_render_frame(double time_s) {

@@ -50,6 +50,7 @@ int main(void) {
     const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME);
     const int hash_framebuffer = db_env_is_truthy(DB_ENV_FRAMEBUFFER_HASH);
     const int hash_every_frame = db_env_is_truthy(DB_ENV_HASH_EVERY_FRAME);
+    const int hash_enabled = (hash_framebuffer != 0) || (hash_every_frame != 0);
     GLFWwindow *window = db_glfw_create_opengl_window(
         BACKEND_NAME, "OpenGL 3.3 Shader GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
@@ -68,7 +69,7 @@ int main(void) {
     double bench_start = db_glfw_time_seconds();
     double next_progress_log_due_ms = 0.0;
     db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
-        hash_framebuffer, hash_every_frame, "framebuffer_hash");
+        hash_enabled, hash_every_frame, "framebuffer_hash");
     db_gl_framebuffer_hash_scratch_t hash_scratch = {0};
 
     while (!glfwWindowShouldClose(window) && !db_should_stop()) {
@@ -88,7 +89,7 @@ int main(void) {
         double frame_time_s = (double)frames / BENCH_TARGET_FPS_D;
         db_renderer_opengl_gl3_3_render_frame(frame_time_s);
 
-        if (hash_framebuffer != 0) {
+        if (hash_enabled != 0) {
             const uint64_t frame_hash = db_gl_hash_framebuffer_rgba8_or_fail(
                 BACKEND_NAME, framebuffer_width_px, framebuffer_height_px,
                 &hash_scratch);

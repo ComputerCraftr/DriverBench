@@ -146,7 +146,7 @@ typedef struct {
     uint32_t gradient_sweep_cycle;
     uint32_t gradient_fill_cycle;
     uint32_t random_seed;
-    uint32_t rect_snake_seed;
+    uint32_t pattern_seed;
 } db_pattern_vertex_init_t;
 
 static inline uint32_t db_grid_rows_effective(void) {
@@ -351,7 +351,7 @@ static inline void db_gradient_fill_cycle_color_rgb(uint32_t cycle_index,
         db_mix_u32(seed_base ^ DB_SEED_COMMON_COLOR_B));
 }
 
-static inline uint32_t db_rect_snake_seed_from_time(void) {
+static inline uint32_t db_pattern_seed_from_time(void) {
     const time_t now = time(NULL);
     if (now == (time_t)-1) {
         db_failf(DB_BENCH_COMMON_BACKEND, "time() failed for random seed");
@@ -370,7 +370,7 @@ static inline uint32_t
 db_benchmark_random_seed_from_env_or_time(const char *backend_name) {
     const char *value = getenv(DB_RANDOM_SEED_ENV);
     if ((value == NULL) || (value[0] == '\0')) {
-        return db_rect_snake_seed_from_time();
+        return db_pattern_seed_from_time();
     }
     char *end = NULL;
     const unsigned long parsed = strtoul(value, &end, 0);
@@ -1062,7 +1062,7 @@ db_init_vertices_for_mode_common(const char *backend_name,
         out_state->pattern = requested;
         out_state->random_seed =
             db_benchmark_random_seed_from_env_or_time(backend_name);
-        out_state->rect_snake_seed = out_state->random_seed;
+        out_state->pattern_seed = out_state->random_seed;
         out_state->gradient_sweep_cycle = db_benchmark_cycle_from_seed(
             out_state->random_seed, DB_GRADIENT_FILL_SEED_PHASE_A);
         out_state->gradient_fill_cycle = db_benchmark_cycle_from_seed(
@@ -1076,7 +1076,7 @@ db_init_vertices_for_mode_common(const char *backend_name,
         }
         if (requested == DB_PATTERN_GRADIENT_SWEEP) {
             db_infof(backend_name,
-                     "benchmark mode: %s (%u-row green/gray/green sweep over "
+                     "benchmark mode: %s (%u-row random palette sweep over "
                      "%ux%u tiles)",
                      DB_BENCHMARK_MODE_GRADIENT_SWEEP,
                      db_gradient_sweep_window_rows_effective(),
@@ -1092,7 +1092,7 @@ db_init_vertices_for_mode_common(const char *backend_name,
             db_infof(backend_name,
                      "benchmark mode: %s (seed=%u, deterministic PRNG random "
                      "rectangles, S-snake draw)",
-                     DB_BENCHMARK_MODE_RECT_SNAKE, out_state->rect_snake_seed);
+                     DB_BENCHMARK_MODE_RECT_SNAKE, out_state->pattern_seed);
         } else {
             db_infof(
                 backend_name,

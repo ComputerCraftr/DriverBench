@@ -8,13 +8,16 @@ layout(push_constant) uniform PC {
     vec2 offsetNDC;
     vec2 scaleNDC;
     vec4 color;
-    ivec4 renderParams;   // x=mode, y=gridRows, z=headRow, w=clearingPhase
+    ivec4 renderParams;   // x=mode, y=gridRows, z=headRow, w=mode-dependent
     ivec4 gradientParams; // x=sweepWindowRows, y=fillWindowRows,
                           // z=viewportHeight, w=gridCols
     ivec4 snakeParams;    // x=activeCursor, y=batchSize, z=phaseCompleted,
                           // w=viewportWidth
     vec4 baseColor;
     vec4 targetColor;
+    uint gradientSweepCycle;
+    uint gradientFillCycle;
+    uint rectSeed;
 } pc;
 #else
 layout(std140, binding = 0) uniform PC {
@@ -26,6 +29,9 @@ layout(std140, binding = 0) uniform PC {
     ivec4 snakeParams;
     vec4 baseColor;
     vec4 targetColor;
+    uint gradientSweepCycle;
+    uint gradientFillCycle;
+    uint rectSeed;
 } pc;
 #endif
 
@@ -80,7 +86,7 @@ vec4 db_gradient_sweep_color(int row_i) {
     int rows_i = max(pc.renderParams.y, 1);
     int window_i = clamp(pc.gradientParams.x, 1, rows_i);
     int head_i = pc.renderParams.z - window_i;
-    uint cycle_u = uint(max(pc.renderParams.w, 0));
+    uint cycle_u = pc.gradientSweepCycle;
     bool direction_down = (pc.snakeParams.z != 0);
     vec3 sourceColor = db_gradient_fill_palette_color_rgb(cycle_u);
     vec3 targetColor = db_gradient_fill_palette_color_rgb(cycle_u + 1u);
@@ -102,7 +108,7 @@ vec4 db_gradient_sweep_color(int row_i) {
 vec4 db_gradient_fill_color(int row_i) {
     int rows_i = max(pc.renderParams.y, 1);
     int head_i = max(pc.renderParams.z, 0);
-    uint cycle_u = uint(max(pc.snakeParams.z, 0));
+    uint cycle_u = pc.gradientFillCycle;
     vec3 sourceColor = db_gradient_fill_palette_color_rgb(cycle_u);
     vec3 targetColor = db_gradient_fill_palette_color_rgb(cycle_u + 1u);
     if(row_i >= head_i) {
@@ -188,13 +194,13 @@ vec3 db_gradient_fill_palette_color_rgb(uint cycle_u) {
 }
 
 RectSnakeDesc db_rect_snake_desc(
-    int rect_seed,
+    uint rect_seed,
     uint rect_index,
     int rows_i,
     int cols_i
 ) {
     RectSnakeDesc rect;
-    uint seed_base = db_mix_u32(uint(max(rect_seed, 0)) + (rect_index * 0x85EBCA77u) + 1u);
+    uint seed_base = db_mix_u32(rect_seed + (rect_index * 0x85EBCA77u) + 1u);
     int min_w = (cols_i >= 16) ? 8 : 1;
     int min_h = (rows_i >= 16) ? 8 : 1;
     int max_w = (cols_i >= min_w) ? ((cols_i / 3) + min_w) : min_w;
@@ -226,9 +232,8 @@ int db_rect_snake_step(RectSnakeDesc rect, int row_i, int col_i) {
 vec4 db_rect_snake_color(int row_i, int col_i, vec3 prior_color) {
     int rows_i = max(pc.renderParams.y, 1);
     int cols_i = max(pc.gradientParams.w, 1);
-    int rect_seed = max(pc.renderParams.w, 0);
     uint rect_index_u = uint(max(pc.renderParams.z, 0));
-    RectSnakeDesc current_rect = db_rect_snake_desc(rect_seed, rect_index_u, rows_i, cols_i);
+    RectSnakeDesc current_rect = db_rect_snake_desc(pc.rectSeed, rect_index_u, rows_i, cols_i);
     if(!db_rect_contains(current_rect, row_i, col_i)) {
         return db_rgba(prior_color);
     }

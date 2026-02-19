@@ -3,12 +3,14 @@ layout(location = 0) in vec2 inPos; // [0..1] quad coords
 
 #if defined(VULKAN) || defined(GL_KHR_vulkan_glsl)
 layout(push_constant) uniform PC {
-    vec2 offsetNDC;  // in NDC
-    vec2 scaleNDC;   // in NDC
+    vec2 offsetNDC; // in NDC
+    vec2 scaleNDC;  // in NDC
     vec4 color;
     ivec4 renderParams;   // x=mode, y=gridRows, z=headRow, w=clearingPhase
-    ivec4 gradientParams; // x=sweepWindowRows, y=fillWindowRows, z=viewportHeight, w=gridCols
-    ivec4 snakeParams;    // x=activeCursor, y=batchSize, z=phaseCompleted, w=viewportWidth
+    ivec4 gradientParams; // x=sweepWindowRows, y=fillWindowRows,
+                          // z=viewportHeight, w=gridCols
+    ivec4 snakeParams;    // x=activeCursor, y=batchSize, z=phaseCompleted,
+                          // w=viewportWidth
     vec4 baseColor;
     vec4 targetColor;
 } pc;

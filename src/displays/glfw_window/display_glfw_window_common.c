@@ -12,8 +12,8 @@
 #include <time.h>
 
 #include "../../core/db_core.h"
-#include "../display_env_common.h"
 #include "../bench_config.h"
+#include "../display_env_common.h"
 
 #define NS_PER_SECOND_D 1000000000.0
 #define MAX_SLEEP_NS_D 100000000.0
@@ -150,8 +150,8 @@ int db_glfw_resolve_swap_interval(void) {
     }
 
     db_infof("display_glfw_window_common",
-             "Invalid %s='%s'; using default swap interval %d",
-             DB_ENV_VSYNC, value, BENCH_GLFW_SWAP_INTERVAL);
+             "Invalid %s='%s'; using default swap interval %d", DB_ENV_VSYNC,
+             value, BENCH_GLFW_SWAP_INTERVAL);
     return BENCH_GLFW_SWAP_INTERVAL;
 }
 
