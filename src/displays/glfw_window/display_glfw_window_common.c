@@ -3,6 +3,7 @@
 #include <GLFW/glfw3.h>
 
 #include <errno.h>
+#include <stdint.h>
 #ifndef __APPLE__
 #include <sys/errno.h>
 #endif
@@ -11,17 +12,23 @@
 #include <time.h>
 
 #include "../../core/db_core.h"
+#include "../display_env_common.h"
 #include "../bench_config.h"
 
-#define DRIVERBENCH_VSYNC_ENV "DRIVERBENCH_VSYNC"
-#define DRIVERBENCH_FPS_CAP_ENV "DRIVERBENCH_FPS_CAP"
 #define NS_PER_SECOND_D 1000000000.0
 #define MAX_SLEEP_NS_D 100000000.0
+
+int db_glfw_offscreen_enabled(void) {
+    return db_env_is_truthy(DB_ENV_OFFSCREEN);
+}
 
 GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
                                          int width_px, int height_px) {
     if (!glfwInit()) {
         db_failf(backend, "glfwInit failed");
+    }
+    if (db_glfw_offscreen_enabled() != 0) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *window =
@@ -41,6 +48,9 @@ GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
         db_failf(backend, "glfwInit failed");
     }
     glfwDefaultWindowHints();
+    if (db_glfw_offscreen_enabled() != 0) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, context_major);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, context_minor);
@@ -75,6 +85,9 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     }
 
     glfwDefaultWindowHints();
+    if (db_glfw_offscreen_enabled() != 0) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, gl_context_major);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, gl_context_minor);
@@ -87,6 +100,9 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     }
 
     glfwDefaultWindowHints();
+    if (db_glfw_offscreen_enabled() != 0) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 1);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
@@ -116,7 +132,7 @@ void db_glfw_poll_events(void) { glfwPollEvents(); }
 double db_glfw_time_seconds(void) { return glfwGetTime(); }
 
 int db_glfw_resolve_swap_interval(void) {
-    const char *value = getenv(DRIVERBENCH_VSYNC_ENV);
+    const char *value = getenv(DB_ENV_VSYNC);
     if (value == NULL) {
         return BENCH_GLFW_SWAP_INTERVAL;
     }
@@ -135,12 +151,12 @@ int db_glfw_resolve_swap_interval(void) {
 
     db_infof("display_glfw_window_common",
              "Invalid %s='%s'; using default swap interval %d",
-             DRIVERBENCH_VSYNC_ENV, value, BENCH_GLFW_SWAP_INTERVAL);
+             DB_ENV_VSYNC, value, BENCH_GLFW_SWAP_INTERVAL);
     return BENCH_GLFW_SWAP_INTERVAL;
 }
 
 double db_glfw_resolve_fps_cap(const char *backend) {
-    const char *value = getenv(DRIVERBENCH_FPS_CAP_ENV);
+    const char *value = getenv(DB_ENV_FPS_CAP);
     if (value == NULL) {
         return BENCH_FPS_CAP_D;
     }
@@ -159,8 +175,26 @@ double db_glfw_resolve_fps_cap(const char *backend) {
     }
 
     db_infof(backend, "Invalid %s='%s'; using default fps cap %.2f",
-             DRIVERBENCH_FPS_CAP_ENV, value, BENCH_FPS_CAP_D);
+             DB_ENV_FPS_CAP, value, BENCH_FPS_CAP_D);
     return BENCH_FPS_CAP_D;
+}
+
+uint32_t db_glfw_resolve_frame_limit(const char *backend) {
+    const char *value = getenv(DB_ENV_FRAME_LIMIT);
+    if ((value == NULL) || (value[0] == '\0')) {
+        return 0U;
+    }
+
+    char *endptr = NULL;
+    const unsigned long parsed = strtoul(value, &endptr, 10);
+    if ((endptr != value) && (endptr != NULL) && (*endptr == '\0') &&
+        (parsed <= UINT32_MAX)) {
+        return (uint32_t)parsed;
+    }
+
+    db_infof(backend, "Invalid %s='%s'; using unlimited runtime",
+             DB_ENV_FRAME_LIMIT, value);
+    return 0U;
 }
 
 void db_glfw_sleep_to_fps_cap(double frame_start_s, double fps_cap) {

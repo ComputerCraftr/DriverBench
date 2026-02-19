@@ -12,6 +12,7 @@ if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
 endif()
 
 project(DriverBench C)
+include(CTest)
 
 include(CheckIncludeFile)
 include(CheckSymbolExists)
@@ -32,6 +33,9 @@ set(DB_RENDERER_GLES_COMMON_SOURCES
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
 option(DB_BUILD_OFFSCREEN "Build CPU renderer backend" ON)
+option(DB_ENABLE_GLFW_OFFSCREEN_TESTS
+  "Enable deterministic offscreen GLFW hash tests (requires working GLFW display stack)"
+  OFF)
 option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
@@ -507,14 +511,50 @@ if(DB_BUILD_OPENGL)
 endif()
 
 if(DB_BUILD_OFFSCREEN)
-  set(DB_OFFSCREEN_TARGET driverbench_cpu_renderer)
+  set(DB_OFFSCREEN_TARGET driverbench_offscreen_cpu_renderer)
   add_executable(${DB_OFFSCREEN_TARGET}
+    src/displays/offscreen/display_offscreen_cpu_renderer.c
     src/renderers/cpu_renderer/renderer_cpu_renderer.c
     ${DB_CORE_SOURCES}
   )
   db_apply_perf_options(${DB_OFFSCREEN_TARGET})
   target_link_libraries(${DB_OFFSCREEN_TARGET} PRIVATE m)
   set(HAVE_BACKEND ON)
+
+  if(DB_GLFW_TARGET)
+    set(DB_CPU_GLFW_TARGET driverbench_glfw_window_cpu_renderer)
+    add_executable(${DB_CPU_GLFW_TARGET}
+      src/displays/glfw_window/display_glfw_window_cpu_renderer.c
+      src/displays/glfw_window/display_glfw_window_common.c
+      src/renderers/cpu_renderer/renderer_cpu_renderer.c
+      ${DB_CORE_SOURCES}
+    )
+    db_apply_perf_options(${DB_CPU_GLFW_TARGET})
+    if(APPLE)
+      target_compile_definitions(${DB_CPU_GLFW_TARGET} PRIVATE GL_SILENCE_DEPRECATION)
+      target_link_libraries(${DB_CPU_GLFW_TARGET} PRIVATE
+        ${DB_GLFW_TARGET}
+        "-framework OpenGL"
+        m
+      )
+    else()
+      find_package(OpenGL QUIET)
+      if(TARGET OpenGL::GL)
+        target_link_libraries(${DB_CPU_GLFW_TARGET} PRIVATE
+          ${DB_GLFW_TARGET}
+          OpenGL::GL
+          m
+        )
+      else()
+        target_link_libraries(${DB_CPU_GLFW_TARGET} PRIVATE
+          ${DB_GLFW_TARGET}
+          GL
+          m
+        )
+      endif()
+    endif()
+    set(HAVE_BACKEND ON)
+  endif()
 endif()
 
 if(NOT HAVE_BACKEND)
@@ -531,4 +571,48 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS)
     COMMENT "Sync compile_commands.json to source root for clangd"
     VERBATIM
   )
+endif()
+
+if(BUILD_TESTING)
+  function(db_add_determinism_test test_name target_name hash_key env_list)
+    if(NOT TARGET ${target_name})
+      return()
+    endif()
+    add_test(
+      NAME ${test_name}
+      COMMAND ${CMAKE_COMMAND}
+        -DTEST_BIN=$<TARGET_FILE:${target_name}>
+        -DTEST_HASH_KEY=${hash_key}
+        -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
+    )
+    set_property(TEST ${test_name} PROPERTY ENVIRONMENT "${env_list}")
+  endfunction()
+
+  db_add_determinism_test(
+    determinism_cpu_renderer_snake
+    driverbench_offscreen_cpu_renderer
+    bo_hash_final
+    "DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+  )
+  db_add_determinism_test(
+    determinism_cpu_renderer_gradient_fill
+    driverbench_offscreen_cpu_renderer
+    bo_hash_final
+    "DRIVERBENCH_BENCHMARK_MODE=gradient_fill;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+  )
+
+  if(DB_ENABLE_GLFW_OFFSCREEN_TESTS)
+    db_add_determinism_test(
+      determinism_glfw_gl1_5_offscreen
+      driverbench_glfw_window_opengl_gl1_5_gles1_1
+      framebuffer_hash_final
+      "DRIVERBENCH_OFFSCREEN=1;DRIVERBENCH_FRAME_LIMIT=64;DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_VSYNC=0;DRIVERBENCH_FRAMEBUFFER_HASH=1"
+    )
+    db_add_determinism_test(
+      determinism_glfw_gl3_3_offscreen
+      driverbench_glfw_window_opengl_gl3_3
+      framebuffer_hash_final
+      "DRIVERBENCH_OFFSCREEN=1;DRIVERBENCH_FRAME_LIMIT=64;DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_VSYNC=0;DRIVERBENCH_FRAMEBUFFER_HASH=1"
+    )
+  endif()
 endif()

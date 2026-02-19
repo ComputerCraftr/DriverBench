@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/signal.h>
+#endif
 
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
@@ -71,6 +74,23 @@ int db_env_is_truthy(const char *name) {
     return (strcmp(value, "1") == 0) || (strcmp(value, "true") == 0) ||
            (strcmp(value, "TRUE") == 0) || (strcmp(value, "yes") == 0) ||
            (strcmp(value, "YES") == 0);
+}
+
+int db_env_parse_u32_positive(const char *backend, const char *env_name,
+                              uint32_t *out_value) {
+    const char *value = getenv(env_name);
+    if ((value == NULL) || (value[0] == '\0')) {
+        return 0;
+    }
+
+    char *end = NULL;
+    const unsigned long parsed = strtoul(value, &end, 10);
+    if ((end == value) || (end == NULL) || (*end != '\0') || (parsed == 0UL) ||
+        (parsed > UINT32_MAX)) {
+        db_failf(backend, "Invalid %s='%s'", env_name, value);
+    }
+    *out_value = (uint32_t)parsed;
+    return 1;
 }
 
 int db_has_ssh_env(void) {

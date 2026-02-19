@@ -42,7 +42,8 @@ Build outputs use versioned, display-aware target names only:
 - `driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1`
 - `driverbench_linux_kms_atomic_opengl_gl3_3`
 - `driverbench_glfw_window_vulkan_1_2_multi_gpu`
-- `driverbench_cpu_renderer`
+- `driverbench_offscreen_cpu_renderer`
+- `driverbench_glfw_window_cpu_renderer`
 
 ## Runtime Options
 
@@ -56,9 +57,16 @@ Build outputs use versioned, display-aware target names only:
   - When unset, a time-based seed is used.
   - Set this for reproducible comparisons across renderers/drivers.
 - `DRIVERBENCH_OFFSCREEN_FRAMES=<number>`
-  - CPU renderer frame count override (default `600`).
+  - Offscreen CPU display frame count override (default `600`).
+- `DRIVERBENCH_OFFSCREEN=1`
+  - GLFW backends create hidden windows for offscreen CI-style runs.
+- `DRIVERBENCH_FRAME_LIMIT=<number>`
+  - Stops GLFW render loops after N frames (`0`/unset = no limit).
+  - Applies to `driverbench_glfw_window_cpu_renderer` too.
+- `DRIVERBENCH_FRAMEBUFFER_HASH=1`
+  - OpenGL GLFW backends compute/log final framebuffer hash for determinism checks.
 - `DRIVERBENCH_HASH_EVERY_FRAME=1|0`
-  - CPU renderer hash logging control. Default logs final+aggregate only.
+  - CPU/OpenGL hash logging control. Default logs final+aggregate only.
 - `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid|gradient_fill|rect_snake`
   - Default is `gradient_sweep` (mode index `0`).
   - `gradient_sweep` renders a full-grid workload with a moving `32`-row
@@ -80,3 +88,12 @@ Build outputs use versioned, display-aware target names only:
     palette phase.
   - `rect_snake` draws deterministic pseudo-random rectangles and fills each
     rectangle in an S-pattern snake order.
+
+## Determinism Tests
+
+- `ctest` includes deterministic hash tests for
+  `driverbench_offscreen_cpu_renderer`.
+- Enable GLFW offscreen deterministic tests with:
+  - `-DDB_ENABLE_GLFW_OFFSCREEN_TESTS=ON`
+- GLFW deterministic tests run hidden (`DRIVERBENCH_OFFSCREEN=1`) and compare
+  final framebuffer hashes across repeated runs with fixed seed/frame count.

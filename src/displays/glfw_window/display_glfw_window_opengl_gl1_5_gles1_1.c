@@ -7,7 +7,9 @@
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../bench_config.h"
+#include "../display_env_common.h"
 #include "../display_gl_runtime_common.h"
+#include "../display_hash_common.h"
 #include "display_glfw_window_common.h"
 
 #ifdef __APPLE__
@@ -16,9 +18,10 @@
 #include <GL/gl.h>
 #endif
 
+#include "display_glfw_window_gl_hash_common.h"
+
 #define BACKEND_NAME "display_glfw_window_opengl_gl1_5_gles1_1"
 #define RENDERER_NAME "renderer_opengl_gl1_5_gles1_1"
-#define REMOTE_DISPLAY_OVERRIDE_ENV "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
 
 #define OPENGL_CONTEXT_VERSION_MAJOR 2
 #define OPENGL_CONTEXT_VERSION_MINOR 1
@@ -29,11 +32,14 @@
 #define BG_A 1.0F
 
 int main(void) {
-    db_validate_runtime_environment(BACKEND_NAME, REMOTE_DISPLAY_OVERRIDE_ENV);
+    db_validate_runtime_environment(BACKEND_NAME, DB_ENV_ALLOW_REMOTE_DISPLAY);
     db_install_signal_handlers();
 
     int swap_interval = db_glfw_resolve_swap_interval();
     const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME);
+    const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME);
+    const int hash_framebuffer = db_env_is_truthy(DB_ENV_FRAMEBUFFER_HASH);
+    const int hash_every_frame = db_env_is_truthy(DB_ENV_HASH_EVERY_FRAME);
     int is_gles = 0;
     GLFWwindow *window = db_glfw_create_gl1_5_or_gles1_1_window(
         BACKEND_NAME, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
@@ -65,8 +71,14 @@ int main(void) {
     uint64_t frames = 0;
     double bench_start = db_glfw_time_seconds();
     double next_progress_log_due_ms = 0.0;
+    db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
+        hash_framebuffer, hash_every_frame, "framebuffer_hash");
+    db_gl_framebuffer_hash_scratch_t hash_scratch = {0};
 
     while (!glfwWindowShouldClose(window) && !db_should_stop()) {
+        if ((frame_limit > 0U) && (frames >= frame_limit)) {
+            break;
+        }
         const double frame_start_s = db_glfw_time_seconds();
         db_glfw_poll_events();
         int framebuffer_width_px = 0;
@@ -79,6 +91,14 @@ int main(void) {
 
         double frame_time_s = (double)frames / BENCH_TARGET_FPS_D;
         db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_time_s);
+
+        if (hash_framebuffer != 0) {
+            const uint64_t frame_hash = db_gl_hash_framebuffer_rgba8_or_fail(
+                BACKEND_NAME, framebuffer_width_px, framebuffer_height_px,
+                &hash_scratch);
+            db_display_hash_tracker_record(BACKEND_NAME, &hash_tracker, frames,
+                                           frame_hash);
+        }
 
         glfwSwapBuffers(window);
         db_glfw_sleep_to_fps_cap(frame_start_s, fps_cap);
@@ -96,8 +116,10 @@ int main(void) {
         (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
     db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
                            work_unit_count, bench_ms, capability_mode);
+    db_display_hash_tracker_log_final(BACKEND_NAME, &hash_tracker);
 
     db_renderer_opengl_gl1_5_gles1_1_shutdown();
     db_glfw_destroy_window(window);
+    db_gl_hash_scratch_release(&hash_scratch);
     return 0;
 }

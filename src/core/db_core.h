@@ -21,6 +21,8 @@ int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
 int db_env_is_truthy(const char *name);
+int db_env_parse_u32_positive(const char *backend, const char *env_name,
+                              uint32_t *out_value);
 int db_has_ssh_env(void);
 int db_is_forwarded_x11_display(void);
 void db_validate_runtime_environment(const char *backend,
@@ -70,6 +72,27 @@ static inline long db_checked_double_to_long(const char *backend,
 
 static inline uint32_t db_fold_u64_to_u32(uint64_t value) {
     return (uint32_t)(value ^ (value >> 32U));
+}
+
+#define DB_FNV1A64_OFFSET UINT64_C(1469598103934665603)
+#define DB_FNV1A64_PRIME UINT64_C(1099511628211)
+
+static inline uint64_t db_fnv1a64_extend(uint64_t hash, const void *data,
+                                         size_t size) {
+    const uint8_t *bytes = (const uint8_t *)data;
+    for (size_t i = 0U; i < size; i++) {
+        hash ^= (uint64_t)bytes[i];
+        hash *= DB_FNV1A64_PRIME;
+    }
+    return hash;
+}
+
+static inline uint64_t db_fnv1a64_bytes(const void *data, size_t size) {
+    return db_fnv1a64_extend(DB_FNV1A64_OFFSET, data, size);
+}
+
+static inline uint64_t db_fnv1a64_mix_u64(uint64_t hash, uint64_t value) {
+    return db_fnv1a64_extend(hash, &value, sizeof(value));
 }
 
 static inline uint32_t db_checked_add_u32(const char *backend,

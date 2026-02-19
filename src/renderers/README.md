@@ -11,7 +11,7 @@ Current renderer modules:
 - `vulkan_1_2_multi_gpu/`
     - Vulkan 1.2 multi-GPU renderer logic.
 - `cpu_renderer/`
-    - CPU offscreen BO renderer for CI hash/reference comparisons.
+    - CPU BO renderer logic shared by offscreen display/test entrypoints.
 
 Display entrypoints live in `src/displays/`.
 
