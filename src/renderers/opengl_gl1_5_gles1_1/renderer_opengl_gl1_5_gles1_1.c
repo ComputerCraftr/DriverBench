@@ -154,39 +154,30 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
         const uint32_t tile_step = plan->active_cursor + update_index;
         const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
 
-        float color_r = 0.0F;
-        float color_g = 0.0F;
-        float color_b = 0.0F;
-        db_snake_grid_window_color_rgb(update_index, plan->batch_size,
-                                       plan->clearing_phase, &color_r, &color_g,
-                                       &color_b);
+        float target_r = 0.0F;
+        float target_g = 0.0F;
+        float target_b = 0.0F;
+        db_snake_grid_target_color_rgb(plan->clearing_phase, &target_r,
+                                       &target_g, &target_b);
+        const float blend_factor =
+            db_window_blend_factor(update_index, plan->batch_size);
 
         const size_t tile_float_offset =
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
         float *unit = &g_state.vertices[tile_float_offset];
+        const float prior_r = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
+        const float prior_g = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
+        const float prior_b = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+        float out_r = 0.0F;
+        float out_g = 0.0F;
+        float out_b = 0.0F;
+        db_blend_rgb(prior_r, prior_g, prior_b, target_r, target_g, target_b,
+                     blend_factor, &out_r, &out_g, &out_b);
         db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, color_r, color_g,
-                             color_b);
+                             DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
+                             out_b);
         if (g_state.is_es_context != 0) {
             db_update_es_color_array_tile(tile_index);
-        }
-    }
-
-    if (plan->phase_completed != 0) {
-        for (uint32_t update_index = 0; update_index < plan->batch_size;
-             update_index++) {
-            const uint32_t tile_step = plan->active_cursor + update_index;
-            const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
-            const size_t tile_float_offset = (size_t)tile_index *
-                                             DB_RECT_VERTEX_COUNT *
-                                             DB_VERTEX_FLOAT_STRIDE;
-            float *unit = &g_state.vertices[tile_float_offset];
-            db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
-                                 DB_VERTEX_POSITION_FLOAT_COUNT, target_r,
-                                 target_g, target_b);
-            if (g_state.is_es_context != 0) {
-                db_update_es_color_array_tile(tile_index);
-            }
         }
     }
 
@@ -205,6 +196,41 @@ static void db_fill_grid_all_rgb(float color_r, float color_g, float color_b) {
         db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
                              DB_VERTEX_POSITION_FLOAT_COUNT, color_r, color_g,
                              color_b);
+        if (g_state.is_es_context != 0) {
+            db_update_es_color_array_tile(tile_index);
+        }
+    }
+}
+
+static void db_blend_grid_row_to_color(uint32_t row, float target_r,
+                                       float target_g, float target_b,
+                                       float blend_factor) {
+    const uint32_t rows = db_grid_rows_effective();
+    const uint32_t cols = db_grid_cols_effective();
+    if ((rows == 0U) || (cols == 0U) || (blend_factor <= 0.0F)) {
+        return;
+    }
+    if (blend_factor > 1.0F) {
+        blend_factor = 1.0F;
+    }
+
+    const uint32_t row_wrapped = row % rows;
+    for (uint32_t col = 0U; col < cols; col++) {
+        const uint32_t tile_index = (row_wrapped * cols) + col;
+        const size_t tile_float_offset =
+            (size_t)tile_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
+        float *unit = &g_state.vertices[tile_float_offset];
+        const float prior_r = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
+        const float prior_g = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
+        const float prior_b = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+        float out_r = 0.0F;
+        float out_g = 0.0F;
+        float out_b = 0.0F;
+        db_blend_rgb(prior_r, prior_g, prior_b, target_r, target_g, target_b,
+                     blend_factor, &out_r, &out_g, &out_b);
+        db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
+                             DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
+                             out_b);
         if (g_state.is_es_context != 0) {
             db_update_es_color_array_tile(tile_index);
         }
@@ -249,7 +275,6 @@ static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
         }
     }
 
-    const uint32_t span = (plan->batch_size > 0U) ? plan->batch_size : 1U;
     for (uint32_t update_index = 0U; update_index < plan->batch_size;
          update_index++) {
         const uint32_t step = plan->active_cursor + update_index;
@@ -258,46 +283,24 @@ static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
         }
         const uint32_t tile_index =
             db_rect_snake_tile_index_from_step(&rect, step);
-        const float blend_factor = (float)(span - update_index) / (float)span;
-        const float color_r =
-            BENCH_GRID_PHASE0_R +
-            ((rect.color_r - BENCH_GRID_PHASE0_R) * blend_factor);
-        const float color_g =
-            BENCH_GRID_PHASE0_G +
-            ((rect.color_g - BENCH_GRID_PHASE0_G) * blend_factor);
-        const float color_b =
-            BENCH_GRID_PHASE0_B +
-            ((rect.color_b - BENCH_GRID_PHASE0_B) * blend_factor);
+        const float blend_factor =
+            db_window_blend_factor(update_index, plan->batch_size);
         const size_t tile_float_offset =
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * DB_VERTEX_FLOAT_STRIDE;
         float *unit = &g_state.vertices[tile_float_offset];
+        const float prior_r = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
+        const float prior_g = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
+        const float prior_b = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+        float out_r = 0.0F;
+        float out_g = 0.0F;
+        float out_b = 0.0F;
+        db_blend_rgb(prior_r, prior_g, prior_b, rect.color_r, rect.color_g,
+                     rect.color_b, blend_factor, &out_r, &out_g, &out_b);
         db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, color_r, color_g,
-                             color_b);
+                             DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
+                             out_b);
         if (g_state.is_es_context != 0) {
             db_update_es_color_array_tile(tile_index);
-        }
-    }
-
-    if (plan->rect_completed != 0) {
-        for (uint32_t update_index = 0U; update_index < plan->batch_size;
-             update_index++) {
-            const uint32_t step = plan->active_cursor + update_index;
-            if (step >= plan->rect_tile_count) {
-                break;
-            }
-            const uint32_t tile_index =
-                db_rect_snake_tile_index_from_step(&rect, step);
-            const size_t tile_float_offset = (size_t)tile_index *
-                                             DB_RECT_VERTEX_COUNT *
-                                             DB_VERTEX_FLOAT_STRIDE;
-            float *unit = &g_state.vertices[tile_float_offset];
-            db_set_rect_unit_rgb(unit, DB_VERTEX_FLOAT_STRIDE,
-                                 DB_VERTEX_POSITION_FLOAT_COUNT, rect.color_r,
-                                 rect.color_g, rect.color_b);
-            if (g_state.is_es_context != 0) {
-                db_update_es_color_array_tile(tile_index);
-            }
         }
     }
 
@@ -331,7 +334,10 @@ db_append_gradient_row_ranges(db_gl_upload_range_t *ranges, size_t max_ranges,
         if (*inout_range_count >= max_ranges) {
             failf("gradient upload range overflow (max=%zu)", max_ranges);
         }
-        const uint32_t row = (row_start + i) % rows;
+        const uint32_t row = row_start + i;
+        if (row >= rows) {
+            break;
+        }
         const size_t row_offset = (size_t)row * row_bytes;
         ranges[*inout_range_count] = (db_gl_upload_range_t){
             .dst_offset_bytes = row_offset,
@@ -540,7 +546,6 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
     uint32_t gradient_row_start = 0U;
     uint32_t gradient_row_count = 0U;
     const uint32_t rows = db_grid_rows_effective();
-    const uint32_t cols = db_grid_cols_effective();
 
     if (g_state.pattern == DB_PATTERN_BANDS) {
         db_fill_band_vertices_pos_rgb(g_state.vertices, g_state.work_unit_count,
@@ -567,19 +572,20 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
         if ((rows > 0U) && (gradient_row_count > 0U)) {
-            db_gradient_sweep_set_rows_color(
-                g_state.vertices, plan.render_head_row, gradient_row_start,
-                gradient_row_count);
-            g_state.gradient_head_row = plan.next_head_row;
-            if (g_state.is_es_context != 0) {
-                for (uint32_t i = 0U; i < gradient_row_count; i++) {
-                    const uint32_t row = (gradient_row_start + i) % rows;
-                    for (uint32_t col = 0U; col < cols; col++) {
-                        db_update_es_color_array_tile((row * cols) + col);
-                    }
+            for (uint32_t i = 0U; i < gradient_row_count; i++) {
+                const uint32_t row = gradient_row_start + i;
+                if (row >= rows) {
+                    break;
                 }
+                float row_r = 0.0F;
+                float row_g = 0.0F;
+                float row_b = 0.0F;
+                db_gradient_sweep_row_color_rgb(row, plan.render_head_row,
+                                                &row_r, &row_g, &row_b);
+                db_blend_grid_row_to_color(row, row_r, row_g, row_b, 1.0F);
             }
         }
+        g_state.gradient_head_row = plan.next_head_row;
     } else {
         const db_gradient_fill_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
@@ -587,21 +593,22 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
         if ((rows > 0U) && (gradient_row_count > 0U)) {
-            db_gradient_fill_set_rows_color(
-                g_state.vertices, plan.render_head_row,
-                plan.render_clearing_phase, gradient_row_start,
-                gradient_row_count);
-            g_state.gradient_head_row = plan.next_head_row;
-            g_state.snake_clearing_phase = plan.next_clearing_phase;
-            if (g_state.is_es_context != 0) {
-                for (uint32_t i = 0U; i < gradient_row_count; i++) {
-                    const uint32_t row = (gradient_row_start + i) % rows;
-                    for (uint32_t col = 0U; col < cols; col++) {
-                        db_update_es_color_array_tile((row * cols) + col);
-                    }
+            for (uint32_t i = 0U; i < gradient_row_count; i++) {
+                const uint32_t row = gradient_row_start + i;
+                if (row >= rows) {
+                    break;
                 }
+                float row_r = 0.0F;
+                float row_g = 0.0F;
+                float row_b = 0.0F;
+                db_gradient_fill_row_color_rgb(row, plan.render_head_row,
+                                               plan.render_clearing_phase,
+                                               &row_r, &row_g, &row_b);
+                db_blend_grid_row_to_color(row, row_r, row_g, row_b, 1.0F);
             }
         }
+        g_state.gradient_head_row = plan.next_head_row;
+        g_state.snake_clearing_phase = plan.next_clearing_phase;
     }
 
     if (g_state.vbo != 0U) {

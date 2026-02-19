@@ -78,6 +78,7 @@ typedef struct {
     uint32_t gradient_head_row;
     uint32_t rect_snake_rect_index;
     uint32_t rect_snake_seed;
+    GLuint fallback_tex;
     GLuint history_tex[2];
     GLuint history_fbo[2];
     int history_width;
@@ -134,8 +135,27 @@ static void db_gl3_destroy_history_targets(void) {
     g_state.history_read_index = -1;
 }
 
+static void db_gl3_create_fallback_texture(void) {
+    if (g_state.fallback_tex != 0U) {
+        return;
+    }
+    static const unsigned char fallback_rgba[4] = {
+        (unsigned char)(BENCH_GRID_PHASE0_R * 255.0F),
+        (unsigned char)(BENCH_GRID_PHASE0_G * 255.0F),
+        (unsigned char)(BENCH_GRID_PHASE0_B * 255.0F), 255U};
+    glGenTextures(1, &g_state.fallback_tex);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_state.fallback_tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 fallback_rgba);
+}
+
 static void db_gl3_ensure_history_targets(void) {
-    if (g_state.pattern != DB_PATTERN_RECT_SNAKE) {
+    if (db_pattern_uses_history_texture(g_state.pattern) == 0) {
         return;
     }
 
@@ -432,6 +452,11 @@ void db_renderer_opengl_gl3_3_init(void) {
     if (g_state.u_history_tex >= 0) {
         glUniform1i(g_state.u_history_tex, 0);
     }
+    db_gl3_create_fallback_texture();
+    if (g_state.fallback_tex != 0U) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, g_state.fallback_tex);
+    }
     db_set_uniform1i_u32_if_changed(g_state.u_gradient_head_row,
                                     &g_state.uniform_gradient_head_row_cache,
                                     g_state.gradient_head_row);
@@ -473,37 +498,23 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
         const db_gradient_sweep_damage_plan_t plan =
             db_gradient_sweep_plan_next_frame(g_state.gradient_head_row);
-        if (plan.dirty_row_count > 0U) {
-            g_state.gradient_head_row = plan.next_head_row;
-            db_set_uniform1i_u32_if_changed(
-                g_state.u_gradient_head_row,
-                &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
-        }
+        g_state.gradient_head_row = plan.next_head_row;
+        db_set_uniform1i_u32_if_changed(
+            g_state.u_gradient_head_row,
+            &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
         const db_gradient_fill_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
                                              g_state.grid_clearing_phase);
-        if (plan.dirty_row_count > 0U) {
-            g_state.gradient_head_row = plan.next_head_row;
-            g_state.grid_clearing_phase = plan.next_clearing_phase;
-            db_set_uniform1i_u32_if_changed(
-                g_state.u_gradient_head_row,
-                &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
-            db_set_uniform1i_if_changed(
-                g_state.u_grid_clearing_phase,
-                &g_state.uniform_grid_clearing_phase_cache,
-                plan.render_clearing_phase);
-        }
+        g_state.gradient_head_row = plan.next_head_row;
+        g_state.grid_clearing_phase = plan.next_clearing_phase;
+        db_set_uniform1i_u32_if_changed(
+            g_state.u_gradient_head_row,
+            &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
+        db_set_uniform1i_if_changed(g_state.u_grid_clearing_phase,
+                                    &g_state.uniform_grid_clearing_phase_cache,
+                                    plan.render_clearing_phase);
     } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
-        if ((g_state.history_read_index < 0) || (g_state.history_width <= 0) ||
-            (g_state.history_height <= 0)) {
-            return;
-        }
-        const int read_index = g_state.history_read_index;
-        const int write_index = (read_index == 0) ? 1 : 0;
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, g_state.history_tex[read_index]);
-
         const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
             g_state.rect_snake_seed, g_state.rect_snake_rect_index,
             g_state.grid_cursor);
@@ -521,34 +532,47 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                                     plan.rect_completed);
         g_state.grid_cursor = plan.next_cursor;
         g_state.rect_snake_rect_index = plan.next_rect_index;
-
-        GLint prev_read_fbo = 0;
-        GLint prev_draw_fbo = 0;
-        GLint prev_viewport[4] = {0, 0, 0, 0};
-        glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
-        glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fbo);
-        glGetIntegerv(GL_VIEWPORT, prev_viewport);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, g_state.history_fbo[write_index]);
-        glViewport(0, 0, g_state.history_width, g_state.history_height);
+    }
+    if (db_pattern_uses_history_texture(g_state.pattern) == 0) {
+        if (g_state.fallback_tex != 0U) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, g_state.fallback_tex);
+        }
         glDrawArrays(GL_TRIANGLES, 0, g_state.draw_vertex_count);
-
-        glBindFramebuffer(GL_READ_FRAMEBUFFER,
-                          g_state.history_fbo[write_index]);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-        glBlitFramebuffer(0, 0, g_state.history_width, g_state.history_height,
-                          0, 0, g_state.history_width, g_state.history_height,
-                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev_draw_fbo);
-        glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2],
-                   prev_viewport[3]);
-        g_state.history_read_index = write_index;
+        return;
+    }
+    if ((g_state.history_read_index < 0) || (g_state.history_width <= 0) ||
+        (g_state.history_height <= 0)) {
         return;
     }
 
+    const int read_index = g_state.history_read_index;
+    const int write_index = (read_index == 0) ? 1 : 0;
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, g_state.history_tex[read_index]);
+
+    GLint prev_read_fbo = 0;
+    GLint prev_draw_fbo = 0;
+    GLint prev_viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read_fbo);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw_fbo);
+    glGetIntegerv(GL_VIEWPORT, prev_viewport);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, g_state.history_fbo[write_index]);
+    glViewport(0, 0, g_state.history_width, g_state.history_height);
     glDrawArrays(GL_TRIANGLES, 0, g_state.draw_vertex_count);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_state.history_fbo[write_index]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, g_state.history_width, g_state.history_height, 0, 0,
+                      g_state.history_width, g_state.history_height,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prev_read_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)prev_draw_fbo);
+    glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2],
+               prev_viewport[3]);
+    g_state.history_read_index = write_index;
 }
 
 void db_renderer_opengl_gl3_3_shutdown(void) {
@@ -557,6 +581,10 @@ void db_renderer_opengl_gl3_3_shutdown(void) {
         glUnmapBuffer(GL_ARRAY_BUFFER);
     }
     db_gl3_destroy_history_targets();
+    if (g_state.fallback_tex != 0U) {
+        glDeleteTextures(1, &g_state.fallback_tex);
+        g_state.fallback_tex = 0U;
+    }
     glDeleteProgram(g_state.program);
     glDeleteBuffers(1, &g_state.vbo);
     glDeleteVertexArrays(1, &g_state.vao);

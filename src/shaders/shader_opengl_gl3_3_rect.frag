@@ -30,21 +30,33 @@ vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
 }
 
+vec3 db_target_color_for_phase(bool clearing) {
+    return clearing ? u_grid_base_color : u_grid_target_color;
+}
+
+float db_window_blend(int batch_size, int window_index) {
+    if(batch_size <= 1) {
+        return 1.0;
+    }
+    return float((batch_size - 1) - window_index) / float(batch_size - 1);
+}
+
+vec3 db_blend_prior_to_target(
+    vec3 prior_color,
+    vec3 target_color,
+    float blend
+) {
+    return mix(prior_color, target_color, blend);
+}
+
 vec4 db_gradient_sweep_color(int row_i) {
     int rows_i = max(u_grid_rows, 1);
-    int head_i = u_gradient_head_row % rows_i;
-    if(head_i < 0) {
-        head_i += rows_i;
-    }
-    row_i = row_i % rows_i;
-    if(row_i < 0) {
-        row_i += rows_i;
-    }
+    int head_i = max(u_gradient_head_row, 0);
     int window_i = clamp(u_gradient_window_rows, 1, rows_i);
-    int delta_i = (row_i - head_i + rows_i) % rows_i;
-    if(delta_i >= window_i) {
+    if((head_i > row_i) || ((row_i - head_i) >= window_i)) {
         return db_rgba(u_grid_target_color);
     }
+    int delta_i = row_i - head_i;
 
     float half_span = (float(window_i) - 1.0) * 0.5;
     float blend = 0.0;
@@ -56,13 +68,10 @@ vec4 db_gradient_sweep_color(int row_i) {
 
 vec4 db_gradient_fill_color(int row_i) {
     int rows_i = max(u_grid_rows, 1);
-    int head_i = u_gradient_head_row % rows_i;
-    if(head_i < 0) {
-        head_i += rows_i;
-    }
+    int head_i = max(u_gradient_head_row, 0);
     bool clearing = (u_grid_clearing_phase != 0);
     vec3 source_color = clearing ? u_grid_target_color : u_grid_base_color;
-    vec3 target_color = clearing ? u_grid_base_color : u_grid_target_color;
+    vec3 target_color = db_target_color_for_phase(clearing);
     if(row_i >= head_i) {
         return db_rgba(source_color);
     }
@@ -72,7 +81,10 @@ vec4 db_gradient_fill_color(int row_i) {
     if(delta_i >= window_i) {
         return db_rgba(target_color);
     }
-    return db_rgba(mix(source_color, target_color, float(delta_i) / float(window_i)));
+    if(window_i <= 1) {
+        return db_rgba(target_color);
+    }
+    return db_rgba(mix(source_color, target_color, float(delta_i) / float(window_i - 1)));
 }
 
 uint db_mix_u32(uint value) {
@@ -96,7 +108,12 @@ float db_rect_channel(uint seed) {
     return 0.25 + ((float(seed & 255u) / 255.0) * 0.70);
 }
 
-RectSnakeDesc db_rect_snake_desc(int rect_seed, uint rect_index, int rows_i, int cols_i) {
+RectSnakeDesc db_rect_snake_desc(
+    int rect_seed,
+    uint rect_index,
+    int rows_i,
+    int cols_i
+) {
     RectSnakeDesc rect;
     uint seed_base = db_mix_u32(uint(max(rect_seed, 0)) + (rect_index * 0x85EBCA77u) + 1u);
     int min_w = (cols_i >= 16) ? 8 : 1;
@@ -116,7 +133,8 @@ RectSnakeDesc db_rect_snake_desc(int rect_seed, uint rect_index, int rows_i, int
 }
 
 bool db_rect_contains(RectSnakeDesc rect, int row_i, int col_i) {
-    return (row_i >= rect.y) && (row_i < (rect.y + rect.h)) && (col_i >= rect.x) && (col_i < (rect.x + rect.w));
+    return (row_i >= rect.y) && (row_i < (rect.y + rect.h)) &&
+        (col_i >= rect.x) && (col_i < (rect.x + rect.w));
 }
 
 int db_rect_snake_step(RectSnakeDesc rect, int row_i, int col_i) {
@@ -143,11 +161,9 @@ vec4 db_rect_snake_color(int row_i, int col_i, vec3 prior_color) {
         return db_rgba(current_rect.color);
     }
     if(step < (cursor + batch_size)) {
-        float blend = float((cursor + batch_size) - step) / float(batch_size);
-        return db_rgba(mix(prior_color, current_rect.color, blend));
-    }
-    if(u_grid_phase_completed != 0) {
-        return db_rgba(current_rect.color);
+        int window_index = step - cursor;
+        float blend = db_window_blend(batch_size, window_index);
+        return db_rgba(db_blend_prior_to_target(prior_color, current_rect.color, blend));
     }
     return db_rgba(prior_color);
 }
@@ -193,8 +209,7 @@ void main() {
     int cursor = u_grid_cursor;
     int batch_size = max(u_grid_batch_size, 1);
     bool clearing = (u_grid_clearing_phase != 0);
-    vec3 source_color = clearing ? u_grid_target_color : u_grid_base_color;
-    vec3 target_color = clearing ? u_grid_base_color : u_grid_target_color;
+    vec3 target_color = db_target_color_for_phase(clearing);
 
     if(tile_step < cursor) {
         out_color = db_rgba(target_color);
@@ -202,16 +217,16 @@ void main() {
     }
 
     if(tile_step < (cursor + batch_size)) {
-        if(u_grid_phase_completed != 0) {
-            out_color = db_rgba(target_color);
-            return;
-        }
+        ivec2 history_coord = ivec2(gl_FragCoord.xy);
+        vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
         int idx = tile_step - cursor;
-        float blend = float(batch_size - idx) / float(batch_size);
-        vec3 color = source_color + ((target_color - source_color) * blend);
+        float blend = db_window_blend(batch_size, idx);
+        vec3 color = db_blend_prior_to_target(prior_color, target_color, blend);
         out_color = db_rgba(color);
         return;
     }
 
-    out_color = db_rgba(source_color);
+    ivec2 history_coord = ivec2(gl_FragCoord.xy);
+    vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
+    out_color = db_rgba(prior_color);
 }

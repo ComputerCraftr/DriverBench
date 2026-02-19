@@ -43,6 +43,29 @@ struct RectSnakeDesc {
     vec3 color;
 };
 
+vec4 db_rgba(vec3 color_rgb) {
+    return vec4(color_rgb, 1.0);
+}
+
+vec3 db_target_color_for_phase(int clearingPhase) {
+    return (clearingPhase != 0) ? pc.baseColor.rgb : pc.targetColor.rgb;
+}
+
+float db_window_blend(int batchSize, int windowIndex) {
+    if(batchSize <= 1) {
+        return 1.0;
+    }
+    return float((batchSize - 1) - windowIndex) / float(batchSize - 1);
+}
+
+vec3 db_blend_prior_to_target(
+    vec3 prior_color,
+    vec3 target_color,
+    float blend
+) {
+    return mix(prior_color, target_color, blend);
+}
+
 int db_row_from_frag_coord() {
     float rows = float(max(pc.renderParams.y, 1));
     float viewportHeight = float(max(pc.gradientParams.z, 1));
@@ -50,21 +73,14 @@ int db_row_from_frag_coord() {
     return int(floor((y * rows) / viewportHeight));
 }
 
-vec4 db_gradient_sweep_color() {
+vec4 db_gradient_sweep_color(int row_i) {
     int rows_i = max(pc.renderParams.y, 1);
-    int head_i = pc.renderParams.z % rows_i;
-    if(head_i < 0) {
-        head_i += rows_i;
-    }
-    int row_i = pc.snakeParams.x % rows_i;
-    if(row_i < 0) {
-        row_i += rows_i;
-    }
+    int head_i = max(pc.renderParams.z, 0);
     int window_i = clamp(pc.gradientParams.x, 1, rows_i);
-    int delta_i = (row_i - head_i + rows_i) % rows_i;
-    if(delta_i >= window_i) {
+    if((head_i > row_i) || ((row_i - head_i) >= window_i)) {
         return pc.targetColor;
     }
+    int delta_i = row_i - head_i;
     float halfSpan = (float(window_i) - 1.0) * 0.5;
     float blend = 0.0;
     if(halfSpan > 0.0) {
@@ -75,23 +91,23 @@ vec4 db_gradient_sweep_color() {
 
 vec4 db_gradient_fill_color(int row_i) {
     int rows_i = max(pc.renderParams.y, 1);
-    int head_i = pc.renderParams.z % rows_i;
-    if(head_i < 0) {
-        head_i += rows_i;
-    }
+    int head_i = max(pc.renderParams.z, 0);
     int clearingPhase = pc.renderParams.w;
     vec4 sourceColor = (clearingPhase != 0) ? pc.targetColor : pc.baseColor;
-    vec4 targetColor = (clearingPhase != 0) ? pc.baseColor : pc.targetColor;
+    vec3 targetColor = db_target_color_for_phase(clearingPhase);
     if(row_i >= head_i) {
         return sourceColor;
     }
     int delta_i = head_i - row_i;
     int window_i = clamp(pc.gradientParams.y, 1, rows_i);
     if(delta_i >= window_i) {
-        return targetColor;
+        return db_rgba(targetColor);
     }
-    float blend = float(delta_i) / float(window_i);
-    return mix(sourceColor, targetColor, blend);
+    if(window_i <= 1) {
+        return db_rgba(targetColor);
+    }
+    float blend = float(delta_i) / float(window_i - 1);
+    return mix(sourceColor, vec4(targetColor, 1.0), blend);
 }
 
 int db_col_from_frag_coord() {
@@ -101,7 +117,7 @@ int db_col_from_frag_coord() {
     return int(floor((x * cols) / viewportWidth));
 }
 
-vec4 db_snake_grid_color(int row_i, int col_i) {
+vec4 db_snake_grid_color(int row_i, int col_i, vec3 prior_color) {
     int cols = max(pc.gradientParams.w, 1);
     int step = row_i * cols;
     if((row_i & 1) == 0) {
@@ -115,21 +131,20 @@ vec4 db_snake_grid_color(int row_i, int col_i) {
     int phaseCompleted = pc.snakeParams.z;
     int clearingPhase = pc.renderParams.w;
 
-    vec4 sourceColor = (clearingPhase != 0) ? pc.targetColor : pc.baseColor;
-    vec4 targetColor = (clearingPhase != 0) ? pc.baseColor : pc.targetColor;
+    vec3 targetColor = db_target_color_for_phase(clearingPhase);
     if(phaseCompleted != 0) {
-        return targetColor;
+        return db_rgba(targetColor);
     }
     if(step < activeCursor) {
-        return targetColor;
+        return db_rgba(targetColor);
     }
     if(step >= (activeCursor + batchSize)) {
-        return sourceColor;
+        return db_rgba(prior_color);
     }
 
     int windowIndex = step - activeCursor;
-    float blend = float(batchSize - windowIndex) / float(batchSize);
-    return mix(sourceColor, targetColor, blend);
+    float blend = db_window_blend(batchSize, windowIndex);
+    return db_rgba(db_blend_prior_to_target(prior_color, targetColor, blend));
 }
 
 uint db_mix_u32(uint value) {
@@ -196,42 +211,47 @@ vec4 db_rect_snake_color(int row_i, int col_i, vec3 prior_color) {
     uint rect_index_u = uint(max(pc.renderParams.z, 0));
     RectSnakeDesc current_rect = db_rect_snake_desc(rect_seed, rect_index_u, rows_i, cols_i);
     if(!db_rect_contains(current_rect, row_i, col_i)) {
-        return vec4(prior_color, 1.0);
+        return db_rgba(prior_color);
     }
     int step = db_rect_snake_step(current_rect, row_i, col_i);
     int cursor = max(pc.snakeParams.x, 0);
     int batch_size = max(pc.snakeParams.y, 1);
     if(step < cursor) {
-        return vec4(current_rect.color, 1.0);
+        return db_rgba(current_rect.color);
     }
     if(step < (cursor + batch_size)) {
-        float blend = float((cursor + batch_size) - step) / float(batch_size);
-        return vec4(mix(prior_color, current_rect.color, blend), 1.0);
+        int window_index = step - cursor;
+        float blend = db_window_blend(batch_size, window_index);
+        return db_rgba(db_blend_prior_to_target(prior_color, current_rect.color, blend));
     }
-    if(pc.snakeParams.z != 0) {
-        return vec4(current_rect.color, 1.0);
-    }
-    return vec4(prior_color, 1.0);
+    return db_rgba(prior_color);
 }
 
 void main() {
     int renderMode = pc.renderParams.x;
+    if(renderMode == RENDER_MODE_BANDS) {
+        outColor = vColor;
+        return;
+    }
+    int row_i = db_row_from_frag_coord();
     if(renderMode == RENDER_MODE_GRADIENT_SWEEP) {
-        outColor = db_gradient_sweep_color();
+        outColor = db_gradient_sweep_color(pc.snakeParams.x);
         return;
     }
     if(renderMode == RENDER_MODE_GRADIENT_FILL) {
-        outColor = db_gradient_fill_color(db_row_from_frag_coord());
+        outColor = db_gradient_fill_color(row_i);
         return;
     }
     if(renderMode == RENDER_MODE_SNAKE_GRID) {
-        outColor = db_snake_grid_color(db_row_from_frag_coord(), db_col_from_frag_coord());
+        ivec2 history_coord = ivec2(gl_FragCoord.xy);
+        vec3 prior_color = texelFetch(uHistoryTex, history_coord, 0).rgb;
+        outColor = db_snake_grid_color(row_i, db_col_from_frag_coord(), prior_color);
         return;
     }
     if(renderMode == RENDER_MODE_RECT_SNAKE) {
         ivec2 history_coord = ivec2(gl_FragCoord.xy);
         vec3 prior_color = texelFetch(uHistoryTex, history_coord, 0).rgb;
-        outColor = db_rect_snake_color(db_row_from_frag_coord(), db_col_from_frag_coord(), prior_color);
+        outColor = db_rect_snake_color(row_i, db_col_from_frag_coord(), prior_color);
         return;
     }
     outColor = vColor;

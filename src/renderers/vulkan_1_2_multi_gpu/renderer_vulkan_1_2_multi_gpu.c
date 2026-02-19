@@ -234,6 +234,95 @@ typedef struct {
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};
+static const VkShaderStageFlags DB_PC_STAGES =
+    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+static void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
+                                              VkPipelineLayout layout,
+                                              VkExtent2D extent,
+                                              uint32_t grid_rows,
+                                              uint32_t grid_cols) {
+    const int32_t gradient_params[4] = {
+        g_state.gradient_sweep_window_rows_i32,
+        g_state.gradient_fill_window_rows_i32,
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.height),
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_cols)};
+    const float base_color[4] = {BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                                 BENCH_GRID_PHASE0_B, 1.0F};
+    const float target_color[4] = {BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G,
+                                   BENCH_GRID_PHASE1_B, 1.0F};
+
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, gradient_params),
+                       sizeof(gradient_params), gradient_params);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, base_color),
+                       sizeof(base_color), base_color);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, target_color),
+                       sizeof(target_color), target_color);
+
+    const int32_t render_grid_rows =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_rows);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, render_params) +
+                           sizeof(int32_t),
+                       sizeof(render_grid_rows), &render_grid_rows);
+
+    const int32_t snake_viewport_width =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.width);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, snake_params) +
+                           (sizeof(int32_t) * 3U),
+                       sizeof(snake_viewport_width), &snake_viewport_width);
+}
+
+static void db_vk_push_constants_draw_dynamic(
+    VkCommandBuffer cmd, VkPipelineLayout layout, float ndc_x0, float ndc_y0,
+    float ndc_x1, float ndc_y1, const float color[3], uint32_t render_mode,
+    uint32_t gradient_head_row, int grid_clearing_phase,
+    uint32_t snake_active_cursor, uint32_t snake_batch_size,
+    int snake_phase_completed) {
+    PushConstants pc = {0};
+    pc.offsetNDC[0] = ndc_x0;
+    pc.offsetNDC[1] = ndc_y0;
+    pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
+    pc.scaleNDC[1] = (ndc_y1 - ndc_y0);
+    pc.color[0] = color[0];
+    pc.color[1] = color[1];
+    pc.color[2] = color[2];
+    pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES, 0U,
+                       (uint32_t)offsetof(PushConstants, render_params), &pc);
+
+    const int32_t render_mode_i32 =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", render_mode);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, render_params),
+                       sizeof(render_mode_i32), &render_mode_i32);
+
+    const int32_t render_head_i32 =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", gradient_head_row);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, render_params) +
+                           (sizeof(int32_t) * 2U),
+                       sizeof(render_head_i32), &render_head_i32);
+
+    const int32_t render_phase_i32 =
+        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", grid_clearing_phase);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, render_params) +
+                           (sizeof(int32_t) * 3U),
+                       sizeof(render_phase_i32), &render_phase_i32);
+
+    const int32_t snake_params[3] = {
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_active_cursor),
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_batch_size),
+        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", snake_phase_completed)};
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, snake_params),
+                       sizeof(snake_params), snake_params);
+}
 
 static uint32_t db_vk_clamp_u32(uint32_t value, uint32_t min_v,
                                 uint32_t max_v) {
@@ -756,48 +845,10 @@ db_vk_draw_grid_span(VkCommandBuffer cmd, VkPipelineLayout layout,
     db_vk_grid_span_bounds_ndc(row, col_start, col_end, grid_rows, grid_cols,
                                &ndc_x0, &ndc_y0, &ndc_x1, &ndc_y1);
 
-    PushConstants pc;
-    pc.offsetNDC[0] = ndc_x0;
-    pc.offsetNDC[1] = ndc_y0;
-    pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
-    pc.scaleNDC[1] = (ndc_y1 - ndc_y0);
-    pc.color[0] = color[0];
-    pc.color[1] = color[1];
-    pc.color[2] = color[2];
-    pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    pc.render_params[0] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", render_mode);
-    pc.render_params[1] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_rows);
-    pc.render_params[2] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", gradient_head_row);
-    pc.render_params[3] =
-        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", grid_clearing_phase);
-    pc.gradient_params[0] = g_state.gradient_sweep_window_rows_i32;
-    pc.gradient_params[1] = g_state.gradient_fill_window_rows_i32;
-    pc.gradient_params[2] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.height);
-    pc.gradient_params[3] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_cols);
-    pc.snake_params[0] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_active_cursor);
-    pc.snake_params[1] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_batch_size);
-    pc.snake_params[2] =
-        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", snake_phase_completed);
-    pc.snake_params[3] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.width);
-    pc.base_color[0] = BENCH_GRID_PHASE0_R;
-    pc.base_color[1] = BENCH_GRID_PHASE0_G;
-    pc.base_color[2] = BENCH_GRID_PHASE0_B;
-    pc.base_color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    pc.target_color[0] = BENCH_GRID_PHASE1_R;
-    pc.target_color[1] = BENCH_GRID_PHASE1_G;
-    pc.target_color[2] = BENCH_GRID_PHASE1_B;
-    pc.target_color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    vkCmdPushConstants(
-        cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0, sizeof(pc), &pc);
+    db_vk_push_constants_draw_dynamic(
+        cmd, layout, ndc_x0, ndc_y0, ndc_x1, ndc_y1, color, render_mode,
+        gradient_head_row, grid_clearing_phase, snake_active_cursor,
+        snake_batch_size, snake_phase_completed);
     vkCmdDraw(cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
@@ -831,48 +882,10 @@ static void db_vk_draw_grid_row_block(
     const float inv_rows = 1.0F / (float)grid_rows;
     const float ndc_y0 = (2.0F * (float)row_start * inv_rows) - 1.0F;
     const float ndc_y1 = (2.0F * (float)row_end * inv_rows) - 1.0F;
-    PushConstants pc = {0};
-    pc.offsetNDC[0] = -1.0F;
-    pc.offsetNDC[1] = ndc_y0;
-    pc.scaleNDC[0] = 2.0F;
-    pc.scaleNDC[1] = ndc_y1 - ndc_y0;
-    pc.color[0] = color[0];
-    pc.color[1] = color[1];
-    pc.color[2] = color[2];
-    pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    pc.render_params[0] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", render_mode);
-    pc.render_params[1] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_rows);
-    pc.render_params[2] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", gradient_head_row);
-    pc.render_params[3] =
-        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", grid_clearing_phase);
-    pc.gradient_params[0] = g_state.gradient_sweep_window_rows_i32;
-    pc.gradient_params[1] = g_state.gradient_fill_window_rows_i32;
-    pc.gradient_params[2] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.height);
-    pc.gradient_params[3] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_cols);
-    pc.snake_params[0] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_active_cursor);
-    pc.snake_params[1] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_batch_size);
-    pc.snake_params[2] =
-        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", snake_phase_completed);
-    pc.snake_params[3] =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.width);
-    pc.base_color[0] = BENCH_GRID_PHASE0_R;
-    pc.base_color[1] = BENCH_GRID_PHASE0_G;
-    pc.base_color[2] = BENCH_GRID_PHASE0_B;
-    pc.base_color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    pc.target_color[0] = BENCH_GRID_PHASE1_R;
-    pc.target_color[1] = BENCH_GRID_PHASE1_G;
-    pc.target_color[2] = BENCH_GRID_PHASE1_B;
-    pc.target_color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    vkCmdPushConstants(
-        cmd, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-        0, sizeof(pc), &pc);
+    db_vk_push_constants_draw_dynamic(cmd, layout, -1.0F, ndc_y0, 1.0F, ndc_y1,
+                                      color, render_mode, gradient_head_row,
+                                      grid_clearing_phase, snake_active_cursor,
+                                      snake_batch_size, snake_phase_completed);
     vkCmdDraw(cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
@@ -1963,10 +1976,10 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         return DB_VK_FRAME_STOP;
     }
     const int acquire_suboptimal = (ar == VK_SUBOPTIMAL_KHR);
-    const int rect_mode = (g_state.pattern == DB_PATTERN_RECT_SNAKE);
+    const int history_mode = db_pattern_uses_history_texture(g_state.pattern);
     const int read_index = g_state.history_read_index;
     const int write_index = (read_index == 0) ? 1 : 0;
-    if (rect_mode && (g_state.history_descriptor_index != read_index) &&
+    if (history_mode && (g_state.history_descriptor_index != read_index) &&
         ((read_index == 0) || (read_index == 1))) {
         db_vk_update_history_descriptor(
             g_state.device, g_state.descriptor_set, g_state.history_sampler,
@@ -2009,8 +2022,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     clear.color.float32[2] = clear_rgb[2];
     clear.color.float32[COLOR_CHANNEL_ALPHA] = BG_COLOR_A_F;
 
-    if (rect_mode && ((g_state.history_targets[0].layout_initialized == 0) ||
-                      (g_state.history_targets[1].layout_initialized == 0))) {
+    if (history_mode &&
+        ((g_state.history_targets[0].layout_initialized == 0) ||
+         (g_state.history_targets[1].layout_initialized == 0))) {
         VkImageMemoryBarrier history_to_clear[2] = {{0}, {0}};
         for (size_t i = 0U; i < 2U; i++) {
             history_to_clear[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -2065,7 +2079,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                              0, NULL, 2U, history_to_read);
     }
 
-    if (rect_mode) {
+    if (history_mode) {
         VkImageMemoryBarrier write_to_color = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         write_to_color.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -2085,13 +2099,13 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     VkRenderPassBeginInfo rbi = {.sType =
                                      VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass =
-        rect_mode ? g_state.history_render_pass : g_state.render_pass;
-    rbi.framebuffer = rect_mode
+        history_mode ? g_state.history_render_pass : g_state.render_pass;
+    rbi.framebuffer = history_mode
                           ? g_state.history_targets[write_index].framebuffer
                           : g_state.swapchain_state.framebuffers[imgIndex];
     rbi.renderArea.extent = g_state.swapchain_state.extent;
-    rbi.clearValueCount = rect_mode ? 0U : 1U;
-    rbi.pClearValues = rect_mode ? NULL : &clear;
+    rbi.clearValueCount = history_mode ? 0U : 1U;
+    rbi.pClearValues = history_mode ? NULL : &clear;
     vkCmdBeginRenderPass(g_state.command_buffer, &rbi,
                          VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(g_state.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -2110,8 +2124,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     uint32_t grid_tiles_drawn = 0U;
     const uint32_t grid_rows = db_grid_rows_effective();
     const uint32_t grid_cols = db_grid_cols_effective();
-    const uint32_t gradient_sweep_window_rows =
-        db_gradient_sweep_window_rows_effective();
+    db_vk_push_constants_frame_static(
+        g_state.command_buffer, g_state.pipeline_layout,
+        g_state.swapchain_state.extent, grid_rows, grid_cols);
     VkViewport vpo = {0};
     vpo.width = (float)g_state.swapchain_state.extent.width;
     vpo.height = (float)g_state.swapchain_state.extent.height;
@@ -2152,41 +2167,13 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
 
             float ndc_x0 = (2.0F * (float)x0 * inv_extent_width) - 1.0F;
             float ndc_x1 = (2.0F * (float)x1 * inv_extent_width) - 1.0F;
-            PushConstants pc = {0};
-            pc.offsetNDC[0] = ndc_x0;
-            pc.offsetNDC[1] = -1.0F;
-            pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
-            pc.scaleNDC[1] = 2.0F;
-            db_band_color_rgb(b, BENCH_BANDS, time_s, &pc.color[0],
-                              &pc.color[1], &pc.color[2]);
-            pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
-            pc.render_params[0] = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
-                                                        DB_RENDER_MODE_BANDS);
-            pc.render_params[1] = 0;
-            pc.render_params[2] = 0;
-            pc.render_params[3] = 0;
-            pc.gradient_params[0] = g_state.gradient_sweep_window_rows_i32;
-            pc.gradient_params[1] = g_state.gradient_fill_window_rows_i32;
-            pc.gradient_params[2] = db_checked_u32_to_i32(
-                BACKEND_NAME, "vk_i32", g_state.swapchain_state.extent.height);
-            pc.gradient_params[3] = 0;
-            pc.snake_params[0] = 0;
-            pc.snake_params[1] = 0;
-            pc.snake_params[2] = 0;
-            pc.snake_params[3] = db_checked_u32_to_i32(
-                BACKEND_NAME, "vk_i32", g_state.swapchain_state.extent.width);
-            pc.base_color[0] = BENCH_GRID_PHASE0_R;
-            pc.base_color[1] = BENCH_GRID_PHASE0_G;
-            pc.base_color[2] = BENCH_GRID_PHASE0_B;
-            pc.base_color[COLOR_CHANNEL_ALPHA] = 1.0F;
-            pc.target_color[0] = BENCH_GRID_PHASE1_R;
-            pc.target_color[1] = BENCH_GRID_PHASE1_G;
-            pc.target_color[2] = BENCH_GRID_PHASE1_B;
-            pc.target_color[COLOR_CHANNEL_ALPHA] = 1.0F;
-            vkCmdPushConstants(g_state.command_buffer, g_state.pipeline_layout,
-                               VK_SHADER_STAGE_VERTEX_BIT |
-                                   VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0, sizeof(pc), &pc);
+            float band_color[3] = {0.0F, 0.0F, 0.0F};
+            db_band_color_rgb(b, BENCH_BANDS, time_s, &band_color[0],
+                              &band_color[1], &band_color[2]);
+            db_vk_push_constants_draw_dynamic(
+                g_state.command_buffer, g_state.pipeline_layout, ndc_x0, -1.0F,
+                ndc_x1, 1.0F, band_color, DB_RENDER_MODE_BANDS, 0U, 0, 0U, 0U,
+                0);
             vkCmdDraw(g_state.command_buffer, DB_RECT_VERTEX_COUNT, 1, 0, 0);
             db_vk_owner_timing_end(
                 g_state.command_buffer, g_state.gpu_timing_enabled,
@@ -2242,6 +2229,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         for (uint32_t update_index = 0; update_index < batch_size;
              update_index++) {
             const uint32_t tile_step = active_cursor + update_index;
+            if (tile_step >= g_state.work_unit_count) {
+                break;
+            }
             const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
             const uint32_t row = tile_index / grid_cols;
             const uint32_t col = tile_index % grid_cols;
@@ -2256,28 +2246,6 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 row, col, col + 1U, shader_ignored_color, active_cursor,
                 grid_plan.clearing_phase, batch_size,
                 grid_plan.phase_completed);
-        }
-
-        if (grid_plan.phase_completed != 0) {
-            for (uint32_t update_index = 0; update_index < batch_size;
-                 update_index++) {
-                const uint32_t tile_step = active_cursor + update_index;
-                const uint32_t tile_index =
-                    db_grid_tile_index_from_step(tile_step);
-                const uint32_t row = tile_index / grid_cols;
-                const uint32_t col = tile_index % grid_cols;
-                db_vk_draw_owner_grid_span_snake(
-                    g_state.command_buffer, g_state.pipeline_layout,
-                    g_state.swapchain_state.extent, haveGroup, active_gpu_count,
-                    tile_step % active_gpu_count, 1U, frameStart, budget_ns,
-                    safety_ns, g_state.ema_ms_per_work_unit,
-                    g_state.gpu_timing_enabled, g_state.timing_query_pool,
-                    frame_owner_used, frame_owner_finished, frame_work_units,
-                    grid_tiles_per_gpu, &grid_tiles_drawn, grid_rows, grid_cols,
-                    row, col, col + 1U, shader_ignored_color, active_cursor,
-                    grid_plan.clearing_phase, batch_size,
-                    grid_plan.phase_completed);
-            }
         }
 
         g_state.grid_cursor = grid_plan.next_cursor;
@@ -2349,8 +2317,11 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
 
         if ((grid_rows > 0U) && (plan.dirty_row_count > 0U)) {
             const float shader_ignored_color[3] = {0.0F, 0.0F, 0.0F};
-            for (uint32_t i = 0U; i < gradient_sweep_window_rows; i++) {
-                const uint32_t row = (plan.render_head_row + i) % grid_rows;
+            for (uint32_t i = 0U; i < plan.dirty_row_count; i++) {
+                const uint32_t row = plan.dirty_row_start + i;
+                if (row >= grid_rows) {
+                    break;
+                }
                 const uint32_t span_units = grid_cols;
                 db_vk_draw_owner_grid_span_gradient_sweep(
                     g_state.command_buffer, g_state.pipeline_layout,
@@ -2363,13 +2334,15 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                     row, 0U, grid_cols, shader_ignored_color,
                     plan.render_head_row);
             }
-            g_state.gradient_head_row = plan.next_head_row;
         }
+        g_state.gradient_head_row = plan.next_head_row;
     } else {
         const db_gradient_fill_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
                                              g_state.grid_clearing_phase);
         const uint32_t head_row = plan.render_head_row;
+        const uint32_t head_row_clamped =
+            (head_row < grid_rows) ? head_row : grid_rows;
         const int clearing_phase = plan.render_clearing_phase;
 
         const float shader_ignored_color[3] = {0.0F, 0.0F, 0.0F};
@@ -2402,7 +2375,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
                 &grid_tiles_drawn, grid_rows, grid_cols, row_start, row_end,
                 shader_ignored_color, head_row, clearing_phase);
-            for (uint32_t row = solid_rows; row < head_row; row++) {
+            for (uint32_t row = solid_rows; row < head_row_clamped; row++) {
                 db_vk_draw_owner_grid_span_gradient_fill(
                     g_state.command_buffer, g_state.pipeline_layout,
                     g_state.swapchain_state.extent, haveGroup, active_gpu_count,
@@ -2417,7 +2390,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             g_state.gradient_head_row = plan.next_head_row;
             g_state.grid_clearing_phase = plan.next_clearing_phase;
         } else if ((grid_rows > 0U) && (plan.dirty_row_count > 0U)) {
-            for (uint32_t row = solid_rows; row < head_row; row++) {
+            for (uint32_t row = solid_rows; row < head_row_clamped; row++) {
                 db_vk_draw_owner_grid_span_gradient_fill(
                     g_state.command_buffer, g_state.pipeline_layout,
                     g_state.swapchain_state.extent, haveGroup, active_gpu_count,
@@ -2429,9 +2402,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                     row, 0U, grid_cols, shader_ignored_color, head_row,
                     clearing_phase);
             }
-            g_state.gradient_head_row = plan.next_head_row;
-            g_state.grid_clearing_phase = plan.next_clearing_phase;
         }
+        g_state.gradient_head_row = plan.next_head_row;
+        g_state.grid_clearing_phase = plan.next_clearing_phase;
     }
 
     if (haveGroup) {
@@ -2439,7 +2412,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     }
     vkCmdEndRenderPass(g_state.command_buffer);
 
-    if (rect_mode) {
+    if (history_mode) {
         VkImageMemoryBarrier write_to_src = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         write_to_src.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -2496,9 +2469,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
 
         VkImageMemoryBarrier swap_to_present = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        swap_to_present.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        swap_to_present.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         swap_to_present.dstAccessMask = 0;
-        swap_to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        swap_to_present.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         swap_to_present.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         swap_to_present.image = g_state.swapchain_state.images[imgIndex];
         swap_to_present.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -2517,8 +2490,8 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     VK_CHECK(vkEndCommandBuffer(g_state.command_buffer));
 
     VkPipelineStageFlags waitStage =
-        rect_mode ? VK_PIPELINE_STAGE_TRANSFER_BIT
-                  : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        history_mode ? VK_PIPELINE_STAGE_TRANSFER_BIT
+                     : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.waitSemaphoreCount = 1;
     si.pWaitSemaphores = &g_state.image_available;

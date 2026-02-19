@@ -187,6 +187,11 @@ static inline const char *db_pattern_mode_name(db_pattern_t pattern) {
     }
 }
 
+static inline int db_pattern_uses_history_texture(db_pattern_t pattern) {
+    return (pattern == DB_PATTERN_SNAKE_GRID) ||
+           (pattern == DB_PATTERN_RECT_SNAKE);
+}
+
 static inline uint32_t db_pattern_work_unit_count(db_pattern_t pattern) {
     if ((pattern == DB_PATTERN_SNAKE_GRID) ||
         (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
@@ -434,24 +439,21 @@ db_rect_snake_plan_next_step(uint32_t seed, uint32_t rect_index,
 
     const uint32_t tiles_per_step =
         db_snake_grid_tiles_per_step(rect_tile_count);
-    if (plan.active_cursor >= rect_tile_count) {
-        plan.batch_size = 0U;
-    } else {
-        const uint32_t remaining = rect_tile_count - plan.active_cursor;
-        plan.batch_size =
-            (tiles_per_step < remaining) ? tiles_per_step : remaining;
-    }
-    plan.rect_completed =
-        ((plan.active_cursor + plan.batch_size) >= rect_tile_count) ? 1 : 0;
-    plan.next_cursor = plan.active_cursor + plan.batch_size;
+    plan.batch_size = tiles_per_step;
+    plan.rect_completed = (plan.active_cursor >= rect_tile_count) ? 1 : 0;
     plan.next_rect_index = plan.active_rect_index;
     plan.wrapped = 0;
-    if (plan.next_cursor >= rect_tile_count) {
+    if (plan.rect_completed != 0) {
         plan.next_cursor = 0U;
         plan.next_rect_index = plan.active_rect_index + 1U;
         if (plan.next_rect_index >= rect_index_modulus) {
             plan.next_rect_index = 0U;
             plan.wrapped = 1;
+        }
+    } else {
+        plan.next_cursor = plan.active_cursor + 1U;
+        if (plan.next_cursor > rect_tile_count) {
+            plan.next_cursor = rect_tile_count;
         }
     }
     return plan;
@@ -479,26 +481,36 @@ db_snake_grid_plan_next_step(uint32_t snake_cursor, uint32_t snake_prev_start,
 
     const uint32_t tiles_per_step =
         db_snake_grid_tiles_per_step(work_unit_count);
-    plan.batch_size = db_snake_grid_step_batch_size(
-        snake_cursor, work_unit_count, tiles_per_step);
-    plan.phase_completed =
-        ((snake_cursor + plan.batch_size) >= work_unit_count) ? 1 : 0;
+    plan.batch_size = tiles_per_step;
+    plan.phase_completed = (snake_cursor >= work_unit_count) ? 1 : 0;
 
     plan.next_prev_start = snake_cursor;
     plan.next_prev_count = plan.phase_completed ? 0U : plan.batch_size;
-    plan.next_cursor = snake_cursor + plan.batch_size;
     plan.next_clearing_phase = clearing_phase;
-    if (plan.next_cursor >= work_unit_count) {
+    if (plan.phase_completed != 0) {
         plan.next_cursor = 0U;
         plan.next_clearing_phase = !clearing_phase;
+    } else {
+        plan.next_cursor = snake_cursor + 1U;
+        if (plan.next_cursor > work_unit_count) {
+            plan.next_cursor = work_unit_count;
+        }
     }
     return plan;
 }
 
-static inline void db_snake_grid_target_color_rgb(int clearing_phase,
-                                                  float *out_r, float *out_g,
-                                                  float *out_b) {
-    if (clearing_phase) {
+static inline float db_window_blend_factor(uint32_t window_index,
+                                           uint32_t window_size) {
+    const uint32_t span = (window_size > 0U) ? window_size : 1U;
+    if (span <= 1U) {
+        return 1.0F;
+    }
+    return (float)((span - 1U) - window_index) / (float)(span - 1U);
+}
+
+static inline void db_grid_target_color_rgb(int clearing_phase, float *out_r,
+                                            float *out_g, float *out_b) {
+    if (clearing_phase != 0) {
         *out_r = BENCH_GRID_PHASE0_R;
         *out_g = BENCH_GRID_PHASE0_G;
         *out_b = BENCH_GRID_PHASE0_B;
@@ -509,13 +521,40 @@ static inline void db_snake_grid_target_color_rgb(int clearing_phase,
     *out_b = BENCH_GRID_PHASE1_B;
 }
 
+static inline void db_blend_rgb(float prior_r, float prior_g, float prior_b,
+                                float target_r, float target_g, float target_b,
+                                float blend_factor, float *out_r, float *out_g,
+                                float *out_b) {
+    if (blend_factor <= 0.0F) {
+        *out_r = prior_r;
+        *out_g = prior_g;
+        *out_b = prior_b;
+        return;
+    }
+    if (blend_factor >= 1.0F) {
+        *out_r = target_r;
+        *out_g = target_g;
+        *out_b = target_b;
+        return;
+    }
+    *out_r = prior_r + ((target_r - prior_r) * blend_factor);
+    *out_g = prior_g + ((target_g - prior_g) * blend_factor);
+    *out_b = prior_b + ((target_b - prior_b) * blend_factor);
+}
+
+static inline void db_snake_grid_target_color_rgb(int clearing_phase,
+                                                  float *out_r, float *out_g,
+                                                  float *out_b) {
+    db_grid_target_color_rgb(clearing_phase, out_r, out_g, out_b);
+}
+
 static inline void db_snake_grid_window_color_rgb(uint32_t window_index,
                                                   uint32_t window_size,
                                                   int clearing_phase,
                                                   float *out_r, float *out_g,
                                                   float *out_b) {
-    const uint32_t span = (window_size > 0U) ? window_size : 1U;
-    const float blend_factor = (float)(span - window_index) / (float)span;
+    const float blend_factor =
+        db_window_blend_factor(window_index, window_size);
     const float from_r =
         clearing_phase ? BENCH_GRID_PHASE1_R : BENCH_GRID_PHASE0_R;
     const float from_g =
@@ -525,11 +564,9 @@ static inline void db_snake_grid_window_color_rgb(uint32_t window_index,
     float to_r = 0.0F;
     float to_g = 0.0F;
     float to_b = 0.0F;
-    db_snake_grid_target_color_rgb(clearing_phase, &to_r, &to_g, &to_b);
-
-    *out_r = from_r + ((to_r - from_r) * blend_factor);
-    *out_g = from_g + ((to_g - from_g) * blend_factor);
-    *out_b = from_b + ((to_b - from_b) * blend_factor);
+    db_grid_target_color_rgb(clearing_phase, &to_r, &to_g, &to_b);
+    db_blend_rgb(from_r, from_g, from_b, to_r, to_g, to_b, blend_factor, out_r,
+                 out_g, out_b);
 }
 
 static inline uint32_t db_gradient_sweep_window_rows_effective(void) {
@@ -550,17 +587,28 @@ db_gradient_sweep_plan_next_frame(uint32_t head_row) {
         return plan;
     }
 
-    const uint32_t prev_head = head_row % rows;
-    const uint32_t next_head = (prev_head + 1U) % rows;
-    uint32_t dirty_count = db_gradient_sweep_window_rows_effective() + 1U;
-    if (dirty_count > rows) {
-        dirty_count = rows;
+    const uint32_t window_rows = db_gradient_sweep_window_rows_effective();
+    const uint32_t max_head = rows + window_rows;
+    const uint32_t prev_head = head_row;
+    uint32_t next_head = head_row + 1U;
+    if (next_head > max_head) {
+        next_head = 0U;
+        plan.dirty_row_start = 0U;
+        plan.dirty_row_count = rows;
+    } else {
+        const uint32_t dirty_end = next_head + window_rows;
+        const uint32_t unclamped_start = prev_head;
+        const uint32_t clamped_start =
+            (unclamped_start < rows) ? unclamped_start : rows;
+        const uint32_t clamped_end = (dirty_end < rows) ? dirty_end : rows;
+        if (clamped_end > clamped_start) {
+            plan.dirty_row_start = clamped_start;
+            plan.dirty_row_count = clamped_end - clamped_start;
+        }
     }
 
     plan.render_head_row = next_head;
     plan.next_head_row = next_head;
-    plan.dirty_row_start = prev_head;
-    plan.dirty_row_count = dirty_count;
     return plan;
 }
 
@@ -577,13 +625,13 @@ static inline void db_gradient_sweep_row_color_rgb(uint32_t row_index,
         return;
     }
 
-    const uint32_t delta = (row_index + rows - (head_row % rows)) % rows;
-    if (delta >= window_rows) {
+    if ((head_row > row_index) || ((row_index - head_row) >= window_rows)) {
         *out_r = BENCH_GRID_PHASE1_R;
         *out_g = BENCH_GRID_PHASE1_G;
         *out_b = BENCH_GRID_PHASE1_B;
         return;
     }
+    const uint32_t delta = row_index - head_row;
 
     const float half_span = ((float)window_rows - 1.0F) * 0.5F;
     float blend = 0.0F;
@@ -592,12 +640,9 @@ static inline void db_gradient_sweep_row_color_rgb(uint32_t row_index,
         blend = centered / half_span;
     }
 
-    *out_r = BENCH_GRID_PHASE0_R +
-             ((BENCH_GRID_PHASE1_R - BENCH_GRID_PHASE0_R) * blend);
-    *out_g = BENCH_GRID_PHASE0_G +
-             ((BENCH_GRID_PHASE1_G - BENCH_GRID_PHASE0_G) * blend);
-    *out_b = BENCH_GRID_PHASE0_B +
-             ((BENCH_GRID_PHASE1_B - BENCH_GRID_PHASE0_B) * blend);
+    db_blend_rgb(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B,
+                 BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G, BENCH_GRID_PHASE1_B,
+                 blend, out_r, out_g, out_b);
 }
 
 static inline void db_gradient_sweep_set_row_color(float *vertices,
@@ -657,35 +702,39 @@ db_gradient_fill_plan_next_frame(uint32_t head_row, int clearing_phase) {
         return plan;
     }
 
-    uint32_t next_head = (head_row % rows) + 1U;
+    const uint32_t window_rows = db_gradient_fill_window_rows_effective();
+    const uint32_t max_head = rows + window_rows;
+    uint32_t next_head = head_row + 1U;
     int next_phase = clearing_phase;
-    if (next_head >= rows) {
+    if (next_head > max_head) {
         next_head = 0U;
         next_phase = !next_phase;
+        plan.dirty_row_start = 0U;
+        plan.dirty_row_count = rows;
+    } else {
+        const uint32_t dirty_span = window_rows + 1U;
+        const uint32_t dirty_start_unclamped =
+            (next_head > dirty_span) ? (next_head - dirty_span) : 0U;
+        const uint32_t dirty_end = (next_head < rows) ? next_head : rows;
+        if (dirty_end > dirty_start_unclamped) {
+            plan.dirty_row_start = dirty_start_unclamped;
+            plan.dirty_row_count = dirty_end - dirty_start_unclamped;
+        }
     }
 
     plan.render_head_row = next_head;
     plan.render_clearing_phase = next_phase;
     plan.next_head_row = next_head;
     plan.next_clearing_phase = next_phase;
-
-    if ((next_head == 0U) && (next_phase != clearing_phase)) {
-        plan.dirty_row_start = 0U;
-        plan.dirty_row_count = rows;
-    } else {
-        uint32_t dirty_span = db_gradient_fill_window_rows_effective() + 1U;
-        if (dirty_span > rows) {
-            dirty_span = rows;
-        }
-        plan.dirty_row_count = dirty_span;
-        plan.dirty_row_start = (next_head + rows - dirty_span) % rows;
-    }
     return plan;
 }
 
 static inline uint32_t db_gradient_fill_solid_rows(uint32_t head_row) {
     const uint32_t window_rows = db_gradient_fill_window_rows_effective();
-    return (head_row > window_rows) ? (head_row - window_rows) : 0U;
+    const uint32_t rows = db_grid_rows_effective();
+    const uint32_t solid_rows =
+        (head_row > window_rows) ? (head_row - window_rows) : 0U;
+    return (solid_rows < rows) ? solid_rows : rows;
 }
 
 static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
@@ -702,7 +751,7 @@ static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
         return;
     }
 
-    const uint32_t head = head_row % rows;
+    const uint32_t head = head_row;
     const uint32_t row = row_index % rows;
     const float source_r =
         (clearing_phase != 0) ? BENCH_GRID_PHASE1_R : BENCH_GRID_PHASE0_R;
@@ -710,12 +759,10 @@ static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
         (clearing_phase != 0) ? BENCH_GRID_PHASE1_G : BENCH_GRID_PHASE0_G;
     const float source_b =
         (clearing_phase != 0) ? BENCH_GRID_PHASE1_B : BENCH_GRID_PHASE0_B;
-    const float target_r =
-        (clearing_phase != 0) ? BENCH_GRID_PHASE0_R : BENCH_GRID_PHASE1_R;
-    const float target_g =
-        (clearing_phase != 0) ? BENCH_GRID_PHASE0_G : BENCH_GRID_PHASE1_G;
-    const float target_b =
-        (clearing_phase != 0) ? BENCH_GRID_PHASE0_B : BENCH_GRID_PHASE1_B;
+    float target_r = 0.0F;
+    float target_g = 0.0F;
+    float target_b = 0.0F;
+    db_grid_target_color_rgb(clearing_phase, &target_r, &target_g, &target_b);
     if (row >= head) {
         *out_r = source_r;
         *out_g = source_g;
@@ -731,10 +778,16 @@ static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
         return;
     }
 
-    const float blend = (float)delta / (float)window_rows;
-    *out_r = source_r + ((target_r - source_r) * blend);
-    *out_g = source_g + ((target_g - source_g) * blend);
-    *out_b = source_b + ((target_b - source_b) * blend);
+    if (window_rows <= 1U) {
+        *out_r = target_r;
+        *out_g = target_g;
+        *out_b = target_b;
+        return;
+    }
+
+    const float blend = (float)delta / (float)(window_rows - 1U);
+    db_blend_rgb(source_r, source_g, source_b, target_r, target_g, target_b,
+                 blend, out_r, out_g, out_b);
 }
 
 static inline void db_gradient_fill_set_row_color(float *vertices,
