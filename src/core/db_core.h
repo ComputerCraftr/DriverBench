@@ -61,6 +61,33 @@ static inline int32_t db_checked_int_to_i32(const char *backend,
     return (int32_t)value;
 }
 
+static inline uint32_t
+db_checked_int_to_u32(const char *backend, const char *field_name, int value) {
+    if (value < 0) {
+        db_failf(backend, "%s out of u32 range: %d", field_name, value);
+    }
+    return (uint32_t)value;
+}
+
+static inline uint32_t db_checked_size_to_u32(const char *backend,
+                                              const char *field_name,
+                                              size_t value) {
+    if (value > (size_t)UINT32_MAX) {
+        db_failf(backend, "%s out of u32 range: %zu", field_name, value);
+    }
+    return (uint32_t)value;
+}
+
+static inline uint32_t db_checked_u64_to_u32(const char *backend,
+                                             const char *field_name,
+                                             uint64_t value) {
+    if (value > (uint64_t)UINT32_MAX) {
+        db_failf(backend, "%s out of u32 range: %llu", field_name,
+                 (unsigned long long)value);
+    }
+    return (uint32_t)value;
+}
+
 static inline long db_checked_double_to_long(const char *backend,
                                              const char *field_name,
                                              double value) {
@@ -93,6 +120,18 @@ static inline uint64_t db_fnv1a64_bytes(const void *data, size_t size) {
 
 static inline uint64_t db_fnv1a64_mix_u64(uint64_t hash, uint64_t value) {
     return db_fnv1a64_extend(hash, &value, sizeof(value));
+}
+
+static inline uint32_t db_u32_min(uint32_t lhs, uint32_t rhs) {
+    return (lhs < rhs) ? lhs : rhs;
+}
+
+static inline uint32_t db_u32_max(uint32_t lhs, uint32_t rhs) {
+    return (lhs > rhs) ? lhs : rhs;
+}
+
+static inline uint32_t db_u32_saturating_sub(uint32_t lhs, uint32_t rhs) {
+    return (lhs > rhs) ? (lhs - rhs) : 0U;
 }
 
 static inline uint32_t db_checked_add_u32(const char *backend,

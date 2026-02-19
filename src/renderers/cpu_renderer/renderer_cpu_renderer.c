@@ -3,7 +3,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "../../core/db_core.h"
 #include "../../displays/bench_config.h"
@@ -80,8 +79,9 @@ static void db_bo_fill_solid(db_cpu_bo_t *bo, uint32_t rgba) {
 
 static void db_bo_copy(db_cpu_bo_t *dst, const db_cpu_bo_t *src) {
     const uint64_t pixel_count = (uint64_t)dst->width * (uint64_t)dst->height;
-    memcpy(dst->pixels_rgba8, src->pixels_rgba8,
-           (size_t)(pixel_count * sizeof(uint32_t)));
+    for (uint64_t idx = 0U; idx < pixel_count; idx++) {
+        dst->pixels_rgba8[idx] = src->pixels_rgba8[idx];
+    }
 }
 
 static size_t db_grid_index(uint32_t row, uint32_t col, uint32_t cols) {

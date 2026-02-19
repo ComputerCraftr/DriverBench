@@ -138,7 +138,7 @@ typedef struct {
     float target_color[4];
     uint32_t gradient_sweep_cycle;
     uint32_t gradient_fill_cycle;
-    uint32_t rect_seed;
+    uint32_t pattern_seed;
 } PushConstants;
 
 typedef struct {
@@ -337,11 +337,11 @@ static void db_vk_push_constants_draw_dynamic(
                        (uint32_t)offsetof(PushConstants, gradient_fill_cycle),
                        sizeof(gradient_fill_cycle), &gradient_fill_cycle);
 
-    const uint32_t rect_seed =
+    const uint32_t pattern_seed =
         (render_mode == DB_RENDER_MODE_RECT_SNAKE) ? g_state.pattern_seed : 0U;
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, rect_seed),
-                       sizeof(rect_seed), &rect_seed);
+                       (uint32_t)offsetof(PushConstants, pattern_seed),
+                       sizeof(pattern_seed), &pattern_seed);
 }
 
 static uint32_t db_vk_clamp_u32(uint32_t value, uint32_t min_v,
@@ -368,8 +368,10 @@ db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
             width = BENCH_WINDOW_WIDTH_PX;
             height = BENCH_WINDOW_HEIGHT_PX;
         }
-        extent.width = (uint32_t)width;
-        extent.height = (uint32_t)height;
+        extent.width =
+            db_checked_int_to_u32(BACKEND_NAME, "surface_extent_width", width);
+        extent.height = db_checked_int_to_u32(BACKEND_NAME,
+                                              "surface_extent_height", height);
         extent.width = db_vk_clamp_u32(extent.width, caps->minImageExtent.width,
                                        caps->maxImageExtent.width);
         extent.height =

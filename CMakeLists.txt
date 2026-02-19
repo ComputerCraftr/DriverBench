@@ -574,17 +574,28 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS)
 endif()
 
 if(BUILD_TESTING)
-  function(db_add_determinism_test test_name target_name hash_key env_list)
+  function(db_add_determinism_test test_name target_name hash_key env_list expected_hash)
     if(NOT TARGET ${target_name})
       return()
     endif()
-    add_test(
-      NAME ${test_name}
-      COMMAND ${CMAKE_COMMAND}
-        -DTEST_BIN=$<TARGET_FILE:${target_name}>
-        -DTEST_HASH_KEY=${hash_key}
-        -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
-    )
+    if("${expected_hash}" STREQUAL "")
+      add_test(
+        NAME ${test_name}
+        COMMAND ${CMAKE_COMMAND}
+          -DTEST_BIN=$<TARGET_FILE:${target_name}>
+          -DTEST_HASH_KEY=${hash_key}
+          -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
+      )
+    else()
+      add_test(
+        NAME ${test_name}
+        COMMAND ${CMAKE_COMMAND}
+          -DTEST_BIN=$<TARGET_FILE:${target_name}>
+          -DTEST_HASH_KEY=${hash_key}
+          -DTEST_EXPECTED_HASH=${expected_hash}
+          -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
+      )
+    endif()
     set_property(TEST ${test_name} PROPERTY ENVIRONMENT "${env_list}")
   endfunction()
 
@@ -593,12 +604,35 @@ if(BUILD_TESTING)
     driverbench_offscreen_cpu_renderer
     bo_hash_final
     "DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    0x2739df2d274aacf2
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_fill
     driverbench_offscreen_cpu_renderer
     bo_hash_final
     "DRIVERBENCH_BENCHMARK_MODE=gradient_fill;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    0xdf88841758610943
+  )
+  db_add_determinism_test(
+    determinism_cpu_renderer_rect_snake
+    driverbench_offscreen_cpu_renderer
+    bo_hash_final
+    "DRIVERBENCH_BENCHMARK_MODE=rect_snake;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    0x15d3c7ed38452332
+  )
+  db_add_determinism_test(
+    determinism_cpu_renderer_gradient_sweep
+    driverbench_offscreen_cpu_renderer
+    bo_hash_final
+    "DRIVERBENCH_BENCHMARK_MODE=gradient_sweep;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    0xa0f5ddd79d8e9993
+  )
+  db_add_determinism_test(
+    determinism_cpu_renderer_bands
+    driverbench_offscreen_cpu_renderer
+    bo_hash_final
+    "DRIVERBENCH_BENCHMARK_MODE=bands;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    0x265a06c2cd23fac3
   )
 
   if(DB_ENABLE_GLFW_OFFSCREEN_TESTS)
@@ -607,12 +641,14 @@ if(BUILD_TESTING)
       driverbench_glfw_window_opengl_gl1_5_gles1_1
       framebuffer_hash_final
       "DRIVERBENCH_OFFSCREEN=1;DRIVERBENCH_FRAME_LIMIT=64;DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_VSYNC=0;DRIVERBENCH_FRAMEBUFFER_HASH=1"
+      ""
     )
     db_add_determinism_test(
       determinism_glfw_gl3_3_offscreen
       driverbench_glfw_window_opengl_gl3_3
       framebuffer_hash_final
       "DRIVERBENCH_OFFSCREEN=1;DRIVERBENCH_FRAME_LIMIT=64;DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_VSYNC=0;DRIVERBENCH_FRAMEBUFFER_HASH=1"
+      ""
     )
   endif()
 endif()

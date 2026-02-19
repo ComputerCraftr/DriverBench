@@ -117,7 +117,8 @@ static int db_init_vertices_for_mode(void) {
     g_state.vertices = init_state.vertices;
     g_state.pattern = init_state.pattern;
     g_state.work_unit_count = init_state.work_unit_count;
-    g_state.draw_vertex_count = (GLsizei)init_state.draw_vertex_count;
+    g_state.draw_vertex_count = (GLsizei)db_checked_u32_to_i32(
+        BACKEND_NAME, "draw_vertex_count", init_state.draw_vertex_count);
     g_state.snake_cursor = init_state.snake_cursor;
     g_state.snake_prev_start = init_state.snake_prev_start;
     g_state.snake_prev_count = init_state.snake_prev_count;

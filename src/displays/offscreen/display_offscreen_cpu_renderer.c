@@ -1,4 +1,6 @@
+#include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "../../core/db_core.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"

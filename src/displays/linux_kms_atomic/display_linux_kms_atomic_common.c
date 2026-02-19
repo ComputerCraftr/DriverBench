@@ -503,7 +503,9 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         runtime_check(backend, runtime_version, runtime_is_gles);
     }
 
-    glViewport(0, 0, (GLint)width, (GLint)height);
+    glViewport(
+        0, 0, (GLint)db_checked_u32_to_i32(backend, "viewport_width", width),
+        (GLint)db_checked_u32_to_i32(backend, "viewport_height", height));
 
     renderer->init();
     const char *capability_mode = renderer->capability_mode();

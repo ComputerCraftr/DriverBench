@@ -44,4 +44,12 @@ if(NOT run1_hash STREQUAL run2_hash)
     "run2:\n${run2_output}\n")
 endif()
 
+if(DEFINED TEST_EXPECTED_HASH AND NOT "${TEST_EXPECTED_HASH}" STREQUAL "")
+  if(NOT run1_hash STREQUAL TEST_EXPECTED_HASH)
+    message(FATAL_ERROR
+      "Golden hash mismatch for ${TEST_BIN}: expected ${TEST_EXPECTED_HASH}, got ${run1_hash}\n"
+      "run output:\n${run1_output}\n")
+  endif()
+endif()
+
 message(STATUS "Determinism OK for ${TEST_BIN}: ${run1_hash}")
