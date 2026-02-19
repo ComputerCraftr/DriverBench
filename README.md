@@ -58,15 +58,20 @@ Build outputs use versioned, display-aware target names only:
   - Set this for reproducible comparisons across renderers/drivers.
 - `DRIVERBENCH_OFFSCREEN_FRAMES=<number>`
   - Offscreen CPU display frame count override (default `600`).
+  - Applies to `driverbench_offscreen_cpu_renderer` only.
 - `DRIVERBENCH_OFFSCREEN=1`
   - GLFW backends create hidden windows for offscreen CI-style runs.
 - `DRIVERBENCH_FRAME_LIMIT=<number>`
   - Stops GLFW render loops after N frames (`0`/unset = no limit).
-  - Applies to `driverbench_glfw_window_cpu_renderer` too.
+  - Applies to all GLFW window backends (including GLFW CPU renderer).
 - `DRIVERBENCH_FRAMEBUFFER_HASH=1`
-  - OpenGL GLFW backends compute/log final framebuffer hash for determinism checks.
+  - Enables framebuffer hash logging for GLFW OpenGL backends only when
+    `DRIVERBENCH_OFFSCREEN=1`.
 - `DRIVERBENCH_HASH_EVERY_FRAME=1|0`
-  - CPU/OpenGL hash logging control. Default logs final+aggregate only.
+  - Enables per-frame hash logging when hashing is enabled.
+  - For GLFW backends, hash envs are ignored unless `DRIVERBENCH_OFFSCREEN=1`.
+  - `bo_hash_*` and `framebuffer_hash_*` are backend-specific; do not compare
+    hashes across different renderer/display backends.
 - `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid|gradient_fill|rect_snake`
   - Default is `gradient_sweep` (mode index `0`).
   - `gradient_sweep` renders a full-grid workload with a moving `32`-row

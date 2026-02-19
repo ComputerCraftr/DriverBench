@@ -38,9 +38,10 @@ int main(void) {
     int swap_interval = db_glfw_resolve_swap_interval();
     const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME);
     const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME);
-    const int hash_framebuffer = db_env_is_truthy(DB_ENV_FRAMEBUFFER_HASH);
-    const int hash_every_frame = db_env_is_truthy(DB_ENV_HASH_EVERY_FRAME);
-    const int hash_enabled = (hash_framebuffer != 0) || (hash_every_frame != 0);
+    int hash_enabled = 0;
+    int hash_every_frame = 0;
+    db_glfw_resolve_hash_settings(BACKEND_NAME, &hash_enabled,
+                                  &hash_every_frame);
     int is_gles = 0;
     GLFWwindow *window = db_glfw_create_gl1_5_or_gles1_1_window(
         BACKEND_NAME, "OpenGL 1.5/GLES1.1 GLFW DriverBench",

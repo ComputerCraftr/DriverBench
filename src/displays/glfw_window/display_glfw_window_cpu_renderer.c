@@ -23,16 +23,7 @@
 #define DB_CAP_MODE_CPU_GLFW_WINDOW "cpu_glfw_window"
 
 static uint32_t db_cpu_glfw_frame_limit(void) {
-    const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME);
-    if (frame_limit > 0U) {
-        return frame_limit;
-    }
-    uint32_t parsed = 0U;
-    if (db_env_parse_u32_positive(BACKEND_NAME, DB_ENV_OFFSCREEN_FRAMES,
-                                  &parsed) != 0) {
-        return parsed;
-    }
-    return 0U;
+    return db_glfw_resolve_frame_limit(BACKEND_NAME);
 }
 
 #define OPENGL_CONTEXT_VERSION_MAJOR 2
@@ -79,7 +70,10 @@ int main(void) {
     const int swap_interval = db_glfw_resolve_swap_interval();
     const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME);
     const uint32_t frame_limit = db_cpu_glfw_frame_limit();
-    const int hash_every_frame = db_env_is_truthy(DB_ENV_HASH_EVERY_FRAME);
+    int hash_enabled = 0;
+    int hash_every_frame = 0;
+    db_glfw_resolve_hash_settings(BACKEND_NAME, &hash_enabled,
+                                  &hash_every_frame);
 
     GLFWwindow *window = db_glfw_create_opengl_window(
         BACKEND_NAME, "CPU Renderer GLFW DriverBench", BENCH_WINDOW_WIDTH_PX,
@@ -97,8 +91,8 @@ int main(void) {
     uint64_t frames = 0U;
     double bench_start = db_glfw_time_seconds();
     double next_progress_log_due_ms = 0.0;
-    db_display_hash_tracker_t hash_tracker =
-        db_display_hash_tracker_create(1, hash_every_frame, "bo_hash");
+    db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
+        hash_enabled, hash_every_frame, "bo_hash");
 
     while (!glfwWindowShouldClose(window) && !db_should_stop()) {
         if ((frame_limit > 0U) && (frames >= frame_limit)) {
@@ -112,19 +106,22 @@ int main(void) {
         db_renderer_cpu_renderer_render_frame(frame_time_s);
         db_present_cpu_framebuffer(window);
 
-        uint32_t pixel_width = 0U;
-        uint32_t pixel_height = 0U;
-        const uint32_t *pixels =
-            db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
-        if (pixels == NULL) {
-            db_failf(BACKEND_NAME, "cpu renderer returned invalid framebuffer");
+        if (hash_enabled != 0) {
+            uint32_t pixel_width = 0U;
+            uint32_t pixel_height = 0U;
+            const uint32_t *pixels = db_renderer_cpu_renderer_pixels_rgba8(
+                &pixel_width, &pixel_height);
+            if (pixels == NULL) {
+                db_failf(BACKEND_NAME,
+                         "cpu renderer returned invalid framebuffer");
+            }
+            const size_t byte_count =
+                (size_t)((uint64_t)pixel_width * (uint64_t)pixel_height *
+                         sizeof(uint32_t));
+            const uint64_t frame_hash = db_fnv1a64_bytes(pixels, byte_count);
+            db_display_hash_tracker_record(BACKEND_NAME, &hash_tracker, frames,
+                                           frame_hash);
         }
-        const size_t byte_count =
-            (size_t)((uint64_t)pixel_width * (uint64_t)pixel_height *
-                     sizeof(uint32_t));
-        const uint64_t frame_hash = db_fnv1a64_bytes(pixels, byte_count);
-        db_display_hash_tracker_record(BACKEND_NAME, &hash_tracker, frames,
-                                       frame_hash);
 
         glfwSwapBuffers(window);
         db_glfw_sleep_to_fps_cap(frame_start_s, fps_cap);
