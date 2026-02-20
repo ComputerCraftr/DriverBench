@@ -440,17 +440,7 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.uniform_palette_cycle_cache_valid = 0;
 
     if (g_state.u_render_mode >= 0) {
-        int render_mode = DB_RENDER_MODE_BANDS;
-        if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
-            render_mode = DB_RENDER_MODE_GRADIENT_SWEEP;
-        } else if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
-            render_mode = DB_RENDER_MODE_SNAKE_GRID;
-        } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
-            render_mode = DB_RENDER_MODE_GRADIENT_FILL;
-        } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
-            render_mode = DB_RENDER_MODE_RECT_SNAKE;
-        }
-        glUniform1i(g_state.u_render_mode, render_mode);
+        glUniform1i(g_state.u_render_mode, g_state.pattern);
     }
     glUniform3f(g_state.u_grid_base_color, BENCH_GRID_PHASE0_R,
                 BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B);
@@ -481,6 +471,13 @@ void db_renderer_opengl_gl3_3_init(void) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, g_state.fallback_tex);
     }
+
+    if (g_state.pattern == DB_PATTERN_BANDS) {
+        db_fill_band_vertices_pos_rgb_stride(
+            g_state.vertices, g_state.work_unit_count, 0.0,
+            DB_VERTEX_FLOAT_STRIDE, DB_VERTEX_POSITION_FLOAT_COUNT);
+    }
+
     db_set_uniform1i_u32_if_changed(g_state.u_gradient_head_row,
                                     &g_state.uniform_gradient_head_row_cache,
                                     g_state.gradient_head_row);
@@ -499,8 +496,9 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
     db_gl3_ensure_history_targets();
 
     if (g_state.pattern == DB_PATTERN_BANDS) {
-        db_fill_band_vertices_pos_rgb(g_state.vertices, g_state.work_unit_count,
-                                      time_s);
+        db_update_band_vertices_rgb_stride(
+            g_state.vertices, g_state.work_unit_count, time_s,
+            DB_VERTEX_FLOAT_STRIDE, DB_VERTEX_POSITION_FLOAT_COUNT);
         db_gl_upload_buffer(
             g_state.vertices, g_state.vbo_bytes, g_state.use_persistent_upload,
             g_state.persistent_mapped_ptr, g_state.use_map_range_upload,

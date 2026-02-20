@@ -65,14 +65,6 @@ typedef enum {
     DB_PATTERN_RECT_SNAKE = 4,
 } db_pattern_t;
 
-typedef enum {
-    DB_RENDER_MODE_GRADIENT_SWEEP = 0,
-    DB_RENDER_MODE_BANDS = 1,
-    DB_RENDER_MODE_SNAKE_GRID = 2,
-    DB_RENDER_MODE_GRADIENT_FILL = 3,
-    DB_RENDER_MODE_RECT_SNAKE = 4,
-} db_render_mode_t;
-
 typedef struct {
     uint32_t active_cursor;
     uint32_t prev_start;
@@ -1154,14 +1146,6 @@ db_update_band_vertices_rgb_stride(float *out_vertices, uint32_t band_count,
         db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
                              color_g, color_b);
     }
-}
-
-static inline void db_fill_band_vertices_pos_rgb(float *out_vertices,
-                                                 uint32_t band_count,
-                                                 double time_s) {
-    db_fill_band_vertices_pos_rgb_stride(out_vertices, band_count, time_s,
-                                         DB_VERTEX_FLOAT_STRIDE,
-                                         DB_VERTEX_POSITION_FLOAT_COUNT);
 }
 
 #endif

@@ -338,7 +338,7 @@ static void db_vk_push_constants_draw_dynamic(
                        sizeof(gradient_fill_cycle), &gradient_fill_cycle);
 
     const uint32_t pattern_seed =
-        (render_mode == DB_RENDER_MODE_RECT_SNAKE) ? g_state.pattern_seed : 0U;
+        (render_mode == DB_PATTERN_RECT_SNAKE) ? g_state.pattern_seed : 0U;
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, pattern_seed),
                        sizeof(pattern_seed), &pattern_seed);
@@ -1021,7 +1021,7 @@ static void db_vk_draw_owner_grid_span_legacy(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_RENDER_MODE_BANDS, 0U, 0, 0U, 0U, 0, 0U, 0U);
+        DB_PATTERN_BANDS, 0U, 0, 0U, 0U, 0, 0U, 0U);
 }
 
 static void db_vk_draw_owner_grid_span_snake(
@@ -1041,7 +1041,7 @@ static void db_vk_draw_owner_grid_span_snake(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_RENDER_MODE_SNAKE_GRID, active_cursor, clearing_phase, active_cursor,
+        DB_PATTERN_SNAKE_GRID, active_cursor, clearing_phase, active_cursor,
         batch_size, phase_completed, 0U, 0U);
 }
 
@@ -1062,7 +1062,7 @@ static void db_vk_draw_owner_grid_span_gradient_sweep(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_RENDER_MODE_GRADIENT_SWEEP, head_row, 0, row, 0U, direction_down,
+        DB_PATTERN_GRADIENT_SWEEP, head_row, 0, row, 0U, direction_down,
         cycle_index, 0U);
 }
 
@@ -1083,7 +1083,7 @@ static void db_vk_draw_owner_grid_span_gradient_fill(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_RENDER_MODE_GRADIENT_FILL, head_row, 0, 0U, 0U, 0, 0U, cycle_index);
+        DB_PATTERN_GRADIENT_FILL, head_row, 0, 0U, 0U, 0, 0U, cycle_index);
 }
 
 static void db_vk_draw_owner_grid_row_block_gradient_fill(
@@ -1103,7 +1103,7 @@ static void db_vk_draw_owner_grid_row_block_gradient_fill(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row_start, row_end, color,
-        DB_RENDER_MODE_GRADIENT_FILL, head_row, 0, 0U, 0U, 0, 0U, cycle_index);
+        DB_PATTERN_GRADIENT_FILL, head_row, 0, 0U, 0U, 0, 0U, cycle_index);
 }
 
 static void db_vk_draw_owner_grid_span_rect(
@@ -1123,7 +1123,7 @@ static void db_vk_draw_owner_grid_span_rect(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_RENDER_MODE_RECT_SNAKE, rect_index, 0, active_cursor, batch_size,
+        DB_PATTERN_RECT_SNAKE, rect_index, 0, active_cursor, batch_size,
         rect_completed, 0U, 0U);
 }
 
@@ -1144,7 +1144,7 @@ static void db_vk_draw_owner_grid_row_block_rect(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row_start, row_end, color,
-        DB_RENDER_MODE_RECT_SNAKE, rect_index, 0, active_cursor, batch_size,
+        DB_PATTERN_RECT_SNAKE, rect_index, 0, active_cursor, batch_size,
         rect_completed, 0U, 0U);
 }
 
@@ -2255,8 +2255,8 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                               &band_color[1], &band_color[2]);
             db_vk_push_constants_draw_dynamic(
                 g_state.command_buffer, g_state.pipeline_layout, ndc_x0, -1.0F,
-                ndc_x1, 1.0F, band_color, DB_RENDER_MODE_BANDS, 0U, 0, 0U, 0U,
-                0, 0U, 0U);
+                ndc_x1, 1.0F, band_color, DB_PATTERN_BANDS, 0U, 0, 0U, 0U, 0,
+                0U, 0U);
             vkCmdDraw(g_state.command_buffer, DB_RECT_VERTEX_COUNT, 1, 0, 0);
             db_vk_owner_timing_end(
                 g_state.command_buffer, g_state.gpu_timing_enabled,
