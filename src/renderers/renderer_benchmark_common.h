@@ -18,6 +18,9 @@
 #define DB_VERTEX_COLOR_FLOAT_COUNT 3U
 #define DB_VERTEX_FLOAT_STRIDE                                                 \
     (DB_VERTEX_POSITION_FLOAT_COUNT + DB_VERTEX_COLOR_FLOAT_COUNT)
+#define DB_ES_VERTEX_COLOR_FLOAT_COUNT 4U
+#define DB_ES_VERTEX_FLOAT_STRIDE                                              \
+    (DB_VERTEX_POSITION_FLOAT_COUNT + DB_ES_VERTEX_COLOR_FLOAT_COUNT)
 #define DB_BENCHMARK_MODE_ENV "DRIVERBENCH_BENCHMARK_MODE"
 #define DB_RANDOM_SEED_ENV "DRIVERBENCH_RANDOM_SEED"
 #define DB_BENCH_COMMON_BACKEND "renderer_benchmark_common"
@@ -1109,12 +1112,12 @@ db_init_vertices_for_mode_common(const char *backend_name,
     return 1;
 }
 
-static inline void db_fill_band_vertices_pos_rgb(float *out_vertices,
-                                                 uint32_t band_count,
-                                                 double time_s) {
+static inline void
+db_fill_band_vertices_pos_rgb_stride(float *out_vertices, uint32_t band_count,
+                                     double time_s, size_t stride_floats,
+                                     size_t color_offset_floats) {
     const float inv_band_count = 1.0F / (float)band_count;
     const float band_x_scale = 2.0F * inv_band_count;
-    float *out = out_vertices;
     for (uint32_t band_index = 0; band_index < band_count; band_index++) {
         const float band_f = (float)band_index;
         const float x0 = (band_f * band_x_scale) - 1.0F;
@@ -1125,44 +1128,40 @@ static inline void db_fill_band_vertices_pos_rgb(float *out_vertices,
         db_band_color_rgb(band_index, band_count, time_s, &color_r, &color_g,
                           &color_b);
 
-        // Triangle 1
-        *out++ = x0;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        // Triangle 2
-        *out++ = x0;
-        *out++ = -1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x1;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
-
-        *out++ = x0;
-        *out++ = 1.0F;
-        *out++ = color_r;
-        *out++ = color_g;
-        *out++ = color_b;
+        const size_t band_base =
+            (size_t)band_index * DB_RECT_VERTEX_COUNT * stride_floats;
+        float *unit = &out_vertices[band_base];
+        db_fill_rect_unit_pos(unit, x0, -1.0F, x1, 1.0F, stride_floats);
+        db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
+                             color_g, color_b);
     }
+}
+
+static inline void
+db_update_band_vertices_rgb_stride(float *out_vertices, uint32_t band_count,
+                                   double time_s, size_t stride_floats,
+                                   size_t color_offset_floats) {
+    for (uint32_t band_index = 0; band_index < band_count; band_index++) {
+        float color_r = 0.0F;
+        float color_g = 0.0F;
+        float color_b = 0.0F;
+        db_band_color_rgb(band_index, band_count, time_s, &color_r, &color_g,
+                          &color_b);
+
+        const size_t band_base =
+            (size_t)band_index * DB_RECT_VERTEX_COUNT * stride_floats;
+        float *unit = &out_vertices[band_base];
+        db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
+                             color_g, color_b);
+    }
+}
+
+static inline void db_fill_band_vertices_pos_rgb(float *out_vertices,
+                                                 uint32_t band_count,
+                                                 double time_s) {
+    db_fill_band_vertices_pos_rgb_stride(out_vertices, band_count, time_s,
+                                         DB_VERTEX_FLOAT_STRIDE,
+                                         DB_VERTEX_POSITION_FLOAT_COUNT);
 }
 
 #endif
