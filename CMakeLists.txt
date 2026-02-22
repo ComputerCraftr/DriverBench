@@ -611,7 +611,7 @@ if(BUILD_TESTING)
     driverbench_offscreen_cpu_renderer
     bo_hash_final
     "DRIVERBENCH_BENCHMARK_MODE=gradient_fill;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
-    0xdf88841758610943
+    0xa9e0e14b45798d93
   )
   db_add_determinism_test(
     determinism_cpu_renderer_rect_snake
@@ -625,7 +625,7 @@ if(BUILD_TESTING)
     driverbench_offscreen_cpu_renderer
     bo_hash_final
     "DRIVERBENCH_BENCHMARK_MODE=gradient_sweep;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
-    0xa0f5ddd79d8e9993
+    0x3dcb7da55d6a8193
   )
   db_add_determinism_test(
     determinism_cpu_renderer_bands

@@ -648,7 +648,7 @@ db_gradient_sweep_plan_next_frame(uint32_t head_row, int direction_down,
     if (next_direction_down != 0) {
         if (head_row >= max_head) {
             next_direction_down = 0;
-            next_head = db_u32_saturating_sub(max_head, 1U);
+            next_head = max_head;
             next_cycle =
                 db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
                                    "gradient_sweep_cycle_next", next_cycle, 1U);
@@ -660,7 +660,7 @@ db_gradient_sweep_plan_next_frame(uint32_t head_row, int direction_down,
     } else {
         if (head_row == 0U) {
             next_direction_down = 1;
-            next_head = db_u32_min(max_head, 1U);
+            next_head = 0U;
             next_cycle =
                 db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
                                    "gradient_sweep_cycle_next", next_cycle, 1U);
@@ -723,11 +723,11 @@ db_gradient_sweep_row_color_rgb(uint32_t row_index, uint32_t head_row,
         return;
     }
 
-    const uint32_t head_start = db_u32_saturating_sub(head_row, window_rows);
-    const uint32_t head_end =
-        db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "gradient_sweep_head_end",
-                           head_start, window_rows);
-    if (row_index < head_start) {
+    const uint32_t row = row_index % rows;
+    const int64_t head_start_i64 = (int64_t)head_row - (int64_t)window_rows;
+    const int64_t head_end_i64 = head_start_i64 + (int64_t)window_rows;
+    const int64_t row_i64 = (int64_t)row;
+    if (row_i64 < head_start_i64) {
         if (direction_down != 0) {
             *out_r = target_r;
             *out_g = target_g;
@@ -739,7 +739,7 @@ db_gradient_sweep_row_color_rgb(uint32_t row_index, uint32_t head_row,
         }
         return;
     }
-    if (row_index >= head_end) {
+    if (row_i64 >= head_end_i64) {
         if (direction_down != 0) {
             *out_r = source_r;
             *out_g = source_g;
@@ -751,7 +751,9 @@ db_gradient_sweep_row_color_rgb(uint32_t row_index, uint32_t head_row,
         }
         return;
     }
-    const uint32_t delta = row_index - head_start;
+    const uint64_t delta_u64 = (uint64_t)(row_i64 - head_start_i64);
+    const uint32_t delta = db_checked_u64_to_u32(
+        DB_BENCH_COMMON_BACKEND, "gradient_sweep_delta", delta_u64);
 
     float blend = 1.0F;
     if (window_rows > 1U) {
@@ -868,7 +870,6 @@ static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
         return;
     }
 
-    const uint32_t head = head_row;
     const uint32_t row = row_index % rows;
     float source_r = 0.0F;
     float source_g = 0.0F;
@@ -879,14 +880,15 @@ static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
     db_palette_cycle_color_rgb(cycle_index, &source_r, &source_g, &source_b);
     db_palette_cycle_color_rgb(cycle_index + 1U, &target_r, &target_g,
                                &target_b);
-    if (row >= head) {
+
+    if (row >= head_row) {
         *out_r = source_r;
         *out_g = source_g;
         *out_b = source_b;
         return;
     }
 
-    const uint32_t delta = head - row;
+    const uint32_t delta = head_row - row;
     if (delta >= window_rows) {
         *out_r = target_r;
         *out_g = target_g;
