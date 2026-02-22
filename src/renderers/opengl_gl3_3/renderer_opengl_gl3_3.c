@@ -46,6 +46,11 @@
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
+    size_t vbo_bytes;
+    int use_map_range_upload;
+    int use_map_buffer_upload;
+    int use_persistent_upload;
+    void *persistent_mapped_ptr;
     GLuint vao;
     GLuint vbo;
     GLuint program;
@@ -92,11 +97,6 @@ typedef struct {
     int history_read_index;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
-    size_t vbo_bytes;
-    int use_map_range_upload;
-    int use_map_buffer_upload;
-    int use_persistent_upload;
-    void *persistent_mapped_ptr;
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};
@@ -452,14 +452,9 @@ void db_renderer_opengl_gl3_3_init(void) {
     glUniform1i(g_state.u_grid_rows,
                 db_checked_u32_to_i32(BACKEND_NAME, "u_grid_rows",
                                       db_grid_rows_effective()));
-    glUniform1i(
-        g_state.u_gradient_window_rows,
-        db_checked_u32_to_i32(BACKEND_NAME, "u_gradient_window_rows",
-                              db_gradient_sweep_window_rows_effective()));
-    glUniform1i(
-        g_state.u_gradient_fill_window_rows,
-        db_checked_u32_to_i32(BACKEND_NAME, "u_gradient_fill_window_rows",
-                              db_gradient_fill_window_rows_effective()));
+    glUniform1i(g_state.u_gradient_window_rows,
+                db_checked_u32_to_i32(BACKEND_NAME, "u_gradient_window_rows",
+                                      db_gradient_window_rows_effective()));
     if (g_state.u_pattern_seed >= 0) {
         glUniform1ui(g_state.u_pattern_seed, g_state.pattern_seed);
     }
@@ -495,15 +490,7 @@ void db_renderer_opengl_gl3_3_init(void) {
 void db_renderer_opengl_gl3_3_render_frame(double time_s) {
     db_gl3_ensure_history_targets();
 
-    if (g_state.pattern == DB_PATTERN_BANDS) {
-        db_update_band_vertices_rgb_stride(
-            g_state.vertices, g_state.work_unit_count, time_s,
-            DB_VERTEX_FLOAT_STRIDE, DB_VERTEX_POSITION_FLOAT_COUNT);
-        db_gl_upload_buffer(
-            g_state.vertices, g_state.vbo_bytes, g_state.use_persistent_upload,
-            g_state.persistent_mapped_ptr, g_state.use_map_range_upload,
-            g_state.use_map_buffer_upload);
-    } else if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
+    if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
         const db_snake_damage_plan_t grid_plan = db_snake_grid_plan_next_step(
             g_state.grid_cursor, 0U, 0U, g_state.grid_clearing_phase,
             g_state.work_unit_count);
@@ -523,6 +510,24 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
         db_set_uniform1i_u32_if_changed(g_state.u_grid_batch_size,
                                         &g_state.uniform_grid_batch_size_cache,
                                         g_state.grid_batch_size);
+    } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
+        const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
+            g_state.pattern_seed, g_state.rect_snake_rect_index,
+            g_state.grid_cursor);
+        db_set_uniform1i_u32_if_changed(
+            g_state.u_gradient_head_row,
+            &g_state.uniform_gradient_head_row_cache, plan.active_rect_index);
+        db_set_uniform1i_u32_if_changed(g_state.u_grid_cursor,
+                                        &g_state.uniform_grid_cursor_cache,
+                                        plan.active_cursor);
+        db_set_uniform1i_u32_if_changed(g_state.u_grid_batch_size,
+                                        &g_state.uniform_grid_batch_size_cache,
+                                        plan.batch_size);
+        db_set_uniform1i_if_changed(g_state.u_grid_phase_completed,
+                                    &g_state.uniform_grid_phase_completed_cache,
+                                    plan.rect_completed);
+        g_state.grid_cursor = plan.next_cursor;
+        g_state.rect_snake_rect_index = plan.next_rect_index;
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
         const db_gradient_sweep_damage_plan_t plan =
             db_gradient_sweep_plan_next_frame(
@@ -555,25 +560,16 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
             g_state.u_palette_cycle, &g_state.uniform_palette_cycle_cache,
             &g_state.uniform_palette_cycle_cache_valid,
             plan.render_cycle_index);
-    } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
-        const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
-            g_state.pattern_seed, g_state.rect_snake_rect_index,
-            g_state.grid_cursor);
-        db_set_uniform1i_u32_if_changed(
-            g_state.u_gradient_head_row,
-            &g_state.uniform_gradient_head_row_cache, plan.active_rect_index);
-        db_set_uniform1i_u32_if_changed(g_state.u_grid_cursor,
-                                        &g_state.uniform_grid_cursor_cache,
-                                        plan.active_cursor);
-        db_set_uniform1i_u32_if_changed(g_state.u_grid_batch_size,
-                                        &g_state.uniform_grid_batch_size_cache,
-                                        plan.batch_size);
-        db_set_uniform1i_if_changed(g_state.u_grid_phase_completed,
-                                    &g_state.uniform_grid_phase_completed_cache,
-                                    plan.rect_completed);
-        g_state.grid_cursor = plan.next_cursor;
-        g_state.rect_snake_rect_index = plan.next_rect_index;
+    } else {
+        db_update_band_vertices_rgb_stride(
+            g_state.vertices, g_state.work_unit_count, time_s,
+            DB_VERTEX_FLOAT_STRIDE, DB_VERTEX_POSITION_FLOAT_COUNT);
+        db_gl_upload_buffer(
+            g_state.vertices, g_state.vbo_bytes, g_state.use_persistent_upload,
+            g_state.persistent_mapped_ptr, g_state.use_map_range_upload,
+            g_state.use_map_buffer_upload);
     }
+
     if (db_pattern_uses_history_texture(g_state.pattern) == 0) {
         if (g_state.fallback_tex != 0U) {
             glActiveTexture(GL_TEXTURE0);

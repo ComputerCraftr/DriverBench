@@ -46,9 +46,8 @@ typedef struct {
     int rect_snake_reset_pending;
     int snake_clearing_phase;
     uint32_t gradient_head_row;
+    uint32_t gradient_cycle;
     int gradient_sweep_direction_down;
-    uint32_t gradient_sweep_cycle;
-    uint32_t gradient_fill_cycle;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
     size_t vertex_stride;
@@ -81,8 +80,7 @@ static int db_init_vertices_for_mode(void) {
     g_state.gradient_head_row = init_state.gradient_head_row;
     g_state.gradient_sweep_direction_down =
         init_state.gradient_sweep_direction_down;
-    g_state.gradient_sweep_cycle = init_state.gradient_sweep_cycle;
-    g_state.gradient_fill_cycle = init_state.gradient_fill_cycle;
+    g_state.gradient_cycle = init_state.gradient_sweep_cycle;
     return 1;
 }
 
@@ -519,11 +517,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
     uint32_t gradient_row_count = 0U;
     const uint32_t rows = db_grid_rows_effective();
 
-    if (g_state.pattern == DB_PATTERN_BANDS) {
-        db_update_band_vertices_rgb_stride(
-            g_state.vertices, g_state.work_unit_count, time_s,
-            g_state.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT);
-    } else if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
+    if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
         snake_plan = db_snake_grid_plan_next_step(
             g_state.snake_cursor, g_state.snake_prev_start,
             g_state.snake_prev_count, g_state.snake_clearing_phase,
@@ -540,8 +534,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         const db_gradient_sweep_damage_plan_t plan =
             db_gradient_sweep_plan_next_frame(
                 g_state.gradient_head_row,
-                g_state.gradient_sweep_direction_down,
-                g_state.gradient_sweep_cycle);
+                g_state.gradient_sweep_direction_down, g_state.gradient_cycle);
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
         if ((rows > 0U) && (gradient_row_count > 0U)) {
@@ -561,11 +554,11 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         }
         g_state.gradient_head_row = plan.next_head_row;
         g_state.gradient_sweep_direction_down = plan.next_direction_down;
-        g_state.gradient_sweep_cycle = plan.next_cycle_index;
-    } else {
+        g_state.gradient_cycle = plan.next_cycle_index;
+    } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
         const db_gradient_fill_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
-                                             g_state.gradient_fill_cycle);
+                                             g_state.gradient_cycle);
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
         if ((rows > 0U) && (gradient_row_count > 0U)) {
@@ -584,7 +577,11 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
             }
         }
         g_state.gradient_head_row = plan.next_head_row;
-        g_state.gradient_fill_cycle = plan.next_cycle_index;
+        g_state.gradient_cycle = plan.next_cycle_index;
+    } else {
+        db_update_band_vertices_rgb_stride(
+            g_state.vertices, g_state.work_unit_count, time_s,
+            g_state.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT);
     }
 
     if (g_state.vbo != 0U) {

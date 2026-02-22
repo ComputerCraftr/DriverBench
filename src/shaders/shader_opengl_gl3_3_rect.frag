@@ -3,7 +3,7 @@ in vec3 v_color;
 flat in int v_tile_index;
 out vec4 out_color;
 
-uniform int u_render_mode; // 0=gradient_sweep, 1=bands, 2=snake_grid, 3=gradient_fill
+uniform int u_render_mode;
 uniform int u_grid_clearing_phase;
 uniform int u_grid_phase_completed;
 uniform int u_grid_cursor;
@@ -12,7 +12,6 @@ uniform int u_grid_cols;
 uniform int u_grid_rows;
 uniform int u_gradient_head_row;
 uniform int u_gradient_window_rows;
-uniform int u_gradient_fill_window_rows;
 uniform uint u_palette_cycle;
 uniform uint u_pattern_seed;
 uniform vec3 u_grid_base_color;
@@ -150,7 +149,7 @@ vec4 db_gradient_fill_color(int row_i) {
         return db_rgba(source_color);
     }
 
-    int window_i = clamp(u_gradient_fill_window_rows, 1, rows_i);
+    int window_i = clamp(u_gradient_window_rows, 1, rows_i);
     int delta_i = head_i - row_i;
     if(delta_i >= window_i) {
         return db_rgba(target_color);
