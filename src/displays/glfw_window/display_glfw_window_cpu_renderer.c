@@ -29,11 +29,6 @@ static uint32_t db_cpu_glfw_frame_limit(void) {
 #define OPENGL_CONTEXT_VERSION_MAJOR 2
 #define OPENGL_CONTEXT_VERSION_MINOR 1
 
-#define BG_A 1.0F
-#define BG_B 0.0F
-#define BG_G 0.0F
-#define BG_R 0.0F
-
 static void db_present_cpu_framebuffer(GLFWwindow *window) {
     uint32_t pixel_width = 0U;
     uint32_t pixel_height = 0U;
@@ -48,7 +43,8 @@ static void db_present_cpu_framebuffer(GLFWwindow *window) {
     glfwGetFramebufferSize(window, &framebuffer_width_px,
                            &framebuffer_height_px);
     glViewport(0, 0, framebuffer_width_px, framebuffer_height_px);
-    glClearColor(BG_R, BG_G, BG_B, BG_A);
+    glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                 BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
     glClear(GL_COLOR_BUFFER_BIT);
 
     const int32_t width_i32 = db_checked_u32_to_i32(
@@ -128,7 +124,7 @@ int main(void) {
         frames++;
 
         const double bench_ms =
-            (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
+            (db_glfw_time_seconds() - bench_start) * DB_MS_PER_SECOND_D;
         db_benchmark_log_periodic(
             "CPU", RENDERER_NAME, BACKEND_NAME, frames, work_unit_count,
             bench_ms, DB_CAP_MODE_CPU_GLFW_WINDOW, &next_progress_log_due_ms,
@@ -136,7 +132,7 @@ int main(void) {
     }
 
     const double bench_ms =
-        (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
+        (db_glfw_time_seconds() - bench_start) * DB_MS_PER_SECOND_D;
     db_benchmark_log_final("CPU", RENDERER_NAME, BACKEND_NAME, frames,
                            work_unit_count, bench_ms,
                            DB_CAP_MODE_CPU_GLFW_WINDOW);

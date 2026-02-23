@@ -16,7 +16,6 @@
 #include "../display_env_common.h"
 
 #define MAX_SLEEP_NS_D 100000000.0
-#define NS_PER_SECOND_D 1000000000.0
 
 int db_glfw_offscreen_enabled(void) {
     return db_env_is_truthy(DB_ENV_OFFSCREEN);
@@ -233,7 +232,7 @@ void db_glfw_sleep_to_fps_cap(double frame_start_s, double fps_cap) {
     double remaining_s =
         frame_budget_s - (db_glfw_time_seconds() - frame_start_s);
     while (remaining_s > 0.0) {
-        const double remaining_ns_d = remaining_s * NS_PER_SECOND_D;
+        const double remaining_ns_d = remaining_s * DB_NS_PER_SECOND_D;
         const double sleep_ns_d =
             (remaining_ns_d > MAX_SLEEP_NS_D) ? MAX_SLEEP_NS_D : remaining_ns_d;
         const long sleep_ns = db_checked_double_to_long(

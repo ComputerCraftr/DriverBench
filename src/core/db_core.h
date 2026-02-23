@@ -18,6 +18,10 @@
 #define DB_HASH_MIX_MUL_B 0x846CA68BU
 #define DB_FNV1A64_OFFSET UINT64_C(1469598103934665603)
 #define DB_FNV1A64_PRIME UINT64_C(1099511628211)
+#define DB_MS_PER_SECOND_D 1000.0
+#define DB_NS_PER_MS_D 1000000.0
+#define DB_NS_PER_SECOND_D 1000000000.0
+#define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
 
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));

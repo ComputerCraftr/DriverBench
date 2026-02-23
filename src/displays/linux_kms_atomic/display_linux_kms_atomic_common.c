@@ -30,14 +30,8 @@
 #include "../bench_config.h"
 #include "../display_gl_runtime_common.h"
 
-#define BG_COLOR_A_F 1.0F
-#define BG_COLOR_B_F 0.07F
-#define BG_COLOR_G_F 0.04F
-#define BG_COLOR_R_F 0.04F
 #define DRM_SRC_FP_SHIFT 16U
 #define LOG_MSG_CAPACITY 2048U
-#define NS_PER_SECOND_U64 1000000000ULL
-#define NS_TO_MS_D 1e6
 
 static const char *g_backend_name = "display_linux_kms_atomic";
 
@@ -57,7 +51,7 @@ static uint64_t now_ns(void) {
     struct timespec ts;
     // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ((uint64_t)ts.tv_sec * NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
+    return ((uint64_t)ts.tv_sec * DB_NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
 }
 
 struct kms_atomic {
@@ -517,7 +511,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
     struct fb *cur = NULL;
 
-    glClearColor(BG_COLOR_R_F, BG_COLOR_G_F, BG_COLOR_B_F, BG_COLOR_A_F);
+    glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                 BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
     glClear(GL_COLOR_BUFFER_BIT);
     renderer->render_frame(0.0);
     eglSwapBuffers(dpy, surf);
@@ -569,7 +564,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     while (!db_should_stop()) {
         const double time_s = (double)bench_frames / BENCH_TARGET_FPS_D;
 
-        glClearColor(BG_COLOR_R_F, BG_COLOR_G_F, BG_COLOR_B_F, BG_COLOR_A_F);
+        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
         glClear(GL_COLOR_BUFFER_BIT);
         renderer->render_frame(time_s);
         eglSwapBuffers(dpy, surf);
@@ -616,14 +612,15 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         cur = next;
         bench_frames++;
 
-        const double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
+        const double bench_ms =
+            (double)(now_ns() - bench_start) / DB_NS_PER_MS_D;
         db_benchmark_log_periodic("OpenGL", renderer_name, backend,
                                   bench_frames, work_unit_count, bench_ms,
                                   capability_mode, &next_progress_log_due_ms,
                                   BENCH_LOG_INTERVAL_MS_D);
     }
 
-    const double bench_ms = (double)(now_ns() - bench_start) / NS_TO_MS_D;
+    const double bench_ms = (double)(now_ns() - bench_start) / DB_NS_PER_MS_D;
     db_benchmark_log_final("OpenGL", renderer_name, backend, bench_frames,
                            work_unit_count, bench_ms, capability_mode);
 

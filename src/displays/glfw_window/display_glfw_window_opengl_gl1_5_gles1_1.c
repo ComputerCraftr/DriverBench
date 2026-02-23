@@ -24,11 +24,6 @@
 
 #define OPENGL_CONTEXT_VERSION_MAJOR 2
 #define OPENGL_CONTEXT_VERSION_MINOR 1
-
-#define BG_A 1.0F
-#define BG_B 0.07F
-#define BG_G 0.04F
-#define BG_R 0.04F
 #define RENDERER_NAME "renderer_opengl_gl1_5_gles1_1"
 
 int main(void) {
@@ -88,7 +83,8 @@ int main(void) {
         glfwGetFramebufferSize(window, &framebuffer_width_px,
                                &framebuffer_height_px);
         glViewport(0, 0, framebuffer_width_px, framebuffer_height_px);
-        glClearColor(BG_R, BG_G, BG_B, BG_A);
+        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
         glClear(GL_COLOR_BUFFER_BIT);
 
         double frame_time_s = (double)frames / BENCH_TARGET_FPS_D;
@@ -107,7 +103,7 @@ int main(void) {
         frames++;
 
         double bench_ms =
-            (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
+            (db_glfw_time_seconds() - bench_start) * DB_MS_PER_SECOND_D;
         db_benchmark_log_periodic("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
                                   work_unit_count, bench_ms, capability_mode,
                                   &next_progress_log_due_ms,
@@ -115,7 +111,7 @@ int main(void) {
     }
 
     double bench_ms =
-        (db_glfw_time_seconds() - bench_start) * BENCH_MS_PER_SEC_D;
+        (db_glfw_time_seconds() - bench_start) * DB_MS_PER_SECOND_D;
     db_benchmark_log_final("OpenGL", RENDERER_NAME, BACKEND_NAME, frames,
                            work_unit_count, bench_ms, capability_mode);
     db_display_hash_tracker_log_final(BACKEND_NAME, &hash_tracker);

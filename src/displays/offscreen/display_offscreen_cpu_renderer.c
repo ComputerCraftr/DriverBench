@@ -63,7 +63,7 @@ int main(void) {
 
         frames++;
         const double elapsed_ms =
-            ((double)frames * BENCH_MS_PER_SEC_D) / BENCH_TARGET_FPS_D;
+            ((double)frames * DB_MS_PER_SECOND_D) / BENCH_TARGET_FPS_D;
         db_benchmark_log_periodic(API_NAME, RENDERER_NAME, BACKEND_NAME, frames,
                                   work_unit_count, elapsed_ms, capability_mode,
                                   &next_progress_log_due_ms,
@@ -81,7 +81,7 @@ int main(void) {
     hash_tracker.final_hash = final_hash;
 
     const double total_ms =
-        ((double)frames * BENCH_MS_PER_SEC_D) / BENCH_TARGET_FPS_D;
+        ((double)frames * DB_MS_PER_SECOND_D) / BENCH_TARGET_FPS_D;
     db_benchmark_log_final(API_NAME, RENDERER_NAME, BACKEND_NAME, frames,
                            work_unit_count, total_ms, capability_mode);
     db_display_hash_tracker_log_final(BACKEND_NAME, &hash_tracker);

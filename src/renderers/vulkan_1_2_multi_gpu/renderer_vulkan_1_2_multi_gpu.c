@@ -29,8 +29,6 @@
 #define MAX_BAND_OWNER BENCH_BANDS
 #define MAX_GPU_COUNT 8U
 #define MAX_INSTANCE_EXTS 16U
-#define NS_PER_SECOND_U64 1000000000ULL
-#define NS_TO_MS_D 1e6
 #define QUAD_VERT_FLOAT_COUNT 12U
 #define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
 #define SLOW_GPU_RATIO_THRESHOLD 1.5
@@ -112,7 +110,7 @@ static void __attribute__((noreturn)) vk_fail(const char *expr, VkResult result,
 static uint64_t now_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ((uint64_t)ts.tv_sec * NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
+    return ((uint64_t)ts.tv_sec * DB_NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
 }
 
 static uint32_t db_vk_build_device_group_mask(uint32_t device_count) {
@@ -2210,7 +2208,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 }
                 const double elapsed_ms =
                     ((double)(end - start) * g_state.timestamp_period_ns) /
-                    NS_TO_MS_D;
+                    DB_NS_PER_MS_D;
                 const double ms_per_unit =
                     elapsed_ms / (double)g_state.prev_frame_work_units[g];
                 g_state.ema_ms_per_work_unit[g] =
@@ -2720,14 +2718,15 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
 
     if (!g_state.gpu_timing_enabled) {
         uint64_t frameEnd = now_ns();
-        double frame_ms = (double)(frameEnd - frameStart) / NS_TO_MS_D;
+        double frame_ms = (double)(frameEnd - frameStart) / DB_NS_PER_MS_D;
         db_vk_update_ema_fallback(g_state.pattern, gpuCount, g_state.work_owner,
                                   grid_tiles_per_gpu, grid_tiles_drawn,
                                   frame_ms, g_state.ema_ms_per_work_unit);
     }
 
     g_state.bench_frames++;
-    double bench_ms = (double)(now_ns() - g_state.bench_start_ns) / NS_TO_MS_D;
+    double bench_ms =
+        (double)(now_ns() - g_state.bench_start_ns) / DB_NS_PER_MS_D;
     db_benchmark_log_periodic(
         "Vulkan", RENDERER_NAME, BACKEND_NAME, g_state.bench_frames,
         g_state.work_unit_count, bench_ms, g_state.capability_mode,
@@ -2741,7 +2740,8 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
         return;
     }
     uint64_t bench_end = now_ns();
-    double bench_ms = (double)(bench_end - g_state.bench_start_ns) / NS_TO_MS_D;
+    double bench_ms =
+        (double)(bench_end - g_state.bench_start_ns) / DB_NS_PER_MS_D;
     db_benchmark_log_final("Vulkan", RENDERER_NAME, BACKEND_NAME,
                            g_state.bench_frames, g_state.work_unit_count,
                            bench_ms, g_state.capability_mode);

@@ -11,7 +11,6 @@
 #endif
 
 #define DB_MAX_TEXT_FILE_BYTES (16U * 1024U * 1024U)
-#define DB_MS_PER_SEC_D 1000.0
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 
@@ -204,7 +203,7 @@ static void db_benchmark_log(const char *api_name, const char *renderer_name,
     }
 
     double ms_per_frame = elapsed_ms / (double)frames;
-    double fps = DB_MS_PER_SEC_D / ms_per_frame;
+    double fps = DB_MS_PER_SECOND_D / ms_per_frame;
     const char *mode = (capability_mode != NULL) ? capability_mode : "default";
     if (strcmp(tag, "progress") == 0) {
         printf("%s benchmark (%s): mode=%s frames=%llu total_ms=%.2f "

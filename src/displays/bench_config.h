@@ -3,6 +3,10 @@
 
 // Shared benchmark shape/config used by all renderer/display combinations.
 #define BENCH_BANDS 16U
+#define BENCH_CLEAR_COLOR_A_F 1.0F
+#define BENCH_CLEAR_COLOR_B_F 0.0F
+#define BENCH_CLEAR_COLOR_G_F 0.0F
+#define BENCH_CLEAR_COLOR_R_F 0.0F
 #define BENCH_COLOR_G_SCALE_F 0.6F
 #define BENCH_COLOR_R_BASE_F 0.2F
 #define BENCH_COLOR_R_SCALE_F 0.8F
@@ -15,7 +19,6 @@
 #define BENCH_GRID_PHASE1_G 0.85F
 #define BENCH_GRID_PHASE1_R 0.12F
 #define BENCH_LOG_INTERVAL_MS_D 5000.0
-#define BENCH_MS_PER_SEC_D 1000.0
 #define BENCH_PULSE_AMP_F 0.5F
 #define BENCH_PULSE_BASE_F 0.5F
 #define BENCH_PULSE_FREQ_F 2.0F
