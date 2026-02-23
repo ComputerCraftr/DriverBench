@@ -131,11 +131,19 @@ typedef struct {
     float offsetNDC[2];
     float scaleNDC[2];
     float color[4];
-    int32_t render_params[4];
-    int32_t gradient_params[4];
-    int32_t snake_params[4];
     float base_color[4];
     float target_color[4];
+    uint32_t render_mode;
+    uint32_t grid_rows;
+    uint32_t gradient_head_row;
+    int32_t grid_clearing_phase;
+    uint32_t gradient_window_rows;
+    uint32_t viewport_height;
+    uint32_t grid_cols;
+    uint32_t snake_active_cursor;
+    uint32_t snake_batch_size;
+    int32_t snake_phase_completed;
+    uint32_t viewport_width;
     uint32_t gradient_cycle;
     uint32_t pattern_seed;
 } PushConstants;
@@ -229,7 +237,7 @@ typedef struct {
     uint32_t gradient_head_row;
     uint32_t gradient_cycle;
     int gradient_sweep_direction_down;
-    int32_t gradient_window_rows_i32;
+    uint32_t gradient_window_rows;
     uint32_t prev_frame_work_units[MAX_GPU_COUNT];
     uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
     int have_prev_timing_frame;
@@ -245,18 +253,21 @@ static void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
                                               VkExtent2D extent,
                                               uint32_t grid_rows,
                                               uint32_t grid_cols) {
-    const int32_t gradient_params[4] = {
-        g_state.gradient_window_rows_i32, g_state.gradient_window_rows_i32,
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.height),
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_cols)};
     const float base_color[4] = {BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
                                  BENCH_GRID_PHASE0_B, 1.0F};
     const float target_color[4] = {BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G,
                                    BENCH_GRID_PHASE1_B, 1.0F};
 
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, gradient_params),
-                       sizeof(gradient_params), gradient_params);
+                       (uint32_t)offsetof(PushConstants, gradient_window_rows),
+                       sizeof(g_state.gradient_window_rows),
+                       &g_state.gradient_window_rows);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, viewport_height),
+                       sizeof(extent.height), &extent.height);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, grid_cols),
+                       sizeof(grid_cols), &grid_cols);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, base_color),
                        sizeof(base_color), base_color);
@@ -264,19 +275,12 @@ static void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
                        (uint32_t)offsetof(PushConstants, target_color),
                        sizeof(target_color), target_color);
 
-    const int32_t render_grid_rows =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", grid_rows);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, render_params) +
-                           sizeof(int32_t),
-                       sizeof(render_grid_rows), &render_grid_rows);
-
-    const int32_t snake_viewport_width =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", extent.width);
+                       (uint32_t)offsetof(PushConstants, grid_rows),
+                       sizeof(grid_rows), &grid_rows);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, snake_params) +
-                           (sizeof(int32_t) * 3U),
-                       sizeof(snake_viewport_width), &snake_viewport_width);
+                       (uint32_t)offsetof(PushConstants, viewport_width),
+                       sizeof(extent.width), &extent.width);
 }
 
 static void db_vk_push_constants_draw_dynamic(
@@ -294,46 +298,42 @@ static void db_vk_push_constants_draw_dynamic(
     pc.color[1] = color[1];
     pc.color[2] = color[2];
     pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
+    pc.render_mode = render_mode;
+    pc.gradient_head_row = gradient_head_row;
+    pc.grid_clearing_phase = (int32_t)grid_clearing_phase;
+    pc.snake_active_cursor = snake_active_cursor;
+    pc.snake_batch_size = snake_batch_size;
+    pc.snake_phase_completed = (int32_t)snake_phase_completed;
+    pc.gradient_cycle = gradient_cycle;
+    pc.pattern_seed =
+        (render_mode == DB_PATTERN_RECT_SNAKE) ? g_state.pattern_seed : 0U;
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES, 0U,
-                       (uint32_t)offsetof(PushConstants, render_params), &pc);
-
-    const int32_t render_mode_i32 =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", render_mode);
+                       (uint32_t)offsetof(PushConstants, render_mode), &pc);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, render_params),
-                       sizeof(render_mode_i32), &render_mode_i32);
-
-    const int32_t render_head_i32 =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", gradient_head_row);
+                       (uint32_t)offsetof(PushConstants, render_mode),
+                       sizeof(pc.render_mode), &pc.render_mode);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, render_params) +
-                           (sizeof(int32_t) * 2U),
-                       sizeof(render_head_i32), &render_head_i32);
-
-    const int32_t render_phase_i32 =
-        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", grid_clearing_phase);
+                       (uint32_t)offsetof(PushConstants, gradient_head_row),
+                       sizeof(pc.gradient_head_row), &pc.gradient_head_row);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, render_params) +
-                           (sizeof(int32_t) * 3U),
-                       sizeof(render_phase_i32), &render_phase_i32);
-
-    const int32_t snake_params[3] = {
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_active_cursor),
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", snake_batch_size),
-        db_checked_int_to_i32(BACKEND_NAME, "vk_i32", snake_phase_completed)};
+                       (uint32_t)offsetof(PushConstants, grid_clearing_phase),
+                       sizeof(pc.grid_clearing_phase), &pc.grid_clearing_phase);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, snake_params),
-                       sizeof(snake_params), snake_params);
-
+                       (uint32_t)offsetof(PushConstants, snake_active_cursor),
+                       sizeof(pc.snake_active_cursor), &pc.snake_active_cursor);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, snake_batch_size),
+                       sizeof(pc.snake_batch_size), &pc.snake_batch_size);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, snake_phase_completed),
+                       sizeof(pc.snake_phase_completed),
+                       &pc.snake_phase_completed);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, gradient_cycle),
-                       sizeof(gradient_cycle), &gradient_cycle);
-
-    const uint32_t pattern_seed =
-        (render_mode == DB_PATTERN_RECT_SNAKE) ? g_state.pattern_seed : 0U;
+                       sizeof(pc.gradient_cycle), &pc.gradient_cycle);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, pattern_seed),
-                       sizeof(pattern_seed), &pattern_seed);
+                       sizeof(pc.pattern_seed), &pc.pattern_seed);
 }
 
 static uint32_t db_vk_clamp_u32(uint32_t value, uint32_t min_v,
@@ -1944,9 +1944,7 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     g_state.gradient_cycle =
         db_benchmark_cycle_from_seed(run_seed, DB_GRADIENT_FILL_SEED_PHASE_A);
     g_state.gradient_sweep_direction_down = 1;
-    g_state.gradient_window_rows_i32 =
-        db_checked_u32_to_i32(BACKEND_NAME, "gradient_window_rows",
-                              db_gradient_window_rows_effective());
+    g_state.gradient_window_rows = db_gradient_window_rows_effective();
 }
 
 db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
