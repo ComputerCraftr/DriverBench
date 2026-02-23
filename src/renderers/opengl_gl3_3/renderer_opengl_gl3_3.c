@@ -84,8 +84,7 @@ typedef struct {
     int grid_clearing_phase;
     uint32_t gradient_head_row;
     int gradient_sweep_direction_down;
-    uint32_t gradient_sweep_cycle;
-    uint32_t gradient_fill_cycle;
+    uint32_t gradient_cycle;
     uint32_t rect_snake_rect_index;
     uint32_t pattern_seed;
     GLuint fallback_tex;
@@ -356,8 +355,7 @@ static int db_init_vertices_for_mode(void) {
     g_state.gradient_head_row = init_state.gradient_head_row;
     g_state.gradient_sweep_direction_down =
         init_state.gradient_sweep_direction_down;
-    g_state.gradient_sweep_cycle = init_state.gradient_sweep_cycle;
-    g_state.gradient_fill_cycle = init_state.gradient_fill_cycle;
+    g_state.gradient_cycle = init_state.gradient_sweep_cycle;
     g_state.pattern_seed = init_state.pattern_seed;
     return 1;
 }
@@ -478,10 +476,7 @@ void db_renderer_opengl_gl3_3_init(void) {
                                     g_state.gradient_head_row);
     db_set_uniform1ui_u32_if_changed(
         g_state.u_palette_cycle, &g_state.uniform_palette_cycle_cache,
-        &g_state.uniform_palette_cycle_cache_valid,
-        (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP)
-            ? g_state.gradient_sweep_cycle
-            : g_state.gradient_fill_cycle);
+        &g_state.uniform_palette_cycle_cache_valid, g_state.gradient_cycle);
     db_set_uniform1i_if_changed(g_state.u_grid_clearing_phase,
                                 &g_state.uniform_grid_clearing_phase_cache,
                                 g_state.grid_clearing_phase);
@@ -528,34 +523,22 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                                     plan.rect_completed);
         g_state.grid_cursor = plan.next_cursor;
         g_state.rect_snake_rect_index = plan.next_rect_index;
-    } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
-        const db_gradient_sweep_damage_plan_t plan =
-            db_gradient_sweep_plan_next_frame(
-                g_state.gradient_head_row,
-                g_state.gradient_sweep_direction_down,
-                g_state.gradient_sweep_cycle);
+    } else if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
+               (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
+        const int is_sweep = (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP);
+        const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
+            g_state.gradient_head_row,
+            is_sweep ? g_state.gradient_sweep_direction_down : 1,
+            g_state.gradient_cycle, is_sweep ? 0 : 1);
         g_state.gradient_head_row = plan.next_head_row;
         g_state.gradient_sweep_direction_down = plan.next_direction_down;
-        g_state.gradient_sweep_cycle = plan.next_cycle_index;
+        g_state.gradient_cycle = plan.next_cycle_index;
         db_set_uniform1i_u32_if_changed(
             g_state.u_gradient_head_row,
             &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
         db_set_uniform1i_if_changed(g_state.u_grid_clearing_phase,
                                     &g_state.uniform_grid_clearing_phase_cache,
                                     plan.render_direction_down);
-        db_set_uniform1ui_u32_if_changed(
-            g_state.u_palette_cycle, &g_state.uniform_palette_cycle_cache,
-            &g_state.uniform_palette_cycle_cache_valid,
-            plan.render_cycle_index);
-    } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
-        const db_gradient_sweep_damage_plan_t plan =
-            db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
-                                             g_state.gradient_fill_cycle);
-        g_state.gradient_head_row = plan.next_head_row;
-        g_state.gradient_fill_cycle = plan.next_cycle_index;
-        db_set_uniform1i_u32_if_changed(
-            g_state.u_gradient_head_row,
-            &g_state.uniform_gradient_head_row_cache, plan.render_head_row);
         db_set_uniform1ui_u32_if_changed(
             g_state.u_palette_cycle, &g_state.uniform_palette_cycle_cache,
             &g_state.uniform_palette_cycle_cache_valid,

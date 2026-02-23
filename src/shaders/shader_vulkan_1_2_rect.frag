@@ -15,8 +15,7 @@ layout(push_constant) uniform PC {
                            // w=viewport_width
     vec4 base_color;
     vec4 target_color;
-    uint gradient_sweep_cycle;
-    uint gradient_fill_cycle;
+    uint gradient_cycle;
     uint pattern_seed;
 } pc;
 #else
@@ -29,8 +28,7 @@ layout(std140, binding = 0) uniform PC {
     ivec4 snake_params;
     vec4 base_color;
     vec4 target_color;
-    uint gradient_sweep_cycle;
-    uint gradient_fill_cycle;
+    uint gradient_cycle;
     uint pattern_seed;
 } pc;
 #endif
@@ -232,12 +230,12 @@ void main() {
         return;
     }
     int row_i = db_row_from_frag_coord();
-    if(render_mode == RENDER_MODE_GRADIENT_SWEEP) {
-        out_color = db_gradient_color(pc.snake_params.x, pc.render_params.z, pc.gradient_sweep_cycle, (pc.snake_params.z != 0));
-        return;
-    }
-    if(render_mode == RENDER_MODE_GRADIENT_FILL) {
-        out_color = db_gradient_color(row_i, pc.render_params.z, pc.gradient_fill_cycle, true);
+    if((render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
+        (render_mode == RENDER_MODE_GRADIENT_FILL)) {
+        bool is_sweep = (render_mode == RENDER_MODE_GRADIENT_SWEEP);
+        int gradient_row = is_sweep ? pc.snake_params.x : row_i;
+        bool direction_down = is_sweep ? (pc.snake_params.z != 0) : true;
+        out_color = db_gradient_color(gradient_row, pc.render_params.z, pc.gradient_cycle, direction_down);
         return;
     }
     if(render_mode == RENDER_MODE_SNAKE_GRID) {

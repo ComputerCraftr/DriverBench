@@ -174,12 +174,11 @@ void main() {
     int cols = max(u_grid_cols, 1);
     int row = tile_index / cols;
 
-    if(u_render_mode == RENDER_MODE_GRADIENT_SWEEP) {
-        out_color = db_gradient_color(row, u_gradient_head_row, u_palette_cycle, (u_grid_clearing_phase != 0));
-        return;
-    }
-    if(u_render_mode == RENDER_MODE_GRADIENT_FILL) {
-        out_color = db_gradient_color(row, u_gradient_head_row, u_palette_cycle, true);
+    if((u_render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
+        (u_render_mode == RENDER_MODE_GRADIENT_FILL)) {
+        bool is_sweep = (u_render_mode == RENDER_MODE_GRADIENT_SWEEP);
+        bool direction_down = is_sweep ? (u_grid_clearing_phase != 0) : true;
+        out_color = db_gradient_color(row, u_gradient_head_row, u_palette_cycle, direction_down);
         return;
     }
     if(u_render_mode == RENDER_MODE_RECT_SNAKE) {

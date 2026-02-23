@@ -216,8 +216,8 @@ static void db_apply_gradient_dirty_rows_sweep(uint32_t row_start,
         float row_r = 0.0F;
         float row_g = 0.0F;
         float row_b = 0.0F;
-        db_gradient_sweep_row_color_rgb(row, head_row, direction_down,
-                                        cycle_index, &row_r, &row_g, &row_b);
+        db_gradient_row_color_rgb(row, head_row, direction_down, cycle_index,
+                                  &row_r, &row_g, &row_b);
         db_blend_grid_row_to_color(row, row_r, row_g, row_b, 1.0F);
     }
 }
@@ -573,29 +573,20 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
             g_state.pattern_seed, g_state.rect_snake_rect_index,
             g_state.snake_cursor);
         rect_full_repaint = db_render_rect_snake_step(&rect_snake_plan);
-    } else if (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) {
-        const db_gradient_sweep_damage_plan_t plan =
-            db_gradient_sweep_plan_next_frame(
-                g_state.gradient_head_row,
-                g_state.gradient_sweep_direction_down, g_state.gradient_cycle);
+    } else if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
+               (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
+        const int is_sweep = (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP);
+        const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
+            g_state.gradient_head_row,
+            is_sweep ? g_state.gradient_sweep_direction_down : 1,
+            g_state.gradient_cycle, is_sweep ? 0 : 1);
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
         db_apply_gradient_dirty_rows_sweep(
             gradient_row_start, gradient_row_count, plan.render_head_row,
-            plan.render_direction_down, plan.render_cycle_index);
+            is_sweep ? plan.render_direction_down : 1, plan.render_cycle_index);
         g_state.gradient_head_row = plan.next_head_row;
         g_state.gradient_sweep_direction_down = plan.next_direction_down;
-        g_state.gradient_cycle = plan.next_cycle_index;
-    } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
-        const db_gradient_sweep_damage_plan_t plan =
-            db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
-                                             g_state.gradient_cycle);
-        gradient_row_start = plan.dirty_row_start;
-        gradient_row_count = plan.dirty_row_count;
-        db_apply_gradient_dirty_rows_fill(
-            gradient_row_start, gradient_row_count, plan.render_head_row,
-            plan.render_cycle_index);
-        g_state.gradient_head_row = plan.next_head_row;
         g_state.gradient_cycle = plan.next_cycle_index;
     } else {
         db_update_band_vertices_rgb_stride(

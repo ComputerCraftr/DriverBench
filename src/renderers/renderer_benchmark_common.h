@@ -85,7 +85,7 @@ typedef struct {
     uint32_t next_cycle_index;
     uint32_t dirty_row_start;
     uint32_t dirty_row_count;
-} db_gradient_sweep_damage_plan_t;
+} db_gradient_damage_plan_t;
 
 typedef struct {
     uint32_t x;
@@ -620,11 +620,10 @@ static inline uint32_t db_gradient_window_rows_effective(void) {
     return rows;
 }
 
-static inline db_gradient_sweep_damage_plan_t
-db_gradient_plan_next_frame_common(uint32_t head_row, int direction_down,
-                                   uint32_t cycle_index,
-                                   int restart_at_top_only) {
-    db_gradient_sweep_damage_plan_t plan = {0};
+static inline db_gradient_damage_plan_t
+db_gradient_plan_next_frame(uint32_t head_row, int direction_down,
+                            uint32_t cycle_index, int restart_at_top_only) {
+    db_gradient_damage_plan_t plan = {0};
     const uint32_t rows = db_grid_rows_effective();
     if (rows == 0U) {
         return plan;
@@ -707,17 +706,11 @@ db_gradient_plan_next_frame_common(uint32_t head_row, int direction_down,
     return plan;
 }
 
-static inline db_gradient_sweep_damage_plan_t
-db_gradient_sweep_plan_next_frame(uint32_t head_row, int direction_down,
-                                  uint32_t cycle_index) {
-    return db_gradient_plan_next_frame_common(head_row, direction_down,
-                                              cycle_index, 0);
-}
-
-static inline void
-db_gradient_sweep_row_color_rgb(uint32_t row_index, uint32_t head_row,
-                                int direction_down, uint32_t cycle_index,
-                                float *out_r, float *out_g, float *out_b) {
+static inline void db_gradient_row_color_rgb(uint32_t row_index,
+                                             uint32_t head_row,
+                                             int direction_down,
+                                             uint32_t cycle_index, float *out_r,
+                                             float *out_g, float *out_b) {
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t window_rows = db_gradient_window_rows_effective();
     float source_r = 0.0F;
@@ -778,11 +771,11 @@ db_gradient_sweep_row_color_rgb(uint32_t row_index, uint32_t head_row,
                  blend, out_r, out_g, out_b);
 }
 
-static inline void db_gradient_sweep_set_row_color(float *vertices,
-                                                   uint32_t row_index,
-                                                   uint32_t head_row,
-                                                   int direction_down,
-                                                   uint32_t cycle_index) {
+static inline void db_gradient_set_row_color(float *vertices,
+                                             uint32_t row_index,
+                                             uint32_t head_row,
+                                             int direction_down,
+                                             uint32_t cycle_index) {
     const uint32_t cols = db_grid_cols_effective();
     const uint32_t rows = db_grid_rows_effective();
     if ((vertices == NULL) || (cols == 0U) || (rows == 0U)) {
@@ -792,8 +785,8 @@ static inline void db_gradient_sweep_set_row_color(float *vertices,
     float color_r = 0.0F;
     float color_g = 0.0F;
     float color_b = 0.0F;
-    db_gradient_sweep_row_color_rgb(row_index % rows, head_row, direction_down,
-                                    cycle_index, &color_r, &color_g, &color_b);
+    db_gradient_row_color_rgb(row_index % rows, head_row, direction_down,
+                              cycle_index, &color_r, &color_g, &color_b);
 
     const uint32_t row = row_index % rows;
     const uint32_t first_tile = row * cols;
@@ -807,23 +800,18 @@ static inline void db_gradient_sweep_set_row_color(float *vertices,
 }
 
 static inline void
-db_gradient_sweep_set_rows_color(float *vertices, uint32_t head_row,
-                                 int direction_down, uint32_t cycle_index,
-                                 uint32_t row_start, uint32_t row_count) {
+db_gradient_set_rows_color(float *vertices, uint32_t head_row,
+                           int direction_down, uint32_t cycle_index,
+                           uint32_t row_start, uint32_t row_count) {
     const uint32_t rows = db_grid_rows_effective();
     if ((vertices == NULL) || (rows == 0U) || (row_count == 0U)) {
         return;
     }
     for (uint32_t i = 0U; i < row_count; i++) {
         const uint32_t row = (row_start + i) % rows;
-        db_gradient_sweep_set_row_color(vertices, row, head_row, direction_down,
-                                        cycle_index);
+        db_gradient_set_row_color(vertices, row, head_row, direction_down,
+                                  cycle_index);
     }
-}
-
-static inline db_gradient_sweep_damage_plan_t
-db_gradient_fill_plan_next_frame(uint32_t head_row, uint32_t cycle_index) {
-    return db_gradient_plan_next_frame_common(head_row, 1, cycle_index, 1);
 }
 
 static inline uint32_t db_gradient_fill_solid_rows(uint32_t head_row) {
@@ -831,32 +819,6 @@ static inline uint32_t db_gradient_fill_solid_rows(uint32_t head_row) {
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t solid_rows = db_u32_saturating_sub(head_row, window_rows);
     return db_u32_min(solid_rows, rows);
-}
-
-static inline void db_gradient_fill_row_color_rgb(uint32_t row_index,
-                                                  uint32_t head_row,
-                                                  uint32_t cycle_index,
-                                                  float *out_r, float *out_g,
-                                                  float *out_b) {
-    db_gradient_sweep_row_color_rgb(row_index, head_row, 1, cycle_index, out_r,
-                                    out_g, out_b);
-}
-
-static inline void db_gradient_fill_set_row_color(float *vertices,
-                                                  uint32_t row_index,
-                                                  uint32_t head_row,
-                                                  uint32_t cycle_index) {
-    db_gradient_sweep_set_row_color(vertices, row_index, head_row, 1,
-                                    cycle_index);
-}
-
-static inline void db_gradient_fill_set_rows_color(float *vertices,
-                                                   uint32_t head_row,
-                                                   uint32_t cycle_index,
-                                                   uint32_t row_start,
-                                                   uint32_t row_count) {
-    db_gradient_sweep_set_rows_color(vertices, head_row, 1, cycle_index,
-                                     row_start, row_count);
 }
 
 static inline int
@@ -969,10 +931,10 @@ db_init_vertices_for_mode_common(const char *backend_name,
                 db_grid_cols_effective());
         } else {
             db_infof(backend_name,
-                     "benchmark mode: %s (top-down random palette sweep over "
-                     "%ux%u tiles, %u-row transition)",
-                     db_pattern_mode_name(requested), db_grid_rows_effective(),
-                     db_grid_cols_effective(),
+                     "benchmark mode: %s (seed=%u, top-down random palette "
+                     "sweep over %ux%u tiles, %u-row transition)",
+                     db_pattern_mode_name(requested), out_state->pattern_seed,
+                     db_grid_rows_effective(), db_grid_cols_effective(),
                      db_gradient_window_rows_effective());
         }
         return 1;
