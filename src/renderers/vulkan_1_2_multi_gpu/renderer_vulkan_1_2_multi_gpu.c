@@ -2400,7 +2400,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         g_state.gradient_cycle = plan.next_cycle_index;
         g_state.gradient_sweep_direction_down = plan.next_direction_down;
     } else {
-        const db_gradient_fill_damage_plan_t plan =
+        const db_gradient_sweep_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
                                              g_state.gradient_cycle);
         const uint32_t head_row = plan.render_head_row;

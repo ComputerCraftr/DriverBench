@@ -115,12 +115,10 @@ vec3 db_target_color_for_phase(bool clearing) {
     return clearing ? u_grid_base_color : u_grid_target_color;
 }
 
-vec4 db_gradient_sweep_color(int row_i) {
+vec4 db_gradient_color(int row_i, int head_row, uint cycle_u, bool direction_down) {
     int rows_i = max(u_grid_rows, 1);
     int window_i = clamp(u_gradient_window_rows, 1, rows_i);
-    int head_i = u_gradient_head_row - window_i;
-    uint cycle_u = u_palette_cycle;
-    bool direction_down = (u_grid_clearing_phase != 0);
+    int head_i = head_row - window_i;
     vec3 source_color = db_palette_cycle_color_rgb(cycle_u);
     vec3 target_color = db_palette_cycle_color_rgb(cycle_u + 1u);
     if(row_i < head_i) {
@@ -137,27 +135,6 @@ vec4 db_gradient_sweep_color(int row_i) {
         blend = direction_down ? (1.0 - t) : t;
     }
     return db_rgba(mix(source_color, target_color, blend));
-}
-
-vec4 db_gradient_fill_color(int row_i) {
-    int rows_i = max(u_grid_rows, 1);
-    int head_i = max(u_gradient_head_row, 0);
-    uint cycle_u = u_palette_cycle;
-    vec3 source_color = db_palette_cycle_color_rgb(cycle_u);
-    vec3 target_color = db_palette_cycle_color_rgb(cycle_u + 1u);
-    if(row_i >= head_i) {
-        return db_rgba(source_color);
-    }
-
-    int window_i = clamp(u_gradient_window_rows, 1, rows_i);
-    int delta_i = head_i - row_i;
-    if(delta_i >= window_i) {
-        return db_rgba(target_color);
-    }
-    if(window_i <= 1) {
-        return db_rgba(target_color);
-    }
-    return db_rgba(mix(source_color, target_color, float(delta_i) / float(window_i - 1)));
 }
 
 vec4 db_rect_snake_color(int row_i, int col_i, vec3 prior_color) {
@@ -198,11 +175,11 @@ void main() {
     int row = tile_index / cols;
 
     if(u_render_mode == RENDER_MODE_GRADIENT_SWEEP) {
-        out_color = db_gradient_sweep_color(row);
+        out_color = db_gradient_color(row, u_gradient_head_row, u_palette_cycle, (u_grid_clearing_phase != 0));
         return;
     }
     if(u_render_mode == RENDER_MODE_GRADIENT_FILL) {
-        out_color = db_gradient_fill_color(row);
+        out_color = db_gradient_color(row, u_gradient_head_row, u_palette_cycle, true);
         return;
     }
     if(u_render_mode == RENDER_MODE_RECT_SNAKE) {

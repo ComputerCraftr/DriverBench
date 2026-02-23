@@ -236,38 +236,17 @@ static void db_render_rect_snake(db_cpu_bo_t *write_bo,
     }
 }
 
-static void
-db_render_gradient_sweep(db_cpu_bo_t *bo,
-                         const db_gradient_sweep_damage_plan_t *plan) {
+static void db_render_gradient(db_cpu_bo_t *bo, uint32_t head_row,
+                               int direction_down, uint32_t cycle_index) {
     const uint32_t cols = bo->width;
     const uint32_t rows = bo->height;
     for (uint32_t row = 0U; row < rows; row++) {
         float row_red = 0.0F;
         float row_green = 0.0F;
         float row_blue = 0.0F;
-        db_gradient_sweep_row_color_rgb(
-            row, plan->render_head_row, plan->render_direction_down,
-            plan->render_cycle_index, &row_red, &row_green, &row_blue);
-        const uint32_t rgba = db_pack_rgb(row_red, row_green, row_blue);
-        const size_t row_base = (size_t)row * cols;
-        for (uint32_t col = 0U; col < cols; col++) {
-            bo->pixels_rgba8[row_base + col] = rgba;
-        }
-    }
-}
-
-static void
-db_render_gradient_fill(db_cpu_bo_t *bo,
-                        const db_gradient_fill_damage_plan_t *plan) {
-    const uint32_t cols = bo->width;
-    const uint32_t rows = bo->height;
-    for (uint32_t row = 0U; row < rows; row++) {
-        float row_red = 0.0F;
-        float row_green = 0.0F;
-        float row_blue = 0.0F;
-        db_gradient_fill_row_color_rgb(row, plan->render_head_row,
-                                       plan->render_cycle_index, &row_red,
-                                       &row_green, &row_blue);
+        db_gradient_sweep_row_color_rgb(row, head_row, direction_down,
+                                        cycle_index, &row_red, &row_green,
+                                        &row_blue);
         const uint32_t rgba = db_pack_rgb(row_red, row_green, row_blue);
         const size_t row_base = (size_t)row * cols;
         for (uint32_t col = 0U; col < cols; col++) {
@@ -373,15 +352,17 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
                 g_state.gradient_head_row,
                 g_state.gradient_sweep_direction_down,
                 g_state.gradient_sweep_cycle);
-        db_render_gradient_sweep(write_bo, &plan);
+        db_render_gradient(write_bo, plan.render_head_row,
+                           plan.render_direction_down, plan.render_cycle_index);
         g_state.gradient_head_row = plan.next_head_row;
         g_state.gradient_sweep_direction_down = plan.next_direction_down;
         g_state.gradient_sweep_cycle = plan.next_cycle_index;
     } else if (g_state.state.pattern == DB_PATTERN_GRADIENT_FILL) {
-        const db_gradient_fill_damage_plan_t plan =
+        const db_gradient_sweep_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
                                              g_state.gradient_fill_cycle);
-        db_render_gradient_fill(write_bo, &plan);
+        db_render_gradient(write_bo, plan.render_head_row, 1,
+                           plan.render_cycle_index);
         g_state.gradient_head_row = plan.next_head_row;
         g_state.gradient_fill_cycle = plan.next_cycle_index;
     } else if (g_state.state.pattern == DB_PATTERN_RECT_SNAKE) {

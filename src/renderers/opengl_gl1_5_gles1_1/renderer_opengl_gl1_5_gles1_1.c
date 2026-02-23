@@ -587,7 +587,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         g_state.gradient_sweep_direction_down = plan.next_direction_down;
         g_state.gradient_cycle = plan.next_cycle_index;
     } else if (g_state.pattern == DB_PATTERN_GRADIENT_FILL) {
-        const db_gradient_fill_damage_plan_t plan =
+        const db_gradient_sweep_damage_plan_t plan =
             db_gradient_fill_plan_next_frame(g_state.gradient_head_row,
                                              g_state.gradient_cycle);
         gradient_row_start = plan.dirty_row_start;
