@@ -35,7 +35,7 @@ typedef struct {
     uint32_t snake_prev_count;
     int snake_clearing_phase;
     uint32_t gradient_head_row;
-    int gradient_sweep_direction_down;
+    int gradient_direction_down;
     uint32_t gradient_cycle;
     uint32_t rect_snake_index;
     uint32_t rect_snake_cursor;
@@ -307,9 +307,9 @@ void db_renderer_cpu_renderer_init(void) {
     g_state.snake_prev_count = init_state.snake_prev_count;
     g_state.snake_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
-    g_state.gradient_sweep_direction_down =
-        init_state.gradient_sweep_direction_down;
-    g_state.gradient_cycle = init_state.gradient_sweep_cycle;
+    g_state.gradient_direction_down =
+        init_state.gradient_direction_down;
+    g_state.gradient_cycle = init_state.gradient_cycle;
     g_state.rect_snake_index = 0U;
     g_state.rect_snake_cursor = 0U;
     g_state.rect_seed = init_state.pattern_seed;
@@ -349,13 +349,13 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
             (g_state.state.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
             g_state.gradient_head_row,
-            is_sweep ? g_state.gradient_sweep_direction_down : 1,
+            is_sweep ? g_state.gradient_direction_down : 1,
             g_state.gradient_cycle, is_sweep ? 0 : 1);
         db_render_gradient(write_bo, plan.render_head_row,
                            is_sweep ? plan.render_direction_down : 1,
                            plan.render_cycle_index);
         g_state.gradient_head_row = plan.next_head_row;
-        g_state.gradient_sweep_direction_down = plan.next_direction_down;
+        g_state.gradient_direction_down = plan.next_direction_down;
         g_state.gradient_cycle = plan.next_cycle_index;
     } else if (g_state.state.pattern == DB_PATTERN_RECT_SNAKE) {
         const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(

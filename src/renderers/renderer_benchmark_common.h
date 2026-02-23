@@ -34,26 +34,23 @@
 #define DB_HASH_MIX_SHIFT_B 15U
 #define DB_HASH_MIX_MUL_A 0x7FEB352DU
 #define DB_HASH_MIX_MUL_B 0x846CA68BU
-#define DB_SEED_COMMON_GOLDEN_RATIO 0x9E3779B9U
-#define DB_SEED_COMMON_COLOR_R 0x27D4EB2FU
-#define DB_SEED_COMMON_COLOR_G 0x165667B1U
-#define DB_SEED_COMMON_COLOR_B 0x85EBCA77U
-#define DB_RECT_SNAKE_SEED_STEP 0x85EBCA77U
-#define DB_RECT_SNAKE_SEED_RECT_W 0xA511E9B3U
-#define DB_RECT_SNAKE_SEED_RECT_H 0x63D83595U
-#define DB_RECT_SNAKE_SEED_RECT_X DB_SEED_COMMON_GOLDEN_RATIO
-#define DB_RECT_SNAKE_SEED_RECT_Y 0xC2B2AE35U
+#define DB_SALT_COMMON_GOLDEN_RATIO 0x9E3779B9U
+#define DB_SALT_COMMON_COLOR_R 0x27D4EB2FU
+#define DB_SALT_COMMON_COLOR_G 0x165667B1U
+#define DB_SALT_COMMON_COLOR_B 0x85EBCA77U
+#define DB_RECT_SNAKE_SALT_STEP 0x85EBCA77U
+#define DB_RECT_SNAKE_SALT_RECT_W 0xA511E9B3U
+#define DB_RECT_SNAKE_SALT_RECT_H 0x63D83595U
+#define DB_RECT_SNAKE_SALT_RECT_X DB_SALT_COMMON_GOLDEN_RATIO
+#define DB_RECT_SNAKE_SALT_RECT_Y 0xC2B2AE35U
 #define DB_RECT_SNAKE_MIN_DIM_THRESHOLD 16U
 #define DB_RECT_SNAKE_MIN_DIM_LARGE 8U
 #define DB_RECT_SNAKE_MIN_DIM_SMALL 1U
 #define DB_RECT_SNAKE_MAX_DIM_DIVISOR 3U
-#define DB_RECT_SNAKE_COLOR_BIAS 0.25F
-#define DB_RECT_SNAKE_COLOR_SCALE 0.70F
-#define DB_RECT_SNAKE_SEED_I32_MASK 0x7FFFFFFFU
-#define DB_GRADIENT_FILL_COLOR_BIAS 0.20F
-#define DB_GRADIENT_FILL_COLOR_SCALE 0.75F
-#define DB_GRADIENT_FILL_SEED_BASE_STEP DB_SEED_COMMON_GOLDEN_RATIO
-#define DB_GRADIENT_FILL_SEED_PHASE_A 0xA511E9B3U
+#define DB_COLOR_CHANNEL_BIAS 0.20F
+#define DB_COLOR_CHANNEL_SCALE 0.75F
+#define DB_PALETTE_SALT_BASE_STEP DB_SALT_COMMON_GOLDEN_RATIO
+#define DB_PALETTE_SALT 0xA511E9B3U
 
 typedef enum {
     DB_PATTERN_GRADIENT_SWEEP = 0,
@@ -126,9 +123,8 @@ typedef struct {
     int snake_phase_completed;
     int snake_clearing_phase;
     uint32_t gradient_head_row;
-    int gradient_sweep_direction_down;
-    uint32_t gradient_sweep_cycle;
-    uint32_t gradient_fill_cycle;
+    int gradient_direction_down;
+    uint32_t gradient_cycle;
     uint32_t random_seed;
     uint32_t pattern_seed;
 } db_pattern_vertex_init_t;
@@ -310,29 +306,20 @@ static inline uint32_t db_u32_range(uint32_t seed, uint32_t min_value,
     return min_value + (seed % (max_value - min_value + 1U));
 }
 
-static inline float db_rect_snake_color_channel(uint32_t seed) {
+static inline float db_color_channel(uint32_t seed) {
     const float normalized = (float)(seed & 255U) / 255.0F;
-    return DB_RECT_SNAKE_COLOR_BIAS + (normalized * DB_RECT_SNAKE_COLOR_SCALE);
-}
-
-static inline float db_palette_color_channel(uint32_t seed) {
-    const float normalized = (float)(seed & 255U) / 255.0F;
-    return DB_GRADIENT_FILL_COLOR_BIAS +
-           (normalized * DB_GRADIENT_FILL_COLOR_SCALE);
+    return DB_COLOR_CHANNEL_BIAS + (normalized * DB_COLOR_CHANNEL_SCALE);
 }
 
 static inline void db_palette_cycle_color_rgb(uint32_t cycle_index,
                                               float *out_r, float *out_g,
                                               float *out_b) {
-    const uint32_t phase_seed = DB_GRADIENT_FILL_SEED_PHASE_A;
+    const uint32_t phase_seed = DB_PALETTE_SALT;
     const uint32_t seed_base = db_mix_u32(
-        ((cycle_index + 1U) * DB_GRADIENT_FILL_SEED_BASE_STEP) ^ phase_seed);
-    *out_r = db_palette_color_channel(
-        db_mix_u32(seed_base ^ DB_SEED_COMMON_COLOR_R));
-    *out_g = db_palette_color_channel(
-        db_mix_u32(seed_base ^ DB_SEED_COMMON_COLOR_G));
-    *out_b = db_palette_color_channel(
-        db_mix_u32(seed_base ^ DB_SEED_COMMON_COLOR_B));
+        ((cycle_index + 1U) * DB_PALETTE_SALT_BASE_STEP) ^ phase_seed);
+    *out_r = db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_R));
+    *out_g = db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_G));
+    *out_b = db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_B));
 }
 
 static inline uint32_t db_pattern_seed_from_time(void) {
@@ -341,8 +328,8 @@ static inline uint32_t db_pattern_seed_from_time(void) {
         db_failf(DB_BENCH_COMMON_BACKEND, "time() failed for random seed");
     }
     const uint32_t raw = db_fold_u64_to_u32((uint64_t)now);
-    const uint32_t salted = raw ^ DB_SEED_COMMON_GOLDEN_RATIO;
-    return db_mix_u32(salted) & DB_RECT_SNAKE_SEED_I32_MASK;
+    const uint32_t salted = raw ^ DB_SALT_COMMON_GOLDEN_RATIO;
+    return db_mix_u32(salted);
 }
 
 static inline uint32_t db_benchmark_cycle_from_seed(uint32_t seed,
@@ -375,7 +362,7 @@ db_rect_snake_rect_from_index(uint32_t seed, uint32_t rect_index) {
     }
 
     const uint32_t seed_base =
-        db_mix_u32(seed + (rect_index * DB_RECT_SNAKE_SEED_STEP) + 1U);
+        db_mix_u32(seed + (rect_index * DB_RECT_SNAKE_SALT_STEP) + 1U);
     const uint32_t min_w = (cols >= DB_RECT_SNAKE_MIN_DIM_THRESHOLD)
                                ? DB_RECT_SNAKE_MIN_DIM_LARGE
                                : DB_RECT_SNAKE_MIN_DIM_SMALL;
@@ -388,23 +375,23 @@ db_rect_snake_rect_from_index(uint32_t seed, uint32_t rect_index) {
     const uint32_t max_h = db_u32_max(
         min_h, db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "rect_max_h",
                                   rows / DB_RECT_SNAKE_MAX_DIM_DIVISOR, min_h));
-    rect.width = db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SEED_RECT_W),
+    rect.width = db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SALT_RECT_W),
                               min_w, db_u32_min(max_w, cols));
     rect.height =
-        db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SEED_RECT_H), min_h,
+        db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SALT_RECT_H), min_h,
                      db_u32_min(max_h, rows));
     const uint32_t max_x = db_u32_saturating_sub(cols, rect.width);
     const uint32_t max_y = db_u32_saturating_sub(rows, rect.height);
-    rect.x = db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SEED_RECT_X), 0U,
+    rect.x = db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SALT_RECT_X), 0U,
                           max_x);
-    rect.y = db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SEED_RECT_Y), 0U,
+    rect.y = db_u32_range(db_mix_u32(seed_base ^ DB_RECT_SNAKE_SALT_RECT_Y), 0U,
                           max_y);
-    rect.color_r = db_rect_snake_color_channel(
-        db_mix_u32(seed_base ^ DB_SEED_COMMON_COLOR_R));
-    rect.color_g = db_rect_snake_color_channel(
-        db_mix_u32(seed_base ^ DB_SEED_COMMON_COLOR_G));
-    rect.color_b = db_rect_snake_color_channel(
-        db_mix_u32(seed_base ^ DB_SEED_COMMON_COLOR_B));
+    rect.color_r =
+        db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_R));
+    rect.color_g =
+        db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_G));
+    rect.color_b =
+        db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_B));
     return rect;
 }
 
@@ -468,8 +455,7 @@ static inline db_rect_snake_plan_t
 db_rect_snake_plan_next_step(uint32_t seed, uint32_t rect_index,
                              uint32_t rect_cursor) {
     db_rect_snake_plan_t plan = {0};
-    const uint32_t rect_index_modulus = (uint32_t)INT32_MAX;
-    plan.active_rect_index = rect_index % rect_index_modulus;
+    plan.active_rect_index = rect_index;
     plan.active_cursor = rect_cursor;
     const db_rect_snake_rect_t rect =
         db_rect_snake_rect_from_index(seed, plan.active_rect_index);
@@ -488,8 +474,7 @@ db_rect_snake_plan_next_step(uint32_t seed, uint32_t rect_index,
     if (plan.rect_completed != 0) {
         plan.next_cursor = 0U;
         plan.next_rect_index = plan.active_rect_index + 1U;
-        if (plan.next_rect_index >= rect_index_modulus) {
-            plan.next_rect_index = 0U;
+        if (plan.next_rect_index < plan.active_rect_index) {
             plan.wrapped = 1;
         }
     } else {
@@ -631,7 +616,7 @@ db_gradient_plan_next_frame(uint32_t head_row, int direction_down,
 
     const uint32_t window_rows = db_gradient_window_rows_effective();
     const uint32_t max_head = db_checked_add_u32(
-        DB_BENCH_COMMON_BACKEND, "gradient_sweep_max_head", rows, window_rows);
+        DB_BENCH_COMMON_BACKEND, "gradient_max_head", rows, window_rows);
     const uint32_t prev_head = head_row;
     int next_direction_down = 1;
     if (restart_at_top_only == 0) {
@@ -641,37 +626,37 @@ db_gradient_plan_next_frame(uint32_t head_row, int direction_down,
     uint32_t next_head = head_row;
     if (restart_at_top_only != 0) {
         next_head = db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
-                                       "gradient_fill_head_next", head_row, 1U);
+                                       "gradient_head_next", head_row, 1U);
         if (next_head > max_head) {
             next_head = 0U;
-            next_cycle =
-                db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
-                                   "gradient_fill_cycle_next", next_cycle, 1U);
+            next_cycle = db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
+                                            "gradient_palette_cycle_next",
+                                            next_cycle, 1U);
         }
     } else {
         if (next_direction_down != 0) {
             if (head_row >= max_head) {
                 next_direction_down = 0;
                 next_head = max_head;
-                next_cycle = db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
-                                                "gradient_sweep_cycle_next",
-                                                next_cycle, 1U);
+                next_cycle =
+                    db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
+                                       "gradient_cycle_next", next_cycle, 1U);
             } else {
-                next_head = db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
-                                               "gradient_sweep_head_next",
-                                               head_row, 1U);
+                next_head =
+                    db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
+                                       "gradient_head_next", head_row, 1U);
             }
         } else {
             if (head_row == 0U) {
                 next_direction_down = 1;
                 next_head = 0U;
-                next_cycle = db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
-                                                "gradient_sweep_cycle_next",
-                                                next_cycle, 1U);
+                next_cycle =
+                    db_checked_add_u32(DB_BENCH_COMMON_BACKEND,
+                                       "gradient_cycle_next", next_cycle, 1U);
             } else {
-                next_head = db_checked_sub_u32(DB_BENCH_COMMON_BACKEND,
-                                               "gradient_sweep_head_prev",
-                                               head_row, 1U);
+                next_head =
+                    db_checked_sub_u32(DB_BENCH_COMMON_BACKEND,
+                                       "gradient_head_prev", head_row, 1U);
             }
         }
     }
@@ -680,21 +665,21 @@ db_gradient_plan_next_frame(uint32_t head_row, int direction_down,
         db_u32_saturating_sub(prev_head, window_rows);
     const uint32_t next_head_start =
         db_u32_saturating_sub(next_head, window_rows);
-    const uint32_t prev_head_end = db_checked_add_u32(
-        DB_BENCH_COMMON_BACKEND, "gradient_sweep_prev_head_end",
-        prev_head_start, window_rows);
-    const uint32_t next_head_end = db_checked_add_u32(
-        DB_BENCH_COMMON_BACKEND, "gradient_sweep_next_head_end",
-        next_head_start, window_rows);
+    const uint32_t prev_head_end =
+        db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "gradient_prev_head_end",
+                           prev_head_start, window_rows);
+    const uint32_t next_head_end =
+        db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "gradient_next_head_end",
+                           next_head_start, window_rows);
 
     const uint32_t dirty_start = db_u32_min(prev_head_start, next_head_start);
     const uint32_t dirty_end =
         db_u32_min(db_u32_max(prev_head_end, next_head_end), rows);
     if (dirty_end > dirty_start) {
         plan.dirty_row_start = dirty_start;
-        plan.dirty_row_count = db_checked_sub_u32(
-            DB_BENCH_COMMON_BACKEND, "gradient_sweep_dirty_row_count",
-            dirty_end, dirty_start);
+        plan.dirty_row_count = db_checked_sub_u32(DB_BENCH_COMMON_BACKEND,
+                                                  "gradient_dirty_row_count",
+                                                  dirty_end, dirty_start);
     }
 
     plan.render_head_row = next_head;
@@ -758,8 +743,8 @@ static inline void db_gradient_row_color_rgb(uint32_t row_index,
         return;
     }
     const uint64_t delta_u64 = (uint64_t)(row_i64 - head_start_i64);
-    const uint32_t delta = db_checked_u64_to_u32(
-        DB_BENCH_COMMON_BACKEND, "gradient_sweep_delta", delta_u64);
+    const uint32_t delta = db_checked_u64_to_u32(DB_BENCH_COMMON_BACKEND,
+                                                 "gradient_delta", delta_u64);
 
     float blend = 1.0F;
     if (window_rows > 1U) {
@@ -814,7 +799,7 @@ db_gradient_set_rows_color(float *vertices, uint32_t head_row,
     }
 }
 
-static inline uint32_t db_gradient_fill_solid_rows(uint32_t head_row) {
+static inline uint32_t db_gradient_solid_rows_before_head(uint32_t head_row) {
     const uint32_t window_rows = db_gradient_window_rows_effective();
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t solid_rows = db_u32_saturating_sub(head_row, window_rows);
@@ -913,11 +898,10 @@ db_init_vertices_for_mode_common(const char *backend_name,
         out_state->random_seed =
             db_benchmark_random_seed_from_env_or_time(backend_name);
         out_state->pattern_seed = out_state->random_seed;
-        out_state->gradient_sweep_cycle = db_benchmark_cycle_from_seed(
-            out_state->random_seed, DB_GRADIENT_FILL_SEED_PHASE_A);
-        out_state->gradient_fill_cycle = out_state->gradient_sweep_cycle;
+        out_state->gradient_cycle = db_benchmark_cycle_from_seed(
+            out_state->random_seed, DB_PALETTE_SALT);
         out_state->gradient_head_row = 0U;
-        out_state->gradient_sweep_direction_down = 1;
+        out_state->gradient_direction_down = 1;
         if (requested == DB_PATTERN_RECT_SNAKE) {
             db_infof(backend_name,
                      "benchmark mode: %s (seed=%u, deterministic PRNG random "
@@ -932,7 +916,7 @@ db_init_vertices_for_mode_common(const char *backend_name,
         } else {
             db_infof(backend_name,
                      "benchmark mode: %s (seed=%u, top-down random palette "
-                     "sweep over %ux%u tiles, %u-row transition)",
+                     "gradient over %ux%u tiles, %u-row transition)",
                      db_pattern_mode_name(requested), out_state->pattern_seed,
                      db_grid_rows_effective(), db_grid_cols_effective(),
                      db_gradient_window_rows_effective());

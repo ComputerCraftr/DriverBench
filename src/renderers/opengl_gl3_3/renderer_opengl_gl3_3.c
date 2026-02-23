@@ -82,7 +82,7 @@ typedef struct {
     uint32_t grid_batch_size;
     int grid_clearing_phase;
     uint32_t gradient_head_row;
-    int gradient_sweep_direction_down;
+    int gradient_direction_down;
     uint32_t gradient_cycle;
     uint32_t rect_snake_rect_index;
     uint32_t pattern_seed;
@@ -342,9 +342,9 @@ static int db_init_vertices_for_mode(void) {
     g_state.grid_batch_size = init_state.snake_batch_size;
     g_state.grid_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
-    g_state.gradient_sweep_direction_down =
-        init_state.gradient_sweep_direction_down;
-    g_state.gradient_cycle = init_state.gradient_sweep_cycle;
+    g_state.gradient_direction_down =
+        init_state.gradient_direction_down;
+    g_state.gradient_cycle = init_state.gradient_cycle;
     g_state.pattern_seed = init_state.pattern_seed;
     return 1;
 }
@@ -509,10 +509,10 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
         const int is_sweep = (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
             g_state.gradient_head_row,
-            is_sweep ? g_state.gradient_sweep_direction_down : 1,
+            is_sweep ? g_state.gradient_direction_down : 1,
             g_state.gradient_cycle, is_sweep ? 0 : 1);
         g_state.gradient_head_row = plan.next_head_row;
-        g_state.gradient_sweep_direction_down = plan.next_direction_down;
+        g_state.gradient_direction_down = plan.next_direction_down;
         g_state.gradient_cycle = plan.next_cycle_index;
         db_set_uniform1ui_u32_if_changed(
             g_state.u_gradient_head_row,

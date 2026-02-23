@@ -73,17 +73,13 @@ uint db_u32_saturating_sub(uint a, uint b) {
     return (a > b) ? (a - b) : 0u;
 }
 
-float db_rect_channel(uint seed) {
-    return 0.25 + ((float(seed & 255u) / 255.0) * 0.70);
-}
-
-float db_palette_color_channel(uint seed) {
+float db_color_channel(uint seed) {
     return 0.20 + ((float(seed & 255u) / 255.0) * 0.75);
 }
 
 vec3 db_palette_cycle_color_rgb(uint cycle_u) {
     uint seed_base = db_mix_u32(((cycle_u + 1u) * 0x9E3779B9u) ^ 0xA511E9B3u);
-    return vec3(db_palette_color_channel(db_mix_u32(seed_base ^ 0x27D4EB2Fu)), db_palette_color_channel(db_mix_u32(seed_base ^ 0x165667B1u)), db_palette_color_channel(db_mix_u32(seed_base ^ 0x85EBCA77u)));
+    return vec3(db_color_channel(db_mix_u32(seed_base ^ 0x27D4EB2Fu)), db_color_channel(db_mix_u32(seed_base ^ 0x165667B1u)), db_color_channel(db_mix_u32(seed_base ^ 0x85EBCA77u)));
 }
 
 db_rect_snake_desc_t db_rect_snake_desc(
@@ -104,9 +100,9 @@ db_rect_snake_desc_t db_rect_snake_desc(
     uint max_y = db_u32_saturating_sub(rows_u, rect.height);
     rect.x = db_u32_range(db_mix_u32(seed_base ^ 0x9E3779B9u), 0u, max_x);
     rect.y = db_u32_range(db_mix_u32(seed_base ^ 0xC2B2AE35u), 0u, max_y);
-    rect.color.r = db_rect_channel(db_mix_u32(seed_base ^ 0x27D4EB2Fu));
-    rect.color.g = db_rect_channel(db_mix_u32(seed_base ^ 0x165667B1u));
-    rect.color.b = db_rect_channel(db_mix_u32(seed_base ^ 0x85EBCA77u));
+    rect.color.r = db_color_channel(db_mix_u32(seed_base ^ 0x27D4EB2Fu));
+    rect.color.g = db_color_channel(db_mix_u32(seed_base ^ 0x165667B1u));
+    rect.color.b = db_color_channel(db_mix_u32(seed_base ^ 0x85EBCA77u));
     return rect;
 }
 

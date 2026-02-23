@@ -128,8 +128,8 @@ static uint32_t db_vk_build_device_group_mask(uint32_t device_count) {
 }
 
 typedef struct {
-    float offsetNDC[2];
-    float scaleNDC[2];
+    float offset_ndc[2];
+    float scale_ndc[2];
     float color[4];
     float base_color[4];
     float target_color[4];
@@ -144,7 +144,7 @@ typedef struct {
     uint32_t snake_batch_size;
     int32_t snake_phase_completed;
     uint32_t viewport_width;
-    uint32_t gradient_cycle;
+    uint32_t palette_cycle;
     uint32_t pattern_seed;
 } PushConstants;
 
@@ -236,7 +236,7 @@ typedef struct {
     int grid_clearing_phase;
     uint32_t gradient_head_row;
     uint32_t gradient_cycle;
-    int gradient_sweep_direction_down;
+    int gradient_direction_down;
     uint32_t gradient_window_rows;
     uint32_t prev_frame_work_units[MAX_GPU_COUNT];
     uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
@@ -288,12 +288,12 @@ static void db_vk_push_constants_draw_dynamic(
     float ndc_x1, float ndc_y1, const float color[3], uint32_t render_mode,
     uint32_t gradient_head_row, int grid_clearing_phase,
     uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t gradient_cycle) {
+    int snake_phase_completed, uint32_t palette_cycle) {
     PushConstants pc = {0};
-    pc.offsetNDC[0] = ndc_x0;
-    pc.offsetNDC[1] = ndc_y0;
-    pc.scaleNDC[0] = (ndc_x1 - ndc_x0);
-    pc.scaleNDC[1] = (ndc_y1 - ndc_y0);
+    pc.offset_ndc[0] = ndc_x0;
+    pc.offset_ndc[1] = ndc_y0;
+    pc.scale_ndc[0] = (ndc_x1 - ndc_x0);
+    pc.scale_ndc[1] = (ndc_y1 - ndc_y0);
     pc.color[0] = color[0];
     pc.color[1] = color[1];
     pc.color[2] = color[2];
@@ -304,7 +304,7 @@ static void db_vk_push_constants_draw_dynamic(
     pc.snake_active_cursor = snake_active_cursor;
     pc.snake_batch_size = snake_batch_size;
     pc.snake_phase_completed = (int32_t)snake_phase_completed;
-    pc.gradient_cycle = gradient_cycle;
+    pc.palette_cycle = palette_cycle;
     pc.pattern_seed =
         (render_mode == DB_PATTERN_RECT_SNAKE) ? g_state.pattern_seed : 0U;
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES, 0U,
@@ -329,8 +329,8 @@ static void db_vk_push_constants_draw_dynamic(
                        sizeof(pc.snake_phase_completed),
                        &pc.snake_phase_completed);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, gradient_cycle),
-                       sizeof(pc.gradient_cycle), &pc.gradient_cycle);
+                       (uint32_t)offsetof(PushConstants, palette_cycle),
+                       sizeof(pc.palette_cycle), &pc.palette_cycle);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, pattern_seed),
                        sizeof(pc.pattern_seed), &pc.pattern_seed);
@@ -831,7 +831,7 @@ db_vk_draw_grid_span(VkCommandBuffer cmd, VkPipelineLayout layout,
                      const float color[3], uint32_t render_mode,
                      uint32_t gradient_head_row, int grid_clearing_phase,
                      uint32_t snake_active_cursor, uint32_t snake_batch_size,
-                     int snake_phase_completed, uint32_t gradient_cycle) {
+                     int snake_phase_completed, uint32_t palette_cycle) {
     if ((grid_rows == 0U) || (grid_cols == 0U) || (col_end <= col_start) ||
         (row >= grid_rows)) {
         return;
@@ -862,7 +862,7 @@ db_vk_draw_grid_span(VkCommandBuffer cmd, VkPipelineLayout layout,
     db_vk_push_constants_draw_dynamic(
         cmd, layout, ndc_x0, ndc_y0, ndc_x1, ndc_y1, color, render_mode,
         gradient_head_row, grid_clearing_phase, snake_active_cursor,
-        snake_batch_size, snake_phase_completed, gradient_cycle);
+        snake_batch_size, snake_phase_completed, palette_cycle);
     vkCmdDraw(cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
@@ -872,7 +872,7 @@ static void db_vk_draw_grid_row_block(
     uint32_t row_end, const float color[3], uint32_t render_mode,
     uint32_t gradient_head_row, int grid_clearing_phase,
     uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t gradient_cycle) {
+    int snake_phase_completed, uint32_t palette_cycle) {
     if ((row_end <= row_start) || (row_start >= grid_rows) ||
         (grid_rows == 0U) || (grid_cols == 0U)) {
         return;
@@ -899,7 +899,7 @@ static void db_vk_draw_grid_row_block(
     db_vk_push_constants_draw_dynamic(
         cmd, layout, -1.0F, ndc_y0, 1.0F, ndc_y1, color, render_mode,
         gradient_head_row, grid_clearing_phase, snake_active_cursor,
-        snake_batch_size, snake_phase_completed, gradient_cycle);
+        snake_batch_size, snake_phase_completed, palette_cycle);
     vkCmdDraw(cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
@@ -927,7 +927,7 @@ static void db_vk_draw_owner_grid_span(
     uint32_t col_end, const float color[3], uint32_t render_mode,
     uint32_t gradient_head_row, int grid_clearing_phase,
     uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t gradient_cycle) {
+    int snake_phase_completed, uint32_t palette_cycle) {
     if ((span_units == 0U) || (grid_tiles_drawn == NULL) ||
         (grid_tiles_per_gpu == NULL) || (frame_work_units == NULL)) {
         return;
@@ -947,7 +947,7 @@ static void db_vk_draw_owner_grid_span(
                          col_start, col_end, color, render_mode,
                          gradient_head_row, grid_clearing_phase,
                          snake_active_cursor, snake_batch_size,
-                         snake_phase_completed, gradient_cycle);
+                         snake_phase_completed, palette_cycle);
     db_vk_owner_timing_end(cmd, timing_enabled, timing_query_pool, owner,
                            frame_owner_finished);
     frame_work_units[owner] += span_units;
@@ -965,7 +965,7 @@ static void db_vk_draw_owner_grid_row_block(
     uint32_t row_end, const float color[3], uint32_t render_mode,
     uint32_t gradient_head_row, int grid_clearing_phase,
     uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t gradient_cycle) {
+    int snake_phase_completed, uint32_t palette_cycle) {
     if ((span_units == 0U) || (grid_tiles_drawn == NULL) ||
         (grid_tiles_per_gpu == NULL) || (frame_work_units == NULL)) {
         return;
@@ -985,7 +985,7 @@ static void db_vk_draw_owner_grid_row_block(
                               row_start, row_end, color, render_mode,
                               gradient_head_row, grid_clearing_phase,
                               snake_active_cursor, snake_batch_size,
-                              snake_phase_completed, gradient_cycle);
+                              snake_phase_completed, palette_cycle);
     db_vk_owner_timing_end(cmd, timing_enabled, timing_query_pool, owner,
                            frame_owner_finished);
     frame_work_units[owner] += span_units;
@@ -1031,7 +1031,7 @@ static void db_vk_draw_owner_grid_span_snake(
         batch_size, phase_completed, 0U);
 }
 
-static void db_vk_draw_owner_grid_span_gradient_sweep(
+static void db_vk_draw_owner_grid_span_gradient_window(
     VkCommandBuffer cmd, VkPipelineLayout layout, VkExtent2D extent,
     int have_group, uint32_t active_gpu_count, uint32_t candidate_owner,
     uint32_t span_units, uint64_t frame_start_ns, uint64_t budget_ns,
@@ -1052,7 +1052,7 @@ static void db_vk_draw_owner_grid_span_gradient_sweep(
         cycle_index);
 }
 
-static void db_vk_draw_owner_grid_span_gradient_fill(
+static void db_vk_draw_owner_grid_span_gradient(
     VkCommandBuffer cmd, VkPipelineLayout layout, VkExtent2D extent,
     int have_group, uint32_t active_gpu_count, uint32_t candidate_owner,
     uint32_t span_units, uint64_t frame_start_ns, uint64_t budget_ns,
@@ -1072,7 +1072,7 @@ static void db_vk_draw_owner_grid_span_gradient_fill(
         DB_PATTERN_GRADIENT_FILL, head_row, 0, 0U, 0U, 0, cycle_index);
 }
 
-static void db_vk_draw_owner_grid_row_block_gradient_fill(
+static void db_vk_draw_owner_grid_row_block_gradient(
     VkCommandBuffer cmd, VkPipelineLayout layout, VkExtent2D extent,
     int have_group, uint32_t active_gpu_count, uint32_t candidate_owner,
     uint32_t span_units, uint64_t frame_start_ns, uint64_t budget_ns,
@@ -1606,7 +1606,7 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     stages[1].module = fs;
     stages[1].pName = "main";
 
-    // Vertex buffer: a unit quad as two triangles (6 verts), inPos in [0..1]
+    // Vertex buffer: a unit quad as two triangles (6 verts), in_pos in [0..1]
     float quadVerts[QUAD_VERT_FLOAT_COUNT] = {0, 0, 1, 0, 1, 1,
                                               0, 0, 1, 1, 0, 1};
 
@@ -1942,8 +1942,8 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     g_state.grid_clearing_phase = 0;
     g_state.gradient_head_row = 0U;
     g_state.gradient_cycle =
-        db_benchmark_cycle_from_seed(run_seed, DB_GRADIENT_FILL_SEED_PHASE_A);
-    g_state.gradient_sweep_direction_down = 1;
+        db_benchmark_cycle_from_seed(run_seed, DB_PALETTE_SALT);
+    g_state.gradient_direction_down = 1;
     g_state.gradient_window_rows = db_gradient_window_rows_effective();
 }
 
@@ -2372,7 +2372,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         const int is_sweep = (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
             g_state.gradient_head_row,
-            is_sweep ? g_state.gradient_sweep_direction_down : 1,
+            is_sweep ? g_state.gradient_direction_down : 1,
             g_state.gradient_cycle, is_sweep ? 0 : 1);
 
         if (is_sweep != 0) {
@@ -2384,7 +2384,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                         break;
                     }
                     const uint32_t span_units = grid_cols;
-                    db_vk_draw_owner_grid_span_gradient_sweep(
+                    db_vk_draw_owner_grid_span_gradient_window(
                         g_state.command_buffer, g_state.pipeline_layout,
                         g_state.swapchain_state.extent, haveGroup,
                         active_gpu_count, row % active_gpu_count, span_units,
@@ -2398,7 +2398,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                         plan.render_cycle_index, plan.render_direction_down);
                 }
             }
-            g_state.gradient_sweep_direction_down = plan.next_direction_down;
+            g_state.gradient_direction_down = plan.next_direction_down;
         } else {
             const uint32_t head_row = plan.render_head_row;
             const uint32_t head_row_clamped =
@@ -2406,11 +2406,12 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             const uint32_t cycle_index = plan.render_cycle_index;
 
             const float shader_ignored_color[3] = {0.0F, 0.0F, 0.0F};
-            const uint32_t solid_rows = db_gradient_fill_solid_rows(head_row);
+            const uint32_t solid_rows =
+                db_gradient_solid_rows_before_head(head_row);
             if ((grid_rows > 0U) && (plan.dirty_row_count > 0U) &&
                 (head_row == 0U)) {
                 const uint32_t span_units = grid_rows * grid_cols;
-                db_vk_draw_owner_grid_row_block_gradient_fill(
+                db_vk_draw_owner_grid_row_block_gradient(
                     g_state.command_buffer, g_state.pipeline_layout,
                     g_state.swapchain_state.extent, haveGroup, active_gpu_count,
                     0U, span_units, frameStart, budget_ns, safety_ns,
@@ -2424,7 +2425,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 const uint32_t span_units = solid_rows * grid_cols;
                 const uint32_t row_start = 0U;
                 const uint32_t row_end = solid_rows;
-                db_vk_draw_owner_grid_row_block_gradient_fill(
+                db_vk_draw_owner_grid_row_block_gradient(
                     g_state.command_buffer, g_state.pipeline_layout,
                     g_state.swapchain_state.extent, haveGroup, active_gpu_count,
                     0U, span_units, frameStart, budget_ns, safety_ns,
@@ -2434,7 +2435,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                     &grid_tiles_drawn, grid_rows, grid_cols, row_start, row_end,
                     shader_ignored_color, head_row, cycle_index);
                 for (uint32_t row = solid_rows; row < head_row_clamped; row++) {
-                    db_vk_draw_owner_grid_span_gradient_fill(
+                    db_vk_draw_owner_grid_span_gradient(
                         g_state.command_buffer, g_state.pipeline_layout,
                         g_state.swapchain_state.extent, haveGroup,
                         active_gpu_count, row % active_gpu_count, grid_cols,
@@ -2448,7 +2449,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 }
             } else if ((grid_rows > 0U) && (plan.dirty_row_count > 0U)) {
                 for (uint32_t row = solid_rows; row < head_row_clamped; row++) {
-                    db_vk_draw_owner_grid_span_gradient_fill(
+                    db_vk_draw_owner_grid_span_gradient(
                         g_state.command_buffer, g_state.pipeline_layout,
                         g_state.swapchain_state.extent, haveGroup,
                         active_gpu_count, row % active_gpu_count, grid_cols,

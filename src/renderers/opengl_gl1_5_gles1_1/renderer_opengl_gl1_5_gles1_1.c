@@ -47,7 +47,7 @@ typedef struct {
     int snake_clearing_phase;
     uint32_t gradient_head_row;
     uint32_t gradient_cycle;
-    int gradient_sweep_direction_down;
+    int gradient_direction_down;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
     size_t vertex_stride;
@@ -81,9 +81,8 @@ static int db_init_vertices_for_mode(void) {
     g_state.pattern_seed = init_state.pattern_seed;
     g_state.snake_clearing_phase = init_state.snake_clearing_phase;
     g_state.gradient_head_row = init_state.gradient_head_row;
-    g_state.gradient_sweep_direction_down =
-        init_state.gradient_sweep_direction_down;
-    g_state.gradient_cycle = init_state.gradient_sweep_cycle;
+    g_state.gradient_direction_down = init_state.gradient_direction_down;
+    g_state.gradient_cycle = init_state.gradient_cycle;
     if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
         (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
         float source_r = 0.0F;
@@ -236,11 +235,9 @@ static void db_blend_grid_row_to_color(uint32_t row, float target_r,
     }
 }
 
-static void db_apply_gradient_dirty_rows_sweep(uint32_t row_start,
-                                               uint32_t row_count,
-                                               uint32_t head_row,
-                                               int direction_down,
-                                               uint32_t cycle_index) {
+static void db_apply_gradient_dirty_rows(uint32_t row_start, uint32_t row_count,
+                                         uint32_t head_row, int direction_down,
+                                         uint32_t cycle_index) {
     const uint32_t rows = db_grid_rows_effective();
     if ((rows == 0U) || (row_count == 0U)) {
         return;
@@ -257,14 +254,6 @@ static void db_apply_gradient_dirty_rows_sweep(uint32_t row_start,
                                   &row_r, &row_g, &row_b);
         db_blend_grid_row_to_color(row, row_r, row_g, row_b, 1.0F);
     }
-}
-
-static void db_apply_gradient_dirty_rows_fill(uint32_t row_start,
-                                              uint32_t row_count,
-                                              uint32_t head_row,
-                                              uint32_t cycle_index) {
-    db_apply_gradient_dirty_rows_sweep(row_start, row_count, head_row, 1,
-                                       cycle_index);
 }
 
 static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
@@ -639,15 +628,15 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         const int is_sweep = (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
             g_state.gradient_head_row,
-            is_sweep ? g_state.gradient_sweep_direction_down : 1,
+            is_sweep ? g_state.gradient_direction_down : 1,
             g_state.gradient_cycle, is_sweep ? 0 : 1);
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
-        db_apply_gradient_dirty_rows_sweep(
+        db_apply_gradient_dirty_rows(
             gradient_row_start, gradient_row_count, plan.render_head_row,
             is_sweep ? plan.render_direction_down : 1, plan.render_cycle_index);
         g_state.gradient_head_row = plan.next_head_row;
-        g_state.gradient_sweep_direction_down = plan.next_direction_down;
+        g_state.gradient_direction_down = plan.next_direction_down;
         g_state.gradient_cycle = plan.next_cycle_index;
     } else {
         db_update_band_vertices_rgb_stride(

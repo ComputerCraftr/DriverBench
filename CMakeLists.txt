@@ -618,7 +618,7 @@ if(BUILD_TESTING)
     driverbench_offscreen_cpu_renderer
     bo_hash_final
     "DRIVERBENCH_BENCHMARK_MODE=rect_snake;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
-    0x15d3c7ed38452332
+    0xb70c2dd632862304
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_sweep
