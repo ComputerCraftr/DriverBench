@@ -204,7 +204,8 @@ void db_renderer_cpu_renderer_init(void) {
     }
 
     db_pattern_vertex_init_t init_state = {0};
-    if (!db_init_vertices_for_mode_common(BACKEND_NAME, &init_state)) {
+    if (!db_init_vertices_for_mode_common_with_stride(BACKEND_NAME, &init_state,
+                                                      DB_VERTEX_FLOAT_STRIDE)) {
         db_failf(BACKEND_NAME, "cpu renderer init failed");
     }
 

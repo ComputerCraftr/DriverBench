@@ -54,18 +54,16 @@ typedef struct {
 
 static renderer_state_t g_state = {0};
 
-static void db_fill_grid_all_rgb(float color_r, float color_g, float color_b,
-                                 size_t stride_floats);
-
 // NOLINTBEGIN(performance-no-int-to-ptr)
 static const GLvoid *vbo_offset_ptr(size_t byte_offset) {
     return (const GLvoid *)(uintptr_t)byte_offset;
 }
 // NOLINTEND(performance-no-int-to-ptr)
 
-static int db_init_vertices_for_mode(void) {
+static int db_init_vertices_for_mode(size_t vertex_stride) {
     db_pattern_vertex_init_t init_state = {0};
-    if (!db_init_vertices_for_mode_common(BACKEND_NAME, &init_state)) {
+    if (!db_init_vertices_for_mode_common_with_stride(BACKEND_NAME, &init_state,
+                                                      vertex_stride)) {
         return 0;
     }
 
@@ -81,16 +79,7 @@ static int db_init_vertices_for_mode(void) {
     g_state.mode_phase_flag = init_state.mode_phase_flag;
     g_state.gradient_head_row = init_state.gradient_head_row;
     g_state.gradient_cycle = init_state.gradient_cycle;
-    if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-        (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
-        float source_r = 0.0F;
-        float source_g = 0.0F;
-        float source_b = 0.0F;
-        db_palette_cycle_color_rgb(g_state.gradient_cycle, &source_r, &source_g,
-                                   &source_b);
-        db_fill_grid_all_rgb(source_r, source_g, source_b,
-                             DB_VERTEX_FLOAT_STRIDE);
-    }
+    g_state.vertex_stride = init_state.vertex_stride;
     return 1;
 }
 
@@ -109,8 +98,9 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         return;
     }
     if ((full_fill_on_phase_completed != 0) && (plan->phase_completed != 0)) {
-        db_fill_grid_all_rgb(target_r, target_g, target_b,
-                             g_state.vertex_stride);
+        db_fill_grid_all_rgb_stride(
+            g_state.vertices, g_state.work_unit_count, g_state.vertex_stride,
+            DB_VERTEX_POSITION_FLOAT_COUNT, target_r, target_g, target_b);
         return;
     }
     float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
@@ -173,19 +163,6 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         db_set_rect_unit_rgb(unit, g_state.vertex_stride,
                              DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
                              out_b);
-    }
-}
-
-static void db_fill_grid_all_rgb(float color_r, float color_g, float color_b,
-                                 size_t stride_floats) {
-    for (uint32_t tile_index = 0U; tile_index < g_state.work_unit_count;
-         tile_index++) {
-        const size_t tile_float_offset =
-            (size_t)tile_index * DB_RECT_VERTEX_COUNT * stride_floats;
-        float *unit = &g_state.vertices[tile_float_offset];
-        db_set_rect_unit_rgb(unit, stride_floats,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, color_r, color_g,
-                             color_b);
     }
 }
 
@@ -387,7 +364,13 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
-    if (!db_init_vertices_for_mode()) {
+    g_state.is_es_context =
+        db_gl_is_es_context((const char *)glGetString(GL_VERSION));
+    g_state.vertex_stride = (g_state.is_es_context != 0)
+                                ? DB_ES_VERTEX_FLOAT_STRIDE
+                                : DB_VERTEX_FLOAT_STRIDE;
+
+    if (!db_init_vertices_for_mode(g_state.vertex_stride)) {
         failf("failed to allocate benchmark vertex buffers");
     }
 
@@ -395,36 +378,7 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
 
     g_state.use_map_range_upload = 0;
     g_state.use_map_buffer_upload = 0;
-    g_state.is_es_context =
-        db_gl_is_es_context((const char *)glGetString(GL_VERSION));
     g_state.vbo = 0U;
-
-    if (g_state.is_es_context != 0) {
-        g_state.vertex_stride = DB_ES_VERTEX_FLOAT_STRIDE;
-        const size_t vertex_count = (size_t)g_state.draw_vertex_count;
-        const size_t es_float_count = vertex_count * DB_ES_VERTEX_FLOAT_STRIDE;
-        float *es_vertices = (float *)calloc(es_float_count, sizeof(float));
-        if (es_vertices == NULL) {
-            failf("failed to allocate GLES vertex array");
-        }
-        for (uint32_t v = 0U; v < (uint32_t)g_state.draw_vertex_count; v++) {
-            const size_t src = (size_t)v * DB_VERTEX_FLOAT_STRIDE;
-            const size_t dst = (size_t)v * DB_ES_VERTEX_FLOAT_STRIDE;
-            es_vertices[dst] = g_state.vertices[src];
-            es_vertices[dst + 1U] = g_state.vertices[src + 1U];
-            es_vertices[dst + 2U] =
-                g_state.vertices[src + DB_VERTEX_POSITION_FLOAT_COUNT];
-            es_vertices[dst + 3U] =
-                g_state.vertices[src + DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
-            es_vertices[dst + 4U] =
-                g_state.vertices[src + DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
-            es_vertices[dst + 5U] = 1.0F;
-        }
-        free(g_state.vertices);
-        g_state.vertices = es_vertices;
-    } else {
-        g_state.vertex_stride = DB_VERTEX_FLOAT_STRIDE;
-    }
 
     if (g_state.pattern == DB_PATTERN_BANDS) {
         db_fill_band_vertices_pos_rgb_stride(
@@ -526,9 +480,11 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
             g_state.mode_phase_flag = plan.next_clearing_phase;
         } else {
             if (g_state.snake_reset_pending != 0) {
-                db_fill_grid_all_rgb(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
-                                     BENCH_GRID_PHASE0_B,
-                                     g_state.vertex_stride);
+                db_fill_grid_all_rgb_stride(
+                    g_state.vertices, g_state.work_unit_count,
+                    g_state.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
+                    BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                    BENCH_GRID_PHASE0_B);
                 g_state.snake_reset_pending = 0;
                 rect_full_repaint = 1;
             }

@@ -133,7 +133,12 @@ db_rect_snake_desc_t db_full_grid_rect(uint rows_u, uint cols_u) {
     return rect;
 }
 
-vec4 db_gradient_color(int row_i, uint head_row_u, uint cycle_u, bool direction_down) {
+vec4 db_gradient_color(
+    int row_i,
+    uint head_row_u,
+    uint cycle_u,
+    bool direction_down
+) {
     int rows_i = max(int(u_grid_rows), 1);
     int window_i = clamp(int(u_gradient_window_rows), 1, rows_i);
     int head_row = int(head_row_u);

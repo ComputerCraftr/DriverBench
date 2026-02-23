@@ -12,6 +12,13 @@
 #endif
 #endif
 
+#define DB_HASH_MIX_SHIFT_A 16U
+#define DB_HASH_MIX_SHIFT_B 15U
+#define DB_HASH_MIX_MUL_A 0x7FEB352DU
+#define DB_HASH_MIX_MUL_B 0x846CA68BU
+#define DB_FNV1A64_OFFSET UINT64_C(1469598103934665603)
+#define DB_FNV1A64_PRIME UINT64_C(1099511628211)
+
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
 void db_infof(const char *backend, const char *fmt, ...)
@@ -101,8 +108,43 @@ static inline uint32_t db_fold_u64_to_u32(uint64_t value) {
     return (uint32_t)(value ^ (value >> 32U));
 }
 
-#define DB_FNV1A64_OFFSET UINT64_C(1469598103934665603)
-#define DB_FNV1A64_PRIME UINT64_C(1099511628211)
+static inline uint32_t db_mix_u32(uint32_t value) {
+    value ^= value >> DB_HASH_MIX_SHIFT_A;
+    value *= DB_HASH_MIX_MUL_A;
+    value ^= value >> DB_HASH_MIX_SHIFT_B;
+    value *= DB_HASH_MIX_MUL_B;
+    value ^= value >> DB_HASH_MIX_SHIFT_A;
+    return value;
+}
+
+static inline uint32_t db_u32_range(uint32_t seed, uint32_t min_value,
+                                    uint32_t max_value) {
+    if (max_value <= min_value) {
+        return min_value;
+    }
+    return min_value + (seed % (max_value - min_value + 1U));
+}
+
+static inline void db_blend_rgb(float prior_r, float prior_g, float prior_b,
+                                float target_r, float target_g, float target_b,
+                                float blend_factor, float *out_r, float *out_g,
+                                float *out_b) {
+    if (blend_factor <= 0.0F) {
+        *out_r = prior_r;
+        *out_g = prior_g;
+        *out_b = prior_b;
+        return;
+    }
+    if (blend_factor >= 1.0F) {
+        *out_r = target_r;
+        *out_g = target_g;
+        *out_b = target_b;
+        return;
+    }
+    *out_r = prior_r + ((target_r - prior_r) * blend_factor);
+    *out_g = prior_g + ((target_g - prior_g) * blend_factor);
+    *out_b = prior_b + ((target_b - prior_b) * blend_factor);
+}
 
 static inline uint64_t db_fnv1a64_extend(uint64_t hash, const void *data,
                                          size_t size) {

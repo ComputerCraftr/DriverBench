@@ -331,7 +331,8 @@ static GLuint build_program_from_files(const char *vert_shader_path,
 
 static int db_init_vertices_for_mode(void) {
     db_pattern_vertex_init_t init_state = {0};
-    if (!db_init_vertices_for_mode_common(BACKEND_NAME, &init_state)) {
+    if (!db_init_vertices_for_mode_common_with_stride(BACKEND_NAME, &init_state,
+                                                      DB_VERTEX_FLOAT_STRIDE)) {
         return 0;
     }
 

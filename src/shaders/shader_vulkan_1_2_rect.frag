@@ -177,7 +177,12 @@ int db_row_from_frag_coord() {
     return int(floor((y * rows) / viewport_height));
 }
 
-vec4 db_gradient_color(int row_i, uint head_row_u, uint cycle_u, bool direction_down) {
+vec4 db_gradient_color(
+    int row_i,
+    uint head_row_u,
+    uint cycle_u,
+    bool direction_down
+) {
     int rows_i = max(int(pc.grid_rows), 1);
     int window_i = clamp(int(pc.gradient_window_rows), 1, rows_i);
     int head_row = int(head_row_u);
