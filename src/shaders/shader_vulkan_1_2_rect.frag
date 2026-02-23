@@ -13,11 +13,12 @@ layout(push_constant) uniform PC {
     uint render_mode;
     uint grid_rows;
     uint gradient_head_row;
-    int grid_clearing_phase;
+    uint snake_rect_index;
+    int mode_phase_flag;
     uint gradient_window_rows;
     uint viewport_height;
     uint grid_cols;
-    uint snake_active_cursor;
+    uint snake_cursor;
     uint snake_batch_size;
     int snake_phase_completed;
     uint viewport_width;
@@ -34,11 +35,12 @@ layout(std140, binding = 0) uniform PC {
     uint render_mode;
     uint grid_rows;
     uint gradient_head_row;
-    int grid_clearing_phase;
+    uint snake_rect_index;
+    int mode_phase_flag;
     uint gradient_window_rows;
     uint viewport_height;
     uint grid_cols;
-    uint snake_active_cursor;
+    uint snake_cursor;
     uint snake_batch_size;
     int snake_phase_completed;
     uint viewport_width;
@@ -158,6 +160,16 @@ vec3 db_target_color_for_phase(int clearing_phase) {
     return (clearing_phase != 0) ? pc.base_color.rgb : pc.target_color.rgb;
 }
 
+db_rect_snake_desc_t db_full_grid_rect(uint rows_u, uint cols_u) {
+    db_rect_snake_desc_t rect;
+    rect.x = 0u;
+    rect.y = 0u;
+    rect.width = cols_u;
+    rect.height = rows_u;
+    rect.color = vec3(0.0);
+    return rect;
+}
+
 int db_row_from_frag_coord() {
     float rows = float(max(pc.grid_rows, 1u));
     float viewport_height = float(max(pc.viewport_height, 1u));
@@ -194,56 +206,30 @@ int db_col_from_frag_coord() {
     return int(floor((x * cols) / viewport_width));
 }
 
-vec4 db_snake_grid_color(int row_i, int col_i, vec3 prior_color) {
-    int cols = max(int(pc.grid_cols), 1);
-    int step = row_i * cols;
-    if((row_i & 1) == 0) {
-        step += col_i;
-    } else {
-        step += (cols - 1 - col_i);
+vec4 db_snake_color(
+    db_rect_snake_desc_t rect,
+    uint row_u,
+    uint col_u,
+    vec3 prior_color,
+    vec3 target_color,
+    uint cursor,
+    uint batch_size,
+    int phase_completed
+) {
+    if(!db_rect_contains(rect, row_u, col_u)) {
+        return db_rgba(prior_color);
     }
-
-    int active_cursor = int(pc.snake_active_cursor);
-    int batch_size = max(int(pc.snake_batch_size), 1);
-    int phase_completed = pc.snake_phase_completed;
-    int clearing_phase = pc.grid_clearing_phase;
-
-    vec3 target_color = db_target_color_for_phase(clearing_phase);
     if(phase_completed != 0) {
         return db_rgba(target_color);
     }
-    if(step < active_cursor) {
-        return db_rgba(target_color);
-    }
-    if(step >= (active_cursor + batch_size)) {
-        return db_rgba(prior_color);
-    }
-
-    int window_index = step - active_cursor;
-    float blend = db_window_blend(batch_size, window_index);
-    return db_rgba(db_blend_prior_to_target(prior_color, target_color, blend));
-}
-
-vec4 db_rect_snake_color(int row_i, int col_i, vec3 prior_color) {
-    uint row_u = uint(max(row_i, 0));
-    uint col_u = uint(max(col_i, 0));
-    uint rows_u = max(pc.grid_rows, 1u);
-    uint cols_u = max(pc.grid_cols, 1u);
-    uint rect_index_u = pc.gradient_head_row;
-    db_rect_snake_desc_t current_rect = db_rect_snake_desc(pc.pattern_seed, rect_index_u, rows_u, cols_u);
-    if(!db_rect_contains(current_rect, row_u, col_u)) {
-        return db_rgba(prior_color);
-    }
-    uint step = db_rect_snake_step(current_rect, row_u, col_u);
-    uint cursor = pc.snake_active_cursor;
-    uint batch_size = max(pc.snake_batch_size, 1u);
+    uint step = db_rect_snake_step(rect, row_u, col_u);
     if(step < cursor) {
-        return db_rgba(current_rect.color);
+        return db_rgba(target_color);
     }
     if(step < (cursor + batch_size)) {
         uint window_index = step - cursor;
         float blend = db_window_blend(int(batch_size), int(window_index));
-        return db_rgba(db_blend_prior_to_target(prior_color, current_rect.color, blend));
+        return db_rgba(db_blend_prior_to_target(prior_color, target_color, blend));
     }
     return db_rgba(prior_color);
 }
@@ -258,21 +244,28 @@ void main() {
     if((render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
         (render_mode == RENDER_MODE_GRADIENT_FILL)) {
         bool is_sweep = (render_mode == RENDER_MODE_GRADIENT_SWEEP);
-        int gradient_row = is_sweep ? int(pc.snake_active_cursor) : row_i;
-        bool direction_down = is_sweep ? (pc.snake_phase_completed != 0) : true;
-        out_color = db_gradient_color(gradient_row, pc.gradient_head_row, pc.palette_cycle, direction_down);
+        bool direction_down = is_sweep ? (pc.mode_phase_flag != 0) : true;
+        out_color = db_gradient_color(row_i, pc.gradient_head_row, pc.palette_cycle, direction_down);
         return;
     }
-    if(render_mode == RENDER_MODE_SNAKE_GRID) {
+    if((render_mode == RENDER_MODE_SNAKE_GRID) ||
+        (render_mode == RENDER_MODE_RECT_SNAKE)) {
         ivec2 history_coord = ivec2(gl_FragCoord.xy);
         vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
-        out_color = db_snake_grid_color(row_i, db_col_from_frag_coord(), prior_color);
-        return;
-    }
-    if(render_mode == RENDER_MODE_RECT_SNAKE) {
-        ivec2 history_coord = ivec2(gl_FragCoord.xy);
-        vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
-        out_color = db_rect_snake_color(row_i, db_col_from_frag_coord(), prior_color);
+        int col_i = db_col_from_frag_coord();
+        uint row_u = uint(max(row_i, 0));
+        uint col_u = uint(max(col_i, 0));
+        uint rows_u = max(pc.grid_rows, 1u);
+        uint cols_u = max(pc.grid_cols, 1u);
+        uint batch_size = max(pc.snake_batch_size, 1u);
+        if(render_mode == RENDER_MODE_RECT_SNAKE) {
+            db_rect_snake_desc_t rect = db_rect_snake_desc(pc.pattern_seed, pc.snake_rect_index, rows_u, cols_u);
+            out_color = db_snake_color(rect, row_u, col_u, prior_color, rect.color, pc.snake_cursor, batch_size, 0);
+        } else {
+            db_rect_snake_desc_t rect = db_full_grid_rect(rows_u, cols_u);
+            vec3 target_color = db_target_color_for_phase(pc.mode_phase_flag);
+            out_color = db_snake_color(rect, row_u, col_u, prior_color, target_color, pc.snake_cursor, batch_size, pc.snake_phase_completed);
+        }
         return;
     }
     out_color = v_color;

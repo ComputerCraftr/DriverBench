@@ -136,11 +136,12 @@ typedef struct {
     uint32_t render_mode;
     uint32_t grid_rows;
     uint32_t gradient_head_row;
-    int32_t grid_clearing_phase;
+    uint32_t snake_rect_index;
+    int32_t mode_phase_flag;
     uint32_t gradient_window_rows;
     uint32_t viewport_height;
     uint32_t grid_cols;
-    uint32_t snake_active_cursor;
+    uint32_t snake_cursor;
     uint32_t snake_batch_size;
     int32_t snake_phase_completed;
     uint32_t viewport_width;
@@ -227,16 +228,15 @@ typedef struct {
     uint64_t bench_frames;
     double next_progress_log_due_ms;
     uint64_t frame_index;
-    uint32_t grid_cursor;
-    uint32_t rect_snake_rect_index;
-    uint32_t rect_snake_prev_start;
-    uint32_t rect_snake_prev_count;
-    int rect_snake_reset_pending;
+    uint32_t snake_cursor;
+    uint32_t snake_rect_index;
+    uint32_t snake_prev_start;
+    uint32_t snake_prev_count;
+    int snake_reset_pending;
     uint32_t pattern_seed;
-    int grid_clearing_phase;
+    int mode_phase_flag;
     uint32_t gradient_head_row;
     uint32_t gradient_cycle;
-    int gradient_direction_down;
     uint32_t gradient_window_rows;
     uint32_t prev_frame_work_units[MAX_GPU_COUNT];
     uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
@@ -286,9 +286,9 @@ static void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
 static void db_vk_push_constants_draw_dynamic(
     VkCommandBuffer cmd, VkPipelineLayout layout, float ndc_x0, float ndc_y0,
     float ndc_x1, float ndc_y1, const float color[3], uint32_t render_mode,
-    uint32_t gradient_head_row, int grid_clearing_phase,
-    uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t palette_cycle) {
+    uint32_t gradient_head_row, uint32_t snake_rect_index, int mode_phase_flag,
+    uint32_t snake_cursor, uint32_t snake_batch_size, int snake_phase_completed,
+    uint32_t palette_cycle) {
     PushConstants pc = {0};
     pc.offset_ndc[0] = ndc_x0;
     pc.offset_ndc[1] = ndc_y0;
@@ -300,8 +300,9 @@ static void db_vk_push_constants_draw_dynamic(
     pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
     pc.render_mode = render_mode;
     pc.gradient_head_row = gradient_head_row;
-    pc.grid_clearing_phase = (int32_t)grid_clearing_phase;
-    pc.snake_active_cursor = snake_active_cursor;
+    pc.snake_rect_index = snake_rect_index;
+    pc.mode_phase_flag = (int32_t)mode_phase_flag;
+    pc.snake_cursor = snake_cursor;
     pc.snake_batch_size = snake_batch_size;
     pc.snake_phase_completed = (int32_t)snake_phase_completed;
     pc.palette_cycle = palette_cycle;
@@ -316,11 +317,14 @@ static void db_vk_push_constants_draw_dynamic(
                        (uint32_t)offsetof(PushConstants, gradient_head_row),
                        sizeof(pc.gradient_head_row), &pc.gradient_head_row);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, grid_clearing_phase),
-                       sizeof(pc.grid_clearing_phase), &pc.grid_clearing_phase);
+                       (uint32_t)offsetof(PushConstants, snake_rect_index),
+                       sizeof(pc.snake_rect_index), &pc.snake_rect_index);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, snake_active_cursor),
-                       sizeof(pc.snake_active_cursor), &pc.snake_active_cursor);
+                       (uint32_t)offsetof(PushConstants, mode_phase_flag),
+                       sizeof(pc.mode_phase_flag), &pc.mode_phase_flag);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, snake_cursor),
+                       sizeof(pc.snake_cursor), &pc.snake_cursor);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, snake_batch_size),
                        sizeof(pc.snake_batch_size), &pc.snake_batch_size);
@@ -824,14 +828,13 @@ static void db_vk_grid_span_bounds_ndc(uint32_t row, uint32_t col_start,
     *y1 = (2.0F * (float)(row + 1U) * inv_rows) - 1.0F;
 }
 
-static void
-db_vk_draw_grid_span(VkCommandBuffer cmd, VkPipelineLayout layout,
-                     VkExtent2D extent, uint32_t grid_rows, uint32_t grid_cols,
-                     uint32_t row, uint32_t col_start, uint32_t col_end,
-                     const float color[3], uint32_t render_mode,
-                     uint32_t gradient_head_row, int grid_clearing_phase,
-                     uint32_t snake_active_cursor, uint32_t snake_batch_size,
-                     int snake_phase_completed, uint32_t palette_cycle) {
+static void db_vk_draw_grid_span(
+    VkCommandBuffer cmd, VkPipelineLayout layout, VkExtent2D extent,
+    uint32_t grid_rows, uint32_t grid_cols, uint32_t row, uint32_t col_start,
+    uint32_t col_end, const float color[3], uint32_t render_mode,
+    uint32_t gradient_head_row, uint32_t snake_rect_index, int mode_phase_flag,
+    uint32_t snake_cursor, uint32_t snake_batch_size, int snake_phase_completed,
+    uint32_t palette_cycle) {
     if ((grid_rows == 0U) || (grid_cols == 0U) || (col_end <= col_start) ||
         (row >= grid_rows)) {
         return;
@@ -861,7 +864,7 @@ db_vk_draw_grid_span(VkCommandBuffer cmd, VkPipelineLayout layout,
 
     db_vk_push_constants_draw_dynamic(
         cmd, layout, ndc_x0, ndc_y0, ndc_x1, ndc_y1, color, render_mode,
-        gradient_head_row, grid_clearing_phase, snake_active_cursor,
+        gradient_head_row, snake_rect_index, mode_phase_flag, snake_cursor,
         snake_batch_size, snake_phase_completed, palette_cycle);
     vkCmdDraw(cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
@@ -870,9 +873,9 @@ static void db_vk_draw_grid_row_block(
     VkCommandBuffer cmd, VkPipelineLayout layout, VkExtent2D extent,
     uint32_t grid_rows, uint32_t grid_cols, uint32_t row_start,
     uint32_t row_end, const float color[3], uint32_t render_mode,
-    uint32_t gradient_head_row, int grid_clearing_phase,
-    uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t palette_cycle) {
+    uint32_t gradient_head_row, uint32_t snake_rect_index, int mode_phase_flag,
+    uint32_t snake_cursor, uint32_t snake_batch_size, int snake_phase_completed,
+    uint32_t palette_cycle) {
     if ((row_end <= row_start) || (row_start >= grid_rows) ||
         (grid_rows == 0U) || (grid_cols == 0U)) {
         return;
@@ -898,7 +901,7 @@ static void db_vk_draw_grid_row_block(
     const float ndc_y1 = (2.0F * (float)row_end * inv_rows) - 1.0F;
     db_vk_push_constants_draw_dynamic(
         cmd, layout, -1.0F, ndc_y0, 1.0F, ndc_y1, color, render_mode,
-        gradient_head_row, grid_clearing_phase, snake_active_cursor,
+        gradient_head_row, snake_rect_index, mode_phase_flag, snake_cursor,
         snake_batch_size, snake_phase_completed, palette_cycle);
     vkCmdDraw(cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
@@ -925,9 +928,9 @@ static void db_vk_draw_owner_grid_span(
     uint32_t *grid_tiles_per_gpu, uint32_t *grid_tiles_drawn,
     uint32_t grid_rows, uint32_t grid_cols, uint32_t row, uint32_t col_start,
     uint32_t col_end, const float color[3], uint32_t render_mode,
-    uint32_t gradient_head_row, int grid_clearing_phase,
-    uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t palette_cycle) {
+    uint32_t gradient_head_row, uint32_t snake_rect_index, int mode_phase_flag,
+    uint32_t snake_cursor, uint32_t snake_batch_size, int snake_phase_completed,
+    uint32_t palette_cycle) {
     if ((span_units == 0U) || (grid_tiles_drawn == NULL) ||
         (grid_tiles_per_gpu == NULL) || (frame_work_units == NULL)) {
         return;
@@ -945,9 +948,9 @@ static void db_vk_draw_owner_grid_span(
                              frame_owner_used);
     db_vk_draw_grid_span(cmd, layout, extent, grid_rows, grid_cols, row,
                          col_start, col_end, color, render_mode,
-                         gradient_head_row, grid_clearing_phase,
-                         snake_active_cursor, snake_batch_size,
-                         snake_phase_completed, palette_cycle);
+                         gradient_head_row, snake_rect_index, mode_phase_flag,
+                         snake_cursor, snake_batch_size, snake_phase_completed,
+                         palette_cycle);
     db_vk_owner_timing_end(cmd, timing_enabled, timing_query_pool, owner,
                            frame_owner_finished);
     frame_work_units[owner] += span_units;
@@ -963,9 +966,9 @@ static void db_vk_draw_owner_grid_row_block(
     uint32_t *grid_tiles_per_gpu, uint32_t *grid_tiles_drawn,
     uint32_t grid_rows, uint32_t grid_cols, uint32_t row_start,
     uint32_t row_end, const float color[3], uint32_t render_mode,
-    uint32_t gradient_head_row, int grid_clearing_phase,
-    uint32_t snake_active_cursor, uint32_t snake_batch_size,
-    int snake_phase_completed, uint32_t palette_cycle) {
+    uint32_t gradient_head_row, uint32_t snake_rect_index, int mode_phase_flag,
+    uint32_t snake_cursor, uint32_t snake_batch_size, int snake_phase_completed,
+    uint32_t palette_cycle) {
     if ((span_units == 0U) || (grid_tiles_drawn == NULL) ||
         (grid_tiles_per_gpu == NULL) || (frame_work_units == NULL)) {
         return;
@@ -981,11 +984,10 @@ static void db_vk_draw_owner_grid_row_block(
     }
     db_vk_owner_timing_begin(cmd, timing_enabled, timing_query_pool, owner,
                              frame_owner_used);
-    db_vk_draw_grid_row_block(cmd, layout, extent, grid_rows, grid_cols,
-                              row_start, row_end, color, render_mode,
-                              gradient_head_row, grid_clearing_phase,
-                              snake_active_cursor, snake_batch_size,
-                              snake_phase_completed, palette_cycle);
+    db_vk_draw_grid_row_block(
+        cmd, layout, extent, grid_rows, grid_cols, row_start, row_end, color,
+        render_mode, gradient_head_row, snake_rect_index, mode_phase_flag,
+        snake_cursor, snake_batch_size, snake_phase_completed, palette_cycle);
     db_vk_owner_timing_end(cmd, timing_enabled, timing_query_pool, owner,
                            frame_owner_finished);
     frame_work_units[owner] += span_units;
@@ -1007,7 +1009,7 @@ static void db_vk_draw_owner_grid_span_legacy(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_PATTERN_BANDS, 0U, 0, 0U, 0U, 0, 0U);
+        DB_PATTERN_BANDS, 0U, 0U, 0, 0U, 0U, 0, 0U);
 }
 
 static void db_vk_draw_owner_grid_span_snake(
@@ -1027,7 +1029,7 @@ static void db_vk_draw_owner_grid_span_snake(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_PATTERN_SNAKE_GRID, active_cursor, clearing_phase, active_cursor,
+        DB_PATTERN_SNAKE_GRID, 0U, 0U, clearing_phase, active_cursor,
         batch_size, phase_completed, 0U);
 }
 
@@ -1048,7 +1050,7 @@ static void db_vk_draw_owner_grid_span_gradient_window(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_PATTERN_GRADIENT_SWEEP, head_row, 0, row, 0U, direction_down,
+        DB_PATTERN_GRADIENT_SWEEP, head_row, 0U, direction_down, 0U, 0U, 0,
         cycle_index);
 }
 
@@ -1069,7 +1071,7 @@ static void db_vk_draw_owner_grid_span_gradient(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_PATTERN_GRADIENT_FILL, head_row, 0, 0U, 0U, 0, cycle_index);
+        DB_PATTERN_GRADIENT_FILL, head_row, 0U, 0, 0U, 0U, 0, cycle_index);
 }
 
 static void db_vk_draw_owner_grid_row_block_gradient(
@@ -1089,7 +1091,7 @@ static void db_vk_draw_owner_grid_row_block_gradient(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row_start, row_end, color,
-        DB_PATTERN_GRADIENT_FILL, head_row, 0, 0U, 0U, 0, cycle_index);
+        DB_PATTERN_GRADIENT_FILL, head_row, 0U, 0, 0U, 0U, 0, cycle_index);
 }
 
 static void db_vk_draw_owner_grid_span_rect(
@@ -1109,7 +1111,7 @@ static void db_vk_draw_owner_grid_span_rect(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row, col_start, col_end, color,
-        DB_PATTERN_RECT_SNAKE, rect_index, 0, active_cursor, batch_size,
+        DB_PATTERN_RECT_SNAKE, 0U, rect_index, 0, active_cursor, batch_size,
         rect_completed, 0U);
 }
 
@@ -1130,7 +1132,7 @@ static void db_vk_draw_owner_grid_row_block_rect(
         timing_enabled, timing_query_pool, frame_owner_used,
         frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
         grid_tiles_drawn, grid_rows, grid_cols, row_start, row_end, color,
-        DB_PATTERN_RECT_SNAKE, rect_index, 0, active_cursor, batch_size,
+        DB_PATTERN_RECT_SNAKE, 0U, rect_index, 0, active_cursor, batch_size,
         rect_completed, 0U);
 }
 
@@ -1933,17 +1935,17 @@ void db_renderer_vulkan_1_2_multi_gpu_init(
     g_state.bench_frames = 0U;
     g_state.next_progress_log_due_ms = 0.0;
     g_state.frame_index = 0U;
-    g_state.grid_cursor = 0U;
-    g_state.rect_snake_rect_index = 0U;
-    g_state.rect_snake_prev_start = 0U;
-    g_state.rect_snake_prev_count = 0U;
-    g_state.rect_snake_reset_pending = 1;
+    g_state.snake_cursor = 0U;
+    g_state.snake_rect_index = 0U;
+    g_state.snake_prev_start = 0U;
+    g_state.snake_prev_count = 0U;
+    g_state.snake_reset_pending = 1;
     g_state.pattern_seed = run_seed;
-    g_state.grid_clearing_phase = 0;
     g_state.gradient_head_row = 0U;
     g_state.gradient_cycle =
         db_benchmark_cycle_from_seed(run_seed, DB_PALETTE_SALT);
-    g_state.gradient_direction_down = 1;
+    g_state.mode_phase_flag =
+        (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ? 1 : 0;
     g_state.gradient_window_rows = db_gradient_window_rows_effective();
 }
 
@@ -2025,7 +2027,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             g_state.history_targets[g_state.history_read_index].view);
         g_state.history_descriptor_index = g_state.history_read_index;
         if ((g_state.pattern == DB_PATTERN_RECT_SNAKE) && (preserved == 0)) {
-            g_state.rect_snake_reset_pending = 1;
+            g_state.snake_reset_pending = 1;
         }
         g_state.frame_index++;
         return DB_VK_FRAME_RETRY;
@@ -2062,7 +2064,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     VkClearValue clear = {0};
     const int use_base_color = ((g_state.pattern == DB_PATTERN_GRADIENT_FILL) ||
                                 (g_state.pattern == DB_PATTERN_SNAKE_GRID)) &&
-                               (g_state.grid_clearing_phase == 0);
+                               (g_state.mode_phase_flag == 0);
     const float *clear_rgb = NULL;
     if (g_state.pattern == DB_PATTERN_BANDS) {
         static const float bands_rgb[3] = {BG_COLOR_R_F, BG_COLOR_G_F,
@@ -2232,147 +2234,146 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                               &band_color[1], &band_color[2]);
             db_vk_push_constants_draw_dynamic(
                 g_state.command_buffer, g_state.pipeline_layout, ndc_x0, -1.0F,
-                ndc_x1, 1.0F, band_color, DB_PATTERN_BANDS, 0U, 0, 0U, 0U, 0,
-                0U);
+                ndc_x1, 1.0F, band_color, DB_PATTERN_BANDS, 0U, 0U, 0, 0U, 0U,
+                0, 0U);
             vkCmdDraw(g_state.command_buffer, DB_RECT_VERTEX_COUNT, 1, 0, 0);
             db_vk_owner_timing_end(
                 g_state.command_buffer, g_state.gpu_timing_enabled,
                 g_state.timing_query_pool, owner, frame_owner_finished);
             frame_work_units[owner] += 1U;
         }
-    } else if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
-        const db_snake_damage_plan_t grid_plan = db_snake_grid_plan_next_step(
-            g_state.grid_cursor, 0U, 0U, g_state.grid_clearing_phase,
-            g_state.work_unit_count);
-        const uint32_t batch_size = grid_plan.batch_size;
-        const uint32_t active_cursor = grid_plan.active_cursor;
+    } else if ((g_state.pattern == DB_PATTERN_SNAKE_GRID) ||
+               (g_state.pattern == DB_PATTERN_RECT_SNAKE)) {
+        const int is_grid = (g_state.pattern == DB_PATTERN_SNAKE_GRID);
+        const db_snake_plan_request_t request = db_snake_plan_request_make(
+            is_grid, g_state.pattern_seed, g_state.snake_rect_index,
+            g_state.snake_cursor, g_state.snake_prev_start,
+            g_state.snake_prev_count, g_state.mode_phase_flag);
+        const db_snake_plan_t plan = db_snake_plan_next_step(&request);
         const float shader_ignored_color[3] = {0.0F, 0.0F, 0.0F};
-        const uint32_t full_rows = active_cursor / grid_cols;
-        const uint32_t row_remainder = active_cursor % grid_cols;
-        const uint32_t row_span_units = grid_cols;
+        if (is_grid != 0) {
+            const uint32_t batch_size = plan.batch_size;
+            const uint32_t active_cursor = plan.active_cursor;
+            const uint32_t full_rows = active_cursor / grid_cols;
+            const uint32_t row_remainder = active_cursor % grid_cols;
+            const uint32_t row_span_units = grid_cols;
 
-        for (uint32_t row = 0; row < full_rows; row++) {
-            db_vk_draw_owner_grid_span_snake(
-                g_state.command_buffer, g_state.pipeline_layout,
-                g_state.swapchain_state.extent, haveGroup, active_gpu_count,
-                row % active_gpu_count, row_span_units, frameStart, budget_ns,
-                safety_ns, g_state.ema_ms_per_work_unit,
-                g_state.gpu_timing_enabled, g_state.timing_query_pool,
-                frame_owner_used, frame_owner_finished, frame_work_units,
-                grid_tiles_per_gpu, &grid_tiles_drawn, grid_rows, grid_cols,
-                row, 0U, grid_cols, shader_ignored_color, active_cursor,
-                grid_plan.clearing_phase, batch_size,
-                grid_plan.phase_completed);
-        }
-
-        if ((row_remainder > 0U) && (full_rows < grid_rows)) {
-            const uint32_t span_units = row_remainder;
-            uint32_t col_start = 0U;
-            uint32_t col_end = row_remainder;
-            if ((full_rows & 1U) != 0U) {
-                col_start = grid_cols - row_remainder;
-                col_end = grid_cols;
-            }
-            db_vk_draw_owner_grid_span_snake(
-                g_state.command_buffer, g_state.pipeline_layout,
-                g_state.swapchain_state.extent, haveGroup, active_gpu_count,
-                full_rows % active_gpu_count, span_units, frameStart, budget_ns,
-                safety_ns, g_state.ema_ms_per_work_unit,
-                g_state.gpu_timing_enabled, g_state.timing_query_pool,
-                frame_owner_used, frame_owner_finished, frame_work_units,
-                grid_tiles_per_gpu, &grid_tiles_drawn, grid_rows, grid_cols,
-                full_rows, col_start, col_end, shader_ignored_color,
-                active_cursor, grid_plan.clearing_phase, batch_size,
-                grid_plan.phase_completed);
-        }
-
-        for (uint32_t update_index = 0; update_index < batch_size;
-             update_index++) {
-            const uint32_t tile_step = active_cursor + update_index;
-            if (tile_step >= g_state.work_unit_count) {
-                break;
-            }
-            const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
-            const uint32_t row = tile_index / grid_cols;
-            const uint32_t col = tile_index % grid_cols;
-            db_vk_draw_owner_grid_span_snake(
-                g_state.command_buffer, g_state.pipeline_layout,
-                g_state.swapchain_state.extent, haveGroup, active_gpu_count,
-                tile_step % active_gpu_count, 1U, frameStart, budget_ns,
-                safety_ns, g_state.ema_ms_per_work_unit,
-                g_state.gpu_timing_enabled, g_state.timing_query_pool,
-                frame_owner_used, frame_owner_finished, frame_work_units,
-                grid_tiles_per_gpu, &grid_tiles_drawn, grid_rows, grid_cols,
-                row, col, col + 1U, shader_ignored_color, active_cursor,
-                grid_plan.clearing_phase, batch_size,
-                grid_plan.phase_completed);
-        }
-
-        g_state.grid_cursor = grid_plan.next_cursor;
-        g_state.grid_clearing_phase = grid_plan.next_clearing_phase;
-    } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
-        const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
-            g_state.pattern_seed, g_state.rect_snake_rect_index,
-            g_state.grid_cursor);
-        const float shader_ignored_color[3] = {0.0F, 0.0F, 0.0F};
-        const db_rect_snake_rect_t rect = db_rect_snake_rect_from_index(
-            g_state.pattern_seed, plan.active_rect_index);
-        if (g_state.rect_snake_reset_pending != 0) {
-            const uint32_t span_units = grid_rows * grid_cols;
-            db_vk_draw_owner_grid_row_block_rect(
-                g_state.command_buffer, g_state.pipeline_layout,
-                g_state.swapchain_state.extent, haveGroup, active_gpu_count, 0U,
-                span_units, frameStart, budget_ns, safety_ns,
-                g_state.ema_ms_per_work_unit, g_state.gpu_timing_enabled,
-                g_state.timing_query_pool, frame_owner_used,
-                frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
-                &grid_tiles_drawn, grid_rows, grid_cols, 0U, grid_rows,
-                shader_ignored_color, plan.active_rect_index,
-                plan.active_cursor, plan.batch_size, plan.rect_completed);
-            g_state.rect_snake_reset_pending = 0;
-        } else {
-            db_snake_col_span_t
-                spans[(size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U];
-            size_t span_count = 0U;
-            db_snake_append_step_spans_for_rect(
-                spans, (size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U,
-                &span_count, rect.x, rect.y, rect.width, rect.height,
-                g_state.rect_snake_prev_start, g_state.rect_snake_prev_count);
-            db_snake_append_step_spans_for_rect(
-                spans, (size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U,
-                &span_count, rect.x, rect.y, rect.width, rect.height,
-                plan.active_cursor, plan.batch_size);
-            for (size_t i = 0U; i < span_count; i++) {
-                const uint32_t span_units =
-                    spans[i].col_end - spans[i].col_start;
-                db_vk_draw_owner_grid_span_rect(
+            for (uint32_t row = 0; row < full_rows; row++) {
+                db_vk_draw_owner_grid_span_snake(
                     g_state.command_buffer, g_state.pipeline_layout,
                     g_state.swapchain_state.extent, haveGroup, active_gpu_count,
-                    spans[i].row % active_gpu_count, span_units, frameStart,
+                    row % active_gpu_count, row_span_units, frameStart,
                     budget_ns, safety_ns, g_state.ema_ms_per_work_unit,
                     g_state.gpu_timing_enabled, g_state.timing_query_pool,
                     frame_owner_used, frame_owner_finished, frame_work_units,
                     grid_tiles_per_gpu, &grid_tiles_drawn, grid_rows, grid_cols,
-                    spans[i].row, spans[i].col_start, spans[i].col_end,
+                    row, 0U, grid_cols, shader_ignored_color, active_cursor,
+                    plan.clearing_phase, batch_size, plan.phase_completed);
+            }
+
+            if ((row_remainder > 0U) && (full_rows < grid_rows)) {
+                const uint32_t span_units = row_remainder;
+                uint32_t col_start = 0U;
+                uint32_t col_end = row_remainder;
+                if ((full_rows & 1U) != 0U) {
+                    col_start = grid_cols - row_remainder;
+                    col_end = grid_cols;
+                }
+                db_vk_draw_owner_grid_span_snake(
+                    g_state.command_buffer, g_state.pipeline_layout,
+                    g_state.swapchain_state.extent, haveGroup, active_gpu_count,
+                    full_rows % active_gpu_count, span_units, frameStart,
+                    budget_ns, safety_ns, g_state.ema_ms_per_work_unit,
+                    g_state.gpu_timing_enabled, g_state.timing_query_pool,
+                    frame_owner_used, frame_owner_finished, frame_work_units,
+                    grid_tiles_per_gpu, &grid_tiles_drawn, grid_rows, grid_cols,
+                    full_rows, col_start, col_end, shader_ignored_color,
+                    active_cursor, plan.clearing_phase, batch_size,
+                    plan.phase_completed);
+            }
+
+            for (uint32_t update_index = 0; update_index < batch_size;
+                 update_index++) {
+                const uint32_t tile_step = active_cursor + update_index;
+                if (tile_step >= g_state.work_unit_count) {
+                    break;
+                }
+                const uint32_t tile_index =
+                    db_grid_tile_index_from_step(tile_step);
+                const uint32_t row = tile_index / grid_cols;
+                const uint32_t col = tile_index % grid_cols;
+                db_vk_draw_owner_grid_span_snake(
+                    g_state.command_buffer, g_state.pipeline_layout,
+                    g_state.swapchain_state.extent, haveGroup, active_gpu_count,
+                    tile_step % active_gpu_count, 1U, frameStart, budget_ns,
+                    safety_ns, g_state.ema_ms_per_work_unit,
+                    g_state.gpu_timing_enabled, g_state.timing_query_pool,
+                    frame_owner_used, frame_owner_finished, frame_work_units,
+                    grid_tiles_per_gpu, &grid_tiles_drawn, grid_rows, grid_cols,
+                    row, col, col + 1U, shader_ignored_color, active_cursor,
+                    plan.clearing_phase, batch_size, plan.phase_completed);
+            }
+
+            g_state.mode_phase_flag = plan.next_clearing_phase;
+        } else {
+            const db_rect_snake_rect_t rect = db_rect_snake_rect_from_index(
+                g_state.pattern_seed, plan.active_rect_index);
+            if (g_state.snake_reset_pending != 0) {
+                const uint32_t span_units = grid_rows * grid_cols;
+                db_vk_draw_owner_grid_row_block_rect(
+                    g_state.command_buffer, g_state.pipeline_layout,
+                    g_state.swapchain_state.extent, haveGroup, active_gpu_count,
+                    0U, span_units, frameStart, budget_ns, safety_ns,
+                    g_state.ema_ms_per_work_unit, g_state.gpu_timing_enabled,
+                    g_state.timing_query_pool, frame_owner_used,
+                    frame_owner_finished, frame_work_units, grid_tiles_per_gpu,
+                    &grid_tiles_drawn, grid_rows, grid_cols, 0U, grid_rows,
                     shader_ignored_color, plan.active_rect_index,
                     plan.active_cursor, plan.batch_size, plan.rect_completed);
+                g_state.snake_reset_pending = 0;
+            } else {
+                db_snake_col_span_t
+                    spans[(size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U];
+                size_t span_count = 0U;
+                db_snake_append_step_spans_for_rect(
+                    spans, (size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U,
+                    &span_count, rect.x, rect.y, rect.width, rect.height,
+                    g_state.snake_prev_start, g_state.snake_prev_count);
+                db_snake_append_step_spans_for_rect(
+                    spans, (size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U,
+                    &span_count, rect.x, rect.y, rect.width, rect.height,
+                    plan.active_cursor, plan.batch_size);
+                for (size_t i = 0U; i < span_count; i++) {
+                    const uint32_t span_units =
+                        spans[i].col_end - spans[i].col_start;
+                    db_vk_draw_owner_grid_span_rect(
+                        g_state.command_buffer, g_state.pipeline_layout,
+                        g_state.swapchain_state.extent, haveGroup,
+                        active_gpu_count, spans[i].row % active_gpu_count,
+                        span_units, frameStart, budget_ns, safety_ns,
+                        g_state.ema_ms_per_work_unit,
+                        g_state.gpu_timing_enabled, g_state.timing_query_pool,
+                        frame_owner_used, frame_owner_finished,
+                        frame_work_units, grid_tiles_per_gpu, &grid_tiles_drawn,
+                        grid_rows, grid_cols, spans[i].row, spans[i].col_start,
+                        spans[i].col_end, shader_ignored_color,
+                        plan.active_rect_index, plan.active_cursor,
+                        plan.batch_size, plan.rect_completed);
+                }
+            }
+            g_state.snake_rect_index = plan.next_rect_index;
+            if (plan.wrapped != 0) {
+                g_state.snake_reset_pending = 1;
             }
         }
-        g_state.rect_snake_prev_start = plan.active_cursor;
-        g_state.rect_snake_prev_count =
-            (plan.rect_completed != 0) ? 0U : plan.batch_size;
-        g_state.grid_cursor = plan.next_cursor;
-        g_state.rect_snake_rect_index = plan.next_rect_index;
-        if (plan.wrapped != 0) {
-            g_state.rect_snake_reset_pending = 1;
-            g_state.rect_snake_prev_count = 0U;
-        }
+        g_state.snake_cursor = plan.next_cursor;
+        g_state.snake_prev_start = plan.next_prev_start;
+        g_state.snake_prev_count = plan.next_prev_count;
     } else if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
         const int is_sweep = (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
-            g_state.gradient_head_row,
-            is_sweep ? g_state.gradient_direction_down : 1,
+            g_state.gradient_head_row, is_sweep ? g_state.mode_phase_flag : 1,
             g_state.gradient_cycle, is_sweep ? 0 : 1);
 
         if (is_sweep != 0) {
@@ -2398,7 +2399,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                         plan.render_cycle_index, plan.render_direction_down);
                 }
             }
-            g_state.gradient_direction_down = plan.next_direction_down;
+            g_state.mode_phase_flag = plan.next_direction_down;
         } else {
             const uint32_t head_row = plan.render_head_row;
             const uint32_t head_row_clamped =
@@ -2604,7 +2605,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             g_state.history_targets[g_state.history_read_index].view);
         g_state.history_descriptor_index = g_state.history_read_index;
         if ((g_state.pattern == DB_PATTERN_RECT_SNAKE) && (preserved == 0)) {
-            g_state.rect_snake_reset_pending = 1;
+            g_state.snake_reset_pending = 1;
         }
         g_state.frame_index++;
         return DB_VK_FRAME_RETRY;

@@ -33,12 +33,10 @@ typedef struct {
     uint32_t snake_cursor;
     uint32_t snake_prev_start;
     uint32_t snake_prev_count;
-    int snake_clearing_phase;
+    int mode_phase_flag;
     uint32_t gradient_head_row;
-    int gradient_direction_down;
     uint32_t gradient_cycle;
-    uint32_t rect_snake_index;
-    uint32_t rect_snake_cursor;
+    uint32_t snake_rect_index;
     uint32_t rect_seed;
 } db_cpu_renderer_state_t;
 
@@ -112,49 +110,57 @@ static void db_render_bands(db_cpu_bo_t *bo, double time_s) {
     }
 }
 
-static void db_render_snake_grid(db_cpu_bo_t *write_bo,
+static void db_render_snake_step(db_cpu_bo_t *write_bo,
                                  const db_cpu_bo_t *read_bo,
-                                 const db_snake_damage_plan_t *plan,
-                                 uint32_t work_unit_count) {
-    float target_red = 0.0F;
-    float target_green = 0.0F;
-    float target_blue = 0.0F;
-    db_snake_grid_target_color_rgb(plan->clearing_phase, &target_red,
-                                   &target_green, &target_blue);
-    const uint32_t target_rgba =
-        db_pack_rgb(target_red, target_green, target_blue);
-
-    if (plan->phase_completed != 0) {
-        db_bo_fill_solid(write_bo, target_rgba);
+                                 const db_snake_plan_t *plan,
+                                 const db_rect_snake_rect_t *rect,
+                                 float target_red, float target_green,
+                                 float target_blue,
+                                 int full_fill_on_phase_completed) {
+    if ((plan == NULL) || (rect == NULL)) {
+        return;
+    }
+    if ((rect->width == 0U) || (rect->height == 0U)) {
         return;
     }
 
     const uint32_t cols = write_bo->width;
     const uint32_t rows = write_bo->height;
-    for (uint32_t step = 0U; step < plan->active_cursor; step++) {
-        if (step >= work_unit_count) {
+    const uint32_t target_rgba =
+        db_pack_rgb(target_red, target_green, target_blue);
+    if ((full_fill_on_phase_completed != 0) && (plan->phase_completed != 0)) {
+        db_bo_fill_solid(write_bo, target_rgba);
+        return;
+    }
+
+    for (uint32_t update_index = 0U; update_index < plan->prev_count;
+         update_index++) {
+        const uint32_t step = plan->prev_start + update_index;
+        if (step >= plan->rect_tile_count) {
             break;
         }
-        const uint32_t tile = db_grid_tile_index_from_step(step);
-        const uint32_t row = tile / cols;
-        const uint32_t col = tile % cols;
-        if (row >= rows) {
-            break;
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(rect, step);
+        const uint32_t row = tile_index / cols;
+        const uint32_t col = tile_index % cols;
+        if ((row >= rows) || (col >= cols)) {
+            continue;
         }
         write_bo->pixels_rgba8[db_grid_index(row, col, cols)] = target_rgba;
     }
 
-    for (uint32_t window_index = 0U; window_index < plan->batch_size;
-         window_index++) {
-        const uint32_t step = plan->active_cursor + window_index;
-        if (step >= work_unit_count) {
+    for (uint32_t update_index = 0U; update_index < plan->batch_size;
+         update_index++) {
+        const uint32_t step = plan->active_cursor + update_index;
+        if (step >= plan->rect_tile_count) {
             break;
         }
-        const uint32_t tile = db_grid_tile_index_from_step(step);
-        const uint32_t row = tile / cols;
-        const uint32_t col = tile % cols;
-        if (row >= rows) {
-            break;
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(rect, step);
+        const uint32_t row = tile_index / cols;
+        const uint32_t col = tile_index % cols;
+        if ((row >= rows) || (col >= cols)) {
+            continue;
         }
         const size_t idx = db_grid_index(row, col, cols);
         float prior_red = 0.0F;
@@ -163,7 +169,7 @@ static void db_render_snake_grid(db_cpu_bo_t *write_bo,
         db_unpack_rgb(read_bo->pixels_rgba8[idx], &prior_red, &prior_green,
                       &prior_blue);
         const float blend =
-            db_window_blend_factor(window_index, plan->batch_size);
+            db_window_blend_factor(update_index, plan->batch_size);
         float out_red = 0.0F;
         float out_green = 0.0F;
         float out_blue = 0.0F;
@@ -171,67 +177,6 @@ static void db_render_snake_grid(db_cpu_bo_t *write_bo,
                      target_green, target_blue, blend, &out_red, &out_green,
                      &out_blue);
         write_bo->pixels_rgba8[idx] = db_pack_rgb(out_red, out_green, out_blue);
-    }
-}
-
-static void db_render_rect_snake(db_cpu_bo_t *write_bo,
-                                 const db_cpu_bo_t *read_bo,
-                                 const db_rect_snake_plan_t *plan,
-                                 uint32_t rect_seed) {
-    const db_rect_snake_rect_t rect =
-        db_rect_snake_rect_from_index(rect_seed, plan->active_rect_index);
-    if ((rect.width == 0U) || (rect.height == 0U)) {
-        return;
-    }
-
-    const uint32_t cols = write_bo->width;
-    const uint32_t rows = write_bo->height;
-    const uint32_t target_rgba =
-        db_pack_rgb(rect.color_r, rect.color_g, rect.color_b);
-    const uint32_t batch_end = plan->active_cursor + plan->batch_size;
-
-    for (uint32_t local_row = 0U; local_row < rect.height; local_row++) {
-        const uint32_t row = rect.y + local_row;
-        if (row >= rows) {
-            break;
-        }
-        for (uint32_t local_col = 0U; local_col < rect.width; local_col++) {
-            const uint32_t col = rect.x + local_col;
-            if (col >= cols) {
-                break;
-            }
-
-            const uint32_t snake_col = ((local_row & 1U) == 0U)
-                                           ? local_col
-                                           : ((rect.width - 1U) - local_col);
-            const uint32_t step = (local_row * rect.width) + snake_col;
-            const size_t idx = db_grid_index(row, col, cols);
-
-            if (step < plan->active_cursor) {
-                write_bo->pixels_rgba8[idx] = target_rgba;
-                continue;
-            }
-            if (step >= batch_end) {
-                continue;
-            }
-
-            float prior_red = 0.0F;
-            float prior_green = 0.0F;
-            float prior_blue = 0.0F;
-            db_unpack_rgb(read_bo->pixels_rgba8[idx], &prior_red, &prior_green,
-                          &prior_blue);
-            const uint32_t window_index = step - plan->active_cursor;
-            const float blend =
-                db_window_blend_factor(window_index, plan->batch_size);
-            float out_red = 0.0F;
-            float out_green = 0.0F;
-            float out_blue = 0.0F;
-            db_blend_rgb(prior_red, prior_green, prior_blue, rect.color_r,
-                         rect.color_g, rect.color_b, blend, &out_red,
-                         &out_green, &out_blue);
-            write_bo->pixels_rgba8[idx] =
-                db_pack_rgb(out_red, out_green, out_blue);
-        }
     }
 }
 
@@ -305,13 +250,10 @@ void db_renderer_cpu_renderer_init(void) {
     g_state.snake_cursor = init_state.snake_cursor;
     g_state.snake_prev_start = init_state.snake_prev_start;
     g_state.snake_prev_count = init_state.snake_prev_count;
-    g_state.snake_clearing_phase = init_state.snake_clearing_phase;
+    g_state.mode_phase_flag = init_state.mode_phase_flag;
     g_state.gradient_head_row = init_state.gradient_head_row;
-    g_state.gradient_direction_down =
-        init_state.gradient_direction_down;
     g_state.gradient_cycle = init_state.gradient_cycle;
-    g_state.rect_snake_index = 0U;
-    g_state.rect_snake_cursor = 0U;
+    g_state.snake_rect_index = 0U;
     g_state.rect_seed = init_state.pattern_seed;
 }
 
@@ -332,38 +274,60 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
 
     if (g_state.state.pattern == DB_PATTERN_BANDS) {
         db_render_bands(write_bo, time_s);
-    } else if (g_state.state.pattern == DB_PATTERN_SNAKE_GRID) {
-        const db_snake_damage_plan_t plan = db_snake_grid_plan_next_step(
+    } else if ((g_state.state.pattern == DB_PATTERN_SNAKE_GRID) ||
+               (g_state.state.pattern == DB_PATTERN_RECT_SNAKE)) {
+        const int is_grid = (g_state.state.pattern == DB_PATTERN_SNAKE_GRID);
+        const db_snake_plan_request_t request = db_snake_plan_request_make(
+            is_grid, g_state.rect_seed, g_state.snake_rect_index,
             g_state.snake_cursor, g_state.snake_prev_start,
-            g_state.snake_prev_count, g_state.snake_clearing_phase,
-            g_state.state.work_unit_count);
-        db_render_snake_grid(write_bo, read_bo, &plan,
-                             g_state.state.work_unit_count);
+            g_state.snake_prev_count, g_state.mode_phase_flag);
+        const db_snake_plan_t plan = db_snake_plan_next_step(&request);
+        db_rect_snake_rect_t rect = {0};
+        float target_red = 0.0F;
+        float target_green = 0.0F;
+        float target_blue = 0.0F;
+        int full_fill_on_phase_completed = 0;
+        if (is_grid != 0) {
+            rect = (db_rect_snake_rect_t){
+                .x = 0U,
+                .y = 0U,
+                .width = db_grid_cols_effective(),
+                .height = db_grid_rows_effective(),
+                .color_r = 0.0F,
+                .color_g = 0.0F,
+                .color_b = 0.0F,
+            };
+            db_grid_target_color_rgb(plan.clearing_phase, &target_red,
+                                     &target_green, &target_blue);
+            full_fill_on_phase_completed = 1;
+            g_state.mode_phase_flag = plan.next_clearing_phase;
+        } else {
+            rect = db_rect_snake_rect_from_index(g_state.rect_seed,
+                                                 plan.active_rect_index);
+            target_red = rect.color_r;
+            target_green = rect.color_g;
+            target_blue = rect.color_b;
+            g_state.snake_rect_index = plan.next_rect_index;
+        }
+        db_render_snake_step(write_bo, read_bo, &plan, &rect, target_red,
+                             target_green, target_blue,
+                             full_fill_on_phase_completed);
         g_state.snake_cursor = plan.next_cursor;
         g_state.snake_prev_start = plan.next_prev_start;
         g_state.snake_prev_count = plan.next_prev_count;
-        g_state.snake_clearing_phase = plan.next_clearing_phase;
     } else if ((g_state.state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                (g_state.state.pattern == DB_PATTERN_GRADIENT_FILL)) {
         const int is_sweep =
             (g_state.state.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
-            g_state.gradient_head_row,
-            is_sweep ? g_state.gradient_direction_down : 1,
+            g_state.gradient_head_row, is_sweep ? g_state.mode_phase_flag : 1,
             g_state.gradient_cycle, is_sweep ? 0 : 1);
         db_render_gradient(write_bo, plan.render_head_row,
                            is_sweep ? plan.render_direction_down : 1,
                            plan.render_cycle_index);
         g_state.gradient_head_row = plan.next_head_row;
-        g_state.gradient_direction_down = plan.next_direction_down;
+        g_state.mode_phase_flag = plan.next_direction_down;
         g_state.gradient_cycle = plan.next_cycle_index;
-    } else if (g_state.state.pattern == DB_PATTERN_RECT_SNAKE) {
-        const db_rect_snake_plan_t plan = db_rect_snake_plan_next_step(
-            g_state.rect_seed, g_state.rect_snake_index,
-            g_state.rect_snake_cursor);
-        db_render_rect_snake(write_bo, read_bo, &plan, g_state.rect_seed);
-        g_state.rect_snake_index = plan.next_rect_index;
-        g_state.rect_snake_cursor = plan.next_cursor;
     }
 
     if (g_state.history_mode != 0) {

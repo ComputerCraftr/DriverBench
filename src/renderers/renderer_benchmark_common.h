@@ -61,30 +61,6 @@ typedef enum {
 } db_pattern_t;
 
 typedef struct {
-    uint32_t active_cursor;
-    uint32_t prev_start;
-    uint32_t prev_count;
-    uint32_t batch_size;
-    int clearing_phase;
-    int phase_completed;
-    uint32_t next_cursor;
-    uint32_t next_prev_start;
-    uint32_t next_prev_count;
-    int next_clearing_phase;
-} db_snake_damage_plan_t;
-
-typedef struct {
-    uint32_t render_head_row;
-    int render_direction_down;
-    uint32_t render_cycle_index;
-    uint32_t next_head_row;
-    int next_direction_down;
-    uint32_t next_cycle_index;
-    uint32_t dirty_row_start;
-    uint32_t dirty_row_count;
-} db_gradient_damage_plan_t;
-
-typedef struct {
     uint32_t x;
     uint32_t y;
     uint32_t width;
@@ -97,13 +73,58 @@ typedef struct {
 typedef struct {
     uint32_t active_rect_index;
     uint32_t active_cursor;
+    uint32_t prev_start;
+    uint32_t prev_count;
     uint32_t batch_size;
+    int clearing_phase;
+    int phase_completed;
+    uint32_t next_prev_start;
+    uint32_t next_prev_count;
+    int next_clearing_phase;
     uint32_t rect_tile_count;
     int rect_completed;
     uint32_t next_rect_index;
     uint32_t next_cursor;
     int wrapped;
-} db_rect_snake_plan_t;
+} db_snake_plan_t;
+
+typedef struct {
+    int full_grid_rect_mode;
+    uint32_t seed;
+    uint32_t rect_index;
+    uint32_t cursor;
+    uint32_t prev_start;
+    uint32_t prev_count;
+    int clearing_phase;
+} db_snake_plan_request_t;
+
+static inline db_snake_plan_request_t
+db_snake_plan_request_make(int full_grid_rect_mode, uint32_t seed,
+                           uint32_t rect_index, uint32_t cursor,
+                           uint32_t prev_start, uint32_t prev_count,
+                           int clearing_phase) {
+    const db_snake_plan_request_t request = {
+        .full_grid_rect_mode = full_grid_rect_mode,
+        .seed = seed,
+        .rect_index = rect_index,
+        .cursor = cursor,
+        .prev_start = prev_start,
+        .prev_count = prev_count,
+        .clearing_phase = clearing_phase,
+    };
+    return request;
+}
+
+typedef struct {
+    uint32_t render_head_row;
+    int render_direction_down;
+    uint32_t render_cycle_index;
+    uint32_t next_head_row;
+    int next_direction_down;
+    uint32_t next_cycle_index;
+    uint32_t dirty_row_start;
+    uint32_t dirty_row_count;
+} db_gradient_damage_plan_t;
 
 typedef struct {
     uint32_t row;
@@ -121,9 +142,8 @@ typedef struct {
     uint32_t snake_prev_count;
     uint32_t snake_batch_size;
     int snake_phase_completed;
-    int snake_clearing_phase;
+    int mode_phase_flag;
     uint32_t gradient_head_row;
-    int gradient_direction_down;
     uint32_t gradient_cycle;
     uint32_t random_seed;
     uint32_t pattern_seed;
@@ -451,17 +471,33 @@ static inline void db_snake_append_step_spans_for_rect(
     }
 }
 
-static inline db_rect_snake_plan_t
-db_rect_snake_plan_next_step(uint32_t seed, uint32_t rect_index,
-                             uint32_t rect_cursor) {
-    db_rect_snake_plan_t plan = {0};
-    plan.active_rect_index = rect_index;
-    plan.active_cursor = rect_cursor;
-    const db_rect_snake_rect_t rect =
-        db_rect_snake_rect_from_index(seed, plan.active_rect_index);
-    const uint32_t rect_tile_count = rect.width * rect.height;
+static inline db_snake_plan_t db_snake_plan_next_step_for_rect(
+    const db_rect_snake_rect_t *rect, uint32_t active_rect_index,
+    uint32_t active_cursor, uint32_t prev_start, uint32_t prev_count,
+    int clearing_phase, int toggle_clearing_on_complete,
+    int advance_rect_index_on_complete) {
+    db_snake_plan_t plan = {0};
+    plan.active_rect_index = active_rect_index;
+    plan.active_cursor = active_cursor;
+    plan.prev_start = prev_start;
+    plan.prev_count = prev_count;
+    plan.clearing_phase = clearing_phase;
+    if (rect == NULL) {
+        plan.next_cursor = active_cursor;
+        plan.next_prev_start = prev_start;
+        plan.next_prev_count = prev_count;
+        plan.next_clearing_phase = clearing_phase;
+        plan.next_rect_index = active_rect_index;
+        return plan;
+    }
+    const uint32_t rect_tile_count = rect->width * rect->height;
     plan.rect_tile_count = rect_tile_count;
     if (rect_tile_count == 0U) {
+        plan.next_cursor = active_cursor;
+        plan.next_prev_start = prev_start;
+        plan.next_prev_count = prev_count;
+        plan.next_clearing_phase = clearing_phase;
+        plan.next_rect_index = active_rect_index;
         return plan;
     }
 
@@ -469,13 +505,22 @@ db_rect_snake_plan_next_step(uint32_t seed, uint32_t rect_index,
         db_snake_grid_tiles_per_step(rect_tile_count);
     plan.batch_size = tiles_per_step;
     plan.rect_completed = (plan.active_cursor >= rect_tile_count) ? 1 : 0;
+    plan.phase_completed = plan.rect_completed;
     plan.next_rect_index = plan.active_rect_index;
     plan.wrapped = 0;
+    plan.next_prev_start = plan.active_cursor;
+    plan.next_prev_count = plan.phase_completed ? 0U : plan.batch_size;
+    plan.next_clearing_phase = clearing_phase;
     if (plan.rect_completed != 0) {
         plan.next_cursor = 0U;
-        plan.next_rect_index = plan.active_rect_index + 1U;
-        if (plan.next_rect_index < plan.active_rect_index) {
-            plan.wrapped = 1;
+        if (toggle_clearing_on_complete != 0) {
+            plan.next_clearing_phase = !clearing_phase;
+        }
+        if (advance_rect_index_on_complete != 0) {
+            plan.next_rect_index = plan.active_rect_index + 1U;
+            if (plan.next_rect_index < plan.active_rect_index) {
+                plan.wrapped = 1;
+            }
         }
     } else {
         plan.next_cursor = plan.active_cursor + 1U;
@@ -486,44 +531,32 @@ db_rect_snake_plan_next_step(uint32_t seed, uint32_t rect_index,
     return plan;
 }
 
-static inline uint32_t db_snake_grid_step_batch_size(uint32_t cursor,
-                                                     uint32_t work_unit_count,
-                                                     uint32_t tiles_per_step) {
-    if ((work_unit_count == 0U) || (cursor >= work_unit_count)) {
-        return 0U;
+static inline db_snake_plan_t
+db_snake_plan_next_step(const db_snake_plan_request_t *request) {
+    db_snake_plan_t plan = {0};
+    if (request == NULL) {
+        return plan;
     }
-    const uint32_t remaining = work_unit_count - cursor;
-    return db_u32_min(tiles_per_step, remaining);
-}
 
-static inline db_snake_damage_plan_t
-db_snake_grid_plan_next_step(uint32_t snake_cursor, uint32_t snake_prev_start,
-                             uint32_t snake_prev_count, int clearing_phase,
-                             uint32_t work_unit_count) {
-    db_snake_damage_plan_t plan = {0};
-    plan.active_cursor = snake_cursor;
-    plan.prev_start = snake_prev_start;
-    plan.prev_count = snake_prev_count;
-    plan.clearing_phase = clearing_phase;
-
-    const uint32_t tiles_per_step =
-        db_snake_grid_tiles_per_step(work_unit_count);
-    plan.batch_size = tiles_per_step;
-    plan.phase_completed = (snake_cursor >= work_unit_count) ? 1 : 0;
-
-    plan.next_prev_start = snake_cursor;
-    plan.next_prev_count = plan.phase_completed ? 0U : plan.batch_size;
-    plan.next_clearing_phase = clearing_phase;
-    if (plan.phase_completed != 0) {
-        plan.next_cursor = 0U;
-        plan.next_clearing_phase = !clearing_phase;
-    } else {
-        plan.next_cursor = snake_cursor + 1U;
-        if (plan.next_cursor > work_unit_count) {
-            plan.next_cursor = work_unit_count;
-        }
+    if (request->full_grid_rect_mode != 0) {
+        const db_rect_snake_rect_t grid_rect = {
+            .x = 0U,
+            .y = 0U,
+            .width = db_grid_cols_effective(),
+            .height = db_grid_rows_effective(),
+            .color_r = 0.0F,
+            .color_g = 0.0F,
+            .color_b = 0.0F,
+        };
+        return db_snake_plan_next_step_for_rect(
+            &grid_rect, 0U, request->cursor, request->prev_start,
+            request->prev_count, request->clearing_phase, 1, 0);
     }
-    return plan;
+
+    const db_rect_snake_rect_t rect =
+        db_rect_snake_rect_from_index(request->seed, request->rect_index);
+    return db_snake_plan_next_step_for_rect(&rect, request->rect_index,
+                                            request->cursor, 0U, 0U, 0, 0, 1);
 }
 
 static inline float db_window_blend_factor(uint32_t window_index,
@@ -567,33 +600,6 @@ static inline void db_blend_rgb(float prior_r, float prior_g, float prior_b,
     *out_r = prior_r + ((target_r - prior_r) * blend_factor);
     *out_g = prior_g + ((target_g - prior_g) * blend_factor);
     *out_b = prior_b + ((target_b - prior_b) * blend_factor);
-}
-
-static inline void db_snake_grid_target_color_rgb(int clearing_phase,
-                                                  float *out_r, float *out_g,
-                                                  float *out_b) {
-    db_grid_target_color_rgb(clearing_phase, out_r, out_g, out_b);
-}
-
-static inline void db_snake_grid_window_color_rgb(uint32_t window_index,
-                                                  uint32_t window_size,
-                                                  int clearing_phase,
-                                                  float *out_r, float *out_g,
-                                                  float *out_b) {
-    const float blend_factor =
-        db_window_blend_factor(window_index, window_size);
-    const float from_r =
-        clearing_phase ? BENCH_GRID_PHASE1_R : BENCH_GRID_PHASE0_R;
-    const float from_g =
-        clearing_phase ? BENCH_GRID_PHASE1_G : BENCH_GRID_PHASE0_G;
-    const float from_b =
-        clearing_phase ? BENCH_GRID_PHASE1_B : BENCH_GRID_PHASE0_B;
-    float to_r = 0.0F;
-    float to_g = 0.0F;
-    float to_b = 0.0F;
-    db_grid_target_color_rgb(clearing_phase, &to_r, &to_g, &to_b);
-    db_blend_rgb(from_r, from_g, from_b, to_r, to_g, to_b, blend_factor, out_r,
-                 out_g, out_b);
 }
 
 static inline uint32_t db_gradient_window_rows_effective(void) {
@@ -901,7 +907,8 @@ db_init_vertices_for_mode_common(const char *backend_name,
         out_state->gradient_cycle = db_benchmark_cycle_from_seed(
             out_state->random_seed, DB_PALETTE_SALT);
         out_state->gradient_head_row = 0U;
-        out_state->gradient_direction_down = 1;
+        out_state->mode_phase_flag =
+            (requested == DB_PATTERN_GRADIENT_SWEEP) ? 1 : 0;
         if (requested == DB_PATTERN_RECT_SNAKE) {
             db_infof(backend_name,
                      "benchmark mode: %s (seed=%u, deterministic PRNG random "

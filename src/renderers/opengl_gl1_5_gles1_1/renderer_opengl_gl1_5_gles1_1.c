@@ -41,13 +41,12 @@ typedef struct {
     uint32_t snake_cursor;
     uint32_t snake_prev_start;
     uint32_t snake_prev_count;
-    uint32_t rect_snake_rect_index;
+    uint32_t snake_rect_index;
     uint32_t pattern_seed;
-    int rect_snake_reset_pending;
-    int snake_clearing_phase;
+    int snake_reset_pending;
+    int mode_phase_flag;
     uint32_t gradient_head_row;
     uint32_t gradient_cycle;
-    int gradient_direction_down;
     db_pattern_t pattern;
     GLsizei draw_vertex_count;
     size_t vertex_stride;
@@ -79,9 +78,8 @@ static int db_init_vertices_for_mode(void) {
     g_state.snake_prev_start = init_state.snake_prev_start;
     g_state.snake_prev_count = init_state.snake_prev_count;
     g_state.pattern_seed = init_state.pattern_seed;
-    g_state.snake_clearing_phase = init_state.snake_clearing_phase;
+    g_state.mode_phase_flag = init_state.mode_phase_flag;
     g_state.gradient_head_row = init_state.gradient_head_row;
-    g_state.gradient_direction_down = init_state.gradient_direction_down;
     g_state.gradient_cycle = init_state.gradient_cycle;
     if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
         (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
@@ -96,38 +94,35 @@ static int db_init_vertices_for_mode(void) {
     return 1;
 }
 
-static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
-    if (plan == NULL) {
+static void db_render_snake_step(const db_snake_plan_t *plan,
+                                 const db_rect_snake_rect_t *rect,
+                                 float target_r, float target_g, float target_b,
+                                 int full_fill_on_phase_completed) {
+    if ((plan == NULL) || (rect == NULL)) {
         return;
     }
     if (plan->batch_size > BENCH_SNAKE_PHASE_WINDOW_TILES) {
         failf("snake batch size %u exceeds BENCH_SNAKE_PHASE_WINDOW_TILES=%u",
               plan->batch_size, BENCH_SNAKE_PHASE_WINDOW_TILES);
     }
-    float target_r = 0.0F;
-    float target_g = 0.0F;
-    float target_b = 0.0F;
-    db_snake_grid_target_color_rgb(plan->clearing_phase, &target_r, &target_g,
-                                   &target_b);
-    if (plan->phase_completed != 0) {
-        db_fill_grid_all_rgb(target_r, target_g, target_b,
-                             g_state.vertex_stride);
-        g_state.snake_prev_start = plan->next_prev_start;
-        g_state.snake_prev_count = plan->next_prev_count;
-        g_state.snake_cursor = plan->next_cursor;
-        g_state.snake_clearing_phase = plan->next_clearing_phase;
+    if ((rect->width == 0U) || (rect->height == 0U)) {
         return;
     }
-
+    if ((full_fill_on_phase_completed != 0) && (plan->phase_completed != 0)) {
+        db_fill_grid_all_rgb(target_r, target_g, target_b,
+                             g_state.vertex_stride);
+        return;
+    }
     float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
     for (uint32_t update_index = 0U; update_index < plan->batch_size;
          update_index++) {
         const size_t prior_base = (size_t)update_index * 3U;
-        const uint32_t tile_step = plan->active_cursor + update_index;
-        if (tile_step >= g_state.work_unit_count) {
+        const uint32_t step = plan->active_cursor + update_index;
+        if (step >= plan->rect_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(rect, step);
         const size_t tile_float_offset =
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
         float *unit = &g_state.vertices[tile_float_offset];
@@ -136,13 +131,14 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
         prior_rgb[prior_base + 2U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
     }
 
-    for (uint32_t update_index = 0; update_index < plan->prev_count;
+    for (uint32_t update_index = 0U; update_index < plan->prev_count;
          update_index++) {
-        const uint32_t tile_step = plan->prev_start + update_index;
-        if (tile_step >= g_state.work_unit_count) {
+        const uint32_t step = plan->prev_start + update_index;
+        if (step >= plan->rect_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(rect, step);
         const size_t tile_float_offset =
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
         float *unit = &g_state.vertices[tile_float_offset];
@@ -151,19 +147,14 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
                              target_b);
     }
 
-    for (uint32_t update_index = 0; update_index < plan->batch_size;
+    for (uint32_t update_index = 0U; update_index < plan->batch_size;
          update_index++) {
-        const uint32_t tile_step = plan->active_cursor + update_index;
-        if (tile_step >= g_state.work_unit_count) {
+        const uint32_t step = plan->active_cursor + update_index;
+        if (step >= plan->rect_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
-
-        float target_r = 0.0F;
-        float target_g = 0.0F;
-        float target_b = 0.0F;
-        db_snake_grid_target_color_rgb(plan->clearing_phase, &target_r,
-                                       &target_g, &target_b);
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(rect, step);
         const float blend_factor =
             db_window_blend_factor(update_index, plan->batch_size);
 
@@ -183,11 +174,6 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
                              DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
                              out_b);
     }
-
-    g_state.snake_prev_start = plan->next_prev_start;
-    g_state.snake_prev_count = plan->next_prev_count;
-    g_state.snake_cursor = plan->next_cursor;
-    g_state.snake_clearing_phase = plan->next_clearing_phase;
 }
 
 static void db_fill_grid_all_rgb(float color_r, float color_g, float color_b,
@@ -254,103 +240,6 @@ static void db_apply_gradient_dirty_rows(uint32_t row_start, uint32_t row_count,
                                   &row_r, &row_g, &row_b);
         db_blend_grid_row_to_color(row, row_r, row_g, row_b, 1.0F);
     }
-}
-
-static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
-    if (plan == NULL) {
-        return 0;
-    }
-    if (plan->batch_size > BENCH_SNAKE_PHASE_WINDOW_TILES) {
-        failf("rect snake batch size %u exceeds "
-              "BENCH_SNAKE_PHASE_WINDOW_TILES=%u",
-              plan->batch_size, BENCH_SNAKE_PHASE_WINDOW_TILES);
-    }
-
-    int full_repaint = 0;
-    if (g_state.rect_snake_reset_pending != 0) {
-        db_fill_grid_all_rgb(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
-                             BENCH_GRID_PHASE0_B, g_state.vertex_stride);
-        g_state.rect_snake_reset_pending = 0;
-        full_repaint = 1;
-    }
-
-    const db_rect_snake_rect_t rect = db_rect_snake_rect_from_index(
-        g_state.pattern_seed, plan->active_rect_index);
-    if ((rect.width == 0U) || (rect.height == 0U)) {
-        return full_repaint;
-    }
-
-    float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
-    for (uint32_t update_index = 0U; update_index < plan->batch_size;
-         update_index++) {
-        const size_t prior_base = (size_t)update_index * 3U;
-        const uint32_t step = plan->active_cursor + update_index;
-        if (step >= plan->rect_tile_count) {
-            break;
-        }
-        const uint32_t tile_index =
-            db_rect_snake_tile_index_from_step(&rect, step);
-        const size_t tile_float_offset =
-            (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
-        float *unit = &g_state.vertices[tile_float_offset];
-        prior_rgb[prior_base] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
-        prior_rgb[prior_base + 1U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
-        prior_rgb[prior_base + 2U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
-    }
-
-    for (uint32_t update_index = 0U; update_index < g_state.snake_prev_count;
-         update_index++) {
-        const uint32_t step = g_state.snake_prev_start + update_index;
-        if (step >= plan->rect_tile_count) {
-            break;
-        }
-        const uint32_t tile_index =
-            db_rect_snake_tile_index_from_step(&rect, step);
-        const size_t tile_float_offset =
-            (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
-        float *unit = &g_state.vertices[tile_float_offset];
-        db_set_rect_unit_rgb(unit, g_state.vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, rect.color_r,
-                             rect.color_g, rect.color_b);
-    }
-
-    for (uint32_t update_index = 0U; update_index < plan->batch_size;
-         update_index++) {
-        const uint32_t step = plan->active_cursor + update_index;
-        if (step >= plan->rect_tile_count) {
-            break;
-        }
-        const uint32_t tile_index =
-            db_rect_snake_tile_index_from_step(&rect, step);
-        const float blend_factor =
-            db_window_blend_factor(update_index, plan->batch_size);
-        const size_t tile_float_offset =
-            (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
-        float *unit = &g_state.vertices[tile_float_offset];
-        const size_t prior_base = (size_t)update_index * 3U;
-        const float prior_r = prior_rgb[prior_base];
-        const float prior_g = prior_rgb[prior_base + 1U];
-        const float prior_b = prior_rgb[prior_base + 2U];
-        float out_r = 0.0F;
-        float out_g = 0.0F;
-        float out_b = 0.0F;
-        db_blend_rgb(prior_r, prior_g, prior_b, rect.color_r, rect.color_g,
-                     rect.color_b, blend_factor, &out_r, &out_g, &out_b);
-        db_set_rect_unit_rgb(unit, g_state.vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
-                             out_b);
-    }
-
-    g_state.snake_prev_start = plan->active_cursor;
-    g_state.snake_prev_count =
-        (plan->rect_completed != 0) ? 0U : plan->batch_size;
-    g_state.snake_cursor = plan->next_cursor;
-    g_state.rect_snake_rect_index = plan->next_rect_index;
-    if (plan->wrapped != 0) {
-        g_state.rect_snake_reset_pending = 1;
-        g_state.snake_prev_count = 0U;
-    }
-    return full_repaint;
 }
 
 static size_t db_rect_tile_bytes(size_t floats_per_vertex) {
@@ -424,51 +313,46 @@ static void db_append_snake_step_ranges(
 
 static void
 db_upload_vbo_source(const float *source, size_t total_bytes, size_t tile_bytes,
-                     const db_snake_damage_plan_t *snake_plan,
-                     const db_rect_snake_plan_t *rect_plan,
-                     uint32_t rect_prev_start, uint32_t rect_prev_count,
-                     int rect_full_repaint, uint32_t gradient_row_start,
-                     uint32_t gradient_row_count) {
+                     const db_snake_plan_t *plan, uint32_t rect_prev_start,
+                     uint32_t rect_prev_count, int rect_full_repaint,
+                     uint32_t gradient_row_start, uint32_t gradient_row_count) {
     const uint32_t cols = db_grid_cols_effective();
     const uint32_t rows = db_grid_rows_effective();
-    if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
-        db_gl_upload_range_t ranges[DB_MAX_SNAKE_UPLOAD_RANGES];
-        size_t range_count = 0U;
-        db_append_snake_step_ranges(ranges, DB_MAX_SNAKE_UPLOAD_RANGES,
-                                    &range_count, snake_plan->prev_start,
-                                    snake_plan->prev_count, tile_bytes,
-                                    tile_bytes, 0U, 0U, cols, rows);
-        db_append_snake_step_ranges(ranges, DB_MAX_SNAKE_UPLOAD_RANGES,
-                                    &range_count, snake_plan->active_cursor,
-                                    snake_plan->batch_size, tile_bytes,
-                                    tile_bytes, 0U, 0U, cols, rows);
-        db_gl_upload_ranges(source, total_bytes, 0, NULL,
-                            g_state.use_map_range_upload,
-                            g_state.use_map_buffer_upload, ranges, range_count);
-    } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
-        if ((rect_full_repaint != 0) || (rect_plan == NULL)) {
+    if ((g_state.pattern == DB_PATTERN_SNAKE_GRID) ||
+        (g_state.pattern == DB_PATTERN_RECT_SNAKE)) {
+        const int is_grid = (g_state.pattern == DB_PATTERN_SNAKE_GRID);
+        if ((is_grid == 0) && ((rect_full_repaint != 0) || (plan == NULL))) {
             db_gl_upload_buffer(source, total_bytes, 0, NULL,
                                 g_state.use_map_range_upload,
                                 g_state.use_map_buffer_upload);
             return;
         }
-
-        const db_rect_snake_rect_t rect = db_rect_snake_rect_from_index(
-            g_state.pattern_seed, rect_plan->active_rect_index);
+        const db_rect_snake_rect_t rect =
+            (is_grid != 0) ? (db_rect_snake_rect_t){
+                                 .x = 0U,
+                                 .y = 0U,
+                                 .width = cols,
+                                 .height = rows,
+                                 .color_r = 0.0F,
+                                 .color_g = 0.0F,
+                                 .color_b = 0.0F,
+                             }
+                           : db_rect_snake_rect_from_index(
+                                 g_state.pattern_seed, plan->active_rect_index);
         if ((rect.width == 0U) || (rect.height == 0U)) {
             return;
         }
-
         db_gl_upload_range_t ranges[DB_MAX_SNAKE_UPLOAD_RANGES];
         size_t range_count = 0U;
-        db_append_snake_step_ranges(ranges, DB_MAX_SNAKE_UPLOAD_RANGES,
-                                    &range_count, rect_prev_start,
-                                    rect_prev_count, tile_bytes, tile_bytes,
-                                    rect.x, rect.y, rect.width, rect.height);
         db_append_snake_step_ranges(
             ranges, DB_MAX_SNAKE_UPLOAD_RANGES, &range_count,
-            rect_plan->active_cursor, rect_plan->batch_size, tile_bytes,
+            (is_grid != 0) ? plan->prev_start : rect_prev_start,
+            (is_grid != 0) ? plan->prev_count : rect_prev_count, tile_bytes,
             tile_bytes, rect.x, rect.y, rect.width, rect.height);
+        db_append_snake_step_ranges(ranges, DB_MAX_SNAKE_UPLOAD_RANGES,
+                                    &range_count, plan->active_cursor,
+                                    plan->batch_size, tile_bytes, tile_bytes,
+                                    rect.x, rect.y, rect.width, rect.height);
         if (range_count == 0U) {
             return;
         }
@@ -602,33 +486,73 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
-    db_snake_damage_plan_t snake_plan = {0};
-    db_rect_snake_plan_t rect_snake_plan = {0};
+    db_snake_plan_t plan = {0};
     uint32_t rect_prev_start = 0U;
     uint32_t rect_prev_count = 0U;
     int rect_full_repaint = 0;
     uint32_t gradient_row_start = 0U;
     uint32_t gradient_row_count = 0U;
 
-    if (g_state.pattern == DB_PATTERN_SNAKE_GRID) {
-        snake_plan = db_snake_grid_plan_next_step(
+    if ((g_state.pattern == DB_PATTERN_SNAKE_GRID) ||
+        (g_state.pattern == DB_PATTERN_RECT_SNAKE)) {
+        const int is_grid = (g_state.pattern == DB_PATTERN_SNAKE_GRID);
+        if (is_grid == 0) {
+            rect_prev_start = g_state.snake_prev_start;
+            rect_prev_count = g_state.snake_prev_count;
+        }
+        const db_snake_plan_request_t request = db_snake_plan_request_make(
+            is_grid, g_state.pattern_seed, g_state.snake_rect_index,
             g_state.snake_cursor, g_state.snake_prev_start,
-            g_state.snake_prev_count, g_state.snake_clearing_phase,
-            g_state.work_unit_count);
-        db_render_snake_grid_step(&snake_plan);
-    } else if (g_state.pattern == DB_PATTERN_RECT_SNAKE) {
-        rect_prev_start = g_state.snake_prev_start;
-        rect_prev_count = g_state.snake_prev_count;
-        rect_snake_plan = db_rect_snake_plan_next_step(
-            g_state.pattern_seed, g_state.rect_snake_rect_index,
-            g_state.snake_cursor);
-        rect_full_repaint = db_render_rect_snake_step(&rect_snake_plan);
+            g_state.snake_prev_count, g_state.mode_phase_flag);
+        plan = db_snake_plan_next_step(&request);
+        db_rect_snake_rect_t rect = {0};
+        float target_r = 0.0F;
+        float target_g = 0.0F;
+        float target_b = 0.0F;
+        int full_fill_on_phase_completed = 0;
+        if (is_grid != 0) {
+            rect = (db_rect_snake_rect_t){
+                .x = 0U,
+                .y = 0U,
+                .width = db_grid_cols_effective(),
+                .height = db_grid_rows_effective(),
+                .color_r = 0.0F,
+                .color_g = 0.0F,
+                .color_b = 0.0F,
+            };
+            db_grid_target_color_rgb(plan.clearing_phase, &target_r, &target_g,
+                                     &target_b);
+            full_fill_on_phase_completed = 1;
+            g_state.mode_phase_flag = plan.next_clearing_phase;
+        } else {
+            if (g_state.snake_reset_pending != 0) {
+                db_fill_grid_all_rgb(BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                                     BENCH_GRID_PHASE0_B,
+                                     g_state.vertex_stride);
+                g_state.snake_reset_pending = 0;
+                rect_full_repaint = 1;
+            }
+            rect = db_rect_snake_rect_from_index(g_state.pattern_seed,
+                                                 plan.active_rect_index);
+            target_r = rect.color_r;
+            target_g = rect.color_g;
+            target_b = rect.color_b;
+            g_state.snake_rect_index = plan.next_rect_index;
+            if (plan.wrapped != 0) {
+                g_state.snake_reset_pending = 1;
+                g_state.snake_prev_count = 0U;
+            }
+        }
+        db_render_snake_step(&plan, &rect, target_r, target_g, target_b,
+                             full_fill_on_phase_completed);
+        g_state.snake_prev_start = plan.next_prev_start;
+        g_state.snake_prev_count = plan.next_prev_count;
+        g_state.snake_cursor = plan.next_cursor;
     } else if ((g_state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                (g_state.pattern == DB_PATTERN_GRADIENT_FILL)) {
         const int is_sweep = (g_state.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
-            g_state.gradient_head_row,
-            is_sweep ? g_state.gradient_direction_down : 1,
+            g_state.gradient_head_row, is_sweep ? g_state.mode_phase_flag : 1,
             g_state.gradient_cycle, is_sweep ? 0 : 1);
         gradient_row_start = plan.dirty_row_start;
         gradient_row_count = plan.dirty_row_count;
@@ -636,7 +560,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
             gradient_row_start, gradient_row_count, plan.render_head_row,
             is_sweep ? plan.render_direction_down : 1, plan.render_cycle_index);
         g_state.gradient_head_row = plan.next_head_row;
-        g_state.gradient_direction_down = plan.next_direction_down;
+        g_state.mode_phase_flag = plan.next_direction_down;
         g_state.gradient_cycle = plan.next_cycle_index;
     } else {
         db_update_band_vertices_rgb_stride(
@@ -651,9 +575,9 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
             db_rect_tile_bytes(g_state.vertex_stride);
 
         db_upload_vbo_source(g_state.vertices, upload_bytes, upload_tile_bytes,
-                             &snake_plan, &rect_snake_plan, rect_prev_start,
-                             rect_prev_count, rect_full_repaint,
-                             gradient_row_start, gradient_row_count);
+                             &plan, rect_prev_start, rect_prev_count,
+                             rect_full_repaint, gradient_row_start,
+                             gradient_row_count);
     }
 
     glDrawArrays(GL_TRIANGLES, 0, g_state.draw_vertex_count);
