@@ -10,7 +10,11 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#ifdef DB_HAS_OPENGL_DESKTOP
 #include <GL/gl.h>
+#else
+#include <GLES/gl.h>
+#endif
 
 #include <errno.h>
 #include <fcntl.h>

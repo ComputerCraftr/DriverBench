@@ -29,6 +29,9 @@ set(DB_CORE_SOURCES
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
+option(DB_FORCE_GLES_ONLY
+  "Force OpenGL backend to compile in GLES-only mode (for build validation/testing)"
+  OFF)
 option(DB_BUILD_GLFW_WINDOW_DISPLAY "Build GLFW window display backend" ON)
 option(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY
   "Build Linux KMS atomic display backend" ON)
@@ -193,6 +196,18 @@ endif()
 if(DB_BUILD_OPENGL)
   find_package(OpenGL QUIET)
   set(DB_OPENGL_RUNTIME_ENABLED OFF)
+  set(DB_OPENGL_DESKTOP_AVAILABLE OFF)
+
+  if(NOT DB_FORCE_GLES_ONLY)
+    if(APPLE)
+      set(DB_OPENGL_DESKTOP_AVAILABLE ON)
+    elseif(TARGET OpenGL::OpenGL OR TARGET OpenGL::GL)
+      set(DB_OPENGL_DESKTOP_AVAILABLE ON)
+    endif()
+  else()
+    message(STATUS
+      "DB_FORCE_GLES_ONLY=ON: skipping desktop OpenGL sources/libraries for OpenGL backend")
+  endif()
 
   if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET)
     set(DB_OPENGL_RUNTIME_ENABLED ON)
@@ -225,24 +240,30 @@ if(DB_BUILD_OPENGL)
   if(DB_OPENGL_RUNTIME_ENABLED)
     list(APPEND DB_DRIVERBENCH_SOURCES
       src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
-      src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c
-      src/renderers/renderer_opengl_common.c
+      src/renderers/renderer_gl_common.c
     )
-    list(APPEND DB_DRIVERBENCH_DEFS
-      DB_HAS_OPENGL_API=1
-      OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
-      OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
-    )
-    if(APPLE)
-      list(APPEND DB_DRIVERBENCH_LIBS "-framework OpenGL")
-      list(APPEND DB_DRIVERBENCH_DEFS GL_SILENCE_DEPRECATION=1)
-    else()
-      if(TARGET OpenGL::OpenGL)
-        list(APPEND DB_DRIVERBENCH_LIBS OpenGL::OpenGL)
-      elseif(TARGET OpenGL::GL)
-        list(APPEND DB_DRIVERBENCH_LIBS OpenGL::GL)
+    list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_OPENGL_API=1)
+
+    if(DB_OPENGL_DESKTOP_AVAILABLE)
+      list(APPEND DB_DRIVERBENCH_SOURCES
+        src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c
+      )
+      list(APPEND DB_DRIVERBENCH_DEFS
+        DB_HAS_OPENGL_DESKTOP=1
+        OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
+        OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+      )
+      if(APPLE)
+        list(APPEND DB_DRIVERBENCH_LIBS "-framework OpenGL")
+        list(APPEND DB_DRIVERBENCH_DEFS GL_SILENCE_DEPRECATION=1)
       else()
-        list(APPEND DB_DRIVERBENCH_LIBS GL)
+        if(TARGET OpenGL::OpenGL)
+          list(APPEND DB_DRIVERBENCH_LIBS OpenGL::OpenGL)
+        elseif(TARGET OpenGL::GL)
+          list(APPEND DB_DRIVERBENCH_LIBS OpenGL::GL)
+        else()
+          list(APPEND DB_DRIVERBENCH_LIBS GL)
+        endif()
       endif()
     endif()
   endif()

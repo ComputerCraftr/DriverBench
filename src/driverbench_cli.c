@@ -15,10 +15,18 @@ static int db_string_is(const char *value, const char *expected) {
 }
 
 static void db_usage(void) {
+#ifdef DB_HAS_OPENGL_DESKTOP
+    const char *renderer_usage = "auto|gl1_5_gles1_1|gl3_3";
+#else
+    const char *renderer_usage = "auto|gl1_5_gles1_1";
+#endif
     fputs("Usage: driverbench [dispatch options] [runtime options]\n"
           "\nDispatch options:\n"
           "  --api <auto|cpu|opengl|vulkan>\n"
-          "  --renderer <auto|gl1_5_gles1_1|gl3_3>\n"
+          "  --renderer <",
+          stderr);
+    fputs(renderer_usage, stderr);
+    fputs(">\n"
           "  --display <offscreen|glfw_window|linux_kms_atomic>  (required)\n"
           "  --kms-card <path>\n"
           "\nRuntime options:\n"
@@ -226,6 +234,10 @@ static void db_parse_renderer_or_exit(const char *value, db_cli_config_t *cfg) {
         return;
     }
     if (db_string_is(value, "gl3_3")) {
+#ifndef DB_HAS_OPENGL_DESKTOP
+        db_failf("driverbench_cli",
+                 "renderer gl3_3 is not compiled in this build");
+#endif
         cfg->renderer = DB_GL_RENDERER_GL3_3;
         return;
     }
@@ -308,6 +320,11 @@ db_cli_validate_compiled_support_or_exit(const db_cli_config_t *cfg) {
                  "requested display/API combination is unavailable in this "
                  "build");
     }
+    if ((cfg->api == DB_API_OPENGL) && (cfg->renderer_is_auto == 0) &&
+        (db_dispatch_renderer_is_compiled(cfg->renderer) == 0)) {
+        db_failf("driverbench_cli",
+                 "requested OpenGL renderer is not compiled in this build");
+    }
 }
 
 void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
@@ -318,7 +335,11 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
     *out_cfg = (db_cli_config_t){
         .api = DB_API_OPENGL,
         .display = DB_DISPLAY_OFFSCREEN,
+#ifdef DB_HAS_OPENGL_DESKTOP
         .renderer = DB_GL_RENDERER_GL3_3,
+#else
+        .renderer = DB_GL_RENDERER_GL1_5_GLES1_1,
+#endif
         .kms_card = "/dev/dri/card0",
         .api_is_auto = 1,
         .display_is_set = 0,

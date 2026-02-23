@@ -12,14 +12,17 @@
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
 #include <OpenGL/gltypes.h>
-#else
+#elifdef DB_HAS_OPENGL_DESKTOP
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
 #include <GL/glext.h>
+#else
+#include <GLES/gl.h>
 #endif
 
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
 #define DB_CAP_MODE_OPENGL_CLIENT_ARRAY "opengl_client_array"
+#define DB_CAP_MODE_OPENGL_VBO_PERSISTENT "opengl_vbo_persistent"
 #define DB_CAP_MODE_OPENGL_VBO "opengl_vbo"
 #define DB_CAP_MODE_OPENGL_VBO_MAP_BUFFER "opengl_vbo_map_buffer"
 #define DB_CAP_MODE_OPENGL_VBO_MAP_RANGE "opengl_vbo_map_range"
@@ -289,7 +292,9 @@ db_upload_vbo_source(const float *source, size_t total_bytes, size_t tile_bytes,
         (g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE)) {
         const int is_grid = (g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID);
         if ((is_grid == 0) && ((rect_full_repaint != 0) || (plan == NULL))) {
-            db_gl_upload_buffer(source, total_bytes, 0, NULL,
+            db_gl_upload_buffer(source, total_bytes,
+                                g_state.vertex.upload.use_persistent_upload,
+                                g_state.vertex.upload.persistent_mapped_ptr,
                                 g_state.vertex.upload.use_map_range_upload,
                                 g_state.vertex.upload.use_map_buffer_upload);
             return;
@@ -323,14 +328,17 @@ db_upload_vbo_source(const float *source, size_t total_bytes, size_t tile_bytes,
         if (range_count == 0U) {
             return;
         }
-        db_gl_upload_ranges(source, total_bytes, 0, NULL,
-                            g_state.vertex.upload.use_map_range_upload,
-                            g_state.vertex.upload.use_map_buffer_upload, ranges,
-                            range_count);
+        db_gl_upload_ranges(
+            source, total_bytes, g_state.vertex.upload.use_persistent_upload,
+            g_state.vertex.upload.persistent_mapped_ptr,
+            g_state.vertex.upload.use_map_range_upload,
+            g_state.vertex.upload.use_map_buffer_upload, ranges, range_count);
     } else if ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                (g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL)) {
         if (gradient_row_count > DB_MAX_GRADIENT_UPLOAD_RANGES) {
-            db_gl_upload_buffer(source, total_bytes, 0, NULL,
+            db_gl_upload_buffer(source, total_bytes,
+                                g_state.vertex.upload.use_persistent_upload,
+                                g_state.vertex.upload.persistent_mapped_ptr,
                                 g_state.vertex.upload.use_map_range_upload,
                                 g_state.vertex.upload.use_map_buffer_upload);
             return;
@@ -341,12 +349,15 @@ db_upload_vbo_source(const float *source, size_t total_bytes, size_t tile_bytes,
         db_append_gradient_row_ranges(ranges, DB_MAX_GRADIENT_UPLOAD_RANGES,
                                       &range_count, gradient_row_start,
                                       gradient_row_count, row_bytes);
-        db_gl_upload_ranges(source, total_bytes, 0, NULL,
-                            g_state.vertex.upload.use_map_range_upload,
-                            g_state.vertex.upload.use_map_buffer_upload, ranges,
-                            range_count);
+        db_gl_upload_ranges(
+            source, total_bytes, g_state.vertex.upload.use_persistent_upload,
+            g_state.vertex.upload.persistent_mapped_ptr,
+            g_state.vertex.upload.use_map_range_upload,
+            g_state.vertex.upload.use_map_buffer_upload, ranges, range_count);
     } else {
-        db_gl_upload_buffer(source, total_bytes, 0, NULL,
+        db_gl_upload_buffer(source, total_bytes,
+                            g_state.vertex.upload.use_persistent_upload,
+                            g_state.vertex.upload.persistent_mapped_ptr,
                             g_state.vertex.upload.use_map_range_upload,
                             g_state.vertex.upload.use_map_buffer_upload);
     }
@@ -401,7 +412,7 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         if (g_state.vbo != 0U) {
             glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
             db_gl_probe_upload_capabilities(
-                probe_bytes, g_state.vertex.vertices, 0, &probe_result);
+                probe_bytes, g_state.vertex.vertices, &probe_result);
             g_state.vertex.upload = probe_result;
             if (g_state.is_es_context == 0) {
                 glVertexPointer(DB_VERTEX_POSITION_FLOAT_COUNT, GL_FLOAT,
@@ -533,6 +544,10 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
+    if (g_state.vertex.upload.persistent_mapped_ptr != NULL) {
+        glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
+        db_gl_unmap_current_array_buffer();
+    }
     if (g_state.vbo != 0U) {
         glDeleteBuffers(1, &g_state.vbo);
         g_state.vbo = 0U;
@@ -546,6 +561,9 @@ void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
 const char *db_renderer_opengl_gl1_5_gles1_1_capability_mode(void) {
     if (g_state.vbo == 0U) {
         return DB_CAP_MODE_OPENGL_CLIENT_ARRAY;
+    }
+    if (g_state.vertex.upload.use_persistent_upload != 0) {
+        return DB_CAP_MODE_OPENGL_VBO_PERSISTENT;
     }
     if (g_state.vertex.upload.use_map_range_upload != 0) {
         return DB_CAP_MODE_OPENGL_VBO_MAP_RANGE;

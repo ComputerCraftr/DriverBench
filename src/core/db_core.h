@@ -194,6 +194,19 @@ static inline uint32_t db_u32_max(uint32_t lhs, uint32_t rhs) {
     return (lhs > rhs) ? lhs : rhs;
 }
 
+static inline uint32_t db_u32_next_pow2(uint32_t value) {
+    if (value <= 1U) {
+        return 1U;
+    }
+    value--;
+    value |= value >> 1U;
+    value |= value >> 2U;
+    value |= value >> 4U;
+    value |= value >> 8U;
+    value |= value >> 16U;
+    return value + 1U;
+}
+
 static inline uint32_t db_u32_saturating_sub(uint32_t lhs, uint32_t rhs) {
     return (lhs > rhs) ? (lhs - rhs) : 0U;
 }

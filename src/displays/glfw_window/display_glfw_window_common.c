@@ -15,43 +15,47 @@
 
 #define MAX_SLEEP_NS_D 100000000.0
 
-int db_glfw_offscreen_enabled(void) {
-    return db_value_is_truthy(db_runtime_option_get(DB_RUNTIME_OPT_OFFSCREEN));
-}
-
-GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
-                                         int width_px, int height_px) {
+static void db_glfw_init_or_fail(const char *backend) {
     if (!glfwInit()) {
         db_failf(backend, "glfwInit failed");
     }
-    if (db_glfw_offscreen_enabled() != 0) {
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    GLFWwindow *window =
-        glfwCreateWindow(width_px, height_px, title, NULL, NULL);
-    if (window == NULL) {
-        glfwTerminate();
-        db_failf(backend, "glfwCreateWindow failed");
-    }
-    return window;
 }
 
-GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
-                                         int width_px, int height_px,
-                                         int context_major, int context_minor,
-                                         int core_profile, int swap_interval) {
-    if (!glfwInit()) {
-        db_failf(backend, "glfwInit failed");
-    }
+static void db_glfw_apply_default_hints(void) {
     glfwDefaultWindowHints();
     if (db_glfw_offscreen_enabled() != 0) {
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+}
+
+static GLFWwindow *db_glfw_create_window_or_fail(const char *backend,
+                                                 const char *title,
+                                                 int width_px, int height_px,
+                                                 const char *error_message) {
+    GLFWwindow *window =
+        glfwCreateWindow(width_px, height_px, title, NULL, NULL);
+    if (window == NULL) {
+        glfwTerminate();
+        db_failf(backend, "%s", error_message);
+    }
+    return window;
+}
+
+static void db_glfw_make_current_and_set_swap(GLFWwindow *window,
+                                              int swap_interval) {
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(swap_interval);
+}
+
+static GLFWwindow *
+db_glfw_try_context_window(const char *title, int width_px, int height_px,
+                           int client_api, int context_major, int context_minor,
+                           int core_profile, int swap_interval) {
+    db_glfw_apply_default_hints();
+    glfwWindowHint(GLFW_CLIENT_API, client_api);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, context_major);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, context_minor);
-    if (core_profile) {
+    if ((client_api == GLFW_OPENGL_API) && (core_profile != 0)) {
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 #ifdef __APPLE__
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -60,13 +64,37 @@ GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
 
     GLFWwindow *window =
         glfwCreateWindow(width_px, height_px, title, NULL, NULL);
+    if (window != NULL) {
+        db_glfw_make_current_and_set_swap(window, swap_interval);
+    }
+    return window;
+}
+
+int db_glfw_offscreen_enabled(void) {
+    return db_value_is_truthy(db_runtime_option_get(DB_RUNTIME_OPT_OFFSCREEN));
+}
+
+GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
+                                         int width_px, int height_px) {
+    db_glfw_init_or_fail(backend);
+    db_glfw_apply_default_hints();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    return db_glfw_create_window_or_fail(backend, title, width_px, height_px,
+                                         "glfwCreateWindow failed");
+}
+
+GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
+                                         int width_px, int height_px,
+                                         int context_major, int context_minor,
+                                         int core_profile, int swap_interval) {
+    db_glfw_init_or_fail(backend);
+    GLFWwindow *window = db_glfw_try_context_window(
+        title, width_px, height_px, GLFW_OPENGL_API, context_major,
+        context_minor, core_profile, swap_interval);
     if (window == NULL) {
         glfwTerminate();
         db_failf(backend, "glfwCreateWindow failed");
     }
-
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(swap_interval);
     return window;
 }
 
@@ -77,46 +105,42 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     if (out_is_gles != NULL) {
         *out_is_gles = 0;
     }
-    if (!glfwInit()) {
-        db_failf(backend, "glfwInit failed");
-    }
+    db_glfw_init_or_fail(backend);
 
-    glfwDefaultWindowHints();
-    if (db_glfw_offscreen_enabled() != 0) {
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, gl_context_major);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, gl_context_minor);
-    GLFWwindow *window =
-        glfwCreateWindow(width_px, height_px, title, NULL, NULL);
+#ifdef DB_HAS_OPENGL_DESKTOP
+    GLFWwindow *window = db_glfw_try_context_window(
+        title, width_px, height_px, GLFW_OPENGL_API, gl_context_major,
+        gl_context_minor, 0, swap_interval);
     if (window != NULL) {
-        glfwMakeContextCurrent(window);
-        glfwSwapInterval(swap_interval);
         return window;
     }
 
-    glfwDefaultWindowHints();
-    if (db_glfw_offscreen_enabled() != 0) {
-        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 1);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-    window = glfwCreateWindow(width_px, height_px, title, NULL, NULL);
+    window = db_glfw_try_context_window(
+        title, width_px, height_px, GLFW_OPENGL_ES_API, 1, 1, 0, swap_interval);
     if (window == NULL) {
         glfwTerminate();
         db_failf(backend,
                  "glfwCreateWindow failed for both OpenGL and OpenGL ES");
     }
-
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(swap_interval);
     if (out_is_gles != NULL) {
         *out_is_gles = 1;
     }
     db_infof(backend, "OpenGL context creation failed; fell back to GLES 1.1");
     return window;
+#else
+    (void)gl_context_major;
+    (void)gl_context_minor;
+    GLFWwindow *window = db_glfw_try_context_window(
+        title, width_px, height_px, GLFW_OPENGL_ES_API, 1, 1, 0, swap_interval);
+    if (window == NULL) {
+        glfwTerminate();
+        db_failf(backend, "glfwCreateWindow failed for OpenGL ES 1.1");
+    }
+    if (out_is_gles != NULL) {
+        *out_is_gles = 1;
+    }
+    return window;
+#endif
 }
 
 void db_glfw_destroy_window(GLFWwindow *window) {

@@ -9,6 +9,10 @@
 #include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
 
+#ifndef DB_HAS_OPENGL_DESKTOP
+#error "renderer_opengl_gl3_3 requires desktop OpenGL support"
+#endif
+
 #ifdef __APPLE__
 #include <OpenGL/gl3.h>
 #include <OpenGL/gltypes.h>
@@ -366,7 +370,7 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.vertex.upload = (db_gl_upload_probe_result_t){0};
     db_gl_upload_probe_result_t probe_result = {0};
     db_gl_probe_upload_capabilities(g_state.vbo_bytes, g_state.vertex.vertices,
-                                    1, &probe_result);
+                                    &probe_result);
     g_state.vertex.upload = probe_result;
     infof("using capability mode: %s",
           db_renderer_opengl_gl3_3_capability_mode());
@@ -572,7 +576,7 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
 void db_renderer_opengl_gl3_3_shutdown(void) {
     if (g_state.vertex.upload.persistent_mapped_ptr != NULL) {
         glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
-        glUnmapBuffer(GL_ARRAY_BUFFER);
+        db_gl_unmap_current_array_buffer();
     }
     db_gl3_destroy_history_targets();
     if (g_state.fallback_tex != 0U) {
