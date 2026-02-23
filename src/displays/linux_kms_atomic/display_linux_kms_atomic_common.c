@@ -24,15 +24,19 @@
 #include <sys/select.h>
 #include <unistd.h>
 
+#include "../../config/benchmark_config.h"
+#include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
+#include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/renderer_gl_common.h"
-#include "../bench_config.h"
+#include "../display_dispatch.h"
 #include "../display_gl_runtime_common.h"
 
 #define DRM_SRC_FP_SHIFT 16U
 #define LOG_MSG_CAPACITY 2048U
+#define BACKEND_NAME "display_linux_kms_atomic_common"
 
-static const char *g_backend_name = "display_linux_kms_atomic";
+static const char *g_active_backend = BACKEND_NAME;
 
 static __attribute__((noreturn)) void failf(const char *fmt, ...) {
     char message[LOG_MSG_CAPACITY];
@@ -40,7 +44,7 @@ static __attribute__((noreturn)) void failf(const char *fmt, ...) {
     va_start(ap, fmt);
     (void)db_vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
-    db_failf(g_backend_name, "%s", message);
+    db_failf(g_active_backend, "%s", message);
 }
 
 static void die(const char *msg) { failf("%s: %s", msg, strerror(errno)); }
@@ -80,6 +84,7 @@ struct kms_atomic {
 struct fb {
     struct gbm_bo *bo;
     uint32_t fb_id;
+    int is_surface_buffer;
 };
 
 static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
@@ -288,12 +293,13 @@ static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
         get_prop_id(kms->fd, kms->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
 }
 
-static struct fb *fb_from_bo(int fd, struct gbm_bo *bo) {
+static struct fb *fb_from_bo(int fd, struct gbm_bo *bo, int is_surface_buffer) {
     struct fb *fb = (struct fb *)calloc(1, sizeof(*fb));
     if (fb == NULL) {
         diex("calloc fb");
     }
     fb->bo = bo;
+    fb->is_surface_buffer = is_surface_buffer;
 
     const uint32_t width_px = gbm_bo_get_width(bo);
     const uint32_t height_px = gbm_bo_get_height(bo);
@@ -313,6 +319,25 @@ static struct fb *fb_from_bo(int fd, struct gbm_bo *bo) {
     return fb;
 }
 
+static void fb_release(int fd, struct gbm_surface *gbm_surf, struct fb *fb) {
+    if (fb == NULL) {
+        return;
+    }
+    if (fb->fb_id != 0U) {
+        drmModeRmFB(fd, fb->fb_id);
+    }
+    if (fb->bo != NULL) {
+        if (fb->is_surface_buffer != 0) {
+            if (gbm_surf != NULL) {
+                gbm_surface_release_buffer(gbm_surf, fb->bo);
+            }
+        } else {
+            gbm_bo_destroy(fb->bo);
+        }
+    }
+    free(fb);
+}
+
 static void page_flip_handler(int fd, unsigned frame, unsigned sec,
                               unsigned usec, void *data) {
     (void)fd;
@@ -321,6 +346,159 @@ static void page_flip_handler(int fd, unsigned frame, unsigned sec,
     (void)usec;
     int *waiting = (int *)data;
     *waiting = 0;
+}
+
+static void db_kms_atomic_add_modeset_props(drmModeAtomicReq *req,
+                                            const struct kms_atomic *kms,
+                                            uint32_t width, uint32_t height,
+                                            uint32_t fb_id) {
+    drmModeAtomicAddProperty(req, kms->conn_id, kms->conn_prop_crtc_id,
+                             kms->crtc_id);
+    drmModeAtomicAddProperty(req, kms->crtc_id, kms->crtc_prop_mode_id,
+                             kms->mode_blob_id);
+    drmModeAtomicAddProperty(req, kms->crtc_id, kms->crtc_prop_active, 1);
+
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_fb_id, fb_id);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_crtc_id,
+                             kms->crtc_id);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_src_x, 0);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_src_y, 0);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_src_w,
+                             ((uint64_t)width) << DRM_SRC_FP_SHIFT);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_src_h,
+                             ((uint64_t)height) << DRM_SRC_FP_SHIFT);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_crtc_x, 0);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_crtc_y, 0);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_crtc_w, width);
+    drmModeAtomicAddProperty(req, kms->plane_id, kms->plane_prop_crtc_h,
+                             height);
+}
+
+static void db_kms_atomic_commit_modeset(const struct kms_atomic *kms,
+                                         uint32_t width, uint32_t height,
+                                         uint32_t fb_id) {
+    drmModeAtomicReq *req = drmModeAtomicAlloc();
+    if (req == NULL) {
+        diex("drmModeAtomicAlloc");
+    }
+    db_kms_atomic_add_modeset_props(req, kms, width, height, fb_id);
+    if (drmModeAtomicCommit(kms->fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET,
+                            NULL) != 0) {
+        die("drmModeAtomicCommit modeset");
+    }
+    drmModeAtomicFree(req);
+}
+
+static void db_kms_atomic_flip_to_fb(const struct kms_atomic *kms,
+                                     uint32_t fb_id, drmEventContext *ev) {
+    drmModeAtomicReq *commit_req = drmModeAtomicAlloc();
+    if (commit_req == NULL) {
+        diex("drmModeAtomicAlloc");
+    }
+    drmModeAtomicAddProperty(commit_req, kms->plane_id, kms->plane_prop_fb_id,
+                             fb_id);
+
+    int waiting = 1;
+    const uint32_t flip_flags =
+        DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT;
+    if (drmModeAtomicCommit(kms->fd, commit_req, flip_flags, &waiting) != 0) {
+        die("drmModeAtomicCommit flip");
+    }
+    drmModeAtomicFree(commit_req);
+    while (waiting != 0) {
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(kms->fd, &fds);
+        if (select(kms->fd + 1, &fds, NULL, NULL, NULL) < 0) {
+            // NOLINTNEXTLINE(misc-include-cleaner)
+            if (errno == EINTR) {
+                continue;
+            }
+            die("select");
+        }
+        drmHandleEvent(kms->fd, ev);
+    }
+}
+
+typedef struct fb *(*db_kms_atomic_next_fb_fn_t)(void *user_ctx,
+                                                 uint64_t frame_index);
+
+typedef struct {
+    db_api_t api;
+    const char *backend;
+    const char *renderer_name;
+    const char *capability_mode;
+    double fps_cap;
+    uint32_t frame_limit;
+    uint32_t work_unit_count;
+    struct kms_atomic *kms;
+    struct gbm_surface *release_surface;
+    drmEventContext *event_context;
+    struct fb **cur_fb;
+} db_kms_atomic_frame_loop_t;
+
+static uint64_t
+db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
+                             void *producer_ctx,
+                             db_kms_atomic_next_fb_fn_t next_fb_fn) {
+    const uint64_t bench_start = db_now_ns_monotonic();
+    uint64_t bench_frames = 0U;
+    double next_progress_log_due_ms = 0.0;
+    while (!db_should_stop()) {
+        if ((loop->frame_limit > 0U) && (bench_frames >= loop->frame_limit)) {
+            break;
+        }
+        const uint64_t frame_start_ns = db_now_ns_monotonic();
+        struct fb *next = next_fb_fn(producer_ctx, bench_frames);
+        db_kms_atomic_flip_to_fb(loop->kms, next->fb_id, loop->event_context);
+        fb_release(loop->kms->fd, loop->release_surface, *loop->cur_fb);
+        *loop->cur_fb = next;
+        bench_frames++;
+
+        const double bench_ms =
+            (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
+        db_benchmark_log_periodic(
+            db_dispatch_api_name(loop->api), loop->renderer_name, loop->backend,
+            bench_frames, loop->work_unit_count, bench_ms,
+            loop->capability_mode, &next_progress_log_due_ms,
+            BENCH_LOG_INTERVAL_MS_D);
+        db_sleep_to_fps_cap(loop->backend, frame_start_ns, loop->fps_cap);
+    }
+    return bench_frames;
+}
+
+static uint32_t db_kms_frame_limit_from_runtime(const char *backend) {
+    uint32_t frame_limit = 0U;
+    (void)db_parse_u32_nonnegative_value(
+        backend, DB_RUNTIME_OPT_FRAME_LIMIT,
+        db_runtime_option_get(DB_RUNTIME_OPT_FRAME_LIMIT), &frame_limit);
+    return frame_limit;
+}
+
+typedef struct {
+    int kms_fd;
+    EGLDisplay dpy;
+    EGLSurface surf;
+    struct gbm_surface *gbm_surf;
+    const db_kms_atomic_renderer_vtable_t *renderer;
+} db_kms_atomic_gl_frame_producer_t;
+
+static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
+                                           uint64_t frame_index) {
+    db_kms_atomic_gl_frame_producer_t *producer =
+        (db_kms_atomic_gl_frame_producer_t *)user_ctx;
+    const double time_s = (double)frame_index / BENCH_TARGET_FPS_D;
+    glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                 BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+    glClear(GL_COLOR_BUFFER_BIT);
+    producer->renderer->render_frame(time_s);
+    eglSwapBuffers(producer->dpy, producer->surf);
+
+    struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(producer->gbm_surf);
+    if (next_bo == NULL) {
+        diex("lock_front_buffer failed");
+    }
+    return fb_from_bo(producer->kms_fd, next_bo, 1);
 }
 
 static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
@@ -440,10 +618,11 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         (renderer->render_frame == NULL) || (renderer->shutdown == NULL) ||
         (renderer->capability_mode == NULL) ||
         (renderer->work_unit_count == NULL)) {
-        db_failf("display_linux_kms_atomic", "Invalid KMS atomic run config");
+        db_failf((backend != NULL) ? backend : BACKEND_NAME,
+                 "Invalid KMS atomic run config");
     }
 
-    g_backend_name = backend;
+    g_active_backend = backend;
     db_install_signal_handlers();
 
     struct kms_atomic kms;
@@ -495,6 +674,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
     renderer->init();
     const char *capability_mode = renderer->capability_mode();
+    const double fps_cap = db_runtime_resolve_fps_cap(backend, BENCH_FPS_CAP_D);
+    const uint32_t frame_limit = db_kms_frame_limit_from_runtime(backend);
     const uint32_t work_unit_count = renderer->work_unit_count();
 
     drmEventContext ev = {0};
@@ -513,117 +694,42 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     if (bo == NULL) {
         diex("gbm_surface_lock_front_buffer failed");
     }
-    cur = fb_from_bo(kms.fd, bo);
+    cur = fb_from_bo(kms.fd, bo, 1);
 
-    drmModeAtomicReq *req = drmModeAtomicAlloc();
-    if (req == NULL) {
-        diex("drmModeAtomicAlloc");
-    }
+    db_kms_atomic_commit_modeset(&kms, width, height, cur->fb_id);
 
-    drmModeAtomicAddProperty(req, kms.conn_id, kms.conn_prop_crtc_id,
-                             kms.crtc_id);
-    drmModeAtomicAddProperty(req, kms.crtc_id, kms.crtc_prop_mode_id,
-                             kms.mode_blob_id);
-    drmModeAtomicAddProperty(req, kms.crtc_id, kms.crtc_prop_active, 1);
-
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_fb_id,
-                             cur->fb_id);
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_crtc_id,
-                             kms.crtc_id);
-
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_src_x, 0);
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_src_y, 0);
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_src_w,
-                             ((uint64_t)width) << DRM_SRC_FP_SHIFT);
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_src_h,
-                             ((uint64_t)height) << DRM_SRC_FP_SHIFT);
-
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_crtc_x, 0);
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_crtc_y, 0);
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_crtc_w, width);
-    drmModeAtomicAddProperty(req, kms.plane_id, kms.plane_prop_crtc_h, height);
-
-    if (drmModeAtomicCommit(kms.fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL) !=
-        0) {
-        die("drmModeAtomicCommit modeset");
-    }
-    drmModeAtomicFree(req);
-
+    const db_kms_atomic_frame_loop_t loop = {
+        .api = DB_API_OPENGL,
+        .backend = backend,
+        .renderer_name = renderer_name,
+        .capability_mode = capability_mode,
+        .fps_cap = fps_cap,
+        .frame_limit = frame_limit,
+        .work_unit_count = work_unit_count,
+        .kms = &kms,
+        .release_surface = gbm_surf,
+        .event_context = &ev,
+        .cur_fb = &cur,
+    };
+    db_kms_atomic_gl_frame_producer_t producer = {
+        .kms_fd = kms.fd,
+        .dpy = dpy,
+        .surf = surf,
+        .gbm_surf = gbm_surf,
+        .renderer = renderer,
+    };
     const uint64_t bench_start = db_now_ns_monotonic();
-    uint64_t bench_frames = 0;
-    double next_progress_log_due_ms = 0.0;
-
-    while (!db_should_stop()) {
-        const double time_s = (double)bench_frames / BENCH_TARGET_FPS_D;
-
-        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-        glClear(GL_COLOR_BUFFER_BIT);
-        renderer->render_frame(time_s);
-        eglSwapBuffers(dpy, surf);
-
-        struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(gbm_surf);
-        if (next_bo == NULL) {
-            diex("lock_front_buffer failed");
-        }
-        struct fb *next = fb_from_bo(kms.fd, next_bo);
-
-        drmModeAtomicReq *commit_req = drmModeAtomicAlloc();
-        if (commit_req == NULL) {
-            diex("drmModeAtomicAlloc");
-        }
-        drmModeAtomicAddProperty(commit_req, kms.plane_id, kms.plane_prop_fb_id,
-                                 next->fb_id);
-
-        int waiting = 1;
-        const uint32_t flip_flags =
-            DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT;
-        if (drmModeAtomicCommit(kms.fd, commit_req, flip_flags, &waiting) !=
-            0) {
-            die("drmModeAtomicCommit flip");
-        }
-        drmModeAtomicFree(commit_req);
-
-        while (waiting != 0) {
-            fd_set fds;
-            FD_ZERO(&fds);
-            FD_SET(kms.fd, &fds);
-            if (select(kms.fd + 1, &fds, NULL, NULL, NULL) < 0) {
-                // NOLINTNEXTLINE(misc-include-cleaner)
-                if (errno == EINTR) {
-                    continue;
-                }
-                die("select");
-            }
-            drmHandleEvent(kms.fd, &ev);
-        }
-
-        gbm_surface_release_buffer(gbm_surf, cur->bo);
-        drmModeRmFB(kms.fd, cur->fb_id);
-        free(cur);
-        cur = next;
-        bench_frames++;
-
-        const double bench_ms =
-            (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
-        db_benchmark_log_periodic("OpenGL", renderer_name, backend,
-                                  bench_frames, work_unit_count, bench_ms,
-                                  capability_mode, &next_progress_log_due_ms,
-                                  BENCH_LOG_INTERVAL_MS_D);
-    }
-
+    const uint64_t bench_frames = db_kms_atomic_run_frame_loop(
+        &loop, &producer, db_kms_atomic_next_gl_fb);
     const double bench_ms =
         (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
-    db_benchmark_log_final("OpenGL", renderer_name, backend, bench_frames,
-                           work_unit_count, bench_ms, capability_mode);
+    db_benchmark_log_final(db_dispatch_api_name(DB_API_OPENGL), renderer_name,
+                           backend, bench_frames, work_unit_count, bench_ms,
+                           capability_mode);
 
     renderer->shutdown();
 
-    if (cur != NULL) {
-        gbm_surface_release_buffer(gbm_surf, cur->bo);
-        drmModeRmFB(kms.fd, cur->fb_id);
-        free(cur);
-    }
+    fb_release(kms.fd, gbm_surf, cur);
 
     drmModeDestroyPropertyBlob(kms.fd, kms.mode_blob_id);
 
@@ -640,5 +746,148 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     drmModeFreeResources(kms.res);
     close(kms.fd);
 
+    return 0;
+}
+
+static struct fb *db_cpu_create_fb_from_rgba8(struct gbm_device *gbm, int fd,
+                                              const uint32_t *pixels_rgba8,
+                                              uint32_t width, uint32_t height) {
+    uint32_t bo_flags = GBM_BO_USE_SCANOUT;
+#ifdef GBM_BO_USE_WRITE
+    bo_flags |= GBM_BO_USE_WRITE;
+#else
+    bo_flags |= GBM_BO_USE_RENDERING;
+#endif
+    struct gbm_bo *bo =
+        gbm_bo_create(gbm, width, height, GBM_FORMAT_XRGB8888, bo_flags);
+    if (bo == NULL) {
+        diex("gbm_bo_create failed for CPU scanout buffer");
+    }
+
+    uint32_t map_stride_bytes = 0U;
+    void *map_data = NULL;
+    uint8_t *map_ptr =
+        gbm_bo_map(bo, 0, 0, width, height, GBM_BO_TRANSFER_WRITE,
+                   &map_stride_bytes, &map_data);
+    if ((map_ptr == NULL) || (map_data == NULL)) {
+        gbm_bo_destroy(bo);
+        diex("gbm_bo_map failed for CPU scanout buffer");
+    }
+
+    const size_t dst_stride_pixels =
+        (size_t)map_stride_bytes / sizeof(uint32_t);
+    db_convert_rgba8_to_xrgb8888_rows((uint32_t *)map_ptr, dst_stride_pixels,
+                                      pixels_rgba8, (size_t)width, width,
+                                      height);
+    gbm_bo_unmap(bo, map_data);
+
+    return fb_from_bo(fd, bo, 0);
+}
+
+typedef struct {
+    int kms_fd;
+    struct gbm_device *gbm;
+    uint32_t width;
+    uint32_t height;
+    const char *backend;
+} db_kms_atomic_cpu_frame_producer_t;
+
+static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
+                                            uint64_t frame_index) {
+    db_kms_atomic_cpu_frame_producer_t *producer =
+        (db_kms_atomic_cpu_frame_producer_t *)user_ctx;
+    const double time_s = (double)frame_index / BENCH_TARGET_FPS_D;
+    db_renderer_cpu_renderer_render_frame(time_s);
+    const uint32_t *pixels = db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
+    if (pixels == NULL) {
+        db_failf(producer->backend, "cpu renderer returned NULL framebuffer");
+    }
+    return db_cpu_create_fb_from_rgba8(producer->gbm, producer->kms_fd, pixels,
+                                       producer->width, producer->height);
+}
+
+int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
+                          const char *card, db_api_t api) {
+    if (api != DB_API_CPU) {
+        db_failf((backend != NULL) ? backend : BACKEND_NAME,
+                 "CPU KMS path requires cpu api");
+    }
+    if ((backend == NULL) || (renderer_name == NULL) || (card == NULL)) {
+        db_failf((backend != NULL) ? backend : BACKEND_NAME,
+                 "Invalid CPU KMS run config");
+    }
+
+    g_active_backend = backend;
+    db_install_signal_handlers();
+
+    struct kms_atomic kms;
+    kms_atomic_init(&kms, card);
+    const uint32_t width = kms.mode.hdisplay;
+    const uint32_t height = kms.mode.vdisplay;
+
+    struct gbm_device *gbm = gbm_create_device(kms.fd);
+    if (gbm == NULL) {
+        die("gbm_create_device");
+    }
+
+    db_renderer_cpu_renderer_init();
+    const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
+    const double fps_cap = db_runtime_resolve_fps_cap(backend, BENCH_FPS_CAP_D);
+    const uint32_t frame_limit = db_kms_frame_limit_from_runtime(backend);
+    const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
+
+    db_renderer_cpu_renderer_render_frame(0.0);
+    const uint32_t *initial_pixels =
+        db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
+    if (initial_pixels == NULL) {
+        db_failf(backend, "cpu renderer returned NULL framebuffer");
+    }
+    struct fb *cur =
+        db_cpu_create_fb_from_rgba8(gbm, kms.fd, initial_pixels, width, height);
+
+    db_kms_atomic_commit_modeset(&kms, width, height, cur->fb_id);
+
+    drmEventContext ev = {0};
+    ev.version = DRM_EVENT_CONTEXT_VERSION;
+    ev.page_flip_handler = page_flip_handler;
+
+    const db_kms_atomic_frame_loop_t loop = {
+        .api = DB_API_CPU,
+        .backend = backend,
+        .renderer_name = renderer_name,
+        .capability_mode = capability_mode,
+        .fps_cap = fps_cap,
+        .frame_limit = frame_limit,
+        .work_unit_count = work_unit_count,
+        .kms = &kms,
+        .release_surface = NULL,
+        .event_context = &ev,
+        .cur_fb = &cur,
+    };
+    db_kms_atomic_cpu_frame_producer_t producer = {
+        .kms_fd = kms.fd,
+        .gbm = gbm,
+        .width = width,
+        .height = height,
+        .backend = backend,
+    };
+    const uint64_t bench_start = db_now_ns_monotonic();
+    const uint64_t bench_frames = db_kms_atomic_run_frame_loop(
+        &loop, &producer, db_kms_atomic_next_cpu_fb);
+    const double bench_ms =
+        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
+    db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU), renderer_name,
+                           backend, bench_frames, work_unit_count, bench_ms,
+                           capability_mode);
+
+    db_renderer_cpu_renderer_shutdown();
+    fb_release(kms.fd, NULL, cur);
+
+    drmModeDestroyPropertyBlob(kms.fd, kms.mode_blob_id);
+    gbm_device_destroy(gbm);
+    drmModeFreeConnector(kms.conn);
+    drmModeFreePlaneResources(kms.pres);
+    drmModeFreeResources(kms.res);
+    close(kms.fd);
     return 0;
 }

@@ -21,18 +21,17 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(DB_CORE_SOURCES src/core/db_core.c)
-set(DB_GLFW_DISPLAY_SOURCES src/displays/glfw_window/display_glfw_window_common.c)
-set(DB_RENDERER_OPENGL_COMMON_SOURCES
-  src/renderers/renderer_opengl_common.c
-)
-set(DB_RENDERER_GLES_COMMON_SOURCES
-  src/renderers/renderer_gles_common.c
+
+set(DB_CORE_SOURCES
+  src/core/db_buffer_convert.c
+  src/core/db_core.c
 )
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
-option(DB_BUILD_OFFSCREEN "Build CPU renderer backend" ON)
+option(DB_BUILD_GLFW_WINDOW_DISPLAY "Build GLFW window display backend" ON)
+option(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY
+  "Build Linux KMS atomic display backend" ON)
 option(DB_ENABLE_GLFW_OFFSCREEN_TESTS
   "Enable deterministic offscreen GLFW hash tests (requires working GLFW display stack)"
   OFF)
@@ -44,23 +43,6 @@ option(DB_ENABLE_LTO_RELWITHDEBINFO
 option(DB_ENABLE_SANITIZERS "Enable sanitizers for debug builds" ON)
 option(DB_ENABLE_DSYM "Generate dSYM bundles for Apple debug-like builds" ON)
 
-set(DB_OPENGL_RENDERER "auto" CACHE STRING
-  "OpenGL renderer: auto, gl1_5_gles1_1, or gl3_3")
-set_property(CACHE DB_OPENGL_RENDERER PROPERTY STRINGS auto gl1_5_gles1_1 gl3_3)
-
-set(DB_OPENGL_DISPLAY "auto" CACHE STRING
-  "OpenGL display: auto, glfw_window, or linux_kms_atomic")
-set_property(CACHE DB_OPENGL_DISPLAY PROPERTY STRINGS
-  auto glfw_window linux_kms_atomic
-)
-
-set(DB_VULKAN_DISPLAY "auto" CACHE STRING
-  "Vulkan display: auto, glfw_window, or vk_khr_display")
-set_property(CACHE DB_VULKAN_DISPLAY PROPERTY STRINGS
-  auto glfw_window vk_khr_display
-)
-
-set(HAVE_BACKEND OFF)
 set(DB_IS_RELEASE_LIKE OFF)
 if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
   set(DB_IS_RELEASE_LIKE ON)
@@ -173,62 +155,102 @@ function(db_apply_perf_options target_name)
             VERBATIM
           )
         endif()
-      else()
-        message(WARNING
-          "DB_ENABLE_DSYM is ON, but dsymutil was not found; profiler symbols may be incomplete."
-        )
       endif()
     endif()
   endif()
 endfunction()
 
 set(DB_GLFW_TARGET "")
-find_package(glfw3 QUIET)
-if(TARGET glfw)
-  set(DB_GLFW_TARGET glfw)
-elseif(TARGET glfw3::glfw)
-  set(DB_GLFW_TARGET glfw3::glfw)
+if(DB_BUILD_GLFW_WINDOW_DISPLAY)
+  find_package(glfw3 QUIET)
+  if(TARGET glfw)
+    set(DB_GLFW_TARGET glfw)
+  elseif(TARGET glfw3::glfw)
+    set(DB_GLFW_TARGET glfw3::glfw)
+  endif()
 endif()
 
-if(NOT DB_OPENGL_RENDERER MATCHES "^(auto|gl1_5_gles1_1|gl3_3)$")
-  message(FATAL_ERROR
-    "Invalid DB_OPENGL_RENDERER='${DB_OPENGL_RENDERER}'. "
-    "Use: auto, gl1_5_gles1_1, or gl3_3."
+set(DB_DRIVERBENCH_SOURCES
+  src/driverbench_cli.c
+  src/driverbench_main.c
+  src/displays/display_dispatch.c
+  src/displays/offscreen/display_offscreen.c
+  src/renderers/cpu_renderer/renderer_cpu_renderer.c
+  ${DB_CORE_SOURCES}
+)
+set(DB_DRIVERBENCH_LIBS m)
+set(DB_DRIVERBENCH_DEFS "")
+
+if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET)
+  list(APPEND DB_DRIVERBENCH_SOURCES
+    src/displays/glfw_window/display_glfw_window.c
+    src/displays/glfw_window/display_glfw_window_common.c
   )
+  list(APPEND DB_DRIVERBENCH_LIBS ${DB_GLFW_TARGET})
+  list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_GLFW=1)
 endif()
 
-if(NOT DB_OPENGL_DISPLAY MATCHES "^(auto|glfw_window|linux_kms_atomic)$")
-  message(FATAL_ERROR
-    "Invalid DB_OPENGL_DISPLAY='${DB_OPENGL_DISPLAY}'. "
-    "Use: auto, glfw_window, or linux_kms_atomic."
-  )
-endif()
+if(DB_BUILD_OPENGL)
+  find_package(OpenGL QUIET)
+  set(DB_OPENGL_RUNTIME_ENABLED OFF)
 
-if(NOT DB_VULKAN_DISPLAY MATCHES "^(auto|glfw_window|vk_khr_display)$")
-  message(FATAL_ERROR
-    "Invalid DB_VULKAN_DISPLAY='${DB_VULKAN_DISPLAY}'. "
-    "Use: auto, glfw_window, or vk_khr_display."
-  )
+  if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET)
+    set(DB_OPENGL_RUNTIME_ENABLED ON)
+  endif()
+
+  if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND UNIX AND NOT APPLE)
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+      pkg_check_modules(GBM QUIET gbm)
+      pkg_check_modules(EGL QUIET egl)
+      pkg_check_modules(GLES QUIET glesv1_cm)
+      pkg_check_modules(DRM QUIET libdrm)
+      if(GBM_FOUND AND EGL_FOUND AND DRM_FOUND AND GLES_FOUND)
+        list(APPEND DB_DRIVERBENCH_SOURCES
+          src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
+          src/displays/linux_kms_atomic/display_linux_kms_atomic.c
+        )
+        list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_LINUX_KMS_ATOMIC=1)
+        list(APPEND DB_DRIVERBENCH_LIBS
+          ${GBM_LIBRARIES}
+          ${EGL_LIBRARIES}
+          ${GLES_LIBRARIES}
+          ${DRM_LIBRARIES}
+        )
+        set(DB_OPENGL_RUNTIME_ENABLED ON)
+      endif()
+    endif()
+  endif()
+
+  if(DB_OPENGL_RUNTIME_ENABLED)
+    list(APPEND DB_DRIVERBENCH_SOURCES
+      src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
+      src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c
+      src/renderers/renderer_opengl_common.c
+    )
+    list(APPEND DB_DRIVERBENCH_DEFS
+      DB_HAS_OPENGL_API=1
+      OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
+      OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+    )
+    if(APPLE)
+      list(APPEND DB_DRIVERBENCH_LIBS "-framework OpenGL")
+      list(APPEND DB_DRIVERBENCH_DEFS GL_SILENCE_DEPRECATION=1)
+    else()
+      if(TARGET OpenGL::OpenGL)
+        list(APPEND DB_DRIVERBENCH_LIBS OpenGL::OpenGL)
+      elseif(TARGET OpenGL::GL)
+        list(APPEND DB_DRIVERBENCH_LIBS OpenGL::GL)
+      else()
+        list(APPEND DB_DRIVERBENCH_LIBS GL)
+      endif()
+    endif()
+  endif()
 endif()
 
 if(DB_BUILD_VULKAN)
-  message(STATUS "Vulkan selection: renderer=vulkan_1_2_multi_gpu display=${DB_VULKAN_DISPLAY}")
   find_package(Vulkan QUIET)
   find_program(GLSLC glslc HINTS ENV VULKAN_SDK PATH_SUFFIXES Bin bin)
-
-  set(DB_VULKAN_DISPLAY_SELECTED "${DB_VULKAN_DISPLAY}")
-  if(DB_VULKAN_DISPLAY_SELECTED STREQUAL "auto")
-    set(DB_VULKAN_DISPLAY_SELECTED "glfw_window")
-  endif()
-
-  if(DB_VULKAN_DISPLAY_SELECTED STREQUAL "vk_khr_display")
-    message(WARNING
-      "Skipping Vulkan backend: DB_VULKAN_DISPLAY=vk_khr_display is not "
-      "implemented yet (select glfw_window)."
-    )
-  else()
-    set(DB_VULKAN_SOURCE "src/displays/glfw_window/display_glfw_window_vulkan_1_2_multi_gpu.c")
-  endif()
 
   set(DB_VULKAN_LIB "")
   if(TARGET Vulkan::Vulkan)
@@ -237,22 +259,18 @@ if(DB_BUILD_VULKAN)
     set(DB_VULKAN_LIB "${Vulkan_LIBRARY}")
   endif()
 
-  if(DB_VULKAN_SOURCE AND Vulkan_FOUND AND DB_VULKAN_LIB AND DB_GLFW_TARGET AND GLSLC)
-    set(DB_VULKAN_TARGET driverbench_glfw_window_vulkan_1_2_multi_gpu)
-    add_executable(${DB_VULKAN_TARGET}
-      ${DB_VULKAN_SOURCE}
+  if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET AND Vulkan_FOUND AND
+     DB_VULKAN_LIB AND GLSLC)
+    list(APPEND DB_DRIVERBENCH_SOURCES
+      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_frame.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_init.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_runtime.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_scheduler.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_swapchain.c
-      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.c
-      ${DB_GLFW_DISPLAY_SOURCES}
-      ${DB_CORE_SOURCES}
     )
-    db_apply_perf_options(${DB_VULKAN_TARGET})
-    target_include_directories(${DB_VULKAN_TARGET} PRIVATE ${Vulkan_INCLUDE_DIRS})
-    target_link_libraries(${DB_VULKAN_TARGET} PRIVATE ${DB_VULKAN_LIB} ${DB_GLFW_TARGET} m)
+    list(APPEND DB_DRIVERBENCH_LIBS ${DB_VULKAN_LIB})
+    list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_VULKAN_API=1)
 
     add_custom_command(
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
@@ -272,300 +290,34 @@ if(DB_BUILD_VULKAN)
       VERBATIM
     )
 
-    add_custom_target(driverbench_vulkan_1_2_multi_gpu_shaders ALL
+    add_custom_target(driverbench_vulkan_shaders ALL
       DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
               ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
     )
-    add_dependencies(${DB_VULKAN_TARGET} driverbench_vulkan_1_2_multi_gpu_shaders)
-
-    target_compile_definitions(${DB_VULKAN_TARGET} PRIVATE
+    list(APPEND DB_DRIVERBENCH_DEFS
       VERT_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv"
       FRAG_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv"
     )
-
-    set(HAVE_BACKEND ON)
-  else()
-    set(DB_VULKAN_MISSING_DEPS "")
-    if(NOT DB_VULKAN_SOURCE)
-      list(APPEND DB_VULKAN_MISSING_DEPS "display backend")
-    endif()
-    if(NOT Vulkan_FOUND OR NOT DB_VULKAN_LIB)
-      list(APPEND DB_VULKAN_MISSING_DEPS "Vulkan SDK/loader")
-    endif()
-    if(NOT DB_GLFW_TARGET)
-      list(APPEND DB_VULKAN_MISSING_DEPS "glfw3")
-    endif()
-    if(NOT GLSLC)
-      list(APPEND DB_VULKAN_MISSING_DEPS "glslc")
-    endif()
-    if(DB_VULKAN_MISSING_DEPS)
-      list(JOIN DB_VULKAN_MISSING_DEPS ", " DB_VULKAN_MISSING_DEPS_STR)
-    else()
-      set(DB_VULKAN_MISSING_DEPS_STR "unknown")
-    endif()
-    message(WARNING
-      "Skipping Vulkan backend: missing ${DB_VULKAN_MISSING_DEPS_STR}."
-    )
   endif()
 endif()
 
-if(DB_BUILD_OPENGL)
-  message(STATUS
-    "OpenGL selection: renderer=${DB_OPENGL_RENDERER} display=${DB_OPENGL_DISPLAY}"
+set(DB_UNIFIED_TARGET driverbench)
+add_executable(${DB_UNIFIED_TARGET}
+  ${DB_DRIVERBENCH_SOURCES}
+)
+db_apply_perf_options(${DB_UNIFIED_TARGET})
+target_compile_definitions(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_DEFS})
+if(GBM_FOUND OR EGL_FOUND OR DRM_FOUND OR GLES_FOUND)
+  target_include_directories(${DB_UNIFIED_TARGET} PRIVATE
+    ${GBM_INCLUDE_DIRS}
+    ${EGL_INCLUDE_DIRS}
+    ${DRM_INCLUDE_DIRS}
+    ${GLES_INCLUDE_DIRS}
   )
-
-  set(DB_OPENGL_RENDERER_LIST "")
-  if(DB_OPENGL_RENDERER STREQUAL "auto")
-    list(APPEND DB_OPENGL_RENDERER_LIST gl1_5_gles1_1 gl3_3)
-  else()
-    list(APPEND DB_OPENGL_RENDERER_LIST ${DB_OPENGL_RENDERER})
-  endif()
-
-  set(DB_OPENGL_DISPLAY_LIST "")
-  if(DB_OPENGL_DISPLAY STREQUAL "auto")
-    list(APPEND DB_OPENGL_DISPLAY_LIST glfw_window)
-    if(NOT APPLE)
-      list(APPEND DB_OPENGL_DISPLAY_LIST linux_kms_atomic)
-    endif()
-  else()
-    list(APPEND DB_OPENGL_DISPLAY_LIST ${DB_OPENGL_DISPLAY})
-  endif()
-
-  list(FIND DB_OPENGL_DISPLAY_LIST "glfw_window" DB_HAS_GLFW_DISPLAY_INDEX)
-  if(NOT DB_HAS_GLFW_DISPLAY_INDEX EQUAL -1)
-    if(NOT DB_GLFW_TARGET)
-      message(WARNING
-        "Skipping OpenGL backend: DB_OPENGL_DISPLAY includes glfw_window but glfw was not found."
-      )
-    else()
-      foreach(DB_RENDERER IN LISTS DB_OPENGL_RENDERER_LIST)
-        if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
-          set(DB_OPENGL_TARGET driverbench_glfw_window_opengl_gl1_5_gles1_1)
-          set(DB_OPENGL_SOURCE src/displays/glfw_window/display_glfw_window_opengl_gl1_5_gles1_1.c)
-          set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c)
-          set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_GLES_COMMON_SOURCES})
-        elseif(DB_RENDERER STREQUAL "gl3_3")
-          set(DB_OPENGL_TARGET driverbench_glfw_window_opengl_gl3_3)
-          set(DB_OPENGL_SOURCE src/displays/glfw_window/display_glfw_window_opengl_gl3_3.c)
-          set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c)
-          set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_OPENGL_COMMON_SOURCES})
-        else()
-          continue()
-        endif()
-
-        add_executable(${DB_OPENGL_TARGET}
-          ${DB_OPENGL_SOURCE}
-          ${DB_OPENGL_RENDERER_SOURCE}
-          ${DB_OPENGL_COMMON_SOURCE_LIST}
-          ${DB_GLFW_DISPLAY_SOURCES}
-          ${DB_CORE_SOURCES}
-        )
-        db_apply_perf_options(${DB_OPENGL_TARGET})
-        if(DB_RENDERER STREQUAL "gl3_3")
-          target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
-            OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
-            OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
-          )
-        endif()
-        if(APPLE)
-          target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE GL_SILENCE_DEPRECATION)
-          target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
-            ${DB_GLFW_TARGET}
-            "-framework OpenGL"
-            m
-          )
-        else()
-          find_package(OpenGL QUIET)
-          if(TARGET OpenGL::GL)
-            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
-              ${DB_GLFW_TARGET}
-              OpenGL::GL
-              m
-            )
-          else()
-            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
-              ${DB_GLFW_TARGET}
-              GL
-              m
-            )
-          endif()
-          if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
-            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE EGL)
-          endif()
-        endif()
-        set(HAVE_BACKEND ON)
-      endforeach()
-    endif()
-  endif()
-
-  list(FIND DB_OPENGL_DISPLAY_LIST "linux_kms_atomic" DB_HAS_KMS_DISPLAY_INDEX)
-  if(NOT DB_HAS_KMS_DISPLAY_INDEX EQUAL -1)
-    if(APPLE)
-      message(WARNING
-        "Skipping OpenGL backend: linux_kms_atomic display is Linux-only."
-      )
-    else()
-      find_package(PkgConfig QUIET)
-      if(PkgConfig_FOUND)
-        pkg_check_modules(GBM QUIET gbm)
-        pkg_check_modules(EGL QUIET egl)
-        pkg_check_modules(GLES QUIET glesv1_cm)
-        pkg_check_modules(DRM QUIET libdrm)
-      endif()
-
-      if(PkgConfig_FOUND AND GBM_FOUND AND EGL_FOUND AND DRM_FOUND)
-        foreach(DB_RENDERER IN LISTS DB_OPENGL_RENDERER_LIST)
-          if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
-            if(NOT GLES_FOUND)
-              message(WARNING
-                "Skipping OpenGL gl1_5_gles1_1 on linux_kms_atomic: requires glesv1_cm."
-              )
-              continue()
-            endif()
-            set(DB_OPENGL_TARGET driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1)
-            set(DB_OPENGL_DISPLAY_SOURCE src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl1_5_gles1_1.c)
-            set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c)
-            set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_GLES_COMMON_SOURCES})
-          elseif(DB_RENDERER STREQUAL "gl3_3")
-            set(DB_OPENGL_TARGET driverbench_linux_kms_atomic_opengl_gl3_3)
-            set(DB_OPENGL_DISPLAY_SOURCE src/displays/linux_kms_atomic/display_linux_kms_atomic_opengl_gl3_3.c)
-            set(DB_OPENGL_RENDERER_SOURCE src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c)
-            set(DB_OPENGL_COMMON_SOURCE_LIST ${DB_RENDERER_OPENGL_COMMON_SOURCES})
-          else()
-            continue()
-          endif()
-
-          add_executable(${DB_OPENGL_TARGET}
-            ${DB_OPENGL_DISPLAY_SOURCE}
-            src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
-            ${DB_OPENGL_RENDERER_SOURCE}
-            ${DB_OPENGL_COMMON_SOURCE_LIST}
-            ${DB_CORE_SOURCES}
-          )
-          db_apply_perf_options(${DB_OPENGL_TARGET})
-
-          if(DB_RENDERER STREQUAL "gl3_3")
-            target_compile_definitions(${DB_OPENGL_TARGET} PRIVATE
-              OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
-              OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
-            )
-          endif()
-
-          target_include_directories(${DB_OPENGL_TARGET} PRIVATE
-            ${GBM_INCLUDE_DIRS}
-            ${EGL_INCLUDE_DIRS}
-            ${DRM_INCLUDE_DIRS}
-          )
-          target_compile_options(${DB_OPENGL_TARGET} PRIVATE
-            ${GBM_CFLAGS_OTHER}
-            ${EGL_CFLAGS_OTHER}
-            ${DRM_CFLAGS_OTHER}
-          )
-          target_link_directories(${DB_OPENGL_TARGET} PRIVATE
-            ${GBM_LIBRARY_DIRS}
-            ${EGL_LIBRARY_DIRS}
-            ${DRM_LIBRARY_DIRS}
-          )
-
-          if(DB_RENDERER STREQUAL "gl1_5_gles1_1")
-            target_include_directories(${DB_OPENGL_TARGET} PRIVATE
-              ${GLES_INCLUDE_DIRS}
-            )
-            target_compile_options(${DB_OPENGL_TARGET} PRIVATE
-              ${GLES_CFLAGS_OTHER}
-            )
-            target_link_directories(${DB_OPENGL_TARGET} PRIVATE
-              ${GLES_LIBRARY_DIRS}
-            )
-            target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
-              ${GBM_LIBRARIES}
-              ${EGL_LIBRARIES}
-              ${GLES_LIBRARIES}
-              ${DRM_LIBRARIES}
-              m
-            )
-          else()
-            find_package(OpenGL QUIET)
-            if(TARGET OpenGL::GL)
-              target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
-                ${GBM_LIBRARIES}
-                ${EGL_LIBRARIES}
-                ${DRM_LIBRARIES}
-                OpenGL::GL
-                m
-              )
-            else()
-              target_link_libraries(${DB_OPENGL_TARGET} PRIVATE
-                ${GBM_LIBRARIES}
-                ${EGL_LIBRARIES}
-                ${DRM_LIBRARIES}
-                GL
-                m
-              )
-            endif()
-          endif()
-          set(HAVE_BACKEND ON)
-        endforeach()
-      else()
-        message(WARNING
-          "Skipping OpenGL backend on Linux: requires pkg-config with gbm, egl, and libdrm."
-        )
-      endif()
-    endif()
-  endif()
 endif()
-
-if(DB_BUILD_OFFSCREEN)
-  set(DB_OFFSCREEN_TARGET driverbench_offscreen_cpu_renderer)
-  add_executable(${DB_OFFSCREEN_TARGET}
-    src/displays/offscreen/display_offscreen_cpu_renderer.c
-    src/renderers/cpu_renderer/renderer_cpu_renderer.c
-    ${DB_CORE_SOURCES}
-  )
-  db_apply_perf_options(${DB_OFFSCREEN_TARGET})
-  target_link_libraries(${DB_OFFSCREEN_TARGET} PRIVATE m)
-  set(HAVE_BACKEND ON)
-
-  if(DB_GLFW_TARGET)
-    set(DB_CPU_GLFW_TARGET driverbench_glfw_window_cpu_renderer)
-    add_executable(${DB_CPU_GLFW_TARGET}
-      src/displays/glfw_window/display_glfw_window_cpu_renderer.c
-      src/displays/glfw_window/display_glfw_window_common.c
-      src/renderers/cpu_renderer/renderer_cpu_renderer.c
-      ${DB_CORE_SOURCES}
-    )
-    db_apply_perf_options(${DB_CPU_GLFW_TARGET})
-    if(APPLE)
-      target_compile_definitions(${DB_CPU_GLFW_TARGET} PRIVATE GL_SILENCE_DEPRECATION)
-      target_link_libraries(${DB_CPU_GLFW_TARGET} PRIVATE
-        ${DB_GLFW_TARGET}
-        "-framework OpenGL"
-        m
-      )
-    else()
-      find_package(OpenGL QUIET)
-      if(TARGET OpenGL::GL)
-        target_link_libraries(${DB_CPU_GLFW_TARGET} PRIVATE
-          ${DB_GLFW_TARGET}
-          OpenGL::GL
-          m
-        )
-      else()
-        target_link_libraries(${DB_CPU_GLFW_TARGET} PRIVATE
-          ${DB_GLFW_TARGET}
-          GL
-          m
-        )
-      endif()
-    endif()
-    set(HAVE_BACKEND ON)
-  endif()
-endif()
-
-if(NOT HAVE_BACKEND)
-  message(WARNING
-    "No backends were built. Install Vulkan/glfw/glslc and/or gbm/egl/glesv1_cm/libdrm to enable targets."
-  )
+target_link_libraries(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_LIBS})
+if(TARGET driverbench_vulkan_shaders)
+  add_dependencies(${DB_UNIFIED_TARGET} driverbench_vulkan_shaders)
 endif()
 
 if(CMAKE_EXPORT_COMPILE_COMMANDS)
@@ -579,80 +331,74 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS)
 endif()
 
 if(BUILD_TESTING)
-  function(db_add_determinism_test test_name target_name hash_key env_list expected_hash)
-    if(NOT TARGET ${target_name})
+  function(db_add_determinism_test test_name hash_key test_args expected_hash)
+    if(NOT TARGET ${DB_UNIFIED_TARGET})
       return()
     endif()
     if("${expected_hash}" STREQUAL "")
       add_test(
         NAME ${test_name}
         COMMAND ${CMAKE_COMMAND}
-          -DTEST_BIN=$<TARGET_FILE:${target_name}>
+          -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
           -DTEST_HASH_KEY=${hash_key}
+          -DTEST_ARGS=${test_args}
           -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
       )
     else()
       add_test(
         NAME ${test_name}
         COMMAND ${CMAKE_COMMAND}
-          -DTEST_BIN=$<TARGET_FILE:${target_name}>
+          -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
           -DTEST_HASH_KEY=${hash_key}
+          -DTEST_ARGS=${test_args}
           -DTEST_EXPECTED_HASH=${expected_hash}
           -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
       )
     endif()
-    set_property(TEST ${test_name} PROPERTY ENVIRONMENT "${env_list}")
   endfunction()
 
   db_add_determinism_test(
     determinism_cpu_renderer_snake
-    driverbench_offscreen_cpu_renderer
     bo_hash_final
-    "DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    "--api cpu --display offscreen --benchmark-mode snake_grid --random-seed 12345 --offscreen-frames 64"
     0x2739df2d274aacf2
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_fill
-    driverbench_offscreen_cpu_renderer
     bo_hash_final
-    "DRIVERBENCH_BENCHMARK_MODE=gradient_fill;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    "--api cpu --display offscreen --benchmark-mode gradient_fill --random-seed 12345 --offscreen-frames 64"
     0x3dcb7da55d6a8193
   )
   db_add_determinism_test(
     determinism_cpu_renderer_rect_snake
-    driverbench_offscreen_cpu_renderer
     bo_hash_final
-    "DRIVERBENCH_BENCHMARK_MODE=rect_snake;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    "--api cpu --display offscreen --benchmark-mode rect_snake --random-seed 12345 --offscreen-frames 64"
     0xb70c2dd632862304
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_sweep
-    driverbench_offscreen_cpu_renderer
     bo_hash_final
-    "DRIVERBENCH_BENCHMARK_MODE=gradient_sweep;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    "--api cpu --display offscreen --benchmark-mode gradient_sweep --random-seed 12345 --offscreen-frames 64"
     0x3dcb7da55d6a8193
   )
   db_add_determinism_test(
     determinism_cpu_renderer_bands
-    driverbench_offscreen_cpu_renderer
     bo_hash_final
-    "DRIVERBENCH_BENCHMARK_MODE=bands;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_OFFSCREEN_FRAMES=64"
+    "--api cpu --display offscreen --benchmark-mode bands --random-seed 12345 --offscreen-frames 64"
     0x265a06c2cd23fac3
   )
 
   if(DB_ENABLE_GLFW_OFFSCREEN_TESTS)
     db_add_determinism_test(
       determinism_glfw_gl1_5_offscreen
-      driverbench_glfw_window_opengl_gl1_5_gles1_1
       framebuffer_hash_final
-      "DRIVERBENCH_OFFSCREEN=1;DRIVERBENCH_FRAME_LIMIT=64;DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_VSYNC=0;DRIVERBENCH_FRAMEBUFFER_HASH=1"
+      "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --offscreen 1 --frame-limit 64 --benchmark-mode snake_grid --random-seed 12345 --vsync 0 --framebuffer-hash 1"
       ""
     )
     db_add_determinism_test(
       determinism_glfw_gl3_3_offscreen
-      driverbench_glfw_window_opengl_gl3_3
       framebuffer_hash_final
-      "DRIVERBENCH_OFFSCREEN=1;DRIVERBENCH_FRAME_LIMIT=64;DRIVERBENCH_BENCHMARK_MODE=snake_grid;DRIVERBENCH_RANDOM_SEED=12345;DRIVERBENCH_VSYNC=0;DRIVERBENCH_FRAMEBUFFER_HASH=1"
+      "--api opengl --renderer gl3_3 --display glfw_window --offscreen 1 --frame-limit 64 --benchmark-mode snake_grid --random-seed 12345 --vsync 0 --framebuffer-hash 1"
       ""
     )
   endif()

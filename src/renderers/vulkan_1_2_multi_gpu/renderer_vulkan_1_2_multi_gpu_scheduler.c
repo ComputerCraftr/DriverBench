@@ -1,7 +1,7 @@
 #include <stdint.h>
 
+#include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
-#include "../../displays/bench_config.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 
 // NOLINTBEGIN(misc-include-cleaner)

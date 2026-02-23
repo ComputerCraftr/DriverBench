@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 
 #ifdef __APPLE__
@@ -101,8 +102,7 @@ static int db_gl_try_init_persistent_upload(size_t bytes,
         return 0;
     }
 
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    memcpy(mapped, initial_vertices, bytes);
+    db_copy_bytes(mapped, initial_vertices, bytes);
     if (!db_gl_verify_buffer_prefix((const uint8_t *)initial_vertices,
                                     probe_size)) {
         glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -139,8 +139,7 @@ static int db_gl_probe_map_range_upload(size_t bytes,
         return 0;
     }
 
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    memcpy(dst, pattern, probe_size);
+    db_copy_bytes(dst, pattern, probe_size);
     if ((glUnmapBuffer(GL_ARRAY_BUFFER) != GL_TRUE) ||
         (glGetError() != GL_NO_ERROR)) {
         return 0;
@@ -176,8 +175,7 @@ static int db_gl_probe_map_buffer_upload(size_t bytes,
         return 0;
     }
 
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    memcpy(dst, pattern, probe_size);
+    db_copy_bytes(dst, pattern, probe_size);
     if ((glUnmapBuffer(GL_ARRAY_BUFFER) != GL_TRUE) ||
         (glGetError() != GL_NO_ERROR)) {
         return 0;
@@ -278,9 +276,9 @@ void db_gl_upload_ranges(const void *source_base, size_t total_bytes,
         const uint8_t *src_base = (const uint8_t *)source_base;
         for (size_t i = 0; i < range_count; i++) {
             const db_gl_upload_range_t *range = &ranges[i];
-            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-            memcpy(dst_base + range->dst_offset_bytes,
-                   src_base + range->src_offset_bytes, range->size_bytes);
+            db_copy_bytes(dst_base + range->dst_offset_bytes,
+                          src_base + range->src_offset_bytes,
+                          range->size_bytes);
         }
         return;
     }
@@ -292,9 +290,9 @@ void db_gl_upload_ranges(const void *source_base, size_t total_bytes,
         const uint8_t *src_base = (const uint8_t *)source_base;
         for (size_t i = 0; i < range_count; i++) {
             const db_gl_upload_range_t *range = &ranges[i];
-            // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-            memcpy(dst_base + range->dst_offset_bytes,
-                   src_base + range->src_offset_bytes, range->size_bytes);
+            db_copy_bytes(dst_base + range->dst_offset_bytes,
+                          src_base + range->src_offset_bytes,
+                          range->size_bytes);
         }
         if (glUnmapBuffer(GL_ARRAY_BUFFER) == GL_FALSE) {
             db_gl_upload_ranges_subdata(source_base, ranges, range_count);

@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
-#include "../../displays/bench_config.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
 

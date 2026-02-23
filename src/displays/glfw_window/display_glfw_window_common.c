@@ -8,17 +8,15 @@
 #include <sys/errno.h>
 #endif
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
+#include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
-#include "../bench_config.h"
-#include "../display_env_common.h"
 
 #define MAX_SLEEP_NS_D 100000000.0
 
 int db_glfw_offscreen_enabled(void) {
-    return db_env_is_truthy(DB_ENV_OFFSCREEN);
+    return db_value_is_truthy(db_runtime_option_get(DB_RUNTIME_OPT_OFFSCREEN));
 }
 
 GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
@@ -130,56 +128,39 @@ void db_glfw_poll_events(void) { glfwPollEvents(); }
 
 double db_glfw_time_seconds(void) { return glfwGetTime(); }
 
-int db_glfw_resolve_swap_interval(void) {
-    const char *value = getenv(DB_ENV_VSYNC);
+int db_glfw_resolve_swap_interval(const char *backend) {
+    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_VSYNC);
     if (value == NULL) {
         return BENCH_GLFW_SWAP_INTERVAL;
     }
-    if ((strcmp(value, "1") == 0) || (strcmp(value, "true") == 0) ||
-        (strcmp(value, "TRUE") == 0) || (strcmp(value, "yes") == 0) ||
-        (strcmp(value, "YES") == 0) || (strcmp(value, "on") == 0) ||
-        (strcmp(value, "ON") == 0)) {
-        return 1;
-    }
-    if ((strcmp(value, "0") == 0) || (strcmp(value, "false") == 0) ||
-        (strcmp(value, "FALSE") == 0) || (strcmp(value, "no") == 0) ||
-        (strcmp(value, "NO") == 0) || (strcmp(value, "off") == 0) ||
-        (strcmp(value, "OFF") == 0)) {
-        return 0;
+
+    int swap_interval = 0;
+    if (db_parse_bool_text(value, &swap_interval) != 0) {
+        return swap_interval;
     }
 
-    db_infof("display_glfw_window_common",
-             "Invalid %s='%s'; using default swap interval %d", DB_ENV_VSYNC,
-             value, BENCH_GLFW_SWAP_INTERVAL);
+    db_infof(backend, "Invalid %s='%s'; using default swap interval %d",
+             DB_RUNTIME_OPT_VSYNC, value, BENCH_GLFW_SWAP_INTERVAL);
     return BENCH_GLFW_SWAP_INTERVAL;
 }
 
 double db_glfw_resolve_fps_cap(const char *backend) {
-    const char *value = getenv(DB_ENV_FPS_CAP);
+    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_FPS_CAP);
     if (value == NULL) {
         return BENCH_FPS_CAP_D;
     }
-    if ((strcmp(value, "0") == 0) || (strcmp(value, "off") == 0) ||
-        (strcmp(value, "OFF") == 0) || (strcmp(value, "false") == 0) ||
-        (strcmp(value, "FALSE") == 0) || (strcmp(value, "uncapped") == 0) ||
-        (strcmp(value, "none") == 0)) {
-        return 0.0;
-    }
-
-    char *endptr = NULL;
-    const double parsed = strtod(value, &endptr);
-    if ((endptr != value) && (endptr != NULL) && (*endptr == '\0') &&
-        (parsed > 0.0)) {
+    double parsed = 0.0;
+    if (db_parse_fps_cap_text(value, &parsed) != 0) {
         return parsed;
     }
 
     db_infof(backend, "Invalid %s='%s'; using default fps cap %.2f",
-             DB_ENV_FPS_CAP, value, BENCH_FPS_CAP_D);
+             DB_RUNTIME_OPT_FPS_CAP, value, BENCH_FPS_CAP_D);
     return BENCH_FPS_CAP_D;
 }
 
 uint32_t db_glfw_resolve_frame_limit(const char *backend) {
-    const char *value = getenv(DB_ENV_FRAME_LIMIT);
+    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_FRAME_LIMIT);
     if ((value == NULL) || (value[0] == '\0')) {
         return 0U;
     }
@@ -192,15 +173,17 @@ uint32_t db_glfw_resolve_frame_limit(const char *backend) {
     }
 
     db_infof(backend, "Invalid %s='%s'; using unlimited runtime",
-             DB_ENV_FRAME_LIMIT, value);
+             DB_RUNTIME_OPT_FRAME_LIMIT, value);
     return 0U;
 }
 
 void db_glfw_resolve_hash_settings(const char *backend, int *out_hash_enabled,
                                    int *out_hash_every_frame) {
     const int offscreen_enabled = db_glfw_offscreen_enabled();
-    const int hash_framebuffer = db_env_is_truthy(DB_ENV_FRAMEBUFFER_HASH);
-    const int hash_every_frame = db_env_is_truthy(DB_ENV_HASH_EVERY_FRAME);
+    const int hash_framebuffer = db_value_is_truthy(
+        db_runtime_option_get(DB_RUNTIME_OPT_FRAMEBUFFER_HASH));
+    const int hash_every_frame = db_value_is_truthy(
+        db_runtime_option_get(DB_RUNTIME_OPT_HASH_EVERY_FRAME));
     const int hash_enabled =
         (offscreen_enabled != 0) &&
         ((hash_framebuffer != 0) || (hash_every_frame != 0));
@@ -210,7 +193,7 @@ void db_glfw_resolve_hash_settings(const char *backend, int *out_hash_enabled,
         db_infof(backend, "ignoring hash env in windowed mode "
                           "(set DRIVERBENCH_OFFSCREEN=1)");
     }
-    if (getenv(DB_ENV_OFFSCREEN_FRAMES) != NULL) {
+    if (db_runtime_option_get(DB_RUNTIME_OPT_OFFSCREEN_FRAMES) != NULL) {
         db_infof(backend, "ignoring DRIVERBENCH_OFFSCREEN_FRAMES for "
                           "GLFW backend (use DRIVERBENCH_FRAME_LIMIT)");
     }
@@ -223,7 +206,8 @@ void db_glfw_resolve_hash_settings(const char *backend, int *out_hash_enabled,
     }
 }
 
-void db_glfw_sleep_to_fps_cap(double frame_start_s, double fps_cap) {
+void db_glfw_sleep_to_fps_cap(const char *backend, double frame_start_s,
+                              double fps_cap) {
     if (fps_cap <= 0.0) {
         return;
     }
@@ -235,8 +219,8 @@ void db_glfw_sleep_to_fps_cap(double frame_start_s, double fps_cap) {
         const double remaining_ns_d = remaining_s * DB_NS_PER_SECOND_D;
         const double sleep_ns_d =
             (remaining_ns_d > MAX_SLEEP_NS_D) ? MAX_SLEEP_NS_D : remaining_ns_d;
-        const long sleep_ns = db_checked_double_to_long(
-            "display_glfw_window_common", "sleep_ns", sleep_ns_d);
+        const long sleep_ns =
+            db_checked_double_to_long(backend, "sleep_ns", sleep_ns_d);
         if (sleep_ns <= 0L) {
             break;
         }

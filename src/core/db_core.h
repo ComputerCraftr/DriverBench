@@ -22,6 +22,14 @@
 #define DB_NS_PER_MS_D 1000000.0
 #define DB_NS_PER_SECOND_D 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
+#define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
+#define DB_RUNTIME_OPT_FPS_CAP "DRIVERBENCH_FPS_CAP"
+#define DB_RUNTIME_OPT_FRAMEBUFFER_HASH "DRIVERBENCH_FRAMEBUFFER_HASH"
+#define DB_RUNTIME_OPT_FRAME_LIMIT "DRIVERBENCH_FRAME_LIMIT"
+#define DB_RUNTIME_OPT_HASH_EVERY_FRAME "DRIVERBENCH_HASH_EVERY_FRAME"
+#define DB_RUNTIME_OPT_OFFSCREEN "DRIVERBENCH_OFFSCREEN"
+#define DB_RUNTIME_OPT_OFFSCREEN_FRAMES "DRIVERBENCH_OFFSCREEN_FRAMES"
+#define DB_RUNTIME_OPT_VSYNC "DRIVERBENCH_VSYNC"
 
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
@@ -31,9 +39,16 @@ int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt, va_list ap);
 int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
-int db_env_is_truthy(const char *name);
-int db_env_parse_u32_positive(const char *backend, const char *env_name,
-                              uint32_t *out_value);
+int db_value_is_truthy(const char *value);
+int db_parse_bool_text(const char *value, int *out_value);
+int db_parse_fps_cap_text(const char *value, double *out_value);
+double db_runtime_resolve_fps_cap(const char *backend, double default_fps_cap);
+int db_parse_u32_nonnegative_value(const char *backend, const char *field_name,
+                                   const char *value, uint32_t *out_value);
+int db_parse_u32_positive_value(const char *backend, const char *field_name,
+                                const char *value, uint32_t *out_value);
+const char *db_runtime_option_get(const char *name);
+void db_runtime_option_set(const char *name, const char *value);
 int db_has_ssh_env(void);
 int db_is_forwarded_x11_display(void);
 void db_validate_runtime_environment(const char *backend,
@@ -41,6 +56,8 @@ void db_validate_runtime_environment(const char *backend,
 void db_install_signal_handlers(void);
 int db_should_stop(void);
 uint64_t db_now_ns_monotonic(void);
+void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
+                         double fps_cap);
 
 uint8_t *db_read_file_or_fail(const char *backend, const char *path,
                               size_t *out_sz);

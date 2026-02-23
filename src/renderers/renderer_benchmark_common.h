@@ -10,8 +10,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "../config/benchmark_config.h"
 #include "../core/db_core.h"
-#include "../displays/bench_config.h"
 
 #define DB_RECT_VERTEX_COUNT 6U
 #define DB_VERTEX_POSITION_FLOAT_COUNT 2U
@@ -155,7 +155,7 @@ static inline uint32_t db_grid_cols_effective(void) {
 
 static inline int
 db_parse_benchmark_pattern_from_env(db_pattern_t *out_pattern) {
-    const char *mode = getenv(DB_BENCHMARK_MODE_ENV);
+    const char *mode = db_runtime_option_get(DB_BENCHMARK_MODE_ENV);
     if ((mode == NULL) ||
         (strcmp(mode, DB_BENCHMARK_MODE_GRADIENT_SWEEP) == 0)) {
         *out_pattern = DB_PATTERN_GRADIENT_SWEEP;
@@ -224,7 +224,7 @@ static inline uint32_t db_benchmark_cycle_from_seed(uint32_t seed,
 
 static inline uint32_t
 db_benchmark_random_seed_from_env_or_time(const char *backend_name) {
-    const char *value = getenv(DB_RANDOM_SEED_ENV);
+    const char *value = db_runtime_option_get(DB_RANDOM_SEED_ENV);
     if ((value == NULL) || (value[0] == '\0')) {
         return db_pattern_seed_from_time();
     }
@@ -294,7 +294,7 @@ db_init_benchmark_runtime_common(const char *backend_name,
                                  db_benchmark_runtime_init_t *out_state) {
     db_pattern_t requested = DB_PATTERN_GRADIENT_SWEEP;
     if (!db_parse_benchmark_pattern_from_env(&requested)) {
-        const char *mode = getenv(DB_BENCHMARK_MODE_ENV);
+        const char *mode = db_runtime_option_get(DB_BENCHMARK_MODE_ENV);
         db_failf(backend_name, "Invalid %s='%s' (expected: %s|%s|%s|%s|%s)",
                  DB_BENCHMARK_MODE_ENV, (mode != NULL) ? mode : "",
                  DB_BENCHMARK_MODE_GRADIENT_SWEEP, DB_BENCHMARK_MODE_BANDS,

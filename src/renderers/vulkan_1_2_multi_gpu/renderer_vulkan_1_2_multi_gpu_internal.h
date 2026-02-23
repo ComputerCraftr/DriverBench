@@ -7,7 +7,7 @@
 
 #include <vulkan/vulkan.h>
 
-#include "../../displays/bench_config.h"
+#include "../../config/benchmark_config.h"
 #include "../renderer_benchmark_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 
@@ -140,6 +140,7 @@ typedef struct {
     VkFence in_flight;
     int initialized;
     VkInstance instance;
+    const char *log_backend_name;
     double next_progress_log_due_ms;
     db_benchmark_runtime_init_t runtime;
     VkPhysicalDevice present_phys;

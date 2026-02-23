@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "../display_dispatch.h"
+
 typedef enum {
     DB_KMS_ATOMIC_CONTEXT_GL1_5_OR_GLES1_1 = 0,
     DB_KMS_ATOMIC_CONTEXT_GL3_3 = 1,
@@ -25,5 +27,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
                       db_kms_atomic_context_profile_t context_profile,
                       const db_kms_atomic_renderer_vtable_t *renderer,
                       db_kms_atomic_runtime_check_fn_t runtime_check);
+int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
+                          const char *card, db_api_t api);
 
 #endif

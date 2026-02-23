@@ -1,5 +1,5 @@
-#ifndef DRIVERBENCH_BENCH_CONFIG_H
-#define DRIVERBENCH_BENCH_CONFIG_H
+#ifndef DRIVERBENCH_BENCHMARK_CONFIG_H
+#define DRIVERBENCH_BENCHMARK_CONFIG_H
 
 // Shared benchmark shape/config used by all renderer/display combinations.
 #define BENCH_BANDS 16U

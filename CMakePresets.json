@@ -13,10 +13,7 @@
             "binaryDir": "${sourceDir}/build",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "DB_OPENGL_RENDERER": "auto",
-                "DB_OPENGL_DISPLAY": "auto",
-                "DB_VULKAN_DISPLAY": "auto"
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
             }
         },
         {
@@ -27,10 +24,7 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "DB_ENABLE_SANITIZERS": "ON",
-                "DB_OPENGL_RENDERER": "auto",
-                "DB_OPENGL_DISPLAY": "auto",
-                "DB_VULKAN_DISPLAY": "auto"
+                "DB_ENABLE_SANITIZERS": "ON"
             }
         },
         {
@@ -41,57 +35,7 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "DB_ENABLE_SANITIZERS": "OFF",
-                "DB_OPENGL_RENDERER": "auto",
-                "DB_OPENGL_DISPLAY": "auto",
-                "DB_VULKAN_DISPLAY": "auto"
-            }
-        },
-        {
-            "name": "ninja-opengl-gl1_5-gles1_1-glfw",
-            "displayName": "Ninja OpenGL GL1.5/GLES1.1 + GLFW",
-            "inherits": "ninja",
-            "binaryDir": "${sourceDir}/build/opengl-gl1_5-gles1_1-glfw",
-            "cacheVariables": {
-                "DB_BUILD_OPENGL": "ON",
-                "DB_BUILD_VULKAN": "OFF",
-                "DB_OPENGL_RENDERER": "gl1_5_gles1_1",
-                "DB_OPENGL_DISPLAY": "glfw_window"
-            }
-        },
-        {
-            "name": "ninja-opengl-gl3_3-glfw",
-            "displayName": "Ninja OpenGL GL3.3 + GLFW",
-            "inherits": "ninja",
-            "binaryDir": "${sourceDir}/build/opengl-gl3_3-glfw",
-            "cacheVariables": {
-                "DB_BUILD_OPENGL": "ON",
-                "DB_BUILD_VULKAN": "OFF",
-                "DB_OPENGL_RENDERER": "gl3_3",
-                "DB_OPENGL_DISPLAY": "glfw_window"
-            }
-        },
-        {
-            "name": "ninja-opengl-gl1_5-gles1_1-kms",
-            "displayName": "Ninja OpenGL GL1.5/GLES1.1 + Linux KMS",
-            "inherits": "ninja",
-            "binaryDir": "${sourceDir}/build/opengl-gl1_5-gles1_1-kms",
-            "cacheVariables": {
-                "DB_BUILD_OPENGL": "ON",
-                "DB_BUILD_VULKAN": "OFF",
-                "DB_OPENGL_RENDERER": "gl1_5_gles1_1",
-                "DB_OPENGL_DISPLAY": "linux_kms_atomic"
-            }
-        },
-        {
-            "name": "ninja-vulkan-glfw",
-            "displayName": "Ninja Vulkan + GLFW",
-            "inherits": "ninja",
-            "binaryDir": "${sourceDir}/build/vulkan-glfw",
-            "cacheVariables": {
-                "DB_BUILD_OPENGL": "OFF",
-                "DB_BUILD_VULKAN": "ON",
-                "DB_VULKAN_DISPLAY": "glfw_window"
+                "DB_ENABLE_SANITIZERS": "OFF"
             }
         }
     ],
@@ -109,26 +53,6 @@
         {
             "name": "ninja-relwithdebinfo",
             "configurePreset": "ninja-relwithdebinfo",
-            "jobs": 8
-        },
-        {
-            "name": "ninja-opengl-gl1_5-gles1_1-glfw",
-            "configurePreset": "ninja-opengl-gl1_5-gles1_1-glfw",
-            "jobs": 8
-        },
-        {
-            "name": "ninja-opengl-gl3_3-glfw",
-            "configurePreset": "ninja-opengl-gl3_3-glfw",
-            "jobs": 8
-        },
-        {
-            "name": "ninja-opengl-gl1_5-gles1_1-kms",
-            "configurePreset": "ninja-opengl-gl1_5-gles1_1-kms",
-            "jobs": 8
-        },
-        {
-            "name": "ninja-vulkan-glfw",
-            "configurePreset": "ninja-vulkan-glfw",
             "jobs": 8
         }
     ]

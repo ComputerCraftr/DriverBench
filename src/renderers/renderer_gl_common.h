@@ -7,8 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../config/benchmark_config.h"
 #include "../core/db_core.h"
-#include "../displays/bench_config.h"
 #include "renderer_benchmark_common.h"
 
 #define DB_GL_PROBE_PREFIX_BYTES 64U

@@ -1,7 +1,7 @@
 #include <stdint.h>
 
+#include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
-#include "../../displays/bench_config.h"
 #include "../renderer_benchmark_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
@@ -597,9 +597,12 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
     double bench_ms = (double)(db_now_ns_monotonic() - g_state.bench_start_ns) /
                       DB_NS_PER_MS_D;
     db_benchmark_log_periodic(
-        "Vulkan", RENDERER_NAME, BACKEND_NAME, g_state.bench_frames,
-        g_state.runtime.work_unit_count, bench_ms, g_state.capability_mode,
-        &g_state.next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
+        "Vulkan", RENDERER_NAME,
+        (g_state.log_backend_name != NULL) ? g_state.log_backend_name
+                                           : BACKEND_NAME,
+        g_state.bench_frames, g_state.runtime.work_unit_count, bench_ms,
+        g_state.capability_mode, &g_state.next_progress_log_due_ms,
+        BENCH_LOG_INTERVAL_MS_D);
     g_state.frame_index++;
     return DB_VK_FRAME_OK;
 }
@@ -612,8 +615,11 @@ void db_vk_shutdown_impl(void) {
     double bench_ms =
         (double)(bench_end - g_state.bench_start_ns) / DB_NS_PER_MS_D;
     db_benchmark_log_final(
-        "Vulkan", RENDERER_NAME, BACKEND_NAME, g_state.bench_frames,
-        g_state.runtime.work_unit_count, bench_ms, g_state.capability_mode);
+        "Vulkan", RENDERER_NAME,
+        (g_state.log_backend_name != NULL) ? g_state.log_backend_name
+                                           : BACKEND_NAME,
+        g_state.bench_frames, g_state.runtime.work_unit_count, bench_ms,
+        g_state.capability_mode);
     vkDeviceWaitIdle(g_state.device);
     const db_vk_cleanup_ctx_t cleanup = {
         .device = g_state.device,

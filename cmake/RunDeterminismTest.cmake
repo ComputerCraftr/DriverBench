@@ -7,8 +7,13 @@ if(NOT DEFINED TEST_HASH_KEY)
 endif()
 
 function(db_run_once out_hash out_output)
+  set(test_command ${TEST_BIN})
+  if(DEFINED TEST_ARGS AND NOT "${TEST_ARGS}" STREQUAL "")
+    separate_arguments(test_args_list NATIVE_COMMAND "${TEST_ARGS}")
+    list(APPEND test_command ${test_args_list})
+  endif()
   execute_process(
-    COMMAND ${TEST_BIN}
+    COMMAND ${test_command}
     RESULT_VARIABLE run_status
     OUTPUT_VARIABLE run_stdout
     ERROR_VARIABLE run_stderr

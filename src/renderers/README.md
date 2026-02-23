@@ -11,9 +11,10 @@ Current renderer modules:
 - `vulkan_1_2_multi_gpu/`
     - Vulkan 1.2 multi-GPU renderer logic.
 - `cpu_renderer/`
-    - CPU BO renderer logic shared by offscreen display/test entrypoints.
+    - CPU BO renderer logic.
 
-Display entrypoints live in `src/displays/`.
+Renderers are selected at runtime by the unified `driverbench` dispatch layer.
+Display/backend entrypoints live in `src/displays/`.
 
 Benchmark modes are shared across renderers:
 

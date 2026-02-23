@@ -1,5 +1,6 @@
 #include "db_core.h"
 
+#include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -12,10 +13,40 @@
 #endif
 
 #define DB_MAX_TEXT_FILE_BYTES (16U * 1024U * 1024U)
+#define DB_RUNTIME_OPTION_CAPACITY 32U
+#define DB_MAX_SLEEP_NS_D 100000000.0
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 
 static volatile sig_atomic_t db_stop_requested = 0;
+static struct {
+    const char *key;
+    const char *value;
+} db_runtime_options[DB_RUNTIME_OPTION_CAPACITY] = {0};
+
+static int db_ascii_ieq_char(char lhs, char rhs) {
+    if ((lhs >= 'A') && (lhs <= 'Z')) {
+        lhs = (char)(lhs - 'A' + 'a');
+    }
+    if ((rhs >= 'A') && (rhs <= 'Z')) {
+        rhs = (char)(rhs - 'A' + 'a');
+    }
+    return lhs == rhs;
+}
+
+static int db_ascii_ieq(const char *lhs, const char *rhs) {
+    if ((lhs == NULL) || (rhs == NULL)) {
+        return 0;
+    }
+    while ((*lhs != '\0') && (*rhs != '\0')) {
+        if (!db_ascii_ieq_char(*lhs, *rhs)) {
+            return 0;
+        }
+        lhs++;
+        rhs++;
+    }
+    return (*lhs == '\0') && (*rhs == '\0');
+}
 
 static void db_signal_handler(int signum) {
     (void)signum;
@@ -66,19 +97,85 @@ int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...) {
     return result;
 }
 
-int db_env_is_truthy(const char *name) {
-    const char *value = getenv(name);
-    if (value == NULL) {
-        return 0;
+int db_value_is_truthy(const char *value) {
+    int parsed = 0;
+    if (db_parse_bool_text(value, &parsed) != 0) {
+        return parsed;
     }
-    return (strcmp(value, "1") == 0) || (strcmp(value, "true") == 0) ||
-           (strcmp(value, "TRUE") == 0) || (strcmp(value, "yes") == 0) ||
-           (strcmp(value, "YES") == 0);
+    return 0;
 }
 
-int db_env_parse_u32_positive(const char *backend, const char *env_name,
-                              uint32_t *out_value) {
-    const char *value = getenv(env_name);
+int db_parse_bool_text(const char *value, int *out_value) {
+    if ((value == NULL) || (value[0] == '\0')) {
+        return 0;
+    }
+    if ((strcmp(value, "1") == 0) || db_ascii_ieq(value, "true") ||
+        db_ascii_ieq(value, "yes") || db_ascii_ieq(value, "on")) {
+        if (out_value != NULL) {
+            *out_value = 1;
+        }
+        return 1;
+    }
+    if ((strcmp(value, "0") == 0) || db_ascii_ieq(value, "false") ||
+        db_ascii_ieq(value, "no") || db_ascii_ieq(value, "off")) {
+        if (out_value != NULL) {
+            *out_value = 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+int db_parse_fps_cap_text(const char *value, double *out_value) {
+    if ((value == NULL) || (value[0] == '\0')) {
+        return 0;
+    }
+
+    int parsed_bool = 0;
+    if ((db_parse_bool_text(value, &parsed_bool) != 0) && (parsed_bool == 0)) {
+        if (out_value != NULL) {
+            *out_value = 0.0;
+        }
+        return 1;
+    }
+
+    if (db_ascii_ieq(value, "uncapped") || db_ascii_ieq(value, "none")) {
+        if (out_value != NULL) {
+            *out_value = 0.0;
+        }
+        return 1;
+    }
+
+    char *end = NULL;
+    const double parsed = strtod(value, &end);
+    if ((end != value) && (end != NULL) && (*end == '\0') && (parsed > 0.0)) {
+        if (out_value != NULL) {
+            *out_value = parsed;
+        }
+        return 1;
+    }
+
+    return 0;
+}
+
+double db_runtime_resolve_fps_cap(const char *backend, double default_fps_cap) {
+    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_FPS_CAP);
+    if (value == NULL) {
+        return default_fps_cap;
+    }
+
+    double parsed = 0.0;
+    if (db_parse_fps_cap_text(value, &parsed) != 0) {
+        return parsed;
+    }
+
+    db_infof(backend, "Invalid %s='%s'; using default fps cap %.2f",
+             DB_RUNTIME_OPT_FPS_CAP, value, default_fps_cap);
+    return default_fps_cap;
+}
+
+int db_parse_u32_positive_value(const char *backend, const char *field_name,
+                                const char *value, uint32_t *out_value) {
     if ((value == NULL) || (value[0] == '\0')) {
         return 0;
     }
@@ -87,10 +184,57 @@ int db_env_parse_u32_positive(const char *backend, const char *env_name,
     const unsigned long parsed = strtoul(value, &end, 10);
     if ((end == value) || (end == NULL) || (*end != '\0') || (parsed == 0UL) ||
         (parsed > UINT32_MAX)) {
-        db_failf(backend, "Invalid %s='%s'", env_name, value);
+        db_failf(backend, "Invalid %s='%s'", field_name, value);
     }
     *out_value = (uint32_t)parsed;
     return 1;
+}
+
+int db_parse_u32_nonnegative_value(const char *backend, const char *field_name,
+                                   const char *value, uint32_t *out_value) {
+    if ((value == NULL) || (value[0] == '\0')) {
+        return 0;
+    }
+
+    char *end = NULL;
+    const unsigned long parsed = strtoul(value, &end, 10);
+    if ((end == value) || (end == NULL) || (*end != '\0') ||
+        (parsed > UINT32_MAX)) {
+        db_failf(backend, "Invalid %s='%s'", field_name, value);
+    }
+    *out_value = (uint32_t)parsed;
+    return 1;
+}
+
+const char *db_runtime_option_get(const char *name) {
+    if (name == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0U; i < DB_RUNTIME_OPTION_CAPACITY; i++) {
+        if ((db_runtime_options[i].key != NULL) &&
+            (strcmp(db_runtime_options[i].key, name) == 0)) {
+            return db_runtime_options[i].value;
+        }
+    }
+    return NULL;
+}
+
+void db_runtime_option_set(const char *name, const char *value) {
+    if ((name == NULL) || (value == NULL)) {
+        return;
+    }
+    for (size_t i = 0U; i < DB_RUNTIME_OPTION_CAPACITY; i++) {
+        if (db_runtime_options[i].key == NULL) {
+            db_runtime_options[i].key = name;
+            db_runtime_options[i].value = value;
+            return;
+        }
+        if (strcmp(db_runtime_options[i].key, name) == 0) {
+            db_runtime_options[i].value = value;
+            return;
+        }
+    }
+    db_failf("db_core", "Runtime option capacity exceeded");
 }
 
 int db_has_ssh_env(void) {
@@ -113,7 +257,7 @@ void db_validate_runtime_environment(const char *backend,
                                      const char *remote_override_env) {
     const char *display = getenv("DISPLAY");
     if (db_is_forwarded_x11_display() &&
-        !db_env_is_truthy(remote_override_env)) {
+        !db_value_is_truthy(db_runtime_option_get(remote_override_env))) {
         const char *display_text = (display != NULL) ? display : "(null)";
         db_failf(backend,
                  "Refusing forwarded X11 session (DISPLAY=%s). This benchmark "
@@ -140,6 +284,36 @@ uint64_t db_now_ns_monotonic(void) {
     // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ((uint64_t)ts.tv_sec * DB_NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
+}
+
+void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
+                         double fps_cap) {
+    if (fps_cap <= 0.0) {
+        return;
+    }
+
+    const double frame_budget_ns_d = DB_NS_PER_SECOND_D / fps_cap;
+    double remaining_ns_d =
+        frame_budget_ns_d - (double)(db_now_ns_monotonic() - frame_start_ns);
+    while (remaining_ns_d > 0.0) {
+        const double sleep_ns_d = (remaining_ns_d > DB_MAX_SLEEP_NS_D)
+                                      ? DB_MAX_SLEEP_NS_D
+                                      : remaining_ns_d;
+        const long sleep_ns =
+            db_checked_double_to_long(backend, "sleep_ns", sleep_ns_d);
+        if (sleep_ns <= 0L) {
+            break;
+        }
+
+        struct timespec request = {0};
+        request.tv_nsec = sleep_ns;
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        if ((nanosleep(&request, NULL) != 0) && (errno != EINTR)) {
+            break;
+        }
+        remaining_ns_d = frame_budget_ns_d -
+                         (double)(db_now_ns_monotonic() - frame_start_ns);
+    }
 }
 
 uint8_t *db_read_file_or_fail(const char *backend, const char *path,

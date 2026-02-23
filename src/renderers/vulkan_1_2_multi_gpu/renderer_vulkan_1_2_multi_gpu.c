@@ -16,6 +16,10 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     }
     g_state.initialized = 1;
     g_state.wsi_config = *ctx->wsi_config;
+    g_state.log_backend_name = BACKEND_NAME;
+    if ((ctx->wsi_config != NULL) && (ctx->wsi_config->user_data != NULL)) {
+        g_state.log_backend_name = (const char *)ctx->wsi_config->user_data;
+    }
     g_state.instance = ctx->instance;
     g_state.surface = ctx->surface;
     g_state.selection = ctx->selection;

@@ -1,104 +1,69 @@
-#DriverBench
+# DriverBench
 
-OpenGL and Vulkan benchmarks for comparing old vs new drivers and renderers.
+DriverBench builds one executable: `driverbench`.
 
-## Configure Matrix
+It opportunistically includes CPU/OpenGL/Vulkan paths based on detected
+dependencies at configure time.
 
-Choose backend combinations with CMake cache variables:
+## Build
 
-- `DB_OPENGL_RENDERER=gl1_5_gles1_1|gl3_3`
-- `DB_OPENGL_DISPLAY=auto|glfw_window|linux_kms_atomic`
-- `DB_VULKAN_DISPLAY=auto|glfw_window|vk_khr_display`
+```bash
+cmake --preset ninja
+cmake --build build -j
+```
 
-Notes:
+Optional build toggles (defaults shown):
 
-- `vk_khr_display` is reserved and not implemented yet.
-- `linux_kms_atomic` is Linux-only and supports `gl1_5_gles1_1` and `gl3_3`.
-- Default `auto` values opportunistically build as many valid targets as your platform/dependencies allow.
+- `-DDB_BUILD_OPENGL=ON`
+- `-DDB_BUILD_VULKAN=ON`
+- `-DDB_BUILD_GLFW_WINDOW_DISPLAY=ON`
+- `-DDB_BUILD_LINUX_KMS_ATOMIC_DISPLAY=ON`
 
-## Build Defaults
+`cpu` API and `offscreen` display are always built.
 
-- `cmake --preset ninja` now configures a `Release` build by default.
-- Release-like builds use portable optimization defaults:
-  - `-O3`
-  - `-funroll-loops` (compiler-led loop optimization hints)
-- Clang-family compilers (`Clang`/`AppleClang`) enable `-flto` by default in
-  release-like builds.
-- Non-Clang compilers auto-disable LTO with a configure-time warning.
+## Run
 
-Override knobs:
+```bash
+./build/driverbench [dispatch flags] [runtime flags]
+```
 
-- `-DCMAKE_BUILD_TYPE=Debug` to disable release optimizations.
-- `-DDB_ENABLE_AGGRESSIVE_OPT=OFF` to disable aggressive optimization flags.
-- `-DDB_ENABLE_LOOP_HINTS=OFF` to disable loop hint flags.
-- `-DDB_ENABLE_LTO=OFF` to disable LTO.
+Dispatch flags:
 
-## Target Names
+- `--api cpu|opengl|vulkan`
+- `--renderer auto|gl1_5_gles1_1|gl3_3` (OpenGL only)
+- `--display offscreen|glfw_window|linux_kms_atomic` (required, explicit only)
+- `--kms-card /dev/dri/cardX` (KMS only)
 
-Build outputs use versioned, display-aware target names only:
+Runtime flags (CLI aliases for env vars):
 
-- `driverbench_glfw_window_opengl_gl1_5_gles1_1`
-- `driverbench_glfw_window_opengl_gl3_3`
-- `driverbench_linux_kms_atomic_opengl_gl1_5_gles1_1`
-- `driverbench_linux_kms_atomic_opengl_gl3_3`
-- `driverbench_glfw_window_vulkan_1_2_multi_gpu`
-- `driverbench_offscreen_cpu_renderer`
-- `driverbench_glfw_window_cpu_renderer`
+- `--allow-remote-display <0|1>` -> `DRIVERBENCH_ALLOW_REMOTE_DISPLAY`
+- `--benchmark-mode <gradient_sweep|bands|snake_grid|gradient_fill|rect_snake>` -> `DRIVERBENCH_BENCHMARK_MODE`
+- `--fps-cap <value>` -> `DRIVERBENCH_FPS_CAP`
+- `--framebuffer-hash <0|1>` -> `DRIVERBENCH_FRAMEBUFFER_HASH`
+- `--frame-limit <value>` -> `DRIVERBENCH_FRAME_LIMIT`
+- `--hash-every-frame <0|1>` -> `DRIVERBENCH_HASH_EVERY_FRAME`
+- `--offscreen <0|1>` -> `DRIVERBENCH_OFFSCREEN`
+- `--offscreen-frames <value>` -> `DRIVERBENCH_OFFSCREEN_FRAMES`
+- `--random-seed <value>` -> `DRIVERBENCH_RANDOM_SEED`
+- `--vsync <0|1|on|off|true|false>` -> `DRIVERBENCH_VSYNC`
 
-## Runtime Options
+Runtime options are now configured via CLI flags.
+Benchmark mode may be left unset to use its default auto-selection behavior.
 
-- `DRIVERBENCH_VSYNC=1|0|on|off|true|false`
-  - Overrides GLFW swap interval at runtime (default follows `BENCH_VSYNC_ENABLED`).
-- `DRIVERBENCH_FPS_CAP=<number>|0|off|uncapped`
-  - Caps render loop rate for GLFW backends when set to a positive FPS value.
-  - `0`, `off`, `false`, `uncapped`, or unset keeps rendering uncapped.
-- `DRIVERBENCH_RANDOM_SEED=<number>`
-  - Optional shared seed for random-color/random-rect benchmark modes.
-  - When unset, a time-based seed is used.
-  - Set this for reproducible comparisons across renderers/drivers.
-- `DRIVERBENCH_OFFSCREEN_FRAMES=<number>`
-  - Offscreen CPU display frame count override (default `600`).
-  - Applies to `driverbench_offscreen_cpu_renderer` only.
-- `DRIVERBENCH_OFFSCREEN=1`
-  - GLFW backends create hidden windows for offscreen CI-style runs.
-- `DRIVERBENCH_FRAME_LIMIT=<number>`
-  - Stops GLFW render loops after N frames (`0`/unset = no limit).
-  - Applies to all GLFW window backends (including GLFW CPU renderer).
-- `DRIVERBENCH_FRAMEBUFFER_HASH=1`
-  - Enables framebuffer hash logging for GLFW OpenGL backends only when
-    `DRIVERBENCH_OFFSCREEN=1`.
-- `DRIVERBENCH_HASH_EVERY_FRAME=1|0`
-  - Enables per-frame hash logging when hashing is enabled.
-  - For GLFW backends, hash envs are ignored unless `DRIVERBENCH_OFFSCREEN=1`.
-  - `bo_hash_*` and `framebuffer_hash_*` are backend-specific; do not compare
-    hashes across different renderer/display backends.
-- `DRIVERBENCH_BENCHMARK_MODE=gradient_sweep|bands|snake_grid|gradient_fill|rect_snake`
-  - Default is `gradient_sweep` (mode index `0`).
-  - `gradient_sweep` renders a full-grid workload with a moving `32`-row
-    vertical window that blends between deterministic random palette colors
-    while sweeping top-to-bottom and back to top (ping-pong).
-    It is intended as the safer default visual mode.
-  - `bands` is an animated color-changing vertical-band workload.
-    Warning: this mode can produce intense rapid flashing, especially with
-    `DRIVERBENCH_VSYNC=off` and high FPS.
-  - `snake_grid` uses a deterministic S-pattern sweep over a tile grid sized
-    to the benchmark window (`BENCH_WINDOW_WIDTH_PX x BENCH_WINDOW_HEIGHT_PX`)
-    and updates a deterministic window of tiles per frame
-    (`BENCH_SNAKE_PHASE_WINDOW_TILES`, default `64`) with progressive
-    green-over-grey phasing. The sweep paints from top to bottom, then restarts
-    at the top and clears back to grey.
-  - `gradient_fill` performs a full-screen top-down random-palette conversion
-    with a moving row transition.
-    Once the sweep reaches the bottom it restarts from the top with the next
-    palette phase.
-  - `rect_snake` draws deterministic pseudo-random rectangles and fills each
-    rectangle in an S-pattern snake order.
+Examples:
+
+```bash
+./build/driverbench --api cpu --display offscreen --benchmark-mode snake_grid --random-seed 12345 --offscreen-frames 300
+./build/driverbench --api opengl --renderer gl3_3 --display glfw_window --vsync 0 --frame-limit 1000
+./build/driverbench --api vulkan --display glfw_window --benchmark-mode gradient_fill
+```
 
 ## Determinism Tests
 
-- `ctest` includes deterministic hash tests for
-  `driverbench_offscreen_cpu_renderer`.
-- Enable GLFW offscreen deterministic tests with:
-  - `-DDB_ENABLE_GLFW_OFFSCREEN_TESTS=ON`
-- GLFW deterministic tests run hidden (`DRIVERBENCH_OFFSCREEN=1`) and compare
-  final framebuffer hashes across repeated runs with fixed seed/frame count.
+`ctest` runs deterministic CPU/offscreen hash tests against the unified binary.
+
+Enable optional GLFW offscreen determinism tests with:
+
+```bash
+cmake -S . -B build -DDB_ENABLE_GLFW_OFFSCREEN_TESTS=ON
+```

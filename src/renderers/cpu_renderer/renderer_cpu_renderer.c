@@ -4,8 +4,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "../../config/benchmark_config.h"
+#include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
-#include "../../displays/bench_config.h"
 #include "../renderer_benchmark_common.h"
 
 #define BACKEND_NAME "renderer_cpu_renderer"
@@ -67,10 +68,9 @@ static void db_bo_fill_solid(db_cpu_bo_t *bo, uint32_t rgba) {
 }
 
 static void db_bo_copy(db_cpu_bo_t *dst, const db_cpu_bo_t *src) {
-    const uint64_t pixel_count = (uint64_t)dst->width * (uint64_t)dst->height;
-    for (uint64_t idx = 0U; idx < pixel_count; idx++) {
-        dst->pixels_rgba8[idx] = src->pixels_rgba8[idx];
-    }
+    const size_t pixel_count =
+        (size_t)((uint64_t)dst->width * (uint64_t)dst->height);
+    db_copy_u32_buffer(dst->pixels_rgba8, src->pixels_rgba8, pixel_count);
 }
 
 static size_t db_grid_index(uint32_t row, uint32_t col, uint32_t cols) {
