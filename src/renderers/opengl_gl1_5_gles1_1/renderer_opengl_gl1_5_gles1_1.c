@@ -101,15 +101,48 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
     if (plan == NULL) {
         return;
     }
+    if (plan->batch_size > BENCH_SNAKE_PHASE_WINDOW_TILES) {
+        failf("snake batch size %u exceeds BENCH_SNAKE_PHASE_WINDOW_TILES=%u",
+              plan->batch_size, BENCH_SNAKE_PHASE_WINDOW_TILES);
+    }
     float target_r = 0.0F;
     float target_g = 0.0F;
     float target_b = 0.0F;
     db_snake_grid_target_color_rgb(plan->clearing_phase, &target_r, &target_g,
                                    &target_b);
+    if (plan->phase_completed != 0) {
+        db_fill_grid_all_rgb(target_r, target_g, target_b,
+                             g_state.vertex_stride);
+        g_state.snake_prev_start = plan->next_prev_start;
+        g_state.snake_prev_count = plan->next_prev_count;
+        g_state.snake_cursor = plan->next_cursor;
+        g_state.snake_clearing_phase = plan->next_clearing_phase;
+        return;
+    }
+
+    float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
+    for (uint32_t update_index = 0U; update_index < plan->batch_size;
+         update_index++) {
+        const size_t prior_base = (size_t)update_index * 3U;
+        const uint32_t tile_step = plan->active_cursor + update_index;
+        if (tile_step >= g_state.work_unit_count) {
+            break;
+        }
+        const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
+        const size_t tile_float_offset =
+            (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
+        float *unit = &g_state.vertices[tile_float_offset];
+        prior_rgb[prior_base] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
+        prior_rgb[prior_base + 1U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
+        prior_rgb[prior_base + 2U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+    }
 
     for (uint32_t update_index = 0; update_index < plan->prev_count;
          update_index++) {
         const uint32_t tile_step = plan->prev_start + update_index;
+        if (tile_step >= g_state.work_unit_count) {
+            break;
+        }
         const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
         const size_t tile_float_offset =
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
@@ -122,6 +155,9 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
     for (uint32_t update_index = 0; update_index < plan->batch_size;
          update_index++) {
         const uint32_t tile_step = plan->active_cursor + update_index;
+        if (tile_step >= g_state.work_unit_count) {
+            break;
+        }
         const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
 
         float target_r = 0.0F;
@@ -135,9 +171,10 @@ static void db_render_snake_grid_step(const db_snake_damage_plan_t *plan) {
         const size_t tile_float_offset =
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
         float *unit = &g_state.vertices[tile_float_offset];
-        const float prior_r = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
-        const float prior_g = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
-        const float prior_b = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+        const size_t prior_base = (size_t)update_index * 3U;
+        const float prior_r = prior_rgb[prior_base];
+        const float prior_g = prior_rgb[prior_base + 1U];
+        const float prior_b = prior_rgb[prior_base + 2U];
         float out_r = 0.0F;
         float out_g = 0.0F;
         float out_b = 0.0F;
@@ -234,6 +271,11 @@ static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
     if (plan == NULL) {
         return 0;
     }
+    if (plan->batch_size > BENCH_SNAKE_PHASE_WINDOW_TILES) {
+        failf("rect snake batch size %u exceeds "
+              "BENCH_SNAKE_PHASE_WINDOW_TILES=%u",
+              plan->batch_size, BENCH_SNAKE_PHASE_WINDOW_TILES);
+    }
 
     int full_repaint = 0;
     if (g_state.rect_snake_reset_pending != 0) {
@@ -247,6 +289,24 @@ static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
         g_state.pattern_seed, plan->active_rect_index);
     if ((rect.width == 0U) || (rect.height == 0U)) {
         return full_repaint;
+    }
+
+    float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
+    for (uint32_t update_index = 0U; update_index < plan->batch_size;
+         update_index++) {
+        const size_t prior_base = (size_t)update_index * 3U;
+        const uint32_t step = plan->active_cursor + update_index;
+        if (step >= plan->rect_tile_count) {
+            break;
+        }
+        const uint32_t tile_index =
+            db_rect_snake_tile_index_from_step(&rect, step);
+        const size_t tile_float_offset =
+            (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
+        float *unit = &g_state.vertices[tile_float_offset];
+        prior_rgb[prior_base] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
+        prior_rgb[prior_base + 1U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
+        prior_rgb[prior_base + 2U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
     }
 
     for (uint32_t update_index = 0U; update_index < g_state.snake_prev_count;
@@ -278,9 +338,10 @@ static int db_render_rect_snake_step(const db_rect_snake_plan_t *plan) {
         const size_t tile_float_offset =
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * g_state.vertex_stride;
         float *unit = &g_state.vertices[tile_float_offset];
-        const float prior_r = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
-        const float prior_g = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
-        const float prior_b = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+        const size_t prior_base = (size_t)update_index * 3U;
+        const float prior_r = prior_rgb[prior_base];
+        const float prior_g = prior_rgb[prior_base + 1U];
+        const float prior_b = prior_rgb[prior_base + 2U];
         float out_r = 0.0F;
         float out_g = 0.0F;
         float out_b = 0.0F;
