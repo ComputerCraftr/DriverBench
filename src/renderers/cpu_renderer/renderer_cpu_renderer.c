@@ -26,18 +26,10 @@ typedef struct {
 
 typedef struct {
     db_cpu_bo_t bos[2];
-    uint32_t gradient_cycle;
-    uint32_t gradient_head_row;
     int history_mode;
     int history_read_index;
     int initialized;
-    int mode_phase_flag;
-    uint32_t rect_seed;
-    uint32_t snake_cursor;
-    uint32_t snake_prev_count;
-    uint32_t snake_prev_start;
-    uint32_t snake_rect_index;
-    db_pattern_vertex_init_t state;
+    db_benchmark_runtime_init_t runtime;
 } db_cpu_renderer_state_t;
 
 static db_cpu_renderer_state_t g_state = {0};
@@ -203,9 +195,8 @@ void db_renderer_cpu_renderer_init(void) {
         return;
     }
 
-    db_pattern_vertex_init_t init_state = {0};
-    if (!db_init_vertices_for_mode_common_with_stride(BACKEND_NAME, &init_state,
-                                                      DB_VERTEX_FLOAT_STRIDE)) {
+    db_benchmark_runtime_init_t init_state = {0};
+    if (!db_init_benchmark_runtime_common(BACKEND_NAME, &init_state)) {
         db_failf(BACKEND_NAME, "cpu renderer init failed");
     }
 
@@ -214,7 +205,6 @@ void db_renderer_cpu_renderer_init(void) {
     const uint64_t pixel_count = (uint64_t)grid_cols * (uint64_t)grid_rows;
     if ((pixel_count == 0U) ||
         (pixel_count > ((uint64_t)SIZE_MAX / sizeof(uint32_t)))) {
-        free(init_state.vertices);
         db_failf(BACKEND_NAME, "invalid offscreen BO size: %ux%u", grid_cols,
                  grid_rows);
     }
@@ -232,7 +222,6 @@ void db_renderer_cpu_renderer_init(void) {
     if ((bos[0].pixels_rgba8 == NULL) || (bos[1].pixels_rgba8 == NULL)) {
         free(bos[0].pixels_rgba8);
         free(bos[1].pixels_rgba8);
-        free(init_state.vertices);
         db_failf(BACKEND_NAME, "failed to allocate offscreen BOs");
     }
 
@@ -243,19 +232,12 @@ void db_renderer_cpu_renderer_init(void) {
 
     g_state = (db_cpu_renderer_state_t){0};
     g_state.initialized = 1;
-    g_state.state = init_state;
+    g_state.runtime = init_state;
     g_state.bos[0] = bos[0];
     g_state.bos[1] = bos[1];
     g_state.history_mode = db_pattern_uses_history_texture(init_state.pattern);
     g_state.history_read_index = 0;
-    g_state.snake_cursor = init_state.snake_cursor;
-    g_state.snake_prev_start = init_state.snake_prev_start;
-    g_state.snake_prev_count = init_state.snake_prev_count;
-    g_state.mode_phase_flag = init_state.mode_phase_flag;
-    g_state.gradient_head_row = init_state.gradient_head_row;
-    g_state.gradient_cycle = init_state.gradient_cycle;
-    g_state.snake_rect_index = 0U;
-    g_state.rect_seed = init_state.pattern_seed;
+    g_state.runtime.snake_rect_index = 0U;
 }
 
 void db_renderer_cpu_renderer_render_frame(double time_s) {
@@ -273,15 +255,16 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
     db_cpu_bo_t *write_bo = &g_state.bos[write_index];
     const db_cpu_bo_t *read_bo = &g_state.bos[g_state.history_read_index];
 
-    if (g_state.state.pattern == DB_PATTERN_BANDS) {
+    if (g_state.runtime.pattern == DB_PATTERN_BANDS) {
         db_render_bands(write_bo, time_s);
-    } else if ((g_state.state.pattern == DB_PATTERN_SNAKE_GRID) ||
-               (g_state.state.pattern == DB_PATTERN_RECT_SNAKE)) {
-        const int is_grid = (g_state.state.pattern == DB_PATTERN_SNAKE_GRID);
+    } else if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
+               (g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE)) {
+        const int is_grid = (g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID);
         const db_snake_plan_request_t request = db_snake_plan_request_make(
-            is_grid, g_state.rect_seed, g_state.snake_rect_index,
-            g_state.snake_cursor, g_state.snake_prev_start,
-            g_state.snake_prev_count, g_state.mode_phase_flag);
+            is_grid, g_state.runtime.pattern_seed,
+            g_state.runtime.snake_rect_index, g_state.runtime.snake_cursor,
+            g_state.runtime.snake_prev_start, g_state.runtime.snake_prev_count,
+            g_state.runtime.mode_phase_flag);
         const db_snake_plan_t plan = db_snake_plan_next_step(&request);
         db_rect_snake_rect_t rect = {0};
         float target_red = 0.0F;
@@ -301,34 +284,35 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
             db_grid_target_color_rgb(plan.clearing_phase, &target_red,
                                      &target_green, &target_blue);
             full_fill_on_phase_completed = 1;
-            g_state.mode_phase_flag = plan.next_clearing_phase;
+            g_state.runtime.mode_phase_flag = plan.next_clearing_phase;
         } else {
-            rect = db_rect_snake_rect_from_index(g_state.rect_seed,
+            rect = db_rect_snake_rect_from_index(g_state.runtime.pattern_seed,
                                                  plan.active_rect_index);
             target_red = rect.color_r;
             target_green = rect.color_g;
             target_blue = rect.color_b;
-            g_state.snake_rect_index = plan.next_rect_index;
+            g_state.runtime.snake_rect_index = plan.next_rect_index;
         }
         db_render_snake_step(write_bo, read_bo, &plan, &rect, target_red,
                              target_green, target_blue,
                              full_fill_on_phase_completed);
-        g_state.snake_cursor = plan.next_cursor;
-        g_state.snake_prev_start = plan.next_prev_start;
-        g_state.snake_prev_count = plan.next_prev_count;
-    } else if ((g_state.state.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-               (g_state.state.pattern == DB_PATTERN_GRADIENT_FILL)) {
+        g_state.runtime.snake_cursor = plan.next_cursor;
+        g_state.runtime.snake_prev_start = plan.next_prev_start;
+        g_state.runtime.snake_prev_count = plan.next_prev_count;
+    } else if ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
+               (g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL)) {
         const int is_sweep =
-            (g_state.state.pattern == DB_PATTERN_GRADIENT_SWEEP);
+            (g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP);
         const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
-            g_state.gradient_head_row, is_sweep ? g_state.mode_phase_flag : 1,
-            g_state.gradient_cycle, is_sweep ? 0 : 1);
+            g_state.runtime.gradient_head_row,
+            is_sweep ? g_state.runtime.mode_phase_flag : 1,
+            g_state.runtime.gradient_cycle, is_sweep ? 0 : 1);
         db_render_gradient(write_bo, plan.render_head_row,
                            is_sweep ? plan.render_direction_down : 1,
                            plan.render_cycle_index);
-        g_state.gradient_head_row = plan.next_head_row;
-        g_state.mode_phase_flag = plan.next_direction_down;
-        g_state.gradient_cycle = plan.next_cycle_index;
+        g_state.runtime.gradient_head_row = plan.next_head_row;
+        g_state.runtime.mode_phase_flag = plan.next_direction_down;
+        g_state.runtime.gradient_cycle = plan.next_cycle_index;
     }
 
     if (g_state.history_mode != 0) {
@@ -354,7 +338,7 @@ uint32_t db_renderer_cpu_renderer_work_unit_count(void) {
     if (g_state.initialized == 0) {
         return 0U;
     }
-    return g_state.state.work_unit_count;
+    return g_state.runtime.work_unit_count;
 }
 
 const char *db_renderer_cpu_renderer_capability_mode(void) {
@@ -367,6 +351,5 @@ void db_renderer_cpu_renderer_shutdown(void) {
     }
     free(g_state.bos[0].pixels_rgba8);
     free(g_state.bos[1].pixels_rgba8);
-    free(g_state.state.vertices);
     g_state = (db_cpu_renderer_state_t){0};
 }
