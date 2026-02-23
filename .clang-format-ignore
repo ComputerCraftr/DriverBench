@@ -1,0 +1,3 @@
+# Keep CMake files out of clang-format; use cmake-format if needed.
+/CMakeLists.txt
+/cmake/**

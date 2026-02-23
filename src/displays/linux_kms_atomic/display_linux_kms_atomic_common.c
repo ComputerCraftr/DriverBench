@@ -22,7 +22,6 @@
 #include <string.h>
 #include <sys/errno.h>
 #include <sys/select.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "../../core/db_core.h"
@@ -46,13 +45,6 @@ static __attribute__((noreturn)) void failf(const char *fmt, ...) {
 
 static void die(const char *msg) { failf("%s: %s", msg, strerror(errno)); }
 static void diex(const char *msg) { failf("%s", msg); }
-
-static uint64_t now_ns(void) {
-    struct timespec ts;
-    // NOLINTNEXTLINE(misc-include-cleaner)
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ((uint64_t)ts.tv_sec * DB_NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
-}
 
 struct kms_atomic {
     int fd;
@@ -557,7 +549,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     }
     drmModeAtomicFree(req);
 
-    const uint64_t bench_start = now_ns();
+    const uint64_t bench_start = db_now_ns_monotonic();
     uint64_t bench_frames = 0;
     double next_progress_log_due_ms = 0.0;
 
@@ -613,14 +605,15 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         bench_frames++;
 
         const double bench_ms =
-            (double)(now_ns() - bench_start) / DB_NS_PER_MS_D;
+            (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
         db_benchmark_log_periodic("OpenGL", renderer_name, backend,
                                   bench_frames, work_unit_count, bench_ms,
                                   capability_mode, &next_progress_log_due_ms,
                                   BENCH_LOG_INTERVAL_MS_D);
     }
 
-    const double bench_ms = (double)(now_ns() - bench_start) / DB_NS_PER_MS_D;
+    const double bench_ms =
+        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
     db_benchmark_log_final("OpenGL", renderer_name, backend, bench_frames,
                            work_unit_count, bench_ms, capability_mode);
 

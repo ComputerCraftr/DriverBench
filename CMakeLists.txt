@@ -241,6 +241,11 @@ if(DB_BUILD_VULKAN)
     set(DB_VULKAN_TARGET driverbench_glfw_window_vulkan_1_2_multi_gpu)
     add_executable(${DB_VULKAN_TARGET}
       ${DB_VULKAN_SOURCE}
+      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_frame.c
+      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_init.c
+      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_runtime.c
+      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_scheduler.c
+      src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_swapchain.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.c
       ${DB_GLFW_DISPLAY_SOURCES}
       ${DB_CORE_SOURCES}

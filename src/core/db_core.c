@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifndef _WIN32
 #include <sys/signal.h>
 #endif
@@ -133,6 +134,13 @@ void db_install_signal_handlers(void) {
 }
 
 int db_should_stop(void) { return db_stop_requested != 0; }
+
+uint64_t db_now_ns_monotonic(void) {
+    struct timespec ts = {0};
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ((uint64_t)ts.tv_sec * DB_NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
+}
 
 uint8_t *db_read_file_or_fail(const char *backend, const char *path,
                               size_t *out_sz) {

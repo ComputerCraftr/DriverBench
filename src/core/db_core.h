@@ -40,6 +40,7 @@ void db_validate_runtime_environment(const char *backend,
                                      const char *remote_override_env);
 void db_install_signal_handlers(void);
 int db_should_stop(void);
+uint64_t db_now_ns_monotonic(void);
 
 uint8_t *db_read_file_or_fail(const char *backend, const char *path,
                               size_t *out_sz);
