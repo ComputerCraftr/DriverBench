@@ -15,8 +15,8 @@
 #include "../bench_config.h"
 #include "../display_env_common.h"
 
-#define NS_PER_SECOND_D 1000000000.0
 #define MAX_SLEEP_NS_D 100000000.0
+#define NS_PER_SECOND_D 1000000000.0
 
 int db_glfw_offscreen_enabled(void) {
     return db_env_is_truthy(DB_ENV_OFFSCREEN);

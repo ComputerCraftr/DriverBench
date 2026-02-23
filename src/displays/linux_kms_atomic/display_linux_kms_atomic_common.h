@@ -9,10 +9,10 @@ typedef enum {
 } db_kms_atomic_context_profile_t;
 
 typedef struct {
+    const char *(*capability_mode)(void);
     void (*init)(void);
     void (*render_frame)(double time_s);
     void (*shutdown)(void);
-    const char *(*capability_mode)(void);
     uint32_t (*work_unit_count)(void);
 } db_kms_atomic_renderer_vtable_t;
 

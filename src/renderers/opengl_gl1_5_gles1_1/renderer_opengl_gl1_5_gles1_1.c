@@ -19,37 +19,37 @@
 #endif
 
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
-#define STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_VERTEX_FLOAT_STRIDE))
-#define ES_STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_ES_VERTEX_FLOAT_STRIDE))
-#define DB_CAP_MODE_OPENGL_VBO_MAP_RANGE "opengl_vbo_map_range"
-#define DB_CAP_MODE_OPENGL_VBO_MAP_BUFFER "opengl_vbo_map_buffer"
-#define DB_CAP_MODE_OPENGL_VBO "opengl_vbo"
 #define DB_CAP_MODE_OPENGL_CLIENT_ARRAY "opengl_client_array"
+#define DB_CAP_MODE_OPENGL_VBO "opengl_vbo"
+#define DB_CAP_MODE_OPENGL_VBO_MAP_BUFFER "opengl_vbo_map_buffer"
+#define DB_CAP_MODE_OPENGL_VBO_MAP_RANGE "opengl_vbo_map_range"
+#define DB_MAX_GRADIENT_UPLOAD_RANGES 64U
 #define DB_MAX_SNAKE_UPLOAD_RANGES                                             \
     ((size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U)
-#define DB_MAX_GRADIENT_UPLOAD_RANGES 64U
+#define ES_STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_ES_VERTEX_FLOAT_STRIDE))
+#define STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_VERTEX_FLOAT_STRIDE))
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
-    int use_map_range_upload;
-    int use_map_buffer_upload;
-    int is_es_context;
-    GLuint vbo;
-    float *vertices;
-    uint32_t work_unit_count;
-    uint32_t snake_cursor;
-    uint32_t snake_prev_start;
-    uint32_t snake_prev_count;
-    uint32_t snake_rect_index;
-    uint32_t pattern_seed;
-    int snake_reset_pending;
-    int mode_phase_flag;
+    GLsizei draw_vertex_count;
     uint32_t gradient_head_row;
     uint32_t gradient_cycle;
+    int is_es_context;
+    int mode_phase_flag;
     db_pattern_t pattern;
-    GLsizei draw_vertex_count;
+    uint32_t pattern_seed;
+    uint32_t snake_cursor;
+    uint32_t snake_prev_count;
+    uint32_t snake_prev_start;
+    uint32_t snake_rect_index;
+    int snake_reset_pending;
+    int use_map_buffer_upload;
+    int use_map_range_upload;
+    GLuint vbo;
     size_t vertex_stride;
+    float *vertices;
+    uint32_t work_unit_count;
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};

@@ -12,14 +12,14 @@ typedef enum {
 } db_vk_frame_result_t;
 
 typedef struct {
-    void *window_handle;
-    void *user_data;
-    const char *const *(*get_required_instance_extensions)(uint32_t *count,
-                                                           void *user_data);
     VkResult (*create_window_surface)(VkInstance instance, void *window_handle,
                                       VkSurfaceKHR *surface, void *user_data);
     void (*get_framebuffer_size)(void *window_handle, int *width, int *height,
                                  void *user_data);
+    const char *const *(*get_required_instance_extensions)(uint32_t *count,
+                                                           void *user_data);
+    void *user_data;
+    void *window_handle;
 } db_vk_wsi_config_t;
 
 void db_renderer_vulkan_1_2_multi_gpu_init(

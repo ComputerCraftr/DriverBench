@@ -8,20 +8,20 @@ layout(push_constant) uniform PC {
     vec4 color;
     vec4 base_color;
     vec4 target_color;
-    uint render_mode;
-    uint grid_rows;
     uint gradient_head_row;
-    uint snake_rect_index;
-    int mode_phase_flag;
     uint gradient_window_rows;
-    uint viewport_height;
     uint grid_cols;
-    uint snake_cursor;
-    uint snake_batch_size;
-    int snake_phase_completed;
-    uint viewport_width;
+    uint grid_rows;
+    int mode_phase_flag;
     uint palette_cycle;
     uint pattern_seed;
+    uint render_mode;
+    uint snake_batch_size;
+    uint snake_cursor;
+    int snake_phase_completed;
+    uint snake_rect_index;
+    uint viewport_height;
+    uint viewport_width;
 } pc;
 #else
 // OpenGL-mode GLSL tools reject push constants; keep a compatible fallback
@@ -32,20 +32,20 @@ layout(std140, binding = 0) uniform PC {
     vec4 color;
     vec4 base_color;
     vec4 target_color;
-    uint render_mode;
-    uint grid_rows;
     uint gradient_head_row;
-    uint snake_rect_index;
-    int mode_phase_flag;
     uint gradient_window_rows;
-    uint viewport_height;
     uint grid_cols;
-    uint snake_cursor;
-    uint snake_batch_size;
-    int snake_phase_completed;
-    uint viewport_width;
+    uint grid_rows;
+    int mode_phase_flag;
     uint palette_cycle;
     uint pattern_seed;
+    uint render_mode;
+    uint snake_batch_size;
+    uint snake_cursor;
+    int snake_phase_completed;
+    uint snake_rect_index;
+    uint viewport_height;
+    uint viewport_width;
 } pc;
 #endif
 

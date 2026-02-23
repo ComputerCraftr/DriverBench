@@ -3,27 +3,27 @@ in vec3 v_color;
 flat in int v_tile_index;
 out vec4 out_color;
 
-uniform uint u_render_mode;
-uniform int u_mode_phase_flag;
-uniform uint u_snake_cursor;
-uniform uint u_snake_batch_size;
+uniform uint u_gradient_head_row;
+uniform uint u_gradient_window_rows;
+uniform vec3 u_grid_base_color;
 uniform uint u_grid_cols;
 uniform uint u_grid_rows;
-uniform uint u_gradient_head_row;
-uniform uint u_snake_rect_index;
-uniform uint u_gradient_window_rows;
-uniform uint u_palette_cycle;
-uniform uint u_pattern_seed;
-uniform vec3 u_grid_base_color;
 uniform vec3 u_grid_target_color;
 uniform sampler2D u_history_tex;
+uniform int u_mode_phase_flag;
+uniform uint u_palette_cycle;
+uniform uint u_pattern_seed;
+uniform uint u_render_mode;
+uniform uint u_snake_batch_size;
+uniform uint u_snake_cursor;
+uniform uint u_snake_rect_index;
 
 struct db_rect_snake_desc_t {
+    vec3 color;
+    uint height;
+    uint width;
     uint x;
     uint y;
-    uint width;
-    uint height;
-    vec3 color;
 };
 
 vec4 db_rgba(vec3 color_rgb) {

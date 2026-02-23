@@ -25,14 +25,14 @@
 #endif
 #endif
 
-#ifndef GL_MAP_WRITE_BIT
-#define GL_MAP_WRITE_BIT 0x0002
-#endif
 #ifndef GL_MAP_INVALIDATE_BUFFER_BIT
 #define GL_MAP_INVALIDATE_BUFFER_BIT 0x0008
 #endif
 #ifndef GL_MAP_UNSYNCHRONIZED_BIT
 #define GL_MAP_UNSYNCHRONIZED_BIT 0x0020
+#endif
+#ifndef GL_MAP_WRITE_BIT
+#define GL_MAP_WRITE_BIT 0x0002
 #endif
 #ifndef GL_WRITE_ONLY_OES
 #define GL_WRITE_ONLY_OES 0x88B9
@@ -47,11 +47,11 @@ typedef void (*db_gl_get_buffer_sub_data_fn_t)(GLenum target, GLintptr offset,
                                                GLsizeiptr size, void *data);
 
 typedef struct {
-    db_gl_map_buffer_range_fn_t map_buffer_range;
-    db_gl_map_buffer_fn_t map_buffer;
-    db_gl_unmap_buffer_fn_t unmap_buffer;
     db_gl_get_buffer_sub_data_fn_t get_buffer_sub_data;
     int loaded;
+    db_gl_map_buffer_fn_t map_buffer;
+    db_gl_map_buffer_range_fn_t map_buffer_range;
+    db_gl_unmap_buffer_fn_t unmap_buffer;
 } db_gl_upload_proc_table_t;
 
 static db_gl_upload_proc_table_t g_upload_proc_table = {0};

@@ -14,9 +14,9 @@ typedef void (*db_gl_generic_proc_t)(void);
 typedef db_gl_generic_proc_t (*db_gl_get_proc_address_fn_t)(const char *name);
 
 typedef struct {
-    int use_persistent_upload;
-    int use_map_range_upload;
     int use_map_buffer_upload;
+    int use_map_range_upload;
+    int use_persistent_upload;
     void *persistent_mapped_ptr;
 } db_gl_upload_probe_result_t;
 

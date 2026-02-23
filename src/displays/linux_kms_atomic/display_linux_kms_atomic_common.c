@@ -30,14 +30,14 @@
 #include "../bench_config.h"
 #include "../display_gl_runtime_common.h"
 
-#define NS_PER_SECOND_U64 1000000000ULL
-#define BG_COLOR_R_F 0.04F
-#define BG_COLOR_G_F 0.04F
-#define BG_COLOR_B_F 0.07F
 #define BG_COLOR_A_F 1.0F
+#define BG_COLOR_B_F 0.07F
+#define BG_COLOR_G_F 0.04F
+#define BG_COLOR_R_F 0.04F
 #define DRM_SRC_FP_SHIFT 16U
-#define NS_TO_MS_D 1e6
 #define LOG_MSG_CAPACITY 2048U
+#define NS_PER_SECOND_U64 1000000000ULL
+#define NS_TO_MS_D 1e6
 
 static const char *g_backend_name = "display_linux_kms_atomic";
 

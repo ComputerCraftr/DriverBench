@@ -9,14 +9,14 @@
 #include "../renderer_benchmark_common.h"
 
 #define BACKEND_NAME "renderer_cpu_renderer"
-#define DB_CAP_MODE_CPU_OFFSCREEN_BO "cpu_offscreen_bo"
 #define DB_ALPHA_U8 255U
-#define DB_U8_MAX_F 255.0F
-#define DB_ROUND_HALF_UP_F 0.5F
-#define DB_COLOR_SHIFT_R 0U
-#define DB_COLOR_SHIFT_G 8U
-#define DB_COLOR_SHIFT_B 16U
+#define DB_CAP_MODE_CPU_OFFSCREEN_BO "cpu_offscreen_bo"
 #define DB_COLOR_SHIFT_A 24U
+#define DB_COLOR_SHIFT_B 16U
+#define DB_COLOR_SHIFT_G 8U
+#define DB_COLOR_SHIFT_R 0U
+#define DB_ROUND_HALF_UP_F 0.5F
+#define DB_U8_MAX_F 255.0F
 
 typedef struct {
     uint32_t width;
@@ -25,19 +25,19 @@ typedef struct {
 } db_cpu_bo_t;
 
 typedef struct {
-    int initialized;
-    db_pattern_vertex_init_t state;
     db_cpu_bo_t bos[2];
+    uint32_t gradient_cycle;
+    uint32_t gradient_head_row;
     int history_mode;
     int history_read_index;
-    uint32_t snake_cursor;
-    uint32_t snake_prev_start;
-    uint32_t snake_prev_count;
+    int initialized;
     int mode_phase_flag;
-    uint32_t gradient_head_row;
-    uint32_t gradient_cycle;
-    uint32_t snake_rect_index;
     uint32_t rect_seed;
+    uint32_t snake_cursor;
+    uint32_t snake_prev_count;
+    uint32_t snake_prev_start;
+    uint32_t snake_rect_index;
+    db_pattern_vertex_init_t state;
 } db_cpu_renderer_state_t;
 
 static db_cpu_renderer_state_t g_state = {0};

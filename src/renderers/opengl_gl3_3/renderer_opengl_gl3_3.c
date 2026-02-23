@@ -33,70 +33,70 @@
 #endif
 
 #define BACKEND_NAME "renderer_opengl_gl3_3"
-#define SHADER_LOG_MSG_CAPACITY 1024
-#define ATTR_POSITION_LOC 0U
+#define ATTR_COLOR_COMPONENTS 3
 #define ATTR_COLOR_LOC 1U
 #define ATTR_POSITION_COMPONENTS 2
-#define ATTR_COLOR_COMPONENTS 3
-#define DB_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT "opengl_shader_vbo_persistent"
-#define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE "opengl_shader_vbo_map_range"
-#define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER "opengl_shader_vbo_map_buffer"
+#define ATTR_POSITION_LOC 0U
 #define DB_CAP_MODE_OPENGL_SHADER_VBO "opengl_shader_vbo"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER "opengl_shader_vbo_map_buffer"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE "opengl_shader_vbo_map_range"
+#define DB_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT "opengl_shader_vbo_persistent"
+#define SHADER_LOG_MSG_CAPACITY 1024
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
-    size_t vbo_bytes;
-    int use_map_range_upload;
-    int use_map_buffer_upload;
-    int use_persistent_upload;
-    void *persistent_mapped_ptr;
-    GLuint vao;
-    GLuint vbo;
-    GLuint program;
-    GLint u_render_mode;
-    GLint u_mode_phase_flag;
-    GLint u_snake_cursor;
-    GLint u_snake_batch_size;
+    GLsizei draw_vertex_count;
+    GLuint fallback_tex;
+    uint32_t gradient_cycle;
+    uint32_t gradient_head_row;
+    GLint u_gradient_head_row;
+    GLint u_gradient_window_rows;
+    GLint u_grid_base_color;
     GLint u_grid_cols;
     GLint u_grid_rows;
-    GLint u_gradient_head_row;
-    GLint u_snake_rect_index;
-    GLint u_gradient_window_rows;
-    GLint u_palette_cycle;
-    GLint u_pattern_seed;
-    GLint u_grid_base_color;
     GLint u_grid_target_color;
     GLint u_history_tex;
-    int uniform_mode_phase_flag_cache;
-    uint32_t uniform_snake_cursor_cache;
-    int uniform_snake_cursor_cache_valid;
-    uint32_t uniform_snake_batch_size_cache;
-    int uniform_snake_batch_size_cache_valid;
-    uint32_t uniform_gradient_head_row_cache;
-    int uniform_gradient_head_row_cache_valid;
-    uint32_t uniform_snake_rect_index_cache;
-    int uniform_snake_rect_index_cache_valid;
-    uint32_t uniform_palette_cycle_cache;
-    int uniform_palette_cycle_cache_valid;
-    float *vertices;
-    uint32_t work_unit_count;
-    uint32_t snake_cursor;
-    uint32_t snake_batch_size;
-    int mode_phase_flag;
-    uint32_t gradient_head_row;
-    uint32_t gradient_cycle;
-    uint32_t snake_rect_index;
-    uint32_t pattern_seed;
-    GLuint fallback_tex;
-    GLuint history_tex[2];
-    GLuint history_fbo[2];
-    int history_width;
+    GLint u_mode_phase_flag;
+    GLint u_palette_cycle;
+    GLint u_pattern_seed;
+    GLint u_render_mode;
+    GLint u_snake_batch_size;
+    GLint u_snake_cursor;
+    GLint u_snake_rect_index;
     int history_height;
+    GLuint history_fbo[2];
     int history_initialized;
     int history_read_index;
+    GLuint history_tex[2];
+    int history_width;
+    int mode_phase_flag;
     db_pattern_t pattern;
-    GLsizei draw_vertex_count;
+    uint32_t pattern_seed;
+    void *persistent_mapped_ptr;
+    GLuint program;
+    uint32_t snake_batch_size;
+    uint32_t snake_cursor;
+    uint32_t snake_rect_index;
+    int uniform_mode_phase_flag_cache;
+    uint32_t uniform_gradient_head_row_cache;
+    int uniform_gradient_head_row_cache_valid;
+    uint32_t uniform_palette_cycle_cache;
+    int uniform_palette_cycle_cache_valid;
+    uint32_t uniform_snake_batch_size_cache;
+    int uniform_snake_batch_size_cache_valid;
+    uint32_t uniform_snake_cursor_cache;
+    int uniform_snake_cursor_cache_valid;
+    uint32_t uniform_snake_rect_index_cache;
+    int uniform_snake_rect_index_cache_valid;
+    int use_map_buffer_upload;
+    int use_map_range_upload;
+    int use_persistent_upload;
+    GLuint vao;
+    GLuint vbo;
+    size_t vbo_bytes;
+    float *vertices;
+    uint32_t work_unit_count;
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};

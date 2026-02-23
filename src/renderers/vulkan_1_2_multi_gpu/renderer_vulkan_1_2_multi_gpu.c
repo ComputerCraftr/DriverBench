@@ -15,32 +15,28 @@
 // NOLINTBEGIN(misc-include-cleaner)
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
-#define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
-#define DB_CAP_MODE_VULKAN_SINGLE_GPU "vulkan_single_gpu"
+#define COLOR_CHANNEL_ALPHA 3U
 #define DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU                              \
     "vulkan_device_group_multi_gpu"
-
-#define MAX_GPU_COUNT 8U
-#define MAX_BAND_OWNER BENCH_BANDS
-#define MAX_INSTANCE_EXTS 16U
-#define MASK_GPU0 1U
-#define COLOR_CHANNEL_ALPHA 3U
-
-#define NS_PER_SECOND_U64 1000000000ULL
-#define WAIT_TIMEOUT_NS 100000000ULL
-#define FRAME_BUDGET_NS 16666666ULL
-#define FRAME_SAFETY_NS 2000000ULL
-#define NS_TO_MS_D 1e6
-#define HOST_COHERENT_MSCALE_NS 1e6
-
-#define QUAD_VERT_FLOAT_COUNT 12U
-#define TIMESTAMP_QUERIES_PER_GPU 2U
-#define TIMESTAMP_QUERY_COUNT (MAX_GPU_COUNT * TIMESTAMP_QUERIES_PER_GPU)
-
+#define DB_CAP_MODE_VULKAN_SINGLE_GPU "vulkan_single_gpu"
 #define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
-#define SLOW_GPU_RATIO_THRESHOLD 1.5
 #define EMA_KEEP 0.9
 #define EMA_NEW 0.1
+#define FRAME_BUDGET_NS 16666666ULL
+#define FRAME_SAFETY_NS 2000000ULL
+#define HOST_COHERENT_MSCALE_NS 1e6
+#define MASK_GPU0 1U
+#define MAX_BAND_OWNER BENCH_BANDS
+#define MAX_GPU_COUNT 8U
+#define MAX_INSTANCE_EXTS 16U
+#define NS_PER_SECOND_U64 1000000000ULL
+#define NS_TO_MS_D 1e6
+#define QUAD_VERT_FLOAT_COUNT 12U
+#define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
+#define SLOW_GPU_RATIO_THRESHOLD 1.5
+#define TIMESTAMP_QUERIES_PER_GPU 2U
+#define TIMESTAMP_QUERY_COUNT (MAX_GPU_COUNT * TIMESTAMP_QUERIES_PER_GPU)
+#define WAIT_TIMEOUT_NS 100000000ULL
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
@@ -133,20 +129,20 @@ typedef struct {
     float color[4];
     float base_color[4];
     float target_color[4];
-    uint32_t render_mode;
-    uint32_t grid_rows;
     uint32_t gradient_head_row;
-    uint32_t snake_rect_index;
-    int32_t mode_phase_flag;
     uint32_t gradient_window_rows;
-    uint32_t viewport_height;
     uint32_t grid_cols;
-    uint32_t snake_cursor;
-    uint32_t snake_batch_size;
-    int32_t snake_phase_completed;
-    uint32_t viewport_width;
+    uint32_t grid_rows;
+    int32_t mode_phase_flag;
     uint32_t palette_cycle;
     uint32_t pattern_seed;
+    uint32_t render_mode;
+    uint32_t snake_batch_size;
+    uint32_t snake_cursor;
+    int32_t snake_phase_completed;
+    uint32_t snake_rect_index;
+    uint32_t viewport_height;
+    uint32_t viewport_width;
 } PushConstants;
 
 typedef struct {
@@ -342,63 +338,63 @@ typedef struct {
 } db_vk_state_init_ctx_t;
 
 typedef struct {
-    int initialized;
-    db_vk_wsi_config_t wsi_config;
-    VkInstance instance;
-    VkSurfaceKHR surface;
-    DeviceSelectionState selection;
-    int have_group;
-    uint32_t gpu_count;
-    VkPhysicalDevice present_phys;
-    VkDevice device;
-    VkQueue queue;
-    VkSurfaceFormatKHR surface_format;
-    VkPresentModeKHR present_mode;
-    VkRenderPass render_pass;
-    VkRenderPass history_render_pass;
-    SwapchainState swapchain_state;
-    HistoryTargetState history_targets[2];
-    int history_read_index;
-    int history_descriptor_index;
-    uint32_t device_group_mask;
-    VkBuffer vertex_buffer;
-    VkDeviceMemory vertex_memory;
-    VkPipeline pipeline;
-    VkPipelineLayout pipeline_layout;
-    VkDescriptorSetLayout descriptor_set_layout;
+    uint64_t bench_frames;
+    uint64_t bench_start_ns;
+    const char *capability_mode;
+    VkCommandBuffer command_buffer;
+    VkCommandPool command_pool;
     VkDescriptorPool descriptor_pool;
     VkDescriptorSet descriptor_set;
-    VkSampler history_sampler;
-    VkCommandPool command_pool;
-    VkCommandBuffer command_buffer;
-    VkSemaphore image_available;
-    VkSemaphore render_done;
-    VkFence in_flight;
-    VkQueryPool timing_query_pool;
-    int gpu_timing_enabled;
-    db_pattern_t pattern;
-    uint32_t work_unit_count;
-    const char *capability_mode;
-    uint32_t work_owner[MAX_BAND_OWNER];
+    VkDescriptorSetLayout descriptor_set_layout;
+    VkDevice device;
+    uint32_t device_group_mask;
     double ema_ms_per_work_unit[MAX_GPU_COUNT];
-    uint64_t bench_start_ns;
-    uint64_t bench_frames;
-    double next_progress_log_due_ms;
     uint64_t frame_index;
-    uint32_t snake_cursor;
-    uint32_t snake_rect_index;
-    uint32_t snake_prev_start;
-    uint32_t snake_prev_count;
-    int snake_reset_pending;
-    uint32_t pattern_seed;
-    int mode_phase_flag;
-    uint32_t gradient_head_row;
+    uint32_t gpu_count;
+    int gpu_timing_enabled;
     uint32_t gradient_cycle;
+    uint32_t gradient_head_row;
     uint32_t gradient_window_rows;
-    uint32_t prev_frame_work_units[MAX_GPU_COUNT];
-    uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
+    int have_group;
     int have_prev_timing_frame;
+    int history_descriptor_index;
+    int history_read_index;
+    VkRenderPass history_render_pass;
+    VkSampler history_sampler;
+    HistoryTargetState history_targets[2];
+    VkSemaphore image_available;
+    VkFence in_flight;
+    int initialized;
+    VkInstance instance;
+    int mode_phase_flag;
+    double next_progress_log_due_ms;
+    db_pattern_t pattern;
+    uint32_t pattern_seed;
+    VkPhysicalDevice present_phys;
+    VkPipeline pipeline;
+    VkPipelineLayout pipeline_layout;
+    VkPresentModeKHR present_mode;
+    uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
+    uint32_t prev_frame_work_units[MAX_GPU_COUNT];
+    VkQueue queue;
+    VkSemaphore render_done;
+    VkRenderPass render_pass;
+    DeviceSelectionState selection;
+    uint32_t snake_cursor;
+    uint32_t snake_prev_count;
+    uint32_t snake_prev_start;
+    uint32_t snake_rect_index;
+    int snake_reset_pending;
+    VkSurfaceKHR surface;
+    VkSurfaceFormatKHR surface_format;
+    SwapchainState swapchain_state;
     double timestamp_period_ns;
+    VkQueryPool timing_query_pool;
+    VkBuffer vertex_buffer;
+    VkDeviceMemory vertex_memory;
+    uint32_t work_owner[MAX_BAND_OWNER];
+    uint32_t work_unit_count;
+    db_vk_wsi_config_t wsi_config;
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};
@@ -466,7 +462,7 @@ db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd, VkPipelineLayout layout,
     pc.pattern_seed =
         (req->render_mode == DB_PATTERN_RECT_SNAKE) ? g_state.pattern_seed : 0U;
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES, 0U,
-                       (uint32_t)offsetof(PushConstants, render_mode), &pc);
+                       (uint32_t)offsetof(PushConstants, base_color), &pc);
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, render_mode),
                        sizeof(pc.render_mode), &pc.render_mode);

@@ -31,15 +31,15 @@
 #include "display_glfw_window_gl_hash_common.h"
 
 #define BACKEND_NAME "display_glfw_window_opengl_gl3_3"
-#define RENDERER_NAME "renderer_opengl_gl3_3"
 
 #define OPENGL_CONTEXT_VERSION_MAJOR 3
 #define OPENGL_CONTEXT_VERSION_MINOR 3
 
-#define BG_R 0.04F
-#define BG_G 0.04F
-#define BG_B 0.07F
 #define BG_A 1.0F
+#define BG_B 0.07F
+#define BG_G 0.04F
+#define BG_R 0.04F
+#define RENDERER_NAME "renderer_opengl_gl3_3"
 
 int main(void) {
     db_validate_runtime_environment(BACKEND_NAME, DB_ENV_ALLOW_REMOTE_DISPLAY);

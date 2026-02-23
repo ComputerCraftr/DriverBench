@@ -9,10 +9,10 @@
 #include "../display_env_common.h"
 #include "../display_hash_common.h"
 
-#define BACKEND_NAME "display_offscreen_cpu_renderer"
-#define RENDERER_NAME "renderer_cpu_renderer"
 #define API_NAME "CPU"
+#define BACKEND_NAME "display_offscreen_cpu_renderer"
 #define DEFAULT_OFFSCREEN_FRAMES 600U
+#define RENDERER_NAME "renderer_cpu_renderer"
 
 static uint32_t db_offscreen_frames_from_env(void) {
     uint32_t parsed = 0U;

@@ -19,8 +19,8 @@
 #endif
 
 #define BACKEND_NAME "display_glfw_window_cpu_renderer"
-#define RENDERER_NAME "renderer_cpu_renderer"
 #define DB_CAP_MODE_CPU_GLFW_WINDOW "cpu_glfw_window"
+#define RENDERER_NAME "renderer_cpu_renderer"
 
 static uint32_t db_cpu_glfw_frame_limit(void) {
     return db_glfw_resolve_frame_limit(BACKEND_NAME);
@@ -29,10 +29,10 @@ static uint32_t db_cpu_glfw_frame_limit(void) {
 #define OPENGL_CONTEXT_VERSION_MAJOR 2
 #define OPENGL_CONTEXT_VERSION_MINOR 1
 
-#define BG_R 0.0F
-#define BG_G 0.0F
-#define BG_B 0.0F
 #define BG_A 1.0F
+#define BG_B 0.0F
+#define BG_G 0.0F
+#define BG_R 0.0F
 
 static void db_present_cpu_framebuffer(GLFWwindow *window) {
     uint32_t pixel_width = 0U;

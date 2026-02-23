@@ -6,11 +6,11 @@
 #include "../core/db_core.h"
 
 typedef struct {
-    int enabled;
-    int log_each_frame;
-    const char *hash_key;
-    uint64_t final_hash;
     uint64_t aggregate_hash;
+    int enabled;
+    uint64_t final_hash;
+    const char *hash_key;
+    int log_each_frame;
 } db_display_hash_tracker_t;
 
 static inline db_display_hash_tracker_t

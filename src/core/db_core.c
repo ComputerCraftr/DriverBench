@@ -10,10 +10,10 @@
 #include <sys/signal.h>
 #endif
 
-#define DISPLAY_LOCALHOST_PREFIX "localhost:"
-#define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 #define DB_MAX_TEXT_FILE_BYTES (16U * 1024U * 1024U)
 #define DB_MS_PER_SEC_D 1000.0
+#define DISPLAY_LOCALHOST_PREFIX "localhost:"
+#define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 
 static volatile sig_atomic_t db_stop_requested = 0;
 
