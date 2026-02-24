@@ -21,4 +21,6 @@ Benchmark modes are shared across renderers:
 - `gradient_sweep` (default): 32-row green/gray/green window sweeping downward.
 - `bands`: animated full-height vertical color bands (high flash intensity).
 - `snake_grid`: deterministic S-pattern tile sweep with phased recolor.
+- `snake_rect`: deterministic PRNG random rectangle regions swept in S-pattern.
+- `snake_shapes`: deterministic PRNG random shape regions (rectangles, circles, diamonds, triangles, trapezoids) swept in S-pattern.
 - `gradient_fill`: top-down gray->green conversion sweep, then restart.

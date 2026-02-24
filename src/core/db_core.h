@@ -16,6 +16,7 @@
 #define DB_NS_PER_MS_D 1000000.0
 #define DB_NS_PER_SECOND_D 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
+#define DB_U24_MAX_F 16777215.0F
 #define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "allow_remote_display"
 #define DB_RUNTIME_OPT_BENCH_SPEED "bench_speed"
 #define DB_RUNTIME_OPT_BENCHMARK_MODE "benchmark_mode"
@@ -139,6 +140,19 @@ static inline uint32_t db_u32_range(uint32_t seed, uint32_t min_value,
         return min_value;
     }
     return min_value + (seed % (max_value - min_value + 1U));
+}
+
+static inline float db_u32_to_unit_f32(uint32_t value) {
+    const uint32_t value_24 = value >> 8U;
+    return (float)value_24 / DB_U24_MAX_F;
+}
+
+static inline float db_u32_to_range_f32(uint32_t value, float min_value,
+                                        float max_value) {
+    if (max_value <= min_value) {
+        return min_value;
+    }
+    return min_value + (db_u32_to_unit_f32(value) * (max_value - min_value));
 }
 
 static inline void db_blend_rgb(float prior_r, float prior_g, float prior_b,

@@ -8,6 +8,7 @@
 #include "../../core/db_core.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
+#include "../renderer_snake_common.h"
 
 #ifndef DB_HAS_OPENGL_DESKTOP
 #error "renderer_opengl_gl3_3 requires desktop OpenGL support"
@@ -68,7 +69,7 @@ typedef struct {
     GLint u_render_mode;
     GLint u_snake_batch_size;
     GLint u_snake_cursor;
-    GLint u_snake_rect_index;
+    GLint u_snake_shape_index;
     int history_height;
     GLuint history_fbo[2];
     int history_initialized;
@@ -85,8 +86,8 @@ typedef struct {
     int uniform_snake_batch_size_cache_valid;
     uint32_t uniform_snake_cursor_cache;
     int uniform_snake_cursor_cache_valid;
-    uint32_t uniform_snake_rect_index_cache;
-    int uniform_snake_rect_index_cache_valid;
+    uint32_t uniform_snake_shape_index_cache;
+    int uniform_snake_shape_index_cache_valid;
     GLuint vao;
     GLuint vbo;
     size_t vbo_bytes;
@@ -341,7 +342,7 @@ static int db_init_vertices_for_mode(void) {
 
     g_state.vertex = init_state;
     g_state.runtime = runtime_state;
-    g_state.runtime.snake_rect_index = 0U;
+    g_state.runtime.snake_shape_index = 0U;
     return 1;
 }
 
@@ -392,8 +393,8 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.u_grid_rows = glGetUniformLocation(g_state.program, "u_grid_rows");
     g_state.u_gradient_head_row =
         glGetUniformLocation(g_state.program, "u_gradient_head_row");
-    g_state.u_snake_rect_index =
-        glGetUniformLocation(g_state.program, "u_snake_rect_index");
+    g_state.u_snake_shape_index =
+        glGetUniformLocation(g_state.program, "u_snake_shape_index");
     g_state.u_gradient_window_rows =
         glGetUniformLocation(g_state.program, "u_gradient_window_rows");
     g_state.u_palette_cycle =
@@ -413,8 +414,8 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.uniform_snake_batch_size_cache_valid = 0;
     g_state.uniform_gradient_head_row_cache = 0U;
     g_state.uniform_gradient_head_row_cache_valid = 0;
-    g_state.uniform_snake_rect_index_cache = 0U;
-    g_state.uniform_snake_rect_index_cache_valid = 0;
+    g_state.uniform_snake_shape_index_cache = 0U;
+    g_state.uniform_snake_shape_index_cache_valid = 0;
     g_state.uniform_palette_cycle_cache = 0U;
     g_state.uniform_palette_cycle_cache_valid = 0;
 
@@ -454,9 +455,9 @@ void db_renderer_opengl_gl3_3_init(void) {
         &g_state.uniform_gradient_head_row_cache_valid,
         g_state.runtime.gradient_head_row);
     db_set_uniform1ui_u32_if_changed(
-        g_state.u_snake_rect_index, &g_state.uniform_snake_rect_index_cache,
-        &g_state.uniform_snake_rect_index_cache_valid,
-        g_state.runtime.snake_rect_index);
+        g_state.u_snake_shape_index, &g_state.uniform_snake_shape_index_cache,
+        &g_state.uniform_snake_shape_index_cache_valid,
+        g_state.runtime.snake_shape_index);
     db_set_uniform1ui_u32_if_changed(g_state.u_palette_cycle,
                                      &g_state.uniform_palette_cycle_cache,
                                      &g_state.uniform_palette_cycle_cache_valid,
@@ -470,11 +471,12 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
     db_gl3_ensure_history_targets();
 
     if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
-        (g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE)) {
+        (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
+        (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
         const int is_grid = (g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID);
         const db_snake_plan_request_t request = db_snake_plan_request_make(
             is_grid, g_state.runtime.pattern_seed,
-            g_state.runtime.snake_rect_index, g_state.runtime.snake_cursor, 0U,
+            g_state.runtime.snake_shape_index, g_state.runtime.snake_cursor, 0U,
             0U, g_state.runtime.mode_phase_flag,
             g_state.runtime.bench_speed_step);
         const db_snake_plan_t plan = db_snake_plan_next_step(&request);
@@ -487,13 +489,13 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
                                         plan.clearing_phase);
             g_state.runtime.mode_phase_flag = target.next_mode_phase_flag;
         }
-        if (target.has_next_rect_index != 0) {
+        if (target.has_next_shape_index != 0) {
             db_set_uniform1ui_u32_if_changed(
-                g_state.u_snake_rect_index,
-                &g_state.uniform_snake_rect_index_cache,
-                &g_state.uniform_snake_rect_index_cache_valid,
-                plan.active_rect_index);
-            g_state.runtime.snake_rect_index = target.next_rect_index;
+                g_state.u_snake_shape_index,
+                &g_state.uniform_snake_shape_index_cache,
+                &g_state.uniform_snake_shape_index_cache_valid,
+                plan.active_shape_index);
+            g_state.runtime.snake_shape_index = target.next_shape_index;
         }
         db_set_uniform1ui_u32_if_changed(
             g_state.u_snake_cursor, &g_state.uniform_snake_cursor_cache,
@@ -510,9 +512,7 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
             g_state.runtime.mode_phase_flag, g_state.runtime.gradient_cycle,
             g_state.runtime.bench_speed_step);
         const db_gradient_damage_plan_t *plan = &gradient_step.plan;
-        g_state.runtime.gradient_head_row = plan->next_head_row;
-        g_state.runtime.mode_phase_flag = gradient_step.next_mode_phase_flag;
-        g_state.runtime.gradient_cycle = plan->next_cycle_index;
+        db_gradient_apply_step_to_runtime(&g_state.runtime, &gradient_step);
         db_set_uniform1ui_u32_if_changed(
             g_state.u_gradient_head_row,
             &g_state.uniform_gradient_head_row_cache,

@@ -34,7 +34,8 @@ static void db_usage(void) {
           "\nRuntime options:\n"
           "  --allow-remote-display <0|1>\n"
           "  --benchmark-mode "
-          "<gradient_sweep|bands|snake_grid|gradient_fill|rect_snake>\n"
+          "<gradient_sweep|bands|snake_grid|gradient_fill|snake_rect|snake_"
+          "shapes>\n"
           "  --bench-speed <value>\n"
           "  --fps-cap <value>\n"
           "  --hash <none|state|pixel|both>\n"
@@ -60,8 +61,11 @@ static const char *db_cli_mode_normalized_or_null(const char *value) {
     if (db_string_is(value, DB_BENCHMARK_MODE_GRADIENT_FILL)) {
         return DB_BENCHMARK_MODE_GRADIENT_FILL;
     }
-    if (db_string_is(value, DB_BENCHMARK_MODE_RECT_SNAKE)) {
-        return DB_BENCHMARK_MODE_RECT_SNAKE;
+    if (db_string_is(value, DB_BENCHMARK_MODE_SNAKE_RECT)) {
+        return DB_BENCHMARK_MODE_SNAKE_RECT;
+    }
+    if (db_string_is(value, DB_BENCHMARK_MODE_SNAKE_SHAPES)) {
+        return DB_BENCHMARK_MODE_SNAKE_SHAPES;
     }
     return NULL;
 }
@@ -181,10 +185,11 @@ static void db_cli_set_runtime_mode_or_exit(const char *raw_value) {
     if (normalized == NULL) {
         db_failf("driverbench_cli",
                  "invalid value for --benchmark-mode: %s "
-                 "(expected: %s|%s|%s|%s|%s)",
+                 "(expected: %s|%s|%s|%s|%s|%s)",
                  raw_value, DB_BENCHMARK_MODE_GRADIENT_SWEEP,
                  DB_BENCHMARK_MODE_BANDS, DB_BENCHMARK_MODE_SNAKE_GRID,
-                 DB_BENCHMARK_MODE_GRADIENT_FILL, DB_BENCHMARK_MODE_RECT_SNAKE);
+                 DB_BENCHMARK_MODE_GRADIENT_FILL, DB_BENCHMARK_MODE_SNAKE_RECT,
+                 DB_BENCHMARK_MODE_SNAKE_SHAPES);
     }
     db_runtime_option_set(DB_RUNTIME_OPT_BENCHMARK_MODE, normalized);
 }

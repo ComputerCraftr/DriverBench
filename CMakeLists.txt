@@ -399,9 +399,9 @@ if(BUILD_TESTING)
     "state_hash_aggregate=0x74c03956a8e5feca,bo_hash_aggregate=0xbd0b012b6fc09934"
   )
   db_add_determinism_test(
-    determinism_cpu_renderer_rect_snake
-    "--api cpu --display offscreen --benchmark-mode rect_snake ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_aggregate=0xfbfd3f2d7dde7dc1,bo_hash_aggregate=0x28aae40af381ec71"
+    determinism_cpu_renderer_snake_shapes
+    "--api cpu --display offscreen --benchmark-mode snake_shapes ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_FRAME_LIMIT}"
+    "state_hash_aggregate=0xa4179206a93eea79,bo_hash_aggregate=0x3348240f3dc329c3"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_sweep

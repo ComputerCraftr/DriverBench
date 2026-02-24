@@ -71,25 +71,34 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.next_progress_log_due_ms = 0.0;
     g_state.frame_index = 0U;
     if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
-        (g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE)) {
+        (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
+        (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
         g_state.runtime.snake_cursor = DB_SNAKE_CURSOR_PRE_ENTRY;
     } else {
         g_state.runtime.snake_cursor = 0U;
     }
-    g_state.runtime.snake_rect_index = 0U;
+    g_state.runtime.snake_shape_index = 0U;
     g_state.runtime.snake_prev_start = 0U;
     g_state.runtime.snake_prev_count = 0U;
     g_state.snake_reset_pending = 1;
     g_state.snake_spans = NULL;
+    g_state.snake_row_bounds = NULL;
+    g_state.snake_row_bounds_capacity = 0U;
     g_state.snake_span_capacity = 0U;
     if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
-        (g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE)) {
+        (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
+        (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
         const size_t scratch_capacity =
             db_snake_scratch_capacity_from_work_units(
                 g_state.runtime.work_unit_count);
         g_state.snake_spans = (db_snake_col_span_t *)db_alloc_array_or_fail(
             BACKEND_NAME, "snake_spans", scratch_capacity,
             sizeof(*g_state.snake_spans));
+        g_state.snake_row_bounds =
+            (db_snake_shape_row_bounds_t *)db_alloc_array_or_fail(
+                BACKEND_NAME, "snake_row_bounds", db_grid_rows_effective(),
+                sizeof(*g_state.snake_row_bounds));
+        g_state.snake_row_bounds_capacity = (size_t)db_grid_rows_effective();
         g_state.snake_span_capacity = scratch_capacity;
     }
     g_state.gradient_window_rows = db_gradient_window_rows_effective();

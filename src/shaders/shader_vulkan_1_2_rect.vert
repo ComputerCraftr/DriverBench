@@ -19,7 +19,7 @@ layout(push_constant) uniform PC {
     uint snake_batch_size;
     uint snake_cursor;
     int snake_phase_completed;
-    uint snake_rect_index;
+    uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
 } pc;
@@ -43,7 +43,7 @@ layout(std140, binding = 0) uniform PC {
     uint snake_batch_size;
     uint snake_cursor;
     int snake_phase_completed;
-    uint snake_rect_index;
+    uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
 } pc;

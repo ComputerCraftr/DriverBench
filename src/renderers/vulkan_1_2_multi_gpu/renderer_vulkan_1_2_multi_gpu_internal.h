@@ -10,6 +10,7 @@
 
 #include "../../config/benchmark_config.h"
 #include "../renderer_benchmark_common.h"
+#include "../renderer_snake_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 
 #define MAX_BAND_OWNER BENCH_BANDS
@@ -35,7 +36,7 @@ typedef struct {
     uint32_t render_mode;
     uint32_t snake_batch_size;
     uint32_t snake_cursor;
-    uint32_t snake_rect_index;
+    uint32_t snake_shape_index;
     int32_t snake_phase_completed;
     uint32_t viewport_height;
     uint32_t viewport_width;
@@ -157,6 +158,8 @@ typedef struct {
     DeviceSelectionState selection;
     int snake_reset_pending;
     db_snake_col_span_t *snake_spans;
+    db_snake_shape_row_bounds_t *snake_row_bounds;
+    size_t snake_row_bounds_capacity;
     size_t snake_span_capacity;
     VkSurfaceKHR surface;
     VkSurfaceFormatKHR surface_format;
@@ -180,7 +183,7 @@ typedef struct {
     int mode_phase_flag;
     uint32_t snake_cursor;
     uint32_t snake_batch_size;
-    uint32_t snake_rect_index;
+    uint32_t snake_shape_index;
     int snake_phase_completed;
     uint32_t palette_cycle;
 } db_vk_grid_row_block_draw_req_t;
@@ -196,7 +199,7 @@ typedef struct {
     int mode_phase_flag;
     uint32_t snake_cursor;
     uint32_t snake_batch_size;
-    uint32_t snake_rect_index;
+    uint32_t snake_shape_index;
     int snake_phase_completed;
     uint32_t palette_cycle;
 } db_vk_draw_dynamic_req_t;
@@ -374,12 +377,13 @@ void db_vk_owner_timing_end(VkCommandBuffer cmd, int timing_enabled,
 void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
                                 const db_snake_plan_t *plan,
                                 uint32_t work_unit_count, const float color[3]);
-void db_vk_draw_rect_snake_plan(const db_vk_owner_draw_ctx_t *ctx,
-                                const db_snake_plan_t *plan,
-                                uint32_t pattern_seed,
-                                uint32_t snake_prev_start,
-                                uint32_t snake_prev_count,
-                                int snake_reset_pending, const float color[3]);
+void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
+                                  const db_snake_plan_t *plan,
+                                  uint32_t pattern_seed,
+                                  uint32_t snake_prev_start,
+                                  uint32_t snake_prev_count,
+                                  int snake_reset_pending,
+                                  const float color[3]);
 void db_vk_update_ema_fallback(db_pattern_t pattern, uint32_t gpu_count,
                                const uint32_t *work_owner,
                                const uint32_t *grid_tiles_per_gpu,

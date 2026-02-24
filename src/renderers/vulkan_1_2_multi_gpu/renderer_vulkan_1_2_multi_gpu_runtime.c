@@ -100,7 +100,8 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             g_state.device, g_state.descriptor_set, g_state.history_sampler,
             g_state.history_targets[g_state.history_read_index].view);
         g_state.history_descriptor_index = g_state.history_read_index;
-        if ((g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE) &&
+        if (((g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
+             (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) &&
             (preserved == 0)) {
             g_state.snake_reset_pending = 1;
         }
@@ -318,7 +319,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 .color = band_color,
                 .render_mode = DB_PATTERN_BANDS,
                 .gradient_head_row = 0U,
-                .snake_rect_index = 0U,
+                .snake_shape_index = 0U,
                 .mode_phase_flag = 0,
                 .snake_cursor = 0U,
                 .snake_batch_size = 0U,
@@ -334,11 +335,14 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             frame_work_units[owner] += 1U;
         }
     } else if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
-               (g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE)) {
+               (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
+               (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
         const int is_grid = (g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID);
+        const int is_shapes =
+            (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES);
         const db_snake_plan_request_t request = db_snake_plan_request_make(
             is_grid, g_state.runtime.pattern_seed,
-            g_state.runtime.snake_rect_index, g_state.runtime.snake_cursor,
+            g_state.runtime.snake_shape_index, g_state.runtime.snake_cursor,
             g_state.runtime.snake_prev_start, g_state.runtime.snake_prev_count,
             g_state.runtime.mode_phase_flag, g_state.runtime.bench_speed_step);
         const db_snake_plan_t plan = db_snake_plan_next_step(&request);
@@ -374,7 +378,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             }
         } else {
             const int had_reset_pending = g_state.snake_reset_pending;
-            db_vk_draw_rect_snake_plan(
+            db_vk_draw_snake_region_plan(
                 &draw_ctx, &plan, g_state.runtime.pattern_seed,
                 g_state.runtime.snake_prev_start,
                 g_state.runtime.snake_prev_count, g_state.snake_reset_pending,
@@ -382,8 +386,8 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             if (had_reset_pending != 0) {
                 g_state.snake_reset_pending = 0;
             }
-            if (target.has_next_rect_index != 0) {
-                g_state.runtime.snake_rect_index = target.next_rect_index;
+            if (target.has_next_shape_index != 0) {
+                g_state.runtime.snake_shape_index = target.next_shape_index;
             }
             if (plan.wrapped != 0) {
                 g_state.snake_reset_pending = 1;
@@ -430,7 +434,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 .color = shader_ignored_color,
                 .render_mode = (uint32_t)g_state.runtime.pattern,
                 .gradient_head_row = plan->render_head_row,
-                .snake_rect_index = 0U,
+                .snake_shape_index = 0U,
                 .mode_phase_flag = gradient_step.render_direction_down,
                 .snake_cursor = 0U,
                 .snake_batch_size = 0U,
@@ -439,9 +443,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             };
             db_vk_draw_owner_grid_row_block(&draw_ctx, &req);
         }
-        g_state.runtime.mode_phase_flag = gradient_step.next_mode_phase_flag;
-        g_state.runtime.gradient_head_row = plan->next_head_row;
-        g_state.runtime.gradient_cycle = plan->next_cycle_index;
+        db_gradient_apply_step_to_runtime(&g_state.runtime, &gradient_step);
     }
 
     if (haveGroup) {
@@ -581,7 +583,8 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             g_state.device, g_state.descriptor_set, g_state.history_sampler,
             g_state.history_targets[g_state.history_read_index].view);
         g_state.history_descriptor_index = g_state.history_read_index;
-        if ((g_state.runtime.pattern == DB_PATTERN_RECT_SNAKE) &&
+        if (((g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
+             (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) &&
             (preserved == 0)) {
             g_state.snake_reset_pending = 1;
         }
@@ -652,6 +655,7 @@ void db_vk_shutdown_impl(void) {
     };
     db_vk_cleanup_runtime(&cleanup);
     free(g_state.snake_spans);
+    free(g_state.snake_row_bounds);
     g_state = (renderer_state_t){0};
 }
 

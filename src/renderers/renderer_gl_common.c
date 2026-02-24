@@ -677,7 +677,8 @@ int db_init_vertices_for_pattern_common_with_stride(
     const char *backend_name, db_gl_vertex_init_t *out_state,
     db_pattern_t pattern, size_t vertex_stride) {
     const int use_grid_init = (pattern == DB_PATTERN_SNAKE_GRID) ||
-                              (pattern == DB_PATTERN_RECT_SNAKE) ||
+                              (pattern == DB_PATTERN_SNAKE_RECT) ||
+                              (pattern == DB_PATTERN_SNAKE_SHAPES) ||
                               (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                               (pattern == DB_PATTERN_GRADIENT_FILL);
     const int initialized =
