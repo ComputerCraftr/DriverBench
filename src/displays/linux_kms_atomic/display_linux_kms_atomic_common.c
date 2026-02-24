@@ -31,6 +31,7 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
+#include "../../driverbench_cli.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../display_dispatch.h"
@@ -471,14 +472,6 @@ db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
     return bench_frames;
 }
 
-static uint32_t db_kms_frame_limit_from_runtime(const char *backend) {
-    uint32_t frame_limit = 0U;
-    (void)db_parse_u32_nonnegative_value(
-        backend, DB_RUNTIME_OPT_FRAME_LIMIT,
-        db_runtime_option_get(DB_RUNTIME_OPT_FRAME_LIMIT), &frame_limit);
-    return frame_limit;
-}
-
 typedef struct {
     int kms_fd;
     EGLDisplay dpy;
@@ -616,7 +609,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
                       const char *card,
                       db_kms_atomic_context_profile_t context_profile,
                       const db_kms_atomic_renderer_vtable_t *renderer,
-                      db_kms_atomic_runtime_check_fn_t runtime_check) {
+                      db_kms_atomic_runtime_check_fn_t runtime_check,
+                      const db_cli_config_t *cfg) {
     if ((backend == NULL) || (renderer_name == NULL) || (card == NULL) ||
         (renderer == NULL) || (renderer->init == NULL) ||
         (renderer->render_frame == NULL) || (renderer->shutdown == NULL) ||
@@ -654,11 +648,11 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     const int req_minor =
         (context_profile == DB_KMS_ATOMIC_CONTEXT_GL3_3) ? 3 : 5;
 
-    EGLConfig cfg;
+    EGLConfig egl_cfg;
     EGLContext ctx;
     EGLSurface surf;
     EGLDisplay dpy = egl_init_try_gl_then_optional_gles1_1(
-        gbm, &cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
+        gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
         allow_gles1_1_fallback);
 
     db_gl_set_proc_address_loader(
@@ -678,8 +672,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
     renderer->init();
     const char *capability_mode = renderer->capability_mode();
-    const double fps_cap = db_runtime_resolve_fps_cap(backend, BENCH_FPS_CAP_D);
-    const uint32_t frame_limit = db_kms_frame_limit_from_runtime(backend);
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const uint32_t work_unit_count = renderer->work_unit_count();
 
     drmEventContext ev = {0};
@@ -811,7 +805,8 @@ static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
 }
 
 int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
-                          const char *card, db_api_t api) {
+                          const char *card, db_api_t api,
+                          const db_cli_config_t *cfg) {
     if (api != DB_API_CPU) {
         db_failf((backend != NULL) ? backend : BACKEND_NAME,
                  "CPU KMS path requires cpu api");
@@ -836,8 +831,8 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
 
     db_renderer_cpu_renderer_init();
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
-    const double fps_cap = db_runtime_resolve_fps_cap(backend, BENCH_FPS_CAP_D);
-    const uint32_t frame_limit = db_kms_frame_limit_from_runtime(backend);
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
 
     db_renderer_cpu_renderer_render_frame(0.0);

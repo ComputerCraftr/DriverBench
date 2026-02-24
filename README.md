@@ -41,6 +41,7 @@ Runtime flags:
 - `--bench-speed <value>` (`> 0`, max `1024`)
 - `--fps-cap <value>`
 - `--hash <none|state|pixel|both>`
+- `--hash-report <final|aggregate|both>`
 - `--frame-limit <value>`
 - `--offscreen <0|1>`
 - `--random-seed <value>`
@@ -54,6 +55,7 @@ Examples:
 
 ```bash
 ./build/driverbench --api cpu --display offscreen --benchmark-mode snake_grid --random-seed 12345 --frame-limit 300
+./build/driverbench --api cpu --display offscreen --benchmark-mode gradient_fill --hash both --hash-report aggregate --frame-limit 600
 ./build/driverbench --api opengl --renderer gl3_3 --display glfw_window --vsync 0 --frame-limit 1000
 ./build/driverbench --api vulkan --display glfw_window --benchmark-mode gradient_fill
 ```

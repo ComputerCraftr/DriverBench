@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "config/benchmark_config.h"
 #include "core/db_core.h"
 #include "displays/display_dispatch.h"
 #include "renderers/renderer_benchmark_common.h"
@@ -80,6 +81,8 @@ enum {
     DB_CLI_RT_FRAME_LIMIT = 5,
     DB_CLI_RT_HASH_MODE = 6,
     DB_CLI_RT_BENCH_SPEED = 7,
+    DB_CLI_RT_OFFSCREEN = 8,
+    DB_CLI_RT_VSYNC = 9,
 };
 
 #define DB_CLI_RUNTIME_TEXT_LEN 64U
@@ -114,8 +117,8 @@ static void db_cli_set_runtime_bool_or_exit(const char *runtime_option,
     db_runtime_option_set(runtime_option, (parsed != 0) ? "1" : "0");
 }
 
-static void db_cli_set_runtime_frame_limit_or_exit(const char *cli_option,
-                                                   const char *raw_value) {
+static uint32_t db_cli_parse_frame_limit_or_exit(const char *cli_option,
+                                                 const char *raw_value) {
     char *end = NULL;
     const unsigned long parsed = strtoul(raw_value, &end, 10);
     if ((end == raw_value) || (end == NULL) || (*end != '\0') ||
@@ -123,11 +126,7 @@ static void db_cli_set_runtime_frame_limit_or_exit(const char *cli_option,
         db_failf("driverbench_cli", "invalid value for %s: %s", cli_option,
                  raw_value);
     }
-
-    char normalized[32];
-    (void)db_snprintf(normalized, sizeof(normalized), "%lu", parsed);
-    db_runtime_option_set(DB_RUNTIME_OPT_FRAME_LIMIT,
-                          db_cli_store_runtime_text_or_exit(normalized));
+    return (uint32_t)parsed;
 }
 
 static void db_cli_set_runtime_random_seed_or_exit(const char *raw_value) {
@@ -145,21 +144,16 @@ static void db_cli_set_runtime_random_seed_or_exit(const char *raw_value) {
                           db_cli_store_runtime_text_or_exit(normalized));
 }
 
-static void db_cli_set_runtime_fps_cap_or_exit(const char *raw_value) {
+static double db_cli_parse_fps_cap_or_exit(const char *raw_value) {
     double parsed = 0.0;
     if (db_parse_fps_cap_text(raw_value, &parsed) == 0) {
         db_failf("driverbench_cli", "invalid value for --fps-cap: %s",
                  raw_value);
     }
     if (parsed <= 0.0) {
-        db_runtime_option_set(DB_RUNTIME_OPT_FPS_CAP, "0");
-        return;
+        return 0.0;
     }
-
-    char normalized[32];
-    (void)db_snprintf(normalized, sizeof(normalized), "%.9g", parsed);
-    db_runtime_option_set(DB_RUNTIME_OPT_FPS_CAP,
-                          db_cli_store_runtime_text_or_exit(normalized));
+    return parsed;
 }
 
 static void db_cli_set_runtime_bench_speed_or_exit(const char *raw_value) {
@@ -195,31 +189,29 @@ static void db_cli_set_runtime_mode_or_exit(const char *raw_value) {
     db_runtime_option_set(DB_RUNTIME_OPT_BENCHMARK_MODE, normalized);
 }
 
-static void db_cli_set_runtime_hash_report_or_exit(const char *raw_value) {
+static const char *db_cli_parse_hash_report_or_exit(const char *raw_value) {
     if (db_string_is(raw_value, "final") ||
         db_string_is(raw_value, "aggregate") ||
         db_string_is(raw_value, "both")) {
-        db_runtime_option_set(DB_RUNTIME_OPT_HASH_REPORT,
-                              db_cli_store_runtime_text_or_exit(raw_value));
-        return;
+        return raw_value;
     }
     db_failf("driverbench_cli",
              "invalid value for --hash-report: %s "
              "(expected: final|aggregate|both)",
              raw_value);
+    return "both";
 }
 
-static void db_cli_set_runtime_hash_mode_or_exit(const char *raw_value) {
+static const char *db_cli_parse_hash_mode_or_exit(const char *raw_value) {
     if (db_string_is(raw_value, "none") || db_string_is(raw_value, "state") ||
         db_string_is(raw_value, "pixel") || db_string_is(raw_value, "both")) {
-        db_runtime_option_set(DB_RUNTIME_OPT_HASH,
-                              db_cli_store_runtime_text_or_exit(raw_value));
-        return;
+        return raw_value;
     }
     db_failf("driverbench_cli",
              "invalid value for --hash: %s "
              "(expected: none|state|pixel|both)",
              raw_value);
+    return "none";
 }
 
 static const char *db_expect_value(int argc, char **argv, int *index) {
@@ -293,7 +285,8 @@ static void db_parse_renderer_or_exit(const char *value, db_cli_config_t *cfg) {
 }
 
 static int db_try_parse_runtime_override_option(const char *arg, int argc,
-                                                char **argv, int *index) {
+                                                char **argv, int *index,
+                                                db_cli_config_t *cfg) {
     static const db_cli_runtime_option_map_t mappings[] = {
         {"--allow-remote-display", DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY,
          DB_CLI_RT_BOOL},
@@ -303,9 +296,9 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
         {"--hash", DB_RUNTIME_OPT_HASH, DB_CLI_RT_HASH_MODE},
         {"--frame-limit", DB_RUNTIME_OPT_FRAME_LIMIT, DB_CLI_RT_FRAME_LIMIT},
         {"--hash-report", DB_RUNTIME_OPT_HASH_REPORT, DB_CLI_RT_HASH_REPORT},
-        {"--offscreen", DB_RUNTIME_OPT_OFFSCREEN, DB_CLI_RT_BOOL},
+        {"--offscreen", DB_RUNTIME_OPT_OFFSCREEN, DB_CLI_RT_OFFSCREEN},
         {"--random-seed", DB_RUNTIME_OPT_RANDOM_SEED, DB_CLI_RT_RANDOM_SEED},
-        {"--vsync", DB_RUNTIME_OPT_VSYNC, DB_CLI_RT_BOOL},
+        {"--vsync", DB_RUNTIME_OPT_VSYNC, DB_CLI_RT_VSYNC},
     };
 
     for (size_t map_index = 0;
@@ -317,20 +310,37 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                     mappings[map_index].runtime_option,
                     mappings[map_index].cli_option, value);
             } else if (mappings[map_index].kind == DB_CLI_RT_FRAME_LIMIT) {
-                db_cli_set_runtime_frame_limit_or_exit(
+                cfg->frame_limit = db_cli_parse_frame_limit_or_exit(
                     mappings[map_index].cli_option, value);
             } else if (mappings[map_index].kind == DB_CLI_RT_MODE) {
                 db_cli_set_runtime_mode_or_exit(value);
             } else if (mappings[map_index].kind == DB_CLI_RT_FPS_CAP) {
-                db_cli_set_runtime_fps_cap_or_exit(value);
+                cfg->fps_cap = db_cli_parse_fps_cap_or_exit(value);
             } else if (mappings[map_index].kind == DB_CLI_RT_RANDOM_SEED) {
                 db_cli_set_runtime_random_seed_or_exit(value);
             } else if (mappings[map_index].kind == DB_CLI_RT_HASH_REPORT) {
-                db_cli_set_runtime_hash_report_or_exit(value);
+                cfg->hash_report = db_cli_parse_hash_report_or_exit(value);
             } else if (mappings[map_index].kind == DB_CLI_RT_HASH_MODE) {
-                db_cli_set_runtime_hash_mode_or_exit(value);
+                cfg->hash_mode = db_cli_parse_hash_mode_or_exit(value);
             } else if (mappings[map_index].kind == DB_CLI_RT_BENCH_SPEED) {
                 db_cli_set_runtime_bench_speed_or_exit(value);
+            } else if (mappings[map_index].kind == DB_CLI_RT_OFFSCREEN) {
+                int parsed = 0;
+                if (db_parse_bool_text(value, &parsed) == 0) {
+                    db_failf("driverbench_cli",
+                             "invalid value for --offscreen: %s "
+                             "(expected bool)",
+                             value);
+                }
+                cfg->offscreen_enabled = (parsed != 0);
+            } else if (mappings[map_index].kind == DB_CLI_RT_VSYNC) {
+                int parsed = 0;
+                if (db_parse_bool_text(value, &parsed) == 0) {
+                    db_failf("driverbench_cli",
+                             "invalid value for --vsync: %s (expected bool)",
+                             value);
+                }
+                cfg->vsync_enabled = (parsed != 0);
             }
             return 1;
         }
@@ -403,7 +413,7 @@ static int db_cli_hash_mode_requests_pixel(const char *hash_mode) {
 }
 
 static void db_cli_validate_hash_mode_or_exit(const db_cli_config_t *cfg) {
-    const char *hash_mode = db_runtime_option_get(DB_RUNTIME_OPT_HASH);
+    const char *hash_mode = cfg->hash_mode;
     if ((hash_mode == NULL) || (hash_mode[0] == '\0') ||
         db_string_is(hash_mode, "none")) {
         return;
@@ -457,6 +467,12 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
         .renderer = DB_GL_RENDERER_GL1_5_GLES1_1,
 #endif
         .kms_card = "/dev/dri/card0",
+        .hash_mode = "none",
+        .hash_report = "both",
+        .fps_cap = BENCH_FPS_CAP_D,
+        .frame_limit = 0U,
+        .offscreen_enabled = 0,
+        .vsync_enabled = (BENCH_GLFW_SWAP_INTERVAL != 0),
         .api_is_auto = 1,
         .display_is_set = 0,
         .renderer_is_auto = 1,
@@ -484,7 +500,8 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
             out_cfg->kms_card = db_expect_value(argc, argv, &i);
             continue;
         }
-        if (db_try_parse_runtime_override_option(arg, argc, argv, &i) != 0) {
+        if (db_try_parse_runtime_override_option(arg, argc, argv, &i,
+                                                 out_cfg) != 0) {
             continue;
         }
 

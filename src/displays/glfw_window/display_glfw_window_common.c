@@ -10,7 +10,6 @@
 #include <stdlib.h>
 #include <time.h>
 
-#include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 
 #define MAX_SLEEP_NS_D 100000000.0
@@ -21,9 +20,9 @@ static void db_glfw_init_or_fail(const char *backend) {
     }
 }
 
-static void db_glfw_apply_default_hints(void) {
+static void db_glfw_apply_default_hints(int offscreen_enabled) {
     glfwDefaultWindowHints();
-    if (db_glfw_offscreen_enabled() != 0) {
+    if (offscreen_enabled != 0) {
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     }
 }
@@ -50,8 +49,9 @@ static void db_glfw_make_current_and_set_swap(GLFWwindow *window,
 static GLFWwindow *
 db_glfw_try_context_window(const char *title, int width_px, int height_px,
                            int client_api, int context_major, int context_minor,
-                           int core_profile, int swap_interval) {
-    db_glfw_apply_default_hints();
+                           int core_profile, int swap_interval,
+                           int offscreen_enabled) {
+    db_glfw_apply_default_hints(offscreen_enabled);
     glfwWindowHint(GLFW_CLIENT_API, client_api);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, context_major);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, context_minor);
@@ -70,14 +70,11 @@ db_glfw_try_context_window(const char *title, int width_px, int height_px,
     return window;
 }
 
-int db_glfw_offscreen_enabled(void) {
-    return db_value_is_truthy(db_runtime_option_get(DB_RUNTIME_OPT_OFFSCREEN));
-}
-
 GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
-                                         int width_px, int height_px) {
+                                         int width_px, int height_px,
+                                         int offscreen_enabled) {
     db_glfw_init_or_fail(backend);
-    db_glfw_apply_default_hints();
+    db_glfw_apply_default_hints(offscreen_enabled);
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     return db_glfw_create_window_or_fail(backend, title, width_px, height_px,
                                          "glfwCreateWindow failed");
@@ -86,11 +83,12 @@ GLFWwindow *db_glfw_create_no_api_window(const char *backend, const char *title,
 GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
                                          int width_px, int height_px,
                                          int context_major, int context_minor,
-                                         int core_profile, int swap_interval) {
+                                         int core_profile, int swap_interval,
+                                         int offscreen_enabled) {
     db_glfw_init_or_fail(backend);
     GLFWwindow *window = db_glfw_try_context_window(
         title, width_px, height_px, GLFW_OPENGL_API, context_major,
-        context_minor, core_profile, swap_interval);
+        context_minor, core_profile, swap_interval, offscreen_enabled);
     if (window == NULL) {
         glfwTerminate();
         db_failf(backend, "glfwCreateWindow failed");
@@ -101,7 +99,7 @@ GLFWwindow *db_glfw_create_opengl_window(const char *backend, const char *title,
 GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     const char *backend, const char *title, int width_px, int height_px,
     int gl_context_major, int gl_context_minor, int swap_interval,
-    int *out_is_gles) {
+    int *out_is_gles, int offscreen_enabled) {
     if (out_is_gles != NULL) {
         *out_is_gles = 0;
     }
@@ -110,13 +108,14 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
 #ifdef DB_HAS_OPENGL_DESKTOP
     GLFWwindow *window = db_glfw_try_context_window(
         title, width_px, height_px, GLFW_OPENGL_API, gl_context_major,
-        gl_context_minor, 0, swap_interval);
+        gl_context_minor, 0, swap_interval, offscreen_enabled);
     if (window != NULL) {
         return window;
     }
 
-    window = db_glfw_try_context_window(
-        title, width_px, height_px, GLFW_OPENGL_ES_API, 1, 1, 0, swap_interval);
+    window = db_glfw_try_context_window(title, width_px, height_px,
+                                        GLFW_OPENGL_ES_API, 1, 1, 0,
+                                        swap_interval, offscreen_enabled);
     if (window == NULL) {
         glfwTerminate();
         db_failf(backend,
@@ -131,7 +130,8 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     (void)gl_context_major;
     (void)gl_context_minor;
     GLFWwindow *window = db_glfw_try_context_window(
-        title, width_px, height_px, GLFW_OPENGL_ES_API, 1, 1, 0, swap_interval);
+        title, width_px, height_px, GLFW_OPENGL_ES_API, 1, 1, 0, swap_interval,
+        offscreen_enabled);
     if (window == NULL) {
         glfwTerminate();
         db_failf(backend, "glfwCreateWindow failed for OpenGL ES 1.1");
@@ -151,55 +151,6 @@ void db_glfw_destroy_window(GLFWwindow *window) {
 void db_glfw_poll_events(void) { glfwPollEvents(); }
 
 double db_glfw_time_seconds(void) { return glfwGetTime(); }
-
-int db_glfw_resolve_swap_interval(const char *backend) {
-    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_VSYNC);
-    if (value == NULL) {
-        return BENCH_GLFW_SWAP_INTERVAL;
-    }
-
-    int swap_interval = 0;
-    if (db_parse_bool_text(value, &swap_interval) != 0) {
-        return swap_interval;
-    }
-
-    db_infof(backend, "Invalid %s='%s'; using default swap interval %d",
-             DB_RUNTIME_OPT_VSYNC, value, BENCH_GLFW_SWAP_INTERVAL);
-    return BENCH_GLFW_SWAP_INTERVAL;
-}
-
-double db_glfw_resolve_fps_cap(const char *backend) {
-    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_FPS_CAP);
-    if (value == NULL) {
-        return BENCH_FPS_CAP_D;
-    }
-    double parsed = 0.0;
-    if (db_parse_fps_cap_text(value, &parsed) != 0) {
-        return parsed;
-    }
-
-    db_infof(backend, "Invalid %s='%s'; using default fps cap %.2f",
-             DB_RUNTIME_OPT_FPS_CAP, value, BENCH_FPS_CAP_D);
-    return BENCH_FPS_CAP_D;
-}
-
-uint32_t db_glfw_resolve_frame_limit(const char *backend) {
-    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_FRAME_LIMIT);
-    if ((value == NULL) || (value[0] == '\0')) {
-        return 0U;
-    }
-
-    char *endptr = NULL;
-    const unsigned long parsed = strtoul(value, &endptr, 10);
-    if ((endptr != value) && (endptr != NULL) && (*endptr == '\0') &&
-        (parsed <= UINT32_MAX)) {
-        return (uint32_t)parsed;
-    }
-
-    db_infof(backend, "Invalid %s='%s'; using unlimited runtime",
-             DB_RUNTIME_OPT_FRAME_LIMIT, value);
-    return 0U;
-}
 
 void db_glfw_sleep_to_fps_cap(const char *backend, double frame_start_s,
                               double fps_cap) {

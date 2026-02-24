@@ -1,6 +1,8 @@
 #ifndef DRIVERBENCH_DISPLAY_DISPATCH_H
 #define DRIVERBENCH_DISPLAY_DISPATCH_H
 
+typedef struct db_cli_config db_cli_config_t;
+
 typedef enum {
     DB_API_CPU = 0,
     DB_API_OPENGL = 1,
@@ -141,12 +143,15 @@ static inline int db_dispatch_display_has_any_api(db_display_t display) {
 }
 
 int db_run_display(db_display_t display, db_api_t api,
-                   db_gl_renderer_t renderer, const char *kms_card_path);
+                   db_gl_renderer_t renderer, const char *kms_card_path,
+                   const db_cli_config_t *cfg);
 int db_run_display_auto(db_display_t display, db_gl_renderer_t renderer,
-                        const char *kms_card_path);
-int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer);
+                        const char *kms_card_path, const db_cli_config_t *cfg);
+int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer,
+                       const db_cli_config_t *cfg);
 int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
-                            const char *card_path);
-int db_run_offscreen(db_api_t api, db_gl_renderer_t renderer);
+                            const char *card_path, const db_cli_config_t *cfg);
+int db_run_offscreen(db_api_t api, db_gl_renderer_t renderer,
+                     const db_cli_config_t *cfg);
 
 #endif

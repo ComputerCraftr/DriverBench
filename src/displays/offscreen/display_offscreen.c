@@ -5,32 +5,22 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
+#include "../../driverbench_cli.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/renderer_identity.h"
 #include "../display_dispatch.h"
 #include "../display_hash_common.h"
 
 #define BACKEND_NAME "display_offscreen"
-#define DEFAULT_OFFSCREEN_FRAMES 600U
 
-static uint32_t db_offscreen_frame_limit_from_runtime(void) {
-    uint32_t parsed = 0U;
-    if (db_parse_u32_nonnegative_value(
-            BACKEND_NAME, DB_RUNTIME_OPT_FRAME_LIMIT,
-            db_runtime_option_get(DB_RUNTIME_OPT_FRAME_LIMIT), &parsed) != 0) {
-        return parsed;
-    }
-    return DEFAULT_OFFSCREEN_FRAMES;
-}
-
-static int db_run_offscreen_cpu(void) {
+static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     db_install_signal_handlers();
 
-    const uint32_t frame_limit = db_offscreen_frame_limit_from_runtime();
-    const double fps_cap =
-        db_runtime_resolve_fps_cap(BACKEND_NAME, BENCH_FPS_CAP_D);
+    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
     const db_display_hash_settings_t hash_settings =
-        db_display_resolve_hash_settings(0, 0);
+        db_display_resolve_hash_settings(
+            0, 0, (cfg != NULL) ? cfg->hash_mode : "none");
 
     db_renderer_cpu_renderer_init();
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
@@ -40,9 +30,11 @@ static int db_run_offscreen_cpu(void) {
     double next_progress_log_due_ms = 0.0;
     db_display_hash_tracker_t state_hash_tracker =
         db_display_hash_tracker_create(
-            BACKEND_NAME, hash_settings.state_hash_enabled, "state_hash");
+            BACKEND_NAME, hash_settings.state_hash_enabled, "state_hash",
+            (cfg != NULL) ? cfg->hash_report : "both");
     db_display_hash_tracker_t bo_hash_tracker = db_display_hash_tracker_create(
-        BACKEND_NAME, hash_settings.output_hash_enabled, "bo_hash");
+        BACKEND_NAME, hash_settings.output_hash_enabled, "bo_hash",
+        (cfg != NULL) ? cfg->hash_report : "both");
 
     for (uint32_t frame = 0U; !db_should_stop(); frame++) {
         if ((frame_limit > 0U) && (frame >= frame_limit)) {
@@ -106,7 +98,8 @@ static int db_run_offscreen_cpu(void) {
     return EXIT_SUCCESS;
 }
 
-int db_run_offscreen(db_api_t api, db_gl_renderer_t renderer) {
+int db_run_offscreen(db_api_t api, db_gl_renderer_t renderer,
+                     const db_cli_config_t *cfg) {
     if (db_dispatch_display_supports_api(DB_DISPLAY_OFFSCREEN, api) == 0) {
         db_failf(BACKEND_NAME,
                  "requested offscreen/API combination is unavailable in this "
@@ -115,12 +108,13 @@ int db_run_offscreen(db_api_t api, db_gl_renderer_t renderer) {
     }
 
     if (api == DB_API_CPU) {
-        return db_run_offscreen_cpu();
+        return db_run_offscreen_cpu(cfg);
     }
 
 #ifdef DB_HAS_GLFW
-    db_runtime_option_set(DB_RUNTIME_OPT_OFFSCREEN, "1");
-    return db_run_glfw_window(api, renderer);
+    db_cli_config_t glfw_cfg = (cfg != NULL) ? *cfg : (db_cli_config_t){0};
+    glfw_cfg.offscreen_enabled = 1;
+    return db_run_glfw_window(api, renderer, &glfw_cfg);
 #else
     (void)renderer;
     db_failf(BACKEND_NAME, "offscreen %s requires GLFW support in this build",

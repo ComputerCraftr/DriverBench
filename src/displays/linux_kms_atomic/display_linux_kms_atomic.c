@@ -1,6 +1,7 @@
 #include "display_linux_kms_atomic_common.h"
 
 #include "../../core/db_core.h"
+#include "../../driverbench_cli.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
 #ifdef DB_HAS_OPENGL_DESKTOP
 #include "../../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
@@ -58,12 +59,12 @@ static void db_runtime_check_gl3(const char *backend,
 #endif
 
 int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
-                            const char *card_path) {
+                            const char *card_path, const db_cli_config_t *cfg) {
     const char *card = (card_path != NULL) ? card_path : "/dev/dri/card0";
 
     if (api == DB_API_CPU) {
         return db_kms_atomic_run_cpu(BACKEND_NAME_CPU, db_renderer_name_cpu(),
-                                     card, api);
+                                     card, api, cfg);
     }
 
     if (api != DB_API_OPENGL) {
@@ -120,5 +121,5 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
 
     return db_kms_atomic_run(db_kms_backend_name(renderer),
                              db_kms_renderer_name(renderer), card, context_mode,
-                             &vtable, runtime_check);
+                             &vtable, runtime_check, cfg);
 }

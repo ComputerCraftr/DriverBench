@@ -35,18 +35,10 @@ int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt, va_list ap);
 int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
-int db_value_is_truthy(const char *value);
 int db_parse_bool_text(const char *value, int *out_value);
 int db_parse_fps_cap_text(const char *value, double *out_value);
-double db_runtime_resolve_fps_cap(const char *backend, double default_fps_cap);
-int db_parse_u32_nonnegative_value(const char *backend, const char *field_name,
-                                   const char *value, uint32_t *out_value);
-int db_parse_u32_positive_value(const char *backend, const char *field_name,
-                                const char *value, uint32_t *out_value);
 const char *db_runtime_option_get(const char *name);
 void db_runtime_option_set(const char *name, const char *value);
-int db_has_ssh_env(void);
-int db_is_forwarded_x11_display(void);
 void db_validate_runtime_environment(const char *backend,
                                      const char *remote_override_option);
 void db_install_signal_handlers(void);

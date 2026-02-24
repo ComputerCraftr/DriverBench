@@ -26,8 +26,10 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
                       const char *card,
                       db_kms_atomic_context_profile_t context_profile,
                       const db_kms_atomic_renderer_vtable_t *renderer,
-                      db_kms_atomic_runtime_check_fn_t runtime_check);
+                      db_kms_atomic_runtime_check_fn_t runtime_check,
+                      const db_cli_config_t *cfg);
 int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
-                          const char *card, db_api_t api);
+                          const char *card, db_api_t api,
+                          const db_cli_config_t *cfg);
 
 #endif

@@ -8,6 +8,7 @@
 
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
+#include "../../driverbench_cli.h"
 #ifdef DB_HAS_OPENGL_API
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
@@ -88,8 +89,10 @@ static uint64_t db_glfw_run_loop(const db_glfw_loop_t *loop) {
     return frames;
 }
 
-static db_display_hash_settings_t db_glfw_hash_settings_for_backend(void) {
-    return db_display_resolve_hash_settings(0, 0);
+static db_display_hash_settings_t
+db_glfw_hash_settings_for_backend(const db_cli_config_t *cfg) {
+    return db_display_resolve_hash_settings(
+        0, 0, (cfg != NULL) ? cfg->hash_mode : "none");
 }
 
 #ifdef DB_HAS_OPENGL_API
@@ -255,16 +258,17 @@ static db_glfw_loop_result_t db_glfw_cpu_frame(void *user_data,
     return DB_GLFW_LOOP_CONTINUE;
 }
 
-static int db_run_glfw_window_cpu(void) {
+static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
     db_validate_runtime_environment(BACKEND_NAME_CPU,
                                     DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
     db_install_signal_handlers();
 
-    const int swap_interval = db_glfw_resolve_swap_interval(BACKEND_NAME_CPU);
-    const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME_CPU);
-    const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME_CPU);
+    const int swap_interval =
+        ((cfg != NULL) && (cfg->vsync_enabled != 0)) ? 1 : 0;
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const db_display_hash_settings_t hash_settings =
-        db_glfw_hash_settings_for_backend();
+        db_glfw_hash_settings_for_backend(cfg);
 
     const int gl_legacy_context_major = 2;
     const int gl_legacy_context_minor = 1;
@@ -272,7 +276,8 @@ static int db_run_glfw_window_cpu(void) {
     GLFWwindow *window = db_glfw_create_gl1_5_or_gles1_1_window(
         BACKEND_NAME_CPU, "CPU Renderer GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX, gl_legacy_context_major,
-        gl_legacy_context_minor, swap_interval, &is_gles);
+        gl_legacy_context_minor, swap_interval, &is_gles,
+        (cfg != NULL) ? cfg->offscreen_enabled : 0);
 
     const char *runtime_version = (const char *)glGetString(GL_VERSION);
     const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
@@ -301,9 +306,11 @@ static int db_run_glfw_window_cpu(void) {
     const double bench_start = db_glfw_time_seconds();
     db_display_hash_tracker_t state_hash_tracker =
         db_display_hash_tracker_create(
-            BACKEND_NAME_CPU, hash_settings.state_hash_enabled, "state_hash");
+            BACKEND_NAME_CPU, hash_settings.state_hash_enabled, "state_hash",
+            (cfg != NULL) ? cfg->hash_report : "both");
     db_display_hash_tracker_t bo_hash_tracker = db_display_hash_tracker_create(
-        BACKEND_NAME_CPU, hash_settings.output_hash_enabled, "bo_hash");
+        BACKEND_NAME_CPU, hash_settings.output_hash_enabled, "bo_hash",
+        (cfg != NULL) ? cfg->hash_report : "both");
     db_glfw_cpu_loop_ctx_t loop_ctx = {
         .bench_start = bench_start,
         .next_progress_log_due_ms = 0.0,
@@ -341,7 +348,8 @@ static int db_run_glfw_window_cpu(void) {
     return 0;
 }
 #else
-static int db_run_glfw_window_cpu(void) {
+static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
+    (void)cfg;
     db_failf(BACKEND_NAME_CPU,
              "CPU + glfw_window presentation requires OpenGL support in this "
              "build");
@@ -503,17 +511,19 @@ static db_glfw_loop_result_t db_glfw_opengl_frame(void *user_data,
     return DB_GLFW_LOOP_CONTINUE;
 }
 
-static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
+static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
+                                     const db_cli_config_t *cfg) {
     const char *backend_name = db_gl_backend_name(renderer);
     db_validate_runtime_environment(backend_name,
                                     DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
     db_install_signal_handlers();
 
-    const int swap_interval = db_glfw_resolve_swap_interval(backend_name);
-    const double fps_cap = db_glfw_resolve_fps_cap(backend_name);
-    const uint32_t frame_limit = db_glfw_resolve_frame_limit(backend_name);
+    const int swap_interval =
+        ((cfg != NULL) && (cfg->vsync_enabled != 0)) ? 1 : 0;
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const db_display_hash_settings_t hash_settings =
-        db_glfw_hash_settings_for_backend();
+        db_glfw_hash_settings_for_backend(cfg);
 
     GLFWwindow *window = NULL;
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
@@ -524,7 +534,7 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
             backend_name, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
             BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
             gl_legacy_context_major, gl_legacy_context_minor, swap_interval,
-            &is_gles);
+            &is_gles, (cfg != NULL) ? cfg->offscreen_enabled : 0);
         db_gl_set_proc_address_loader(
             (db_gl_get_proc_address_fn_t)glfwGetProcAddress);
         const char *runtime_version = (const char *)glGetString(GL_VERSION);
@@ -547,7 +557,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
         window = db_glfw_create_opengl_window(
             backend_name, "OpenGL 3.3 Shader GLFW DriverBench",
             BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX, gl3_context_major,
-            gl3_context_minor, 1, swap_interval);
+            gl3_context_minor, 1, swap_interval,
+            (cfg != NULL) ? cfg->offscreen_enabled : 0);
         const char *runtime_version = (const char *)glGetString(GL_VERSION);
         const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
         (void)db_display_log_gl_runtime_api(backend_name, runtime_version,
@@ -565,11 +576,12 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
     const double bench_start = db_glfw_time_seconds();
     db_display_hash_tracker_t state_hash_tracker =
         db_display_hash_tracker_create(
-            backend_name, hash_settings.state_hash_enabled, "state_hash");
+            backend_name, hash_settings.state_hash_enabled, "state_hash",
+            (cfg != NULL) ? cfg->hash_report : "both");
     db_display_hash_tracker_t framebuffer_hash_tracker =
-        db_display_hash_tracker_create(backend_name,
-                                       hash_settings.output_hash_enabled,
-                                       "framebuffer_hash");
+        db_display_hash_tracker_create(
+            backend_name, hash_settings.output_hash_enabled, "framebuffer_hash",
+            (cfg != NULL) ? cfg->hash_report : "both");
     db_gl_framebuffer_hash_scratch_t hash_scratch = {0};
     db_glfw_opengl_loop_ctx_t loop_ctx = {
         .backend_name = backend_name,
@@ -660,19 +672,20 @@ static db_glfw_loop_result_t db_glfw_vulkan_frame(void *user_data,
     return DB_GLFW_LOOP_CONTINUE;
 }
 
-static int db_run_glfw_window_vulkan(void) {
+static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
     db_validate_runtime_environment(BACKEND_NAME_VK,
                                     DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
     db_install_signal_handlers();
-    const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME_VK);
-    const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME_VK);
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const db_display_hash_settings_t hash_settings =
-        db_glfw_hash_settings_for_backend();
+        db_glfw_hash_settings_for_backend(cfg);
     (void)hash_settings.output_hash_enabled;
 
     GLFWwindow *window = db_glfw_create_no_api_window(
         BACKEND_NAME_VK, "Vulkan 1.2 opportunistic multi-GPU (device groups)",
-        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX);
+        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
+        (cfg != NULL) ? cfg->offscreen_enabled : 0);
     uint32_t runtime_api_version = VK_API_VERSION_1_0;
     const VkResult version_result =
         vkEnumerateInstanceVersion(&runtime_api_version);
@@ -692,7 +705,8 @@ static int db_run_glfw_window_vulkan(void) {
     };
     db_renderer_vulkan_1_2_multi_gpu_init(&wsi_config);
     db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
-        BACKEND_NAME_VK, hash_settings.state_hash_enabled, "state_hash");
+        BACKEND_NAME_VK, hash_settings.state_hash_enabled, "state_hash",
+        (cfg != NULL) ? cfg->hash_report : "both");
     const db_glfw_vulkan_loop_ctx_t loop_ctx = {
         .backend_name = BACKEND_NAME_VK,
         .hash_tracker = &hash_tracker,
@@ -714,17 +728,18 @@ static int db_run_glfw_window_vulkan(void) {
 }
 #endif
 
-int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer) {
+int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer,
+                       const db_cli_config_t *cfg) {
     if (api == DB_API_CPU) {
-        return db_run_glfw_window_cpu();
+        return db_run_glfw_window_cpu(cfg);
     }
 #ifdef DB_HAS_VULKAN_API
     if (api == DB_API_VULKAN) {
-        return db_run_glfw_window_vulkan();
+        return db_run_glfw_window_vulkan(cfg);
     }
 #endif
 #ifdef DB_HAS_OPENGL_API
-    return db_run_glfw_window_opengl(renderer);
+    return db_run_glfw_window_opengl(renderer, cfg);
 #else
     (void)renderer;
     db_failf(BACKEND_NAME_CPU, "OpenGL backend is unavailable in this build");

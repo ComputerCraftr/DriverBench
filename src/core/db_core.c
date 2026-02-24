@@ -97,7 +97,7 @@ int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...) {
     return result;
 }
 
-int db_value_is_truthy(const char *value) {
+static int db_value_is_truthy(const char *value) {
     int parsed = 0;
     if (db_parse_bool_text(value, &parsed) != 0) {
         return parsed;
@@ -158,54 +158,6 @@ int db_parse_fps_cap_text(const char *value, double *out_value) {
     return 0;
 }
 
-double db_runtime_resolve_fps_cap(const char *backend, double default_fps_cap) {
-    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_FPS_CAP);
-    if (value == NULL) {
-        return default_fps_cap;
-    }
-
-    double parsed = 0.0;
-    if (db_parse_fps_cap_text(value, &parsed) != 0) {
-        return parsed;
-    }
-
-    db_infof(backend, "Invalid %s='%s'; using default fps cap %.2f",
-             DB_RUNTIME_OPT_FPS_CAP, value, default_fps_cap);
-    return default_fps_cap;
-}
-
-int db_parse_u32_positive_value(const char *backend, const char *field_name,
-                                const char *value, uint32_t *out_value) {
-    if ((value == NULL) || (value[0] == '\0')) {
-        return 0;
-    }
-
-    char *end = NULL;
-    const unsigned long parsed = strtoul(value, &end, 10);
-    if ((end == value) || (end == NULL) || (*end != '\0') || (parsed == 0UL) ||
-        (parsed > UINT32_MAX)) {
-        db_failf(backend, "Invalid %s='%s'", field_name, value);
-    }
-    *out_value = (uint32_t)parsed;
-    return 1;
-}
-
-int db_parse_u32_nonnegative_value(const char *backend, const char *field_name,
-                                   const char *value, uint32_t *out_value) {
-    if ((value == NULL) || (value[0] == '\0')) {
-        return 0;
-    }
-
-    char *end = NULL;
-    const unsigned long parsed = strtoul(value, &end, 10);
-    if ((end == value) || (end == NULL) || (*end != '\0') ||
-        (parsed > UINT32_MAX)) {
-        db_failf(backend, "Invalid %s='%s'", field_name, value);
-    }
-    *out_value = (uint32_t)parsed;
-    return 1;
-}
-
 const char *db_runtime_option_get(const char *name) {
     if (name == NULL) {
         return NULL;
@@ -237,12 +189,12 @@ void db_runtime_option_set(const char *name, const char *value) {
     db_failf("db_core", "Runtime option capacity exceeded");
 }
 
-int db_has_ssh_env(void) {
+static int db_has_ssh_env(void) {
     return (getenv("SSH_CONNECTION") != NULL) ||
            (getenv("SSH_CLIENT") != NULL) || (getenv("SSH_TTY") != NULL);
 }
 
-int db_is_forwarded_x11_display(void) {
+static int db_is_forwarded_x11_display(void) {
     const char *display = getenv("DISPLAY");
     if ((display == NULL) || !db_has_ssh_env()) {
         return 0;

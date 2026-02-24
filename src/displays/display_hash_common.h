@@ -23,10 +23,10 @@ typedef struct {
 
 static inline db_display_hash_settings_t
 db_display_resolve_hash_settings(int default_state_hash_enabled,
-                                 int default_output_hash_enabled) {
+                                 int default_output_hash_enabled,
+                                 const char *hash_mode) {
     int state_hash_enabled = default_state_hash_enabled != 0;
     int output_hash_enabled = default_output_hash_enabled != 0;
-    const char *hash_mode = db_runtime_option_get(DB_RUNTIME_OPT_HASH);
     if ((hash_mode == NULL) || (hash_mode[0] == '\0') ||
         (strcmp(hash_mode, "none") == 0)) {
         return (db_display_hash_settings_t){
@@ -57,7 +57,8 @@ db_display_resolve_hash_settings(int default_state_hash_enabled,
 
 static inline db_display_hash_tracker_t
 db_display_hash_tracker_create(const char *backend, int enabled,
-                               const char *hash_key) {
+                               const char *hash_key,
+                               const char *hash_report_mode) {
     db_display_hash_tracker_t tracker = {0};
     tracker.enabled = enabled;
     tracker.hash_key = hash_key;
@@ -66,7 +67,7 @@ db_display_hash_tracker_create(const char *backend, int enabled,
     tracker.report_final = 1;
     tracker.report_aggregate = 1;
 
-    const char *report_mode = db_runtime_option_get(DB_RUNTIME_OPT_HASH_REPORT);
+    const char *report_mode = hash_report_mode;
     if ((report_mode == NULL) || (report_mode[0] == '\0') ||
         (strcmp(report_mode, "both") == 0)) {
         return tracker;
