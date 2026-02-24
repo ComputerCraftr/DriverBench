@@ -3,6 +3,7 @@
 
 // NOLINTBEGIN(misc-include-cleaner)
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <vulkan/vulkan.h>
@@ -155,6 +156,8 @@ typedef struct {
     VkRenderPass render_pass;
     DeviceSelectionState selection;
     int snake_reset_pending;
+    db_snake_col_span_t *snake_spans;
+    size_t snake_span_capacity;
     VkSurfaceKHR surface;
     VkSurfaceFormatKHR surface_format;
     SwapchainState swapchain_state;

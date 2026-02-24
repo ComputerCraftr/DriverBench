@@ -266,55 +266,35 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
             is_grid, g_state.runtime.pattern_seed,
             g_state.runtime.snake_rect_index, g_state.runtime.snake_cursor,
             g_state.runtime.snake_prev_start, g_state.runtime.snake_prev_count,
-            g_state.runtime.mode_phase_flag);
+            g_state.runtime.mode_phase_flag, g_state.runtime.bench_speed_step);
         const db_snake_plan_t plan = db_snake_plan_next_step(&request);
-        db_rect_snake_rect_t rect = {0};
-        float target_red = 0.0F;
-        float target_green = 0.0F;
-        float target_blue = 0.0F;
-        int full_fill_on_phase_completed = 0;
-        if (is_grid != 0) {
-            rect = (db_rect_snake_rect_t){
-                .x = 0U,
-                .y = 0U,
-                .width = db_grid_cols_effective(),
-                .height = db_grid_rows_effective(),
-                .color_r = 0.0F,
-                .color_g = 0.0F,
-                .color_b = 0.0F,
-            };
-            db_grid_target_color_rgb(plan.clearing_phase, &target_red,
-                                     &target_green, &target_blue);
-            full_fill_on_phase_completed = 1;
-            g_state.runtime.mode_phase_flag = plan.next_clearing_phase;
-        } else {
-            rect = db_rect_snake_rect_from_index(g_state.runtime.pattern_seed,
-                                                 plan.active_rect_index);
-            target_red = rect.color_r;
-            target_green = rect.color_g;
-            target_blue = rect.color_b;
-            g_state.runtime.snake_rect_index = plan.next_rect_index;
+        const db_snake_step_target_t target = db_snake_step_target_from_plan(
+            is_grid, g_state.runtime.pattern_seed, &plan);
+        if (target.has_next_mode_phase_flag != 0) {
+            g_state.runtime.mode_phase_flag = target.next_mode_phase_flag;
         }
-        db_render_snake_step(write_bo, read_bo, &plan, &rect, target_red,
-                             target_green, target_blue,
-                             full_fill_on_phase_completed);
+        if (target.has_next_rect_index != 0) {
+            g_state.runtime.snake_rect_index = target.next_rect_index;
+        }
+        db_render_snake_step(write_bo, read_bo, &plan, &target.rect,
+                             target.target_r, target.target_g, target.target_b,
+                             target.full_fill_on_phase_completed);
         g_state.runtime.snake_cursor = plan.next_cursor;
         g_state.runtime.snake_prev_start = plan.next_prev_start;
         g_state.runtime.snake_prev_count = plan.next_prev_count;
     } else if ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                (g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL)) {
-        const int is_sweep =
-            (g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP);
-        const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
-            g_state.runtime.gradient_head_row,
-            is_sweep ? g_state.runtime.mode_phase_flag : 1,
-            g_state.runtime.gradient_cycle, is_sweep ? 0 : 1);
-        db_render_gradient(write_bo, plan.render_head_row,
-                           is_sweep ? plan.render_direction_down : 1,
-                           plan.render_cycle_index);
-        g_state.runtime.gradient_head_row = plan.next_head_row;
-        g_state.runtime.mode_phase_flag = plan.next_direction_down;
-        g_state.runtime.gradient_cycle = plan.next_cycle_index;
+        const db_gradient_step_t gradient_step = db_gradient_step_from_runtime(
+            g_state.runtime.pattern, g_state.runtime.gradient_head_row,
+            g_state.runtime.mode_phase_flag, g_state.runtime.gradient_cycle,
+            g_state.runtime.bench_speed_step);
+        const db_gradient_damage_plan_t *plan = &gradient_step.plan;
+        db_render_gradient(write_bo, plan->render_head_row,
+                           gradient_step.render_direction_down,
+                           plan->render_cycle_index);
+        g_state.runtime.gradient_head_row = plan->next_head_row;
+        g_state.runtime.mode_phase_flag = gradient_step.next_mode_phase_flag;
+        g_state.runtime.gradient_cycle = plan->next_cycle_index;
     }
 
     if (g_state.history_mode != 0) {

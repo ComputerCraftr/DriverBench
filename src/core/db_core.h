@@ -5,18 +5,19 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #ifdef DB_HAVE_STDCKDINT
 #if DB_HAVE_STDCKDINT
 #include <stdckdint.h>
 #define DB_CAN_USE_STDCKDINT 1
 #endif
 #endif
-#include "db_hash.h"
 #define DB_MS_PER_SECOND_D 1000.0
 #define DB_NS_PER_MS_D 1000000.0
 #define DB_NS_PER_SECOND_D 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
 #define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "allow_remote_display"
+#define DB_RUNTIME_OPT_BENCH_SPEED "bench_speed"
 #define DB_RUNTIME_OPT_BENCHMARK_MODE "benchmark_mode"
 #define DB_RUNTIME_OPT_FPS_CAP "fps_cap"
 #define DB_RUNTIME_OPT_FRAME_LIMIT "frame_limit"
@@ -110,6 +111,25 @@ static inline uint32_t db_checked_u64_to_u32(const char *backend,
                  (unsigned long long)value);
     }
     return (uint32_t)value;
+}
+
+static inline void *db_alloc_array_or_fail(const char *backend,
+                                           const char *field_name,
+                                           size_t element_count,
+                                           size_t element_size) {
+    if (element_size == 0U) {
+        db_failf(backend, "%s element_size is zero", field_name);
+    }
+    if (element_count > (SIZE_MAX / element_size)) {
+        db_failf(backend, "%s allocation overflow (%zu * %zu)", field_name,
+                 element_count, element_size);
+    }
+    void *memory = malloc(element_count * element_size);
+    if (memory == NULL) {
+        db_failf(backend, "failed to allocate %s (%zu * %zu)", field_name,
+                 element_count, element_size);
+    }
+    return memory;
 }
 
 static inline long db_checked_double_to_long(const char *backend,

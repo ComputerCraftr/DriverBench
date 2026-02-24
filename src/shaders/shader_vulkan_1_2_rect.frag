@@ -221,6 +221,9 @@ vec4 db_snake_color(
     uint batch_size,
     int phase_completed
 ) {
+    if(batch_size == 0u) {
+        return db_rgba(prior_color);
+    }
     if(!db_rect_contains(rect, row_u, col_u)) {
         return db_rgba(prior_color);
     }
@@ -262,7 +265,7 @@ void main() {
         uint col_u = uint(max(col_i, 0));
         uint rows_u = max(pc.grid_rows, 1u);
         uint cols_u = max(pc.grid_cols, 1u);
-        uint batch_size = max(pc.snake_batch_size, 1u);
+        uint batch_size = pc.snake_batch_size;
         if(render_mode == RENDER_MODE_RECT_SNAKE) {
             db_rect_snake_desc_t rect = db_rect_snake_desc(pc.pattern_seed, pc.snake_rect_index, rows_u, cols_u);
             out_color = db_snake_color(rect, row_u, col_u, prior_color, rect.color, pc.snake_cursor, batch_size, 0);

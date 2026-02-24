@@ -720,17 +720,23 @@ void db_vk_draw_rect_snake_plan(const db_vk_owner_draw_ctx_t *ctx,
         return;
     }
 
-    db_snake_col_span_t
-        spans[(size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U];
+    const size_t max_spans =
+        (size_t)snake_prev_count + (size_t)plan->batch_size;
+    if (max_spans == 0U) {
+        return;
+    }
+    if (max_spans > g_state.snake_span_capacity) {
+        failf("Vulkan snake scratch overflow (required=%zu capacity=%zu)",
+              max_spans, g_state.snake_span_capacity);
+    }
+    db_snake_col_span_t *spans = g_state.snake_spans;
     size_t span_count = 0U;
-    db_snake_append_step_spans_for_rect(
-        spans, (size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U, &span_count,
-        rect.x, rect.y, rect.width, rect.height, snake_prev_start,
-        snake_prev_count);
-    db_snake_append_step_spans_for_rect(
-        spans, (size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * (size_t)2U, &span_count,
-        rect.x, rect.y, rect.width, rect.height, plan->active_cursor,
-        plan->batch_size);
+    db_snake_append_step_spans_for_rect(spans, max_spans, &span_count, rect.x,
+                                        rect.y, rect.width, rect.height,
+                                        snake_prev_start, snake_prev_count);
+    db_snake_append_step_spans_for_rect(spans, max_spans, &span_count, rect.x,
+                                        rect.y, rect.width, rect.height,
+                                        plan->active_cursor, plan->batch_size);
     for (size_t i = 0U; i < span_count; i++) {
         const uint32_t span_units = spans[i].col_end - spans[i].col_start;
         db_vk_draw_owner_grid_span_rect(

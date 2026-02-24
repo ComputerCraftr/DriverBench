@@ -367,6 +367,21 @@ if(BUILD_TESTING)
     )
   endfunction()
 
+  function(db_add_hash_equivalence_test test_name test_args_a test_args_b hash_checks)
+    if(NOT TARGET ${DB_UNIFIED_TARGET})
+      return()
+    endif()
+    add_test(
+      NAME ${test_name}
+      COMMAND ${CMAKE_COMMAND}
+        -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
+        -DTEST_ARGS=${test_args_a}
+        -DTEST_ARGS_B=${test_args_b}
+        -DTEST_HASH_CHECKS=${hash_checks}
+        -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
+    )
+  endfunction()
+
   set(DB_DETERMINISM_COMMON_ARGS "--random-seed 12345")
   set(DB_DETERMINISM_HASH "--hash both")
   set(DB_DETERMINISM_FRAME_LIMIT "--frame-limit 64")
@@ -375,7 +390,7 @@ if(BUILD_TESTING)
   db_add_determinism_test(
     determinism_cpu_renderer_snake
     "--api cpu --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_final=0xc330a0e9e6b79db9,bo_hash_final=0x2739df2d274aacf2"
+    "state_hash_final=0x37ed99059640c08b,bo_hash_final=0xe5bdbe631d806fbd"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_fill
@@ -385,7 +400,7 @@ if(BUILD_TESTING)
   db_add_determinism_test(
     determinism_cpu_renderer_rect_snake
     "--api cpu --display offscreen --benchmark-mode rect_snake ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_final=0x86f21c237d29923f,bo_hash_final=0xb70c2dd632862304"
+    "state_hash_final=0x73017276f51eacf5,bo_hash_final=0xc0f16093e286ba6c"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_sweep
@@ -396,6 +411,13 @@ if(BUILD_TESTING)
     determinism_cpu_renderer_bands
     "--api cpu --display offscreen --benchmark-mode bands ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
     "state_hash_final=0x71f0e9c6cf27ec82,bo_hash_final=0x265a06c2cd23fac3"
+  )
+
+  db_add_hash_equivalence_test(
+    determinism_cpu_gradient_fill_speed_equivalence
+    "--api cpu --display offscreen --benchmark-mode gradient_fill ${DB_DETERMINISM_COMMON_ARGS} --hash pixel --bench-speed 1 --frame-limit 64"
+    "--api cpu --display offscreen --benchmark-mode gradient_fill ${DB_DETERMINISM_COMMON_ARGS} --hash pixel --bench-speed 2 --frame-limit 32"
+    "bo_hash_final"
   )
 
   if(DB_ENABLE_GLFW_OFFSCREEN_TESTS)

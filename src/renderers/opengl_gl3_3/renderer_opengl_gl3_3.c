@@ -475,21 +475,25 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
         const db_snake_plan_request_t request = db_snake_plan_request_make(
             is_grid, g_state.runtime.pattern_seed,
             g_state.runtime.snake_rect_index, g_state.runtime.snake_cursor, 0U,
-            0U, g_state.runtime.mode_phase_flag);
+            0U, g_state.runtime.mode_phase_flag,
+            g_state.runtime.bench_speed_step);
         const db_snake_plan_t plan = db_snake_plan_next_step(&request);
+        const db_snake_step_target_t target = db_snake_step_target_from_plan(
+            is_grid, g_state.runtime.pattern_seed, &plan);
         g_state.runtime.snake_batch_size = plan.batch_size;
-        if (is_grid != 0) {
+        if (target.has_next_mode_phase_flag != 0) {
             db_set_uniform1i_if_changed(g_state.u_mode_phase_flag,
                                         &g_state.uniform_mode_phase_flag_cache,
                                         plan.clearing_phase);
-            g_state.runtime.mode_phase_flag = plan.next_clearing_phase;
-        } else {
+            g_state.runtime.mode_phase_flag = target.next_mode_phase_flag;
+        }
+        if (target.has_next_rect_index != 0) {
             db_set_uniform1ui_u32_if_changed(
                 g_state.u_snake_rect_index,
                 &g_state.uniform_snake_rect_index_cache,
                 &g_state.uniform_snake_rect_index_cache_valid,
                 plan.active_rect_index);
-            g_state.runtime.snake_rect_index = plan.next_rect_index;
+            g_state.runtime.snake_rect_index = target.next_rect_index;
         }
         db_set_uniform1ui_u32_if_changed(
             g_state.u_snake_cursor, &g_state.uniform_snake_cursor_cache,
@@ -501,27 +505,26 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
         g_state.runtime.snake_cursor = plan.next_cursor;
     } else if ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                (g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL)) {
-        const int is_sweep =
-            (g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP);
-        const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
-            g_state.runtime.gradient_head_row,
-            is_sweep ? g_state.runtime.mode_phase_flag : 1,
-            g_state.runtime.gradient_cycle, is_sweep ? 0 : 1);
-        g_state.runtime.gradient_head_row = plan.next_head_row;
-        g_state.runtime.mode_phase_flag = plan.next_direction_down;
-        g_state.runtime.gradient_cycle = plan.next_cycle_index;
+        const db_gradient_step_t gradient_step = db_gradient_step_from_runtime(
+            g_state.runtime.pattern, g_state.runtime.gradient_head_row,
+            g_state.runtime.mode_phase_flag, g_state.runtime.gradient_cycle,
+            g_state.runtime.bench_speed_step);
+        const db_gradient_damage_plan_t *plan = &gradient_step.plan;
+        g_state.runtime.gradient_head_row = plan->next_head_row;
+        g_state.runtime.mode_phase_flag = gradient_step.next_mode_phase_flag;
+        g_state.runtime.gradient_cycle = plan->next_cycle_index;
         db_set_uniform1ui_u32_if_changed(
             g_state.u_gradient_head_row,
             &g_state.uniform_gradient_head_row_cache,
             &g_state.uniform_gradient_head_row_cache_valid,
-            plan.render_head_row);
+            plan->render_head_row);
         db_set_uniform1i_if_changed(g_state.u_mode_phase_flag,
                                     &g_state.uniform_mode_phase_flag_cache,
-                                    plan.render_direction_down);
+                                    gradient_step.render_direction_down);
         db_set_uniform1ui_u32_if_changed(
             g_state.u_palette_cycle, &g_state.uniform_palette_cycle_cache,
             &g_state.uniform_palette_cycle_cache_valid,
-            plan.render_cycle_index);
+            plan->render_cycle_index);
     } else {
         db_update_band_vertices_rgb_stride(
             g_state.vertex.vertices, g_state.runtime.work_unit_count, time_s,

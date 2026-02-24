@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "../core/db_core.h"
+#include "../core/db_hash.h"
 
 typedef struct {
     uint64_t aggregate_hash;

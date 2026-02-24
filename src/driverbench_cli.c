@@ -1,5 +1,6 @@
 #include "driverbench_cli.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,7 @@ static void db_usage(void) {
           "  --allow-remote-display <0|1>\n"
           "  --benchmark-mode "
           "<gradient_sweep|bands|snake_grid|gradient_fill|rect_snake>\n"
+          "  --bench-speed <value>\n"
           "  --fps-cap <value>\n"
           "  --hash <none|state|pixel|both>\n"
           "  --frame-limit <value>\n"
@@ -77,6 +79,7 @@ enum {
     DB_CLI_RT_HASH_REPORT = 4,
     DB_CLI_RT_FRAME_LIMIT = 5,
     DB_CLI_RT_HASH_MODE = 6,
+    DB_CLI_RT_BENCH_SPEED = 7,
 };
 
 #define DB_CLI_RUNTIME_TEXT_LEN 64U
@@ -156,6 +159,26 @@ static void db_cli_set_runtime_fps_cap_or_exit(const char *raw_value) {
     char normalized[32];
     (void)db_snprintf(normalized, sizeof(normalized), "%.9g", parsed);
     db_runtime_option_set(DB_RUNTIME_OPT_FPS_CAP,
+                          db_cli_store_runtime_text_or_exit(normalized));
+}
+
+static void db_cli_set_runtime_bench_speed_or_exit(const char *raw_value) {
+    char *end = NULL;
+    const double parsed = strtod(raw_value, &end);
+    if ((end == raw_value) || (end == NULL) || (*end != '\0') ||
+        !isfinite(parsed) || (parsed <= 0.0)) {
+        db_failf("driverbench_cli", "invalid value for --bench-speed: %s",
+                 raw_value);
+    }
+    if (parsed > (double)DB_BENCH_SPEED_STEP_MAX) {
+        db_failf("driverbench_cli",
+                 "invalid value for --bench-speed: %s (max: %u)", raw_value,
+                 DB_BENCH_SPEED_STEP_MAX);
+    }
+
+    char normalized[32];
+    (void)db_snprintf(normalized, sizeof(normalized), "%.9g", parsed);
+    db_runtime_option_set(DB_RUNTIME_OPT_BENCH_SPEED,
                           db_cli_store_runtime_text_or_exit(normalized));
 }
 
@@ -274,6 +297,7 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
     static const db_cli_runtime_option_map_t mappings[] = {
         {"--allow-remote-display", DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY,
          DB_CLI_RT_BOOL},
+        {"--bench-speed", DB_RUNTIME_OPT_BENCH_SPEED, DB_CLI_RT_BENCH_SPEED},
         {"--benchmark-mode", DB_RUNTIME_OPT_BENCHMARK_MODE, DB_CLI_RT_MODE},
         {"--fps-cap", DB_RUNTIME_OPT_FPS_CAP, DB_CLI_RT_FPS_CAP},
         {"--hash", DB_RUNTIME_OPT_HASH, DB_CLI_RT_HASH_MODE},
@@ -305,6 +329,8 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                 db_cli_set_runtime_hash_report_or_exit(value);
             } else if (mappings[map_index].kind == DB_CLI_RT_HASH_MODE) {
                 db_cli_set_runtime_hash_mode_or_exit(value);
+            } else if (mappings[map_index].kind == DB_CLI_RT_BENCH_SPEED) {
+                db_cli_set_runtime_bench_speed_or_exit(value);
             }
             return 1;
         }

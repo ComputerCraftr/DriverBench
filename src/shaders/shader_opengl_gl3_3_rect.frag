@@ -170,6 +170,9 @@ vec4 db_snake_color(
     uint cursor,
     uint batch_size
 ) {
+    if(batch_size == 0u) {
+        return db_rgba(prior_color);
+    }
     if(!db_rect_contains(rect, row_u, col_u)) {
         return db_rgba(prior_color);
     }
@@ -218,7 +221,7 @@ void main() {
     uint cols_u = max(u_grid_cols, 1u);
     ivec2 history_coord = ivec2(gl_FragCoord.xy);
     vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
-    uint batch_size_u = max(u_snake_batch_size, 1u);
+    uint batch_size_u = u_snake_batch_size;
     if(u_render_mode == RENDER_MODE_RECT_SNAKE) {
         db_rect_snake_desc_t rect = db_rect_snake_desc(u_pattern_seed, u_snake_rect_index, rows_u, cols_u);
         out_color = db_snake_color(rect, row_u, col_u, prior_color, rect.color, u_snake_cursor, batch_size_u);

@@ -38,6 +38,7 @@ Runtime flags:
 
 - `--allow-remote-display <0|1>`
 - `--benchmark-mode <gradient_sweep|bands|snake_grid|gradient_fill|rect_snake>`
+- `--bench-speed <value>` (`> 0`, max `1024`)
 - `--fps-cap <value>`
 - `--hash <none|state|pixel|both>`
 - `--frame-limit <value>`
@@ -47,6 +48,7 @@ Runtime flags:
 
 Runtime options are now configured via CLI flags.
 Benchmark mode may be left unset to use its default auto-selection behavior.
+`--bench-speed` controls per-frame benchmark progression (snake/gradient modes).
 
 Examples:
 

@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
@@ -339,8 +340,10 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             is_grid, g_state.runtime.pattern_seed,
             g_state.runtime.snake_rect_index, g_state.runtime.snake_cursor,
             g_state.runtime.snake_prev_start, g_state.runtime.snake_prev_count,
-            g_state.runtime.mode_phase_flag);
+            g_state.runtime.mode_phase_flag, g_state.runtime.bench_speed_step);
         const db_snake_plan_t plan = db_snake_plan_next_step(&request);
+        const db_snake_step_target_t target = db_snake_step_target_from_plan(
+            is_grid, g_state.runtime.pattern_seed, &plan);
         const float shader_ignored_color[3] = {0.0F, 0.0F, 0.0F};
         const db_vk_owner_draw_ctx_t draw_ctx = {
             .cmd = g_state.command_buffer,
@@ -366,7 +369,9 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             db_vk_draw_snake_grid_plan(&draw_ctx, &plan,
                                        g_state.runtime.work_unit_count,
                                        shader_ignored_color);
-            g_state.runtime.mode_phase_flag = plan.next_clearing_phase;
+            if (target.has_next_mode_phase_flag != 0) {
+                g_state.runtime.mode_phase_flag = target.next_mode_phase_flag;
+            }
         } else {
             const int had_reset_pending = g_state.snake_reset_pending;
             db_vk_draw_rect_snake_plan(
@@ -377,7 +382,9 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             if (had_reset_pending != 0) {
                 g_state.snake_reset_pending = 0;
             }
-            g_state.runtime.snake_rect_index = plan.next_rect_index;
+            if (target.has_next_rect_index != 0) {
+                g_state.runtime.snake_rect_index = target.next_rect_index;
+            }
             if (plan.wrapped != 0) {
                 g_state.snake_reset_pending = 1;
             }
@@ -387,12 +394,11 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
         g_state.runtime.snake_prev_count = plan.next_prev_count;
     } else if ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                (g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL)) {
-        const int is_sweep =
-            (g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP);
-        const db_gradient_damage_plan_t plan = db_gradient_plan_next_frame(
-            g_state.runtime.gradient_head_row,
-            is_sweep ? g_state.runtime.mode_phase_flag : 1,
-            g_state.runtime.gradient_cycle, is_sweep ? 0 : 1);
+        const db_gradient_step_t gradient_step = db_gradient_step_from_runtime(
+            g_state.runtime.pattern, g_state.runtime.gradient_head_row,
+            g_state.runtime.mode_phase_flag, g_state.runtime.gradient_cycle,
+            g_state.runtime.bench_speed_step);
+        const db_gradient_damage_plan_t *plan = &gradient_step.plan;
         if ((grid_rows > 0U) && (grid_cols > 0U)) {
             const float shader_ignored_color[3] = {0.0F, 0.0F, 0.0F};
             const uint32_t span_units = grid_rows * grid_cols;
@@ -423,20 +429,19 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 .row_end = grid_rows,
                 .color = shader_ignored_color,
                 .render_mode = (uint32_t)g_state.runtime.pattern,
-                .gradient_head_row = plan.render_head_row,
+                .gradient_head_row = plan->render_head_row,
                 .snake_rect_index = 0U,
-                .mode_phase_flag = is_sweep ? plan.render_direction_down : 0,
+                .mode_phase_flag = gradient_step.render_direction_down,
                 .snake_cursor = 0U,
                 .snake_batch_size = 0U,
                 .snake_phase_completed = 0,
-                .palette_cycle = plan.render_cycle_index,
+                .palette_cycle = plan->render_cycle_index,
             };
             db_vk_draw_owner_grid_row_block(&draw_ctx, &req);
         }
-        g_state.runtime.mode_phase_flag =
-            is_sweep ? plan.next_direction_down : 0;
-        g_state.runtime.gradient_head_row = plan.next_head_row;
-        g_state.runtime.gradient_cycle = plan.next_cycle_index;
+        g_state.runtime.mode_phase_flag = gradient_step.next_mode_phase_flag;
+        g_state.runtime.gradient_head_row = plan->next_head_row;
+        g_state.runtime.gradient_cycle = plan->next_cycle_index;
     }
 
     if (haveGroup) {
@@ -646,6 +651,7 @@ void db_vk_shutdown_impl(void) {
         .surface = g_state.surface,
     };
     db_vk_cleanup_runtime(&cleanup);
+    free(g_state.snake_spans);
     g_state = (renderer_state_t){0};
 }
 
