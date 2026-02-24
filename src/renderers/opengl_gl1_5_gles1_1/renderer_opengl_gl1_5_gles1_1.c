@@ -35,6 +35,8 @@
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
+    uint64_t state_hash;
+    uint64_t frame_index;
     db_benchmark_runtime_init_t runtime;
     db_gl_vertex_init_t vertex;
     int is_es_context;
@@ -541,6 +543,10 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
     }
 
     glDrawArrays(GL_TRIANGLES, 0, db_draw_vertex_count_glsizei());
+    g_state.state_hash = db_benchmark_runtime_state_hash(
+        &g_state.runtime, g_state.frame_index, db_grid_cols_effective(),
+        db_grid_rows_effective());
+    g_state.frame_index++;
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
@@ -578,4 +584,8 @@ uint32_t db_renderer_opengl_gl1_5_gles1_1_work_unit_count(void) {
     return (g_state.runtime.work_unit_count != 0U)
                ? g_state.runtime.work_unit_count
                : BENCH_BANDS;
+}
+
+uint64_t db_renderer_opengl_gl1_5_gles1_1_state_hash(void) {
+    return g_state.state_hash;
 }

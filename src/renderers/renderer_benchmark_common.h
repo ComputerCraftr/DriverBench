@@ -21,8 +21,6 @@
 #define DB_ES_VERTEX_COLOR_FLOAT_COUNT 4U
 #define DB_ES_VERTEX_FLOAT_STRIDE                                              \
     (DB_VERTEX_POSITION_FLOAT_COUNT + DB_ES_VERTEX_COLOR_FLOAT_COUNT)
-#define DB_BENCHMARK_MODE_ENV "DRIVERBENCH_BENCHMARK_MODE"
-#define DB_RANDOM_SEED_ENV "DRIVERBENCH_RANDOM_SEED"
 #define DB_BENCH_COMMON_BACKEND "renderer_benchmark_common"
 #define DB_BENCHMARK_MODE_BANDS "bands"
 #define DB_BENCHMARK_MODE_SNAKE_GRID "snake_grid"
@@ -145,6 +143,33 @@ typedef struct {
     uint32_t pattern_seed;
 } db_benchmark_runtime_init_t;
 
+static inline uint64_t
+db_benchmark_runtime_state_hash(const db_benchmark_runtime_init_t *runtime,
+                                uint64_t frame_index, uint32_t render_width,
+                                uint32_t render_height) {
+    if (runtime == NULL) {
+        return 0U;
+    }
+    uint64_t hash = DB_FNV1A64_OFFSET;
+    hash = db_fnv1a64_mix_u64(hash, frame_index);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->pattern);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->work_unit_count);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->draw_vertex_count);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake_rect_index);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake_cursor);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake_prev_start);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake_prev_count);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake_batch_size);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake_phase_completed);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->mode_phase_flag);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient_head_row);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient_cycle);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->pattern_seed);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)render_width);
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)render_height);
+    return hash;
+}
+
 static inline uint32_t db_grid_rows_effective(void) {
     return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
 }
@@ -154,8 +179,8 @@ static inline uint32_t db_grid_cols_effective(void) {
 }
 
 static inline int
-db_parse_benchmark_pattern_from_env(db_pattern_t *out_pattern) {
-    const char *mode = db_runtime_option_get(DB_BENCHMARK_MODE_ENV);
+db_parse_benchmark_pattern_from_runtime(db_pattern_t *out_pattern) {
+    const char *mode = db_runtime_option_get(DB_RUNTIME_OPT_BENCHMARK_MODE);
     if ((mode == NULL) ||
         (strcmp(mode, DB_BENCHMARK_MODE_GRADIENT_SWEEP) == 0)) {
         *out_pattern = DB_PATTERN_GRADIENT_SWEEP;
@@ -223,8 +248,8 @@ static inline uint32_t db_benchmark_cycle_from_seed(uint32_t seed,
 }
 
 static inline uint32_t
-db_benchmark_random_seed_from_env_or_time(const char *backend_name) {
-    const char *value = db_runtime_option_get(DB_RANDOM_SEED_ENV);
+db_benchmark_random_seed_from_runtime_or_time(const char *backend_name) {
+    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_RANDOM_SEED);
     if ((value == NULL) || (value[0] == '\0')) {
         return db_pattern_seed_from_time();
     }
@@ -232,7 +257,8 @@ db_benchmark_random_seed_from_env_or_time(const char *backend_name) {
     const unsigned long parsed = strtoul(value, &end, 0);
     if ((end == value) || (end == NULL) || (*end != '\0') ||
         (parsed > UINT32_MAX)) {
-        db_failf(backend_name, "Invalid %s='%s'", DB_RANDOM_SEED_ENV, value);
+        db_failf(backend_name, "Invalid %s='%s'", DB_RUNTIME_OPT_RANDOM_SEED,
+                 value);
     }
     return (uint32_t)parsed;
 }
@@ -293,10 +319,10 @@ static inline int
 db_init_benchmark_runtime_common(const char *backend_name,
                                  db_benchmark_runtime_init_t *out_state) {
     db_pattern_t requested = DB_PATTERN_GRADIENT_SWEEP;
-    if (!db_parse_benchmark_pattern_from_env(&requested)) {
-        const char *mode = db_runtime_option_get(DB_BENCHMARK_MODE_ENV);
+    if (!db_parse_benchmark_pattern_from_runtime(&requested)) {
+        const char *mode = db_runtime_option_get(DB_RUNTIME_OPT_BENCHMARK_MODE);
         db_failf(backend_name, "Invalid %s='%s' (expected: %s|%s|%s|%s|%s)",
-                 DB_BENCHMARK_MODE_ENV, (mode != NULL) ? mode : "",
+                 DB_RUNTIME_OPT_BENCHMARK_MODE, (mode != NULL) ? mode : "",
                  DB_BENCHMARK_MODE_GRADIENT_SWEEP, DB_BENCHMARK_MODE_BANDS,
                  DB_BENCHMARK_MODE_SNAKE_GRID, DB_BENCHMARK_MODE_GRADIENT_FILL,
                  DB_BENCHMARK_MODE_RECT_SNAKE);
@@ -320,7 +346,7 @@ db_init_benchmark_runtime_common(const char *backend_name,
 
     if (requested != DB_PATTERN_BANDS) {
         out_state->random_seed =
-            db_benchmark_random_seed_from_env_or_time(backend_name);
+            db_benchmark_random_seed_from_runtime_or_time(backend_name);
         out_state->pattern_seed = out_state->random_seed;
         out_state->gradient_cycle = db_benchmark_cycle_from_seed(
             out_state->random_seed, DB_PALETTE_SALT);

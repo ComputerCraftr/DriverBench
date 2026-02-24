@@ -25,7 +25,7 @@
 #define BENCH_PULSE_PHASE_F 0.3F
 #define BENCH_SNAKE_PHASE_WINDOW_TILES 64U
 #define BENCH_TARGET_FPS_D 60.0
-// Can be overridden at runtime with DRIVERBENCH_VSYNC=1|0|on|off|true|false.
+// Can be overridden at runtime with --vsync 1|0|on|off|true|false.
 #define BENCH_VSYNC_ENABLED 1
 #define BENCH_WINDOW_HEIGHT_PX 600
 #define BENCH_WINDOW_WIDTH_PX 1000

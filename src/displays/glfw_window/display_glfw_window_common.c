@@ -201,35 +201,6 @@ uint32_t db_glfw_resolve_frame_limit(const char *backend) {
     return 0U;
 }
 
-void db_glfw_resolve_hash_settings(const char *backend, int *out_hash_enabled,
-                                   int *out_hash_every_frame) {
-    const int offscreen_enabled = db_glfw_offscreen_enabled();
-    const int hash_framebuffer = db_value_is_truthy(
-        db_runtime_option_get(DB_RUNTIME_OPT_FRAMEBUFFER_HASH));
-    const int hash_every_frame = db_value_is_truthy(
-        db_runtime_option_get(DB_RUNTIME_OPT_HASH_EVERY_FRAME));
-    const int hash_enabled =
-        (offscreen_enabled != 0) &&
-        ((hash_framebuffer != 0) || (hash_every_frame != 0));
-
-    if ((offscreen_enabled == 0) &&
-        ((hash_framebuffer != 0) || (hash_every_frame != 0))) {
-        db_infof(backend, "ignoring hash env in windowed mode "
-                          "(set DRIVERBENCH_OFFSCREEN=1)");
-    }
-    if (db_runtime_option_get(DB_RUNTIME_OPT_OFFSCREEN_FRAMES) != NULL) {
-        db_infof(backend, "ignoring DRIVERBENCH_OFFSCREEN_FRAMES for "
-                          "GLFW backend (use DRIVERBENCH_FRAME_LIMIT)");
-    }
-
-    if (out_hash_enabled != NULL) {
-        *out_hash_enabled = hash_enabled;
-    }
-    if (out_hash_every_frame != NULL) {
-        *out_hash_every_frame = hash_every_frame;
-    }
-}
-
 void db_glfw_sleep_to_fps_cap(const char *backend, double frame_start_s,
                               double fps_cap) {
     if (fps_cap <= 0.0) {

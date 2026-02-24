@@ -11,25 +11,20 @@
 #define DB_CAN_USE_STDCKDINT 1
 #endif
 #endif
-
-#define DB_HASH_MIX_SHIFT_A 16U
-#define DB_HASH_MIX_SHIFT_B 15U
-#define DB_HASH_MIX_MUL_A 0x7FEB352DU
-#define DB_HASH_MIX_MUL_B 0x846CA68BU
-#define DB_FNV1A64_OFFSET UINT64_C(1469598103934665603)
-#define DB_FNV1A64_PRIME UINT64_C(1099511628211)
+#include "db_hash.h"
 #define DB_MS_PER_SECOND_D 1000.0
 #define DB_NS_PER_MS_D 1000000.0
 #define DB_NS_PER_SECOND_D 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
-#define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "DRIVERBENCH_ALLOW_REMOTE_DISPLAY"
-#define DB_RUNTIME_OPT_FPS_CAP "DRIVERBENCH_FPS_CAP"
-#define DB_RUNTIME_OPT_FRAMEBUFFER_HASH "DRIVERBENCH_FRAMEBUFFER_HASH"
-#define DB_RUNTIME_OPT_FRAME_LIMIT "DRIVERBENCH_FRAME_LIMIT"
-#define DB_RUNTIME_OPT_HASH_EVERY_FRAME "DRIVERBENCH_HASH_EVERY_FRAME"
-#define DB_RUNTIME_OPT_OFFSCREEN "DRIVERBENCH_OFFSCREEN"
-#define DB_RUNTIME_OPT_OFFSCREEN_FRAMES "DRIVERBENCH_OFFSCREEN_FRAMES"
-#define DB_RUNTIME_OPT_VSYNC "DRIVERBENCH_VSYNC"
+#define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "allow_remote_display"
+#define DB_RUNTIME_OPT_BENCHMARK_MODE "benchmark_mode"
+#define DB_RUNTIME_OPT_FPS_CAP "fps_cap"
+#define DB_RUNTIME_OPT_FRAME_LIMIT "frame_limit"
+#define DB_RUNTIME_OPT_HASH "hash"
+#define DB_RUNTIME_OPT_HASH_REPORT "hash_report"
+#define DB_RUNTIME_OPT_OFFSCREEN "offscreen"
+#define DB_RUNTIME_OPT_RANDOM_SEED "random_seed"
+#define DB_RUNTIME_OPT_VSYNC "vsync"
 
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
@@ -52,7 +47,7 @@ void db_runtime_option_set(const char *name, const char *value);
 int db_has_ssh_env(void);
 int db_is_forwarded_x11_display(void);
 void db_validate_runtime_environment(const char *backend,
-                                     const char *remote_override_env);
+                                     const char *remote_override_option);
 void db_install_signal_handlers(void);
 int db_should_stop(void);
 uint64_t db_now_ns_monotonic(void);
@@ -126,19 +121,6 @@ static inline long db_checked_double_to_long(const char *backend,
     return (long)value;
 }
 
-static inline uint32_t db_fold_u64_to_u32(uint64_t value) {
-    return (uint32_t)(value ^ (value >> 32U));
-}
-
-static inline uint32_t db_mix_u32(uint32_t value) {
-    value ^= value >> DB_HASH_MIX_SHIFT_A;
-    value *= DB_HASH_MIX_MUL_A;
-    value ^= value >> DB_HASH_MIX_SHIFT_B;
-    value *= DB_HASH_MIX_MUL_B;
-    value ^= value >> DB_HASH_MIX_SHIFT_A;
-    return value;
-}
-
 static inline uint32_t db_u32_range(uint32_t seed, uint32_t min_value,
                                     uint32_t max_value) {
     if (max_value <= min_value) {
@@ -166,24 +148,6 @@ static inline void db_blend_rgb(float prior_r, float prior_g, float prior_b,
     *out_r = prior_r + ((target_r - prior_r) * blend_factor);
     *out_g = prior_g + ((target_g - prior_g) * blend_factor);
     *out_b = prior_b + ((target_b - prior_b) * blend_factor);
-}
-
-static inline uint64_t db_fnv1a64_extend(uint64_t hash, const void *data,
-                                         size_t size) {
-    const uint8_t *bytes = (const uint8_t *)data;
-    for (size_t i = 0U; i < size; i++) {
-        hash ^= (uint64_t)bytes[i];
-        hash *= DB_FNV1A64_PRIME;
-    }
-    return hash;
-}
-
-static inline uint64_t db_fnv1a64_bytes(const void *data, size_t size) {
-    return db_fnv1a64_extend(DB_FNV1A64_OFFSET, data, size);
-}
-
-static inline uint64_t db_fnv1a64_mix_u64(uint64_t hash, uint64_t value) {
-    return db_fnv1a64_extend(hash, &value, sizeof(value));
 }
 
 static inline uint32_t db_u32_min(uint32_t lhs, uint32_t rhs) {

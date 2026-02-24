@@ -254,15 +254,16 @@ int db_is_forwarded_x11_display(void) {
 }
 
 void db_validate_runtime_environment(const char *backend,
-                                     const char *remote_override_env) {
+                                     const char *remote_override_option) {
     const char *display = getenv("DISPLAY");
     if (db_is_forwarded_x11_display() &&
-        !db_value_is_truthy(db_runtime_option_get(remote_override_env))) {
+        !db_value_is_truthy(db_runtime_option_get(remote_override_option))) {
         const char *display_text = (display != NULL) ? display : "(null)";
         db_failf(backend,
                  "Refusing forwarded X11 session (DISPLAY=%s). This benchmark "
-                 "expects local display/GPU access. Set %s=1 to override.",
-                 display_text, remote_override_env);
+                 "expects local display/GPU access. Set "
+                 "--allow-remote-display 1 to override.",
+                 display_text);
     }
 }
 

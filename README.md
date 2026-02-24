@@ -34,18 +34,16 @@ Dispatch flags:
 - `--display offscreen|glfw_window|linux_kms_atomic` (required, explicit only)
 - `--kms-card /dev/dri/cardX` (KMS only)
 
-Runtime flags (CLI aliases for env vars):
+Runtime flags:
 
-- `--allow-remote-display <0|1>` -> `DRIVERBENCH_ALLOW_REMOTE_DISPLAY`
-- `--benchmark-mode <gradient_sweep|bands|snake_grid|gradient_fill|rect_snake>` -> `DRIVERBENCH_BENCHMARK_MODE`
-- `--fps-cap <value>` -> `DRIVERBENCH_FPS_CAP`
-- `--framebuffer-hash <0|1>` -> `DRIVERBENCH_FRAMEBUFFER_HASH`
-- `--frame-limit <value>` -> `DRIVERBENCH_FRAME_LIMIT`
-- `--hash-every-frame <0|1>` -> `DRIVERBENCH_HASH_EVERY_FRAME`
-- `--offscreen <0|1>` -> `DRIVERBENCH_OFFSCREEN`
-- `--offscreen-frames <value>` -> `DRIVERBENCH_OFFSCREEN_FRAMES`
-- `--random-seed <value>` -> `DRIVERBENCH_RANDOM_SEED`
-- `--vsync <0|1|on|off|true|false>` -> `DRIVERBENCH_VSYNC`
+- `--allow-remote-display <0|1>`
+- `--benchmark-mode <gradient_sweep|bands|snake_grid|gradient_fill|rect_snake>`
+- `--fps-cap <value>`
+- `--hash <none|state|pixel|both>`
+- `--frame-limit <value>`
+- `--offscreen <0|1>`
+- `--random-seed <value>`
+- `--vsync <0|1|on|off|true|false>`
 
 Runtime options are now configured via CLI flags.
 Benchmark mode may be left unset to use its default auto-selection behavior.
@@ -53,7 +51,7 @@ Benchmark mode may be left unset to use its default auto-selection behavior.
 Examples:
 
 ```bash
-./build/driverbench --api cpu --display offscreen --benchmark-mode snake_grid --random-seed 12345 --offscreen-frames 300
+./build/driverbench --api cpu --display offscreen --benchmark-mode snake_grid --random-seed 12345 --frame-limit 300
 ./build/driverbench --api opengl --renderer gl3_3 --display glfw_window --vsync 0 --frame-limit 1000
 ./build/driverbench --api vulkan --display glfw_window --benchmark-mode gradient_fill
 ```

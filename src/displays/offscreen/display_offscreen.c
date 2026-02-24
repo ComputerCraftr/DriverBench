@@ -4,8 +4,8 @@
 
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
+#include "../../core/db_hash.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
-#include "../../renderers/renderer_benchmark_common.h"
 #include "../../renderers/renderer_identity.h"
 #include "../display_dispatch.h"
 #include "../display_hash_common.h"
@@ -13,14 +13,8 @@
 #define BACKEND_NAME "display_offscreen"
 #define DEFAULT_OFFSCREEN_FRAMES 600U
 
-static uint32_t db_offscreen_frames_from_runtime(void) {
+static uint32_t db_offscreen_frame_limit_from_runtime(void) {
     uint32_t parsed = 0U;
-    if (db_parse_u32_positive_value(
-            BACKEND_NAME, DB_RUNTIME_OPT_OFFSCREEN_FRAMES,
-            db_runtime_option_get(DB_RUNTIME_OPT_OFFSCREEN_FRAMES),
-            &parsed) != 0) {
-        return parsed;
-    }
     if (db_parse_u32_nonnegative_value(
             BACKEND_NAME, DB_RUNTIME_OPT_FRAME_LIMIT,
             db_runtime_option_get(DB_RUNTIME_OPT_FRAME_LIMIT), &parsed) != 0) {
@@ -32,11 +26,11 @@ static uint32_t db_offscreen_frames_from_runtime(void) {
 static int db_run_offscreen_cpu(void) {
     db_install_signal_handlers();
 
-    const uint32_t frame_limit = db_offscreen_frames_from_runtime();
+    const uint32_t frame_limit = db_offscreen_frame_limit_from_runtime();
     const double fps_cap =
         db_runtime_resolve_fps_cap(BACKEND_NAME, BENCH_FPS_CAP_D);
-    const int hash_every_frame = db_value_is_truthy(
-        db_runtime_option_get(DB_RUNTIME_OPT_HASH_EVERY_FRAME));
+    const db_display_hash_settings_t hash_settings =
+        db_display_resolve_hash_settings(0, 0);
 
     db_renderer_cpu_renderer_init();
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
@@ -44,8 +38,11 @@ static int db_run_offscreen_cpu(void) {
 
     uint64_t frames = 0U;
     double next_progress_log_due_ms = 0.0;
-    db_display_hash_tracker_t hash_tracker =
-        db_display_hash_tracker_create(1, hash_every_frame, "bo_hash");
+    db_display_hash_tracker_t state_hash_tracker =
+        db_display_hash_tracker_create(
+            BACKEND_NAME, hash_settings.state_hash_enabled, "state_hash");
+    db_display_hash_tracker_t bo_hash_tracker = db_display_hash_tracker_create(
+        BACKEND_NAME, hash_settings.output_hash_enabled, "bo_hash");
 
     for (uint32_t frame = 0U; !db_should_stop(); frame++) {
         if ((frame_limit > 0U) && (frame >= frame_limit)) {
@@ -55,6 +52,9 @@ static int db_run_offscreen_cpu(void) {
         const double time_s = (double)frame / BENCH_TARGET_FPS_D;
         db_renderer_cpu_renderer_render_frame(time_s);
 
+        const uint64_t state_hash = db_renderer_cpu_renderer_state_hash();
+        db_display_hash_tracker_record(&state_hash_tracker, state_hash);
+
         uint32_t pixel_width = 0U;
         uint32_t pixel_height = 0U;
         const uint32_t *pixels =
@@ -62,12 +62,10 @@ static int db_run_offscreen_cpu(void) {
         if (pixels == NULL) {
             db_failf(BACKEND_NAME, "cpu renderer returned NULL framebuffer");
         }
-        const size_t byte_count =
-            (size_t)((uint64_t)pixel_width * (uint64_t)pixel_height *
-                     sizeof(uint32_t));
-        const uint64_t frame_hash = db_fnv1a64_bytes(pixels, byte_count);
-        db_display_hash_tracker_record(BACKEND_NAME, &hash_tracker, frames,
-                                       frame_hash);
+        const uint64_t bo_hash = db_hash_rgba8_pixels_canonical(
+            (const uint8_t *)pixels, pixel_width, pixel_height,
+            (size_t)pixel_width * 4U, 0);
+        db_display_hash_tracker_record(&bo_hash_tracker, bo_hash);
 
         frames++;
         const double elapsed_ms =
@@ -79,24 +77,31 @@ static int db_run_offscreen_cpu(void) {
         db_sleep_to_fps_cap(BACKEND_NAME, frame_start_ns, fps_cap);
     }
 
-    const uint32_t grid_cols = db_grid_cols_effective();
-    const uint32_t grid_rows = db_grid_rows_effective();
+    if (hash_settings.state_hash_enabled != 0) {
+        const uint64_t final_hash = db_renderer_cpu_renderer_state_hash();
+        state_hash_tracker.final_hash = final_hash;
+    }
+
+    uint32_t final_width = 0U;
+    uint32_t final_height = 0U;
     const uint32_t *final_pixels =
-        db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
-    const size_t final_byte_count =
-        (size_t)((uint64_t)grid_cols * (uint64_t)grid_rows * sizeof(uint32_t));
-    const uint64_t final_hash =
-        db_fnv1a64_bytes(final_pixels, final_byte_count);
-    hash_tracker.final_hash = final_hash;
+        db_renderer_cpu_renderer_pixels_rgba8(&final_width, &final_height);
+    if (final_pixels == NULL) {
+        db_failf(BACKEND_NAME, "cpu renderer returned NULL framebuffer");
+    }
+    if (hash_settings.output_hash_enabled != 0) {
+        bo_hash_tracker.final_hash = db_hash_rgba8_pixels_canonical(
+            (const uint8_t *)final_pixels, final_width, final_height,
+            (size_t)final_width * 4U, 0);
+    }
 
     const double total_ms =
         ((double)frames * DB_MS_PER_SECOND_D) / BENCH_TARGET_FPS_D;
     db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU),
                            db_renderer_name_cpu(), BACKEND_NAME, frames,
                            work_unit_count, total_ms, capability_mode);
-    db_display_hash_tracker_log_final(BACKEND_NAME, &hash_tracker);
-    db_infof(BACKEND_NAME, "grid=%ux%u", grid_rows, grid_cols);
-
+    db_display_hash_tracker_log_final(BACKEND_NAME, &state_hash_tracker);
+    db_display_hash_tracker_log_final(BACKEND_NAME, &bo_hash_tracker);
     db_renderer_cpu_renderer_shutdown();
     return EXIT_SUCCESS;
 }

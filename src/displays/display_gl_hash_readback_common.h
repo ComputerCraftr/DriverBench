@@ -1,22 +1,31 @@
-#ifndef DRIVERBENCH_DISPLAY_GLFW_WINDOW_GL_HASH_COMMON_H
-#define DRIVERBENCH_DISPLAY_GLFW_WINDOW_GL_HASH_COMMON_H
+#ifndef DRIVERBENCH_DISPLAY_GL_HASH_READBACK_COMMON_H
+#define DRIVERBENCH_DISPLAY_GL_HASH_READBACK_COMMON_H
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "../../core/db_core.h"
+#include "../core/db_core.h"
+
+#ifdef __APPLE__
+#include <OpenGL/gl.h>
+#elifdef DB_HAS_OPENGL_DESKTOP
+#define GL_GLEXT_PROTOTYPES
+#include <GL/gl.h>
+#else
+#include <GLES/gl.h>
+#endif
 
 typedef struct {
     uint8_t *bytes;
     size_t size;
 } db_gl_framebuffer_hash_scratch_t;
 
-static inline uint64_t db_gl_hash_framebuffer_rgba8_or_fail(
+static inline const uint8_t *db_gl_read_framebuffer_rgba8_or_fail(
     const char *backend, int width_px, int height_px,
     db_gl_framebuffer_hash_scratch_t *scratch) {
     if ((width_px <= 0) || (height_px <= 0)) {
-        return 0U;
+        return NULL;
     }
 
     const uint64_t pixel_count =
@@ -41,7 +50,7 @@ static inline uint64_t db_gl_hash_framebuffer_rgba8_or_fail(
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, width_px, height_px, GL_RGBA, GL_UNSIGNED_BYTE,
                  scratch->bytes);
-    return db_fnv1a64_bytes(scratch->bytes, byte_count);
+    return scratch->bytes;
 }
 
 static inline void

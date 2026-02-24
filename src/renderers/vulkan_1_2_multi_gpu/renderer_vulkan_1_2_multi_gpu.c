@@ -67,6 +67,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.timestamp_period_ns = ctx->timestamp_period_ns;
     g_state.bench_start_ns = db_now_ns_monotonic();
     g_state.bench_frames = 0U;
+    g_state.state_hash = DB_FNV1A64_OFFSET;
     g_state.next_progress_log_due_ms = 0.0;
     g_state.frame_index = 0U;
     g_state.runtime.snake_cursor = 0U;
@@ -94,6 +95,10 @@ const char *db_renderer_vulkan_1_2_multi_gpu_capability_mode(void) {
 
 uint32_t db_renderer_vulkan_1_2_multi_gpu_work_unit_count(void) {
     return db_vk_work_unit_count_impl();
+}
+
+uint64_t db_renderer_vulkan_1_2_multi_gpu_state_hash(void) {
+    return db_vk_state_hash_impl();
 }
 
 // NOLINTEND(misc-include-cleaner)

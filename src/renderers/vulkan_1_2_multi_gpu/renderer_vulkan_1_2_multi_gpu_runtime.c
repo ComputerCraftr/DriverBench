@@ -593,6 +593,9 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                                   g_state.ema_ms_per_work_unit);
     }
 
+    g_state.state_hash = db_benchmark_runtime_state_hash(
+        &g_state.runtime, g_state.frame_index, db_grid_cols_effective(),
+        db_grid_rows_effective());
     g_state.bench_frames++;
     double bench_ms = (double)(db_now_ns_monotonic() - g_state.bench_start_ns) /
                       DB_NS_PER_MS_D;
@@ -654,5 +657,7 @@ const char *db_vk_capability_mode_impl(void) {
 uint32_t db_vk_work_unit_count_impl(void) {
     return g_state.runtime.work_unit_count;
 }
+
+uint64_t db_vk_state_hash_impl(void) { return g_state.state_hash; }
 
 // NOLINTEND(misc-include-cleaner)

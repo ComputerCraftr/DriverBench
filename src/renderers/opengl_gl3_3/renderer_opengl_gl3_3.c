@@ -51,6 +51,8 @@
 
 typedef struct {
     GLuint fallback_tex;
+    uint64_t state_hash;
+    uint64_t frame_index;
     db_benchmark_runtime_init_t runtime;
     db_gl_vertex_init_t vertex;
     GLint u_gradient_head_row;
@@ -537,10 +539,18 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
             glBindTexture(GL_TEXTURE_2D, g_state.fallback_tex);
         }
         glDrawArrays(GL_TRIANGLES, 0, db_draw_vertex_count_glsizei());
+        g_state.state_hash = db_benchmark_runtime_state_hash(
+            &g_state.runtime, g_state.frame_index, db_grid_cols_effective(),
+            db_grid_rows_effective());
+        g_state.frame_index++;
         return;
     }
     if ((g_state.history_read_index < 0) || (g_state.history_width <= 0) ||
         (g_state.history_height <= 0)) {
+        g_state.state_hash = db_benchmark_runtime_state_hash(
+            &g_state.runtime, g_state.frame_index, db_grid_cols_effective(),
+            db_grid_rows_effective());
+        g_state.frame_index++;
         return;
     }
 
@@ -571,6 +581,10 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
     glViewport(prev_viewport[0], prev_viewport[1], prev_viewport[2],
                prev_viewport[3]);
     g_state.history_read_index = write_index;
+    g_state.state_hash = db_benchmark_runtime_state_hash(
+        &g_state.runtime, g_state.frame_index, db_grid_cols_effective(),
+        db_grid_rows_effective());
+    g_state.frame_index++;
 }
 
 void db_renderer_opengl_gl3_3_shutdown(void) {
@@ -607,4 +621,8 @@ uint32_t db_renderer_opengl_gl3_3_work_unit_count(void) {
     return (g_state.runtime.work_unit_count != 0U)
                ? g_state.runtime.work_unit_count
                : BENCH_BANDS;
+}
+
+uint64_t db_renderer_opengl_gl3_3_state_hash(void) {
+    return g_state.state_hash;
 }

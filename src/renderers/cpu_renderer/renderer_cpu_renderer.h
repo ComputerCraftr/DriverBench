@@ -11,5 +11,6 @@ uint32_t db_renderer_cpu_renderer_work_unit_count(void);
 const char *db_renderer_cpu_renderer_capability_mode(void);
 const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
                                                       uint32_t *out_height);
+uint64_t db_renderer_cpu_renderer_state_hash(void);
 
 #endif

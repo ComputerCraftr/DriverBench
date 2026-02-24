@@ -27,6 +27,8 @@ typedef struct {
 
 typedef struct {
     db_cpu_bo_t bos[2];
+    uint64_t state_hash;
+    uint64_t frame_index;
     int history_mode;
     int history_read_index;
     int initialized;
@@ -318,6 +320,10 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
     if (g_state.history_mode != 0) {
         g_state.history_read_index = write_index;
     }
+    g_state.state_hash =
+        db_benchmark_runtime_state_hash(&g_state.runtime, g_state.frame_index,
+                                        write_bo->width, write_bo->height);
+    g_state.frame_index++;
 }
 
 const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
@@ -343,6 +349,10 @@ uint32_t db_renderer_cpu_renderer_work_unit_count(void) {
 
 const char *db_renderer_cpu_renderer_capability_mode(void) {
     return DB_CAP_MODE_CPU_OFFSCREEN_BO;
+}
+
+uint64_t db_renderer_cpu_renderer_state_hash(void) {
+    return g_state.state_hash;
 }
 
 void db_renderer_cpu_renderer_shutdown(void) {

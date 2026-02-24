@@ -115,6 +115,7 @@ typedef struct {
 
 typedef struct {
     uint64_t bench_frames;
+    uint64_t state_hash;
     uint64_t bench_start_ns;
     const char *capability_mode;
     VkCommandBuffer command_buffer;
@@ -388,6 +389,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void);
 void db_vk_shutdown_impl(void);
 const char *db_vk_capability_mode_impl(void);
 uint32_t db_vk_work_unit_count_impl(void);
+uint64_t db_vk_state_hash_impl(void);
 
 // NOLINTEND(misc-include-cleaner)
 

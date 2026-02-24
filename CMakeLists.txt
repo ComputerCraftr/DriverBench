@@ -25,6 +25,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(DB_CORE_SOURCES
   src/core/db_buffer_convert.c
   src/core/db_core.c
+  src/core/db_hash.c
 )
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
@@ -352,75 +353,61 @@ if(CMAKE_EXPORT_COMPILE_COMMANDS)
 endif()
 
 if(BUILD_TESTING)
-  function(db_add_determinism_test test_name hash_key test_args expected_hash)
+  function(db_add_determinism_test test_name test_args hash_checks)
     if(NOT TARGET ${DB_UNIFIED_TARGET})
       return()
     endif()
-    if("${expected_hash}" STREQUAL "")
-      add_test(
-        NAME ${test_name}
-        COMMAND ${CMAKE_COMMAND}
-          -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
-          -DTEST_HASH_KEY=${hash_key}
-          -DTEST_ARGS=${test_args}
-          -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
-      )
-    else()
-      add_test(
-        NAME ${test_name}
-        COMMAND ${CMAKE_COMMAND}
-          -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
-          -DTEST_HASH_KEY=${hash_key}
-          -DTEST_ARGS=${test_args}
-          -DTEST_EXPECTED_HASH=${expected_hash}
-          -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
-      )
-    endif()
+    add_test(
+      NAME ${test_name}
+      COMMAND ${CMAKE_COMMAND}
+        -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
+        -DTEST_ARGS=${test_args}
+        -DTEST_HASH_CHECKS=${hash_checks}
+        -P ${CMAKE_SOURCE_DIR}/cmake/RunDeterminismTest.cmake
+    )
   endfunction()
+
+  set(DB_DETERMINISM_COMMON_ARGS "--random-seed 12345")
+  set(DB_DETERMINISM_HASH "--hash both")
+  set(DB_DETERMINISM_FRAME_LIMIT "--frame-limit 64")
+  set(DB_DETERMINISM_GLFW_FRAMES "--offscreen 1 --frame-limit 64 --vsync 0")
 
   db_add_determinism_test(
     determinism_cpu_renderer_snake
-    bo_hash_final
-    "--api cpu --display offscreen --benchmark-mode snake_grid --random-seed 12345 --offscreen-frames 64"
-    0x2739df2d274aacf2
+    "--api cpu --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
+    "state_hash_final=0xc330a0e9e6b79db9,bo_hash_final=0x2739df2d274aacf2"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_fill
-    bo_hash_final
-    "--api cpu --display offscreen --benchmark-mode gradient_fill --random-seed 12345 --offscreen-frames 64"
-    0x3dcb7da55d6a8193
+    "--api cpu --display offscreen --benchmark-mode gradient_fill ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
+    "state_hash_final=0x8d59424f5cfc0566,bo_hash_final=0x3dcb7da55d6a8193"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_rect_snake
-    bo_hash_final
-    "--api cpu --display offscreen --benchmark-mode rect_snake --random-seed 12345 --offscreen-frames 64"
-    0xb70c2dd632862304
+    "--api cpu --display offscreen --benchmark-mode rect_snake ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
+    "state_hash_final=0x86f21c237d29923f,bo_hash_final=0xb70c2dd632862304"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_sweep
-    bo_hash_final
-    "--api cpu --display offscreen --benchmark-mode gradient_sweep --random-seed 12345 --offscreen-frames 64"
-    0x3dcb7da55d6a8193
+    "--api cpu --display offscreen --benchmark-mode gradient_sweep ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
+    "state_hash_final=0x74dd5ec4a44b0d11,bo_hash_final=0x3dcb7da55d6a8193"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_bands
-    bo_hash_final
-    "--api cpu --display offscreen --benchmark-mode bands --random-seed 12345 --offscreen-frames 64"
-    0x265a06c2cd23fac3
+    "--api cpu --display offscreen --benchmark-mode bands ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_FRAME_LIMIT}"
+    "state_hash_final=0x71f0e9c6cf27ec82,bo_hash_final=0x265a06c2cd23fac3"
   )
 
   if(DB_ENABLE_GLFW_OFFSCREEN_TESTS)
     db_add_determinism_test(
       determinism_glfw_gl1_5_offscreen
-      framebuffer_hash_final
-      "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --offscreen 1 --frame-limit 64 --benchmark-mode snake_grid --random-seed 12345 --vsync 0 --framebuffer-hash 1"
-      ""
+      "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_GLFW_FRAMES}"
+      "state_hash_final,framebuffer_hash_final"
     )
     db_add_determinism_test(
       determinism_glfw_gl3_3_offscreen
-      framebuffer_hash_final
-      "--api opengl --renderer gl3_3 --display glfw_window --offscreen 1 --frame-limit 64 --benchmark-mode snake_grid --random-seed 12345 --vsync 0 --framebuffer-hash 1"
-      ""
+      "--api opengl --renderer gl3_3 --display glfw_window --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_GLFW_FRAMES}"
+      "state_hash_final,framebuffer_hash_final"
     )
   endif()
 endif()

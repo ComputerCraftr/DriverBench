@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "../../core/db_core.h"
+#include "../../core/db_hash.h"
 #ifdef DB_HAS_OPENGL_API
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
@@ -25,12 +26,13 @@
 #include "../display_hash_common.h"
 #include "display_glfw_window_common.h"
 #ifdef DB_HAS_OPENGL_API
-#include "display_glfw_window_gl_hash_common.h"
+#include "../display_gl_hash_readback_common.h"
 #endif
 
 #ifdef DB_HAS_OPENGL_API
 #ifdef __APPLE__
-#include <OpenGL/gl3.h>
+#include <OpenGL/gl.h>
+#include <OpenGL/gltypes.h>
 #elifdef DB_HAS_OPENGL_DESKTOP
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -50,6 +52,7 @@
 typedef enum {
     DB_GLFW_LOOP_CONTINUE = 0,
     DB_GLFW_LOOP_STOP = 1,
+    DB_GLFW_LOOP_RETRY = 2,
 } db_glfw_loop_result_t;
 
 typedef db_glfw_loop_result_t (*db_glfw_frame_fn_t)(void *user_data,
@@ -72,13 +75,21 @@ static uint64_t db_glfw_run_loop(const db_glfw_loop_t *loop) {
         }
         const double frame_start_s = db_glfw_time_seconds();
         db_glfw_poll_events();
-        if (loop->frame_fn(loop->user_data, frames) == DB_GLFW_LOOP_STOP) {
+        const db_glfw_loop_result_t frame_result =
+            loop->frame_fn(loop->user_data, frames);
+        if (frame_result == DB_GLFW_LOOP_STOP) {
             break;
         }
         db_glfw_sleep_to_fps_cap(loop->backend, frame_start_s, loop->fps_cap);
-        frames++;
+        if (frame_result != DB_GLFW_LOOP_RETRY) {
+            frames++;
+        }
     }
     return frames;
+}
+
+static db_display_hash_settings_t db_glfw_hash_settings_for_backend(void) {
+    return db_display_resolve_hash_settings(0, 0);
 }
 
 #ifdef DB_HAS_OPENGL_API
@@ -197,8 +208,10 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
 typedef struct {
     double bench_start;
     double next_progress_log_due_ms;
-    db_display_hash_tracker_t *hash_tracker;
-    int hash_enabled;
+    db_display_hash_tracker_t *state_hash_tracker;
+    db_display_hash_tracker_t *bo_hash_tracker;
+    int state_hash_enabled;
+    int output_hash_enabled;
     db_cpu_present_gl_state_t *present;
     uint32_t work_unit_count;
     GLFWwindow *window;
@@ -211,7 +224,11 @@ static db_glfw_loop_result_t db_glfw_cpu_frame(void *user_data,
     db_renderer_cpu_renderer_render_frame(frame_time_s);
     db_present_cpu_framebuffer(ctx->window, ctx->present);
 
-    if (ctx->hash_enabled != 0) {
+    if (ctx->state_hash_enabled != 0) {
+        const uint64_t state_hash = db_renderer_cpu_renderer_state_hash();
+        db_display_hash_tracker_record(ctx->state_hash_tracker, state_hash);
+    }
+    if (ctx->output_hash_enabled != 0) {
         uint32_t pixel_width = 0U;
         uint32_t pixel_height = 0U;
         const uint32_t *pixels =
@@ -220,12 +237,10 @@ static db_glfw_loop_result_t db_glfw_cpu_frame(void *user_data,
             db_failf(BACKEND_NAME_CPU,
                      "cpu renderer returned invalid framebuffer");
         }
-        const size_t byte_count =
-            (size_t)((uint64_t)pixel_width * (uint64_t)pixel_height *
-                     sizeof(uint32_t));
-        const uint64_t frame_hash = db_fnv1a64_bytes(pixels, byte_count);
-        db_display_hash_tracker_record(BACKEND_NAME_CPU, ctx->hash_tracker,
-                                       frame_index, frame_hash);
+        const uint64_t bo_hash = db_hash_rgba8_pixels_canonical(
+            (const uint8_t *)pixels, pixel_width, pixel_height,
+            (size_t)pixel_width * 4U, 0);
+        db_display_hash_tracker_record(ctx->bo_hash_tracker, bo_hash);
     }
 
     glfwSwapBuffers(ctx->window);
@@ -248,10 +263,8 @@ static int db_run_glfw_window_cpu(void) {
     const int swap_interval = db_glfw_resolve_swap_interval(BACKEND_NAME_CPU);
     const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME_CPU);
     const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME_CPU);
-    int hash_enabled = 0;
-    int hash_every_frame = 0;
-    db_glfw_resolve_hash_settings(BACKEND_NAME_CPU, &hash_enabled,
-                                  &hash_every_frame);
+    const db_display_hash_settings_t hash_settings =
+        db_glfw_hash_settings_for_backend();
 
     const int gl_legacy_context_major = 2;
     const int gl_legacy_context_minor = 1;
@@ -286,13 +299,18 @@ static int db_run_glfw_window_cpu(void) {
 
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
     const double bench_start = db_glfw_time_seconds();
-    db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
-        hash_enabled, hash_every_frame, "bo_hash");
+    db_display_hash_tracker_t state_hash_tracker =
+        db_display_hash_tracker_create(
+            BACKEND_NAME_CPU, hash_settings.state_hash_enabled, "state_hash");
+    db_display_hash_tracker_t bo_hash_tracker = db_display_hash_tracker_create(
+        BACKEND_NAME_CPU, hash_settings.output_hash_enabled, "bo_hash");
     db_glfw_cpu_loop_ctx_t loop_ctx = {
         .bench_start = bench_start,
         .next_progress_log_due_ms = 0.0,
-        .hash_tracker = &hash_tracker,
-        .hash_enabled = hash_enabled,
+        .state_hash_tracker = &state_hash_tracker,
+        .bo_hash_tracker = &bo_hash_tracker,
+        .state_hash_enabled = hash_settings.state_hash_enabled,
+        .output_hash_enabled = hash_settings.output_hash_enabled,
         .present = &present,
         .work_unit_count = work_unit_count,
         .window = window,
@@ -312,7 +330,8 @@ static int db_run_glfw_window_cpu(void) {
     db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU),
                            db_renderer_name_cpu(), BACKEND_NAME_CPU, frames,
                            work_unit_count, bench_ms, "cpu_glfw_window");
-    db_display_hash_tracker_log_final(BACKEND_NAME_CPU, &hash_tracker);
+    db_display_hash_tracker_log_final(BACKEND_NAME_CPU, &state_hash_tracker);
+    db_display_hash_tracker_log_final(BACKEND_NAME_CPU, &bo_hash_tracker);
 
     db_renderer_cpu_renderer_shutdown();
     if (present.texture != 0U) {
@@ -407,16 +426,29 @@ static uint32_t db_gl_renderer_work_unit_count(db_gl_renderer_t renderer) {
 #endif
 }
 
+static uint64_t db_gl_renderer_state_hash(db_gl_renderer_t renderer) {
+    if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
+        return db_renderer_opengl_gl1_5_gles1_1_state_hash();
+    }
+#ifdef DB_HAS_OPENGL_DESKTOP
+    return db_renderer_opengl_gl3_3_state_hash();
+#else
+    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
+#endif
+}
+
 typedef struct {
     const char *backend_name;
     const char *capability_mode;
     const char *renderer_name;
-    db_display_hash_tracker_t *hash_tracker;
+    db_display_hash_tracker_t *state_hash_tracker;
+    db_display_hash_tracker_t *framebuffer_hash_tracker;
     db_gl_framebuffer_hash_scratch_t *hash_scratch;
-    db_gl_renderer_t renderer;
     double bench_start;
     double next_progress_log_due_ms;
-    int hash_enabled;
+    db_gl_renderer_t renderer;
+    int state_hash_enabled;
+    int output_hash_enabled;
     uint32_t work_unit_count;
     GLFWwindow *window;
 } db_glfw_opengl_loop_ctx_t;
@@ -436,12 +468,27 @@ static db_glfw_loop_result_t db_glfw_opengl_frame(void *user_data,
     const double frame_time_s = (double)frame_index / BENCH_TARGET_FPS_D;
     db_gl_renderer_render_frame(ctx->renderer, frame_time_s);
 
-    if (ctx->hash_enabled != 0) {
-        const uint64_t frame_hash = db_gl_hash_framebuffer_rgba8_or_fail(
-            ctx->backend_name, framebuffer_width_px, framebuffer_height_px,
-            ctx->hash_scratch);
-        db_display_hash_tracker_record(ctx->backend_name, ctx->hash_tracker,
-                                       frame_index, frame_hash);
+    if (ctx->state_hash_enabled != 0) {
+        const uint64_t state_hash = db_gl_renderer_state_hash(ctx->renderer);
+        db_display_hash_tracker_record(ctx->state_hash_tracker, state_hash);
+    }
+    if (ctx->output_hash_enabled != 0) {
+        const uint8_t *framebuffer_pixels =
+            db_gl_read_framebuffer_rgba8_or_fail(
+                ctx->backend_name, framebuffer_width_px, framebuffer_height_px,
+                ctx->hash_scratch);
+        const uint64_t framebuffer_hash = db_hash_rgba8_pixels_canonical(
+            framebuffer_pixels,
+            db_checked_int_to_u32(ctx->backend_name, "fb_w",
+                                  framebuffer_width_px),
+            db_checked_int_to_u32(ctx->backend_name, "fb_h",
+                                  framebuffer_height_px),
+            (size_t)db_checked_int_to_u32(ctx->backend_name, "fb_row_bytes",
+                                          framebuffer_width_px) *
+                4U,
+            1);
+        db_display_hash_tracker_record(ctx->framebuffer_hash_tracker,
+                                       framebuffer_hash);
     }
 
     glfwSwapBuffers(ctx->window);
@@ -465,10 +512,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
     const int swap_interval = db_glfw_resolve_swap_interval(backend_name);
     const double fps_cap = db_glfw_resolve_fps_cap(backend_name);
     const uint32_t frame_limit = db_glfw_resolve_frame_limit(backend_name);
-    int hash_enabled = 0;
-    int hash_every_frame = 0;
-    db_glfw_resolve_hash_settings(backend_name, &hash_enabled,
-                                  &hash_every_frame);
+    const db_display_hash_settings_t hash_settings =
+        db_glfw_hash_settings_for_backend();
 
     GLFWwindow *window = NULL;
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
@@ -518,19 +563,26 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
     const char *capability_mode = db_gl_renderer_capability_mode(renderer);
     const uint32_t work_unit_count = db_gl_renderer_work_unit_count(renderer);
     const double bench_start = db_glfw_time_seconds();
-    db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
-        hash_enabled, hash_every_frame, "framebuffer_hash");
+    db_display_hash_tracker_t state_hash_tracker =
+        db_display_hash_tracker_create(
+            backend_name, hash_settings.state_hash_enabled, "state_hash");
+    db_display_hash_tracker_t framebuffer_hash_tracker =
+        db_display_hash_tracker_create(backend_name,
+                                       hash_settings.output_hash_enabled,
+                                       "framebuffer_hash");
     db_gl_framebuffer_hash_scratch_t hash_scratch = {0};
     db_glfw_opengl_loop_ctx_t loop_ctx = {
         .backend_name = backend_name,
         .capability_mode = capability_mode,
         .renderer_name = db_gl_renderer_name(renderer),
-        .hash_tracker = &hash_tracker,
+        .state_hash_tracker = &state_hash_tracker,
+        .framebuffer_hash_tracker = &framebuffer_hash_tracker,
         .hash_scratch = &hash_scratch,
         .renderer = renderer,
         .bench_start = bench_start,
         .next_progress_log_due_ms = 0.0,
-        .hash_enabled = hash_enabled,
+        .state_hash_enabled = hash_settings.state_hash_enabled,
+        .output_hash_enabled = hash_settings.output_hash_enabled,
         .work_unit_count = work_unit_count,
         .window = window,
     };
@@ -549,7 +601,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
     db_benchmark_log_final(db_dispatch_api_name(DB_API_OPENGL),
                            db_gl_renderer_name(renderer), backend_name, frames,
                            work_unit_count, bench_ms, capability_mode);
-    db_display_hash_tracker_log_final(backend_name, &hash_tracker);
+    db_display_hash_tracker_log_final(backend_name, &state_hash_tracker);
+    db_display_hash_tracker_log_final(backend_name, &framebuffer_hash_tracker);
 
     db_gl_renderer_shutdown(renderer);
     db_glfw_destroy_window(window);
@@ -559,7 +612,12 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer) {
 #endif
 
 #ifdef DB_HAS_VULKAN_API
-// NOLINTBEGIN(misc-include-cleaner)
+typedef struct {
+    const char *backend_name;
+    db_display_hash_tracker_t *hash_tracker;
+    int state_hash_enabled;
+} db_glfw_vulkan_loop_ctx_t;
+
 static const char *const *
 db_glfw_vk_required_instance_extensions(uint32_t *count, void *user_data) {
     (void)user_data;
@@ -583,13 +641,21 @@ static void db_glfw_vk_get_framebuffer_size(void *window_handle, int *width,
 
 static db_glfw_loop_result_t db_glfw_vulkan_frame(void *user_data,
                                                   uint64_t frame_index) {
-    (void)frame_index;
-    const char *backend_name = (const char *)user_data;
+    const db_glfw_vulkan_loop_ctx_t *ctx =
+        (const db_glfw_vulkan_loop_ctx_t *)user_data;
     const db_vk_frame_result_t frame_result =
         db_renderer_vulkan_1_2_multi_gpu_render_frame();
+    if ((ctx->state_hash_enabled != 0) && (frame_result == DB_VK_FRAME_OK)) {
+        const uint64_t state_hash =
+            db_renderer_vulkan_1_2_multi_gpu_state_hash();
+        db_display_hash_tracker_record(ctx->hash_tracker, state_hash);
+    }
     if (frame_result == DB_VK_FRAME_STOP) {
-        db_infof(backend_name, "renderer requested stop");
+        db_infof(ctx->backend_name, "renderer requested stop");
         return DB_GLFW_LOOP_STOP;
+    }
+    if (frame_result == DB_VK_FRAME_RETRY) {
+        return DB_GLFW_LOOP_RETRY;
     }
     return DB_GLFW_LOOP_CONTINUE;
 }
@@ -600,6 +666,9 @@ static int db_run_glfw_window_vulkan(void) {
     db_install_signal_handlers();
     const double fps_cap = db_glfw_resolve_fps_cap(BACKEND_NAME_VK);
     const uint32_t frame_limit = db_glfw_resolve_frame_limit(BACKEND_NAME_VK);
+    const db_display_hash_settings_t hash_settings =
+        db_glfw_hash_settings_for_backend();
+    (void)hash_settings.output_hash_enabled;
 
     GLFWwindow *window = db_glfw_create_no_api_window(
         BACKEND_NAME_VK, "Vulkan 1.2 opportunistic multi-GPU (device groups)",
@@ -622,20 +691,27 @@ static int db_run_glfw_window_vulkan(void) {
         .get_framebuffer_size = db_glfw_vk_get_framebuffer_size,
     };
     db_renderer_vulkan_1_2_multi_gpu_init(&wsi_config);
+    db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
+        BACKEND_NAME_VK, hash_settings.state_hash_enabled, "state_hash");
+    const db_glfw_vulkan_loop_ctx_t loop_ctx = {
+        .backend_name = BACKEND_NAME_VK,
+        .hash_tracker = &hash_tracker,
+        .state_hash_enabled = hash_settings.state_hash_enabled,
+    };
     const db_glfw_loop_t loop = {
         .backend = BACKEND_NAME_VK,
         .frame_fn = db_glfw_vulkan_frame,
         .fps_cap = fps_cap,
         .frame_limit = frame_limit,
-        .user_data = (void *)BACKEND_NAME_VK,
+        .user_data = (void *)&loop_ctx,
         .window = window,
     };
     (void)db_glfw_run_loop(&loop);
     db_renderer_vulkan_1_2_multi_gpu_shutdown();
+    db_display_hash_tracker_log_final(BACKEND_NAME_VK, &hash_tracker);
     db_glfw_destroy_window(window);
     return 0;
 }
-// NOLINTEND(misc-include-cleaner)
 #endif
 
 int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer) {

@@ -21,8 +21,6 @@ double db_glfw_time_seconds(void);
 int db_glfw_resolve_swap_interval(const char *backend);
 double db_glfw_resolve_fps_cap(const char *backend);
 uint32_t db_glfw_resolve_frame_limit(const char *backend);
-void db_glfw_resolve_hash_settings(const char *backend, int *out_hash_enabled,
-                                   int *out_hash_every_frame);
 int db_glfw_offscreen_enabled(void);
 void db_glfw_sleep_to_fps_cap(const char *backend, double frame_start_s,
                               double fps_cap);

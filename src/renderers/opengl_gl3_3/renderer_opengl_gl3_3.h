@@ -8,5 +8,6 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s);
 void db_renderer_opengl_gl3_3_shutdown(void);
 const char *db_renderer_opengl_gl3_3_capability_mode(void);
 uint32_t db_renderer_opengl_gl3_3_work_unit_count(void);
+uint64_t db_renderer_opengl_gl3_3_state_hash(void);
 
 #endif
