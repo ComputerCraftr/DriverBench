@@ -29,6 +29,10 @@ typedef struct {
 
 typedef struct {
     db_cpu_bo_t bos[2];
+    db_dirty_row_range_t damage_rows[2];
+    size_t damage_row_count;
+    db_snake_shape_row_bounds_t *snake_row_bounds;
+    size_t snake_row_bounds_capacity;
     uint64_t state_hash;
     uint64_t frame_index;
     int history_mode;
@@ -38,6 +42,71 @@ typedef struct {
 } db_cpu_renderer_state_t;
 
 static db_cpu_renderer_state_t g_state = {0};
+
+static void db_cpu_set_full_damage(const db_cpu_bo_t *bo) {
+    if ((bo == NULL) || (bo->height == 0U)) {
+        g_state.damage_row_count = 0U;
+        return;
+    }
+    g_state.damage_rows[0] = (db_dirty_row_range_t){
+        .row_start = 0U,
+        .row_count = bo->height,
+    };
+    g_state.damage_rows[1] = (db_dirty_row_range_t){0U, 0U};
+    g_state.damage_row_count = 1U;
+}
+
+static void
+db_cpu_set_damage_from_gradient_plan(const db_gradient_damage_plan_t *plan,
+                                     uint32_t rows) {
+    db_dirty_row_range_t ranges[2] = {{0U, 0U}, {0U, 0U}};
+    const size_t count = db_gradient_collect_dirty_ranges(plan, ranges);
+    g_state.damage_row_count = 0U;
+    for (size_t i = 0U; (i < count) && (g_state.damage_row_count < 2U); i++) {
+        if ((ranges[i].row_count == 0U) || (ranges[i].row_start >= rows)) {
+            continue;
+        }
+        const uint32_t clamped_count =
+            db_u32_min(ranges[i].row_count, rows - ranges[i].row_start);
+        if (clamped_count == 0U) {
+            continue;
+        }
+        g_state.damage_rows[g_state.damage_row_count++] =
+            (db_dirty_row_range_t){
+                .row_start = ranges[i].row_start,
+                .row_count = clamped_count,
+            };
+    }
+    if (g_state.damage_row_count == 0U) {
+        db_cpu_set_full_damage(&g_state.bos[g_state.history_read_index]);
+    }
+}
+
+static void db_cpu_set_damage_from_spans(const db_snake_col_span_t *spans,
+                                         size_t span_count, uint32_t rows) {
+    uint32_t row_min = rows;
+    uint32_t row_max_exclusive = 0U;
+    for (size_t i = 0U; i < span_count; i++) {
+        if (spans[i].col_end <= spans[i].col_start) {
+            continue;
+        }
+        if (spans[i].row >= rows) {
+            continue;
+        }
+        row_min = db_u32_min(row_min, spans[i].row);
+        row_max_exclusive = db_u32_max(row_max_exclusive, spans[i].row + 1U);
+    }
+    if ((row_max_exclusive <= row_min) || (row_min >= rows)) {
+        g_state.damage_row_count = 0U;
+        return;
+    }
+    g_state.damage_rows[0] = (db_dirty_row_range_t){
+        .row_start = row_min,
+        .row_count = row_max_exclusive - row_min,
+    };
+    g_state.damage_rows[1] = (db_dirty_row_range_t){0U, 0U};
+    g_state.damage_row_count = 1U;
+}
 
 static uint32_t db_channel_to_u8(float value) {
     float clamped = value;
@@ -110,9 +179,9 @@ static void
 db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
                      const db_snake_plan_t *plan,
                      const db_snake_region_t *region, int apply_shape_clip,
-                     uint32_t shape_kind, uint32_t pattern_seed,
-                     uint32_t shape_index, float target_red, float target_green,
-                     float target_blue, int full_fill_on_phase_completed) {
+                     const db_snake_shape_cache_t *shape_cache_ptr,
+                     float target_red, float target_green, float target_blue,
+                     int full_fill_on_phase_completed) {
     if ((plan == NULL) || (region == NULL)) {
         return;
     }
@@ -124,17 +193,8 @@ db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
     const uint32_t rows = write_bo->height;
     const uint32_t target_rgba =
         db_pack_rgb(target_red, target_green, target_blue);
-    db_snake_shape_cache_t shape_cache = {0};
-    const db_snake_shape_cache_t *shape_cache_ptr = NULL;
-    db_snake_shape_row_bounds_t row_bounds[BENCH_WINDOW_HEIGHT_PX];
-    if (apply_shape_clip != 0) {
-        if (db_snake_shape_cache_init_from_index(
-                &shape_cache, row_bounds, (size_t)BENCH_WINDOW_HEIGHT_PX,
-                pattern_seed, shape_index, DB_PALETTE_SALT, region,
-                (db_snake_shape_kind_t)shape_kind) != 0) {
-            shape_cache_ptr = &shape_cache;
-        }
-    }
+    const db_snake_shape_cache_t *active_shape_cache =
+        (apply_shape_clip != 0) ? shape_cache_ptr : NULL;
     if ((full_fill_on_phase_completed != 0) && (plan->phase_completed != 0)) {
         db_bo_fill_solid(write_bo, target_rgba);
         return;
@@ -152,9 +212,9 @@ db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
         if ((row >= rows) || (col >= cols)) {
             continue;
         }
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
+        if (active_shape_cache != NULL) {
+            const int inside = db_snake_shape_cache_contains_tile(
+                active_shape_cache, row, col);
             if (inside == 0) {
                 continue;
             }
@@ -174,9 +234,9 @@ db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
         if ((row >= rows) || (col >= cols)) {
             continue;
         }
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
+        if (active_shape_cache != NULL) {
+            const int inside = db_snake_shape_cache_contains_tile(
+                active_shape_cache, row, col);
             if (inside == 0) {
                 continue;
             }
@@ -256,6 +316,26 @@ void db_renderer_cpu_renderer_init(void) {
         BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B);
     db_bo_fill_solid(&bos[0], phase0);
     db_bo_fill_solid(&bos[1], phase0);
+    db_snake_shape_row_bounds_t *snake_row_bounds = NULL;
+    size_t snake_row_bounds_capacity = 0U;
+    if (init_state.pattern == DB_PATTERN_SNAKE_SHAPES) {
+        if ((size_t)grid_rows >
+            (SIZE_MAX / sizeof(db_snake_shape_row_bounds_t))) {
+            free(bos[0].pixels_rgba8);
+            free(bos[1].pixels_rgba8);
+            db_failf(BACKEND_NAME, "invalid snake row-bounds size: %u",
+                     grid_rows);
+        }
+        snake_row_bounds = (db_snake_shape_row_bounds_t *)calloc(
+            (size_t)grid_rows, sizeof(*snake_row_bounds));
+        if (snake_row_bounds == NULL) {
+            free(bos[0].pixels_rgba8);
+            free(bos[1].pixels_rgba8);
+            db_failf(BACKEND_NAME,
+                     "failed to allocate snake row-bounds scratch");
+        }
+        snake_row_bounds_capacity = (size_t)grid_rows;
+    }
 
     g_state = (db_cpu_renderer_state_t){0};
     g_state.initialized = 1;
@@ -265,6 +345,8 @@ void db_renderer_cpu_renderer_init(void) {
     g_state.history_mode = db_pattern_uses_history_texture(init_state.pattern);
     g_state.history_read_index = 0;
     g_state.runtime.snake_shape_index = 0U;
+    g_state.snake_row_bounds = snake_row_bounds;
+    g_state.snake_row_bounds_capacity = snake_row_bounds_capacity;
 }
 
 void db_renderer_cpu_renderer_render_frame(double time_s) {
@@ -282,8 +364,10 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
     db_cpu_bo_t *write_bo = &g_state.bos[write_index];
     const db_cpu_bo_t *read_bo = &g_state.bos[g_state.history_read_index];
 
+    g_state.damage_row_count = 0U;
     if (g_state.runtime.pattern == DB_PATTERN_BANDS) {
         db_render_bands(write_bo, time_s);
+        db_cpu_set_full_damage(write_bo);
     } else if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
                (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
                (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
@@ -300,17 +384,47 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
             is_grid, g_state.runtime.pattern_seed, &plan);
         const db_snake_shape_kind_t shape_kind =
             (is_shapes != 0) ? target.shape_kind : DB_SNAKE_SHAPE_RECT;
+        db_snake_shape_cache_t shape_cache = {0};
+        const db_snake_shape_cache_t *shape_cache_ptr = NULL;
+        if (is_shapes != 0) {
+            if ((g_state.snake_row_bounds != NULL) &&
+                (g_state.snake_row_bounds_capacity > 0U) &&
+                (db_snake_shape_cache_init_from_index(
+                     &shape_cache, g_state.snake_row_bounds,
+                     g_state.snake_row_bounds_capacity,
+                     g_state.runtime.pattern_seed, plan.active_shape_index,
+                     DB_PALETTE_SALT, &target.region, shape_kind) != 0)) {
+                shape_cache_ptr = &shape_cache;
+            }
+        }
         if (target.has_next_mode_phase_flag != 0) {
             g_state.runtime.mode_phase_flag = target.next_mode_phase_flag;
         }
         if (target.has_next_shape_index != 0) {
             g_state.runtime.snake_shape_index = target.next_shape_index;
         }
-        db_render_snake_step(
-            write_bo, read_bo, &plan, &target.region, is_shapes, shape_kind,
-            g_state.runtime.pattern_seed, plan.active_shape_index,
-            target.target_r, target.target_g, target.target_b,
-            target.full_fill_on_phase_completed);
+        db_render_snake_step(write_bo, read_bo, &plan, &target.region,
+                             is_shapes, shape_cache_ptr, target.target_r,
+                             target.target_g, target.target_b,
+                             target.full_fill_on_phase_completed);
+        if ((target.full_fill_on_phase_completed != 0) &&
+            (plan.phase_completed != 0)) {
+            db_cpu_set_full_damage(write_bo);
+        } else {
+            const size_t max_spans =
+                (size_t)plan.prev_count + (size_t)plan.batch_size;
+            db_snake_col_span_t spans[BENCH_SNAKE_PHASE_WINDOW_TILES * 2U];
+            if (max_spans <= ((size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * 2U)) {
+                const size_t span_count = db_snake_collect_damage_spans(
+                    spans, max_spans, &target.region, plan.prev_start,
+                    plan.prev_count, plan.active_cursor, plan.batch_size,
+                    shape_cache_ptr);
+                db_cpu_set_damage_from_spans(spans, span_count,
+                                             write_bo->height);
+            } else {
+                db_cpu_set_full_damage(write_bo);
+            }
+        }
         g_state.runtime.snake_cursor = plan.next_cursor;
         g_state.runtime.snake_prev_start = plan.next_prev_start;
         g_state.runtime.snake_prev_count = plan.next_prev_count;
@@ -324,7 +438,10 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
         db_render_gradient(write_bo, plan->render_head_row,
                            gradient_step.render_direction_down,
                            plan->render_cycle_index);
+        db_cpu_set_damage_from_gradient_plan(plan, write_bo->height);
         db_gradient_apply_step_to_runtime(&g_state.runtime, &gradient_step);
+    } else {
+        db_cpu_set_full_damage(write_bo);
     }
 
     if (g_state.history_mode != 0) {
@@ -365,10 +482,26 @@ uint64_t db_renderer_cpu_renderer_state_hash(void) {
     return g_state.state_hash;
 }
 
+const db_dirty_row_range_t *
+db_renderer_cpu_renderer_damage_rows(size_t *out_count) {
+    if (out_count != NULL) {
+        *out_count = 0U;
+    }
+    if (g_state.initialized == 0) {
+        return NULL;
+    }
+    const size_t count = db_u32_min((uint32_t)g_state.damage_row_count, 2U);
+    if (out_count != NULL) {
+        *out_count = count;
+    }
+    return g_state.damage_rows;
+}
+
 void db_renderer_cpu_renderer_shutdown(void) {
     if (g_state.initialized == 0) {
         return;
     }
+    free(g_state.snake_row_bounds);
     free(g_state.bos[0].pixels_rgba8);
     free(g_state.bos[1].pixels_rgba8);
     g_state = (db_cpu_renderer_state_t){0};

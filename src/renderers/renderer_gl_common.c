@@ -1,6 +1,7 @@
 #include "renderer_gl_common.h"
 
 #include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,8 @@
 #include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 #include "renderer_benchmark_common.h"
+#include "renderer_snake_common.h"
+#include "renderer_snake_shape_common.h"
 
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
@@ -58,6 +61,9 @@
 #ifndef GL_WRITE_ONLY
 #define GL_WRITE_ONLY GL_WRITE_ONLY_OES
 #endif
+#ifndef GL_PIXEL_UNPACK_BUFFER
+#define GL_PIXEL_UNPACK_BUFFER 0x88EC
+#endif
 
 typedef void *(*db_gl_map_buffer_fn_t)(GLenum target, GLenum access);
 typedef GLboolean (*db_gl_unmap_buffer_fn_t)(GLenum target);
@@ -68,6 +74,17 @@ typedef void *(*db_gl_map_buffer_range_fn_t)(GLenum target, GLintptr offset,
                                              GLbitfield access);
 typedef void (*db_gl_buffer_storage_fn_t)(GLenum target, GLsizeiptr size,
                                           const void *data, GLbitfield flags);
+typedef void (*db_gl_bind_buffer_fn_t)(GLenum target, GLuint buffer);
+typedef void (*db_gl_buffer_data_fn_t)(GLenum target, GLsizeiptr size,
+                                       const void *data, GLenum usage);
+typedef void (*db_gl_buffer_sub_data_fn_t)(GLenum target, GLintptr offset,
+                                           GLsizeiptr size, const void *data);
+typedef void (*db_gl_gen_buffers_fn_t)(GLsizei count, GLuint *buffers);
+typedef void (*db_gl_delete_buffers_fn_t)(GLsizei count, const GLuint *buffers);
+#ifdef DB_HAS_GLFW
+typedef void (*db_glfw_proc_t)(void);
+extern db_glfw_proc_t glfwGetProcAddress(const char *procname);
+#endif
 
 typedef struct {
     db_gl_map_buffer_fn_t map_buffer;
@@ -75,11 +92,17 @@ typedef struct {
     db_gl_get_buffer_sub_data_fn_t get_buffer_sub_data;
     db_gl_map_buffer_range_fn_t map_buffer_range;
     db_gl_buffer_storage_fn_t buffer_storage;
+    db_gl_bind_buffer_fn_t bind_buffer;
+    db_gl_buffer_data_fn_t buffer_data;
+    db_gl_buffer_sub_data_fn_t buffer_sub_data;
+    db_gl_gen_buffers_fn_t gen_buffers;
+    db_gl_delete_buffers_fn_t delete_buffers;
     int loaded;
 } db_gl_upload_proc_table_t;
 
 static db_gl_upload_proc_table_t g_upload_proc_table = {0};
-static db_gl_get_proc_address_fn_t g_db_gl_get_proc_address = NULL;
+static void db_gl_load_upload_proc_table(void);
+static void db_gl_require_upload_proc_table_loaded(const char *func_name);
 
 int db_has_gl_extension_token(const char *exts, const char *needle) {
     if ((exts == NULL) || (needle == NULL)) {
@@ -210,10 +233,25 @@ int db_gl_runtime_supports_buffer_storage(const char *version_text,
            db_gl_version_text_at_least(version_text, 4, 4);
 }
 
-void db_gl_set_proc_address_loader(
-    db_gl_get_proc_address_fn_t get_proc_address) {
-    g_db_gl_get_proc_address = get_proc_address;
-    g_upload_proc_table = (db_gl_upload_proc_table_t){0};
+int db_gl_runtime_supports_pbo(const char *version_text, const char *exts) {
+    if (db_gl_is_es_context(version_text) != 0) {
+        return db_gl_version_text_at_least(version_text, 3, 0) ||
+               db_has_gl_extension_token(exts, "GL_EXT_pixel_buffer_object");
+    }
+
+    return db_gl_version_text_at_least(version_text, 2, 1) ||
+           db_has_gl_extension_token(exts, "GL_ARB_pixel_buffer_object");
+}
+
+void db_gl_preload_upload_proc_table(void) { db_gl_load_upload_proc_table(); }
+
+static void db_gl_require_upload_proc_table_loaded(const char *func_name) {
+    if (g_upload_proc_table.loaded == 0) {
+        db_failf("renderer_gl_common",
+                 "%s requires preloaded GL proc table; call "
+                 "db_gl_preload_upload_proc_table() during init",
+                 func_name);
+    }
 }
 
 static db_gl_generic_proc_t db_gl_get_proc(const char *name) {
@@ -221,18 +259,19 @@ static db_gl_generic_proc_t db_gl_get_proc(const char *name) {
         return NULL;
     }
 
-    if (g_db_gl_get_proc_address != NULL) {
-        db_gl_generic_proc_t proc = g_db_gl_get_proc_address(name);
-        if (proc != NULL) {
-            return proc;
-        }
-    }
-
 #ifdef DB_HAS_DLSYM_PROC_ADDRESS
     db_gl_generic_proc_t dlsym_proc =
         (db_gl_generic_proc_t)dlsym(RTLD_DEFAULT, name);
     if (dlsym_proc != NULL) {
         return dlsym_proc;
+    }
+#endif
+
+#ifdef DB_HAS_GLFW
+    db_gl_generic_proc_t glfw_proc =
+        (db_gl_generic_proc_t)glfwGetProcAddress(name);
+    if (glfw_proc != NULL) {
+        return glfw_proc;
     }
 #endif
 
@@ -293,6 +332,41 @@ static void db_gl_load_upload_proc_table(void) {
             (db_gl_buffer_storage_fn_t)(db_gl_get_proc("glBufferStorageEXT"));
     }
 
+    g_upload_proc_table.bind_buffer =
+        (db_gl_bind_buffer_fn_t)(db_gl_get_proc("glBindBuffer"));
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        g_upload_proc_table.bind_buffer =
+            (db_gl_bind_buffer_fn_t)(db_gl_get_proc("glBindBufferARB"));
+    }
+
+    g_upload_proc_table.buffer_data =
+        (db_gl_buffer_data_fn_t)(db_gl_get_proc("glBufferData"));
+    if (g_upload_proc_table.buffer_data == NULL) {
+        g_upload_proc_table.buffer_data =
+            (db_gl_buffer_data_fn_t)(db_gl_get_proc("glBufferDataARB"));
+    }
+
+    g_upload_proc_table.buffer_sub_data =
+        (db_gl_buffer_sub_data_fn_t)(db_gl_get_proc("glBufferSubData"));
+    if (g_upload_proc_table.buffer_sub_data == NULL) {
+        g_upload_proc_table.buffer_sub_data =
+            (db_gl_buffer_sub_data_fn_t)(db_gl_get_proc("glBufferSubDataARB"));
+    }
+
+    g_upload_proc_table.gen_buffers =
+        (db_gl_gen_buffers_fn_t)(db_gl_get_proc("glGenBuffers"));
+    if (g_upload_proc_table.gen_buffers == NULL) {
+        g_upload_proc_table.gen_buffers =
+            (db_gl_gen_buffers_fn_t)(db_gl_get_proc("glGenBuffersARB"));
+    }
+
+    g_upload_proc_table.delete_buffers =
+        (db_gl_delete_buffers_fn_t)(db_gl_get_proc("glDeleteBuffers"));
+    if (g_upload_proc_table.delete_buffers == NULL) {
+        g_upload_proc_table.delete_buffers =
+            (db_gl_delete_buffers_fn_t)(db_gl_get_proc("glDeleteBuffersARB"));
+    }
+
 #if defined(DB_HAS_OPENGL_DESKTOP) && !defined(__APPLE__)
     if (g_upload_proc_table.map_buffer == NULL) {
         g_upload_proc_table.map_buffer = (db_gl_map_buffer_fn_t)glMapBuffer;
@@ -317,6 +391,23 @@ static void db_gl_load_upload_proc_table(void) {
             (db_gl_buffer_storage_fn_t)glBufferStorage;
     }
 #endif
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        g_upload_proc_table.bind_buffer = (db_gl_bind_buffer_fn_t)glBindBuffer;
+    }
+    if (g_upload_proc_table.buffer_data == NULL) {
+        g_upload_proc_table.buffer_data = (db_gl_buffer_data_fn_t)glBufferData;
+    }
+    if (g_upload_proc_table.buffer_sub_data == NULL) {
+        g_upload_proc_table.buffer_sub_data =
+            (db_gl_buffer_sub_data_fn_t)glBufferSubData;
+    }
+    if (g_upload_proc_table.gen_buffers == NULL) {
+        g_upload_proc_table.gen_buffers = (db_gl_gen_buffers_fn_t)glGenBuffers;
+    }
+    if (g_upload_proc_table.delete_buffers == NULL) {
+        g_upload_proc_table.delete_buffers =
+            (db_gl_delete_buffers_fn_t)glDeleteBuffers;
+    }
 #endif
 
     g_upload_proc_table.loaded = 1;
@@ -328,13 +419,49 @@ int db_gl_has_vbo_support(void) {
     return db_gl_runtime_supports_vbo(version, exts);
 }
 
+int db_gl_has_pbo_upload_support(void) {
+    db_gl_require_upload_proc_table_loaded("db_gl_has_pbo_upload_support");
+    return (g_upload_proc_table.bind_buffer != NULL) &&
+           (g_upload_proc_table.buffer_data != NULL) &&
+           (g_upload_proc_table.buffer_sub_data != NULL) &&
+           (g_upload_proc_table.gen_buffers != NULL) &&
+           (g_upload_proc_table.delete_buffers != NULL);
+}
+
+unsigned int db_gl_pbo_create_or_zero(void) {
+    db_gl_require_upload_proc_table_loaded("db_gl_pbo_create_or_zero");
+    if (g_upload_proc_table.gen_buffers == NULL) {
+        return 0U;
+    }
+    GLuint pbo = 0U;
+    g_upload_proc_table.gen_buffers(1, &pbo);
+    return (unsigned int)pbo;
+}
+
+void db_gl_pbo_delete_if_valid(unsigned int pbo) {
+    db_gl_require_upload_proc_table_loaded("db_gl_pbo_delete_if_valid");
+    if ((pbo == 0U) || (g_upload_proc_table.delete_buffers == NULL)) {
+        return;
+    }
+    const GLuint gl_pbo = (GLuint)pbo;
+    g_upload_proc_table.delete_buffers(1, &gl_pbo);
+}
+
+void db_gl_pbo_unbind_unpack(void) {
+    db_gl_require_upload_proc_table_loaded("db_gl_pbo_unbind_unpack");
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        return;
+    }
+    g_upload_proc_table.bind_buffer(GL_PIXEL_UNPACK_BUFFER, 0U);
+}
+
 static int db_gl_verify_buffer_prefix(const uint8_t *expected,
                                       size_t expected_size) {
     if (expected_size == 0U) {
         return 0;
     }
 
-    db_gl_load_upload_proc_table();
+    db_gl_require_upload_proc_table_loaded("db_gl_verify_buffer_prefix");
     if (g_upload_proc_table.get_buffer_sub_data == NULL) {
         return 1;
     }
@@ -478,7 +605,7 @@ void db_gl_probe_upload_capabilities(size_t bytes,
         return;
     }
 
-    db_gl_load_upload_proc_table();
+    db_gl_require_upload_proc_table_loaded("db_gl_probe_upload_capabilities");
 
     const char *version = (const char *)glGetString(GL_VERSION);
     const char *exts = (const char *)glGetString(GL_EXTENSIONS);
@@ -538,16 +665,36 @@ static void db_gl_upload_ranges_subdata(const void *source_base,
     }
 }
 
-void db_gl_upload_ranges(const void *source_base, size_t total_bytes,
-                         int use_persistent_upload, void *persistent_mapped_ptr,
-                         int use_map_range_upload, int use_map_buffer_upload,
-                         const db_gl_upload_range_t *ranges,
-                         size_t range_count) {
+static void
+db_gl_upload_ranges_subdata_target(GLenum target, const void *source_base,
+                                   const db_gl_upload_range_t *ranges,
+                                   size_t range_count) {
+    const uint8_t *src_base = (const uint8_t *)source_base;
+    for (size_t i = 0U; i < range_count; i++) {
+        const db_gl_upload_range_t *range = &ranges[i];
+        g_upload_proc_table.buffer_sub_data(
+            target, (GLintptr)range->dst_offset_bytes,
+            (GLsizeiptr)range->size_bytes, src_base + range->src_offset_bytes);
+    }
+}
+
+void db_gl_upload_ranges_target(
+    const void *source_base, size_t total_bytes,
+    const db_gl_upload_range_t *ranges, size_t range_count,
+    db_gl_upload_target_t target, unsigned int target_buffer,
+    int use_persistent_upload, void *persistent_mapped_ptr,
+    int use_map_range_upload, int use_map_buffer_upload) {
     if ((source_base == NULL) || (ranges == NULL) || (range_count == 0U)) {
         return;
     }
 
-    if ((use_persistent_upload != 0) && (persistent_mapped_ptr != NULL)) {
+    const int is_vbo = (target == DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER) ? 1 : 0;
+    const GLenum gl_target = (target == DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER)
+                                 ? GL_PIXEL_UNPACK_BUFFER
+                                 : GL_ARRAY_BUFFER;
+
+    if ((is_vbo != 0) && (use_persistent_upload != 0) &&
+        (persistent_mapped_ptr != NULL)) {
         uint8_t *dst_base = (uint8_t *)persistent_mapped_ptr;
         const uint8_t *src_base = (const uint8_t *)source_base;
         for (size_t i = 0; i < range_count; i++) {
@@ -559,7 +706,26 @@ void db_gl_upload_ranges(const void *source_base, size_t total_bytes,
         return;
     }
 
-    db_gl_load_upload_proc_table();
+    db_gl_require_upload_proc_table_loaded("db_gl_upload_ranges_target");
+    if (g_upload_proc_table.buffer_sub_data == NULL) {
+        return;
+    }
+
+    if (is_vbo == 0) {
+        if ((target_buffer == 0U) ||
+            (g_upload_proc_table.bind_buffer == NULL) ||
+            (g_upload_proc_table.buffer_data == NULL) ||
+            (total_bytes > (size_t)PTRDIFF_MAX)) {
+            return;
+        }
+        const GLuint gl_buffer = (GLuint)target_buffer;
+        g_upload_proc_table.bind_buffer(gl_target, gl_buffer);
+        g_upload_proc_table.buffer_data(gl_target, (GLsizeiptr)total_bytes,
+                                        NULL, GL_STREAM_DRAW);
+        db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
+                                           range_count);
+        return;
+    }
 
     void *mapped_ptr = db_gl_try_map_upload_buffer(
         total_bytes, use_map_range_upload, use_map_buffer_upload);
@@ -573,28 +739,301 @@ void db_gl_upload_ranges(const void *source_base, size_t total_bytes,
                           range->size_bytes);
         }
         if (g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER) == GL_FALSE) {
-            db_gl_upload_ranges_subdata(source_base, ranges, range_count);
+            db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
+                                               range_count);
         }
         return;
     }
 
-    db_gl_upload_ranges_subdata(source_base, ranges, range_count);
+    if (g_upload_proc_table.buffer_sub_data != NULL) {
+        db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
+                                           range_count);
+    } else {
+        db_gl_upload_ranges_subdata(source_base, ranges, range_count);
+    }
 }
 
 void db_gl_upload_buffer(const void *source, size_t bytes,
                          int use_persistent_upload, void *persistent_mapped_ptr,
                          int use_map_range_upload, int use_map_buffer_upload) {
     const db_gl_upload_range_t full_range = {0U, 0U, bytes};
-    db_gl_upload_ranges(source, bytes, use_persistent_upload,
-                        persistent_mapped_ptr, use_map_range_upload,
-                        use_map_buffer_upload, &full_range, 1U);
+    db_gl_upload_ranges_target(source, bytes, &full_range, 1U,
+                               DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, 0U,
+                               use_persistent_upload, persistent_mapped_ptr,
+                               use_map_range_upload, use_map_buffer_upload);
 }
 
 void db_gl_unmap_current_array_buffer(void) {
-    db_gl_load_upload_proc_table();
+    db_gl_require_upload_proc_table_loaded("db_gl_unmap_current_array_buffer");
     if (g_upload_proc_table.unmap_buffer != NULL) {
         (void)g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER);
     }
+}
+
+size_t db_gl_collect_row_upload_ranges(
+    uint32_t row_unit_width, uint32_t row_count_total, size_t unit_stride_bytes,
+    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
+    db_dirty_row_range_t *out_rows, db_gl_upload_range_t *out_ranges,
+    size_t out_capacity) {
+    if ((row_unit_width == 0U) || (row_count_total == 0U) ||
+        (unit_stride_bytes == 0U) || (out_ranges == NULL) ||
+        (out_capacity == 0U)) {
+        return 0U;
+    }
+
+    if (unit_stride_bytes > (SIZE_MAX / (size_t)row_unit_width)) {
+        return 0U;
+    }
+    const size_t row_bytes = (size_t)row_unit_width * unit_stride_bytes;
+    if (row_bytes > (SIZE_MAX / (size_t)row_count_total)) {
+        return 0U;
+    }
+
+    if (dirty_count == 0U) {
+        return 0U;
+    }
+
+    size_t span_count = 0U;
+    for (size_t i = 0U; (i < dirty_count) && (span_count < out_capacity); i++) {
+        const uint32_t row_start = dirty_ranges[i].row_start;
+        const uint32_t row_count = dirty_ranges[i].row_count;
+        if ((row_start >= row_count_total) || (row_count == 0U)) {
+            continue;
+        }
+        const uint32_t clamped_count =
+            db_u32_min(row_count, row_count_total - row_start);
+        if (clamped_count == 0U) {
+            continue;
+        }
+        const size_t byte_offset = row_bytes * (size_t)row_start;
+        const size_t byte_size = row_bytes * (size_t)clamped_count;
+        if (out_rows != NULL) {
+            out_rows[span_count] = (db_dirty_row_range_t){
+                .row_start = row_start, .row_count = clamped_count};
+        }
+        out_ranges[span_count] = (db_gl_upload_range_t){
+            .dst_offset_bytes = byte_offset,
+            .src_offset_bytes = byte_offset,
+            .size_bytes = byte_size,
+        };
+        span_count++;
+    }
+    return span_count;
+}
+
+size_t db_gl_collect_span_upload_ranges(
+    uint32_t row_unit_width, size_t dst_unit_stride_bytes,
+    size_t src_unit_stride_bytes, const db_snake_col_span_t *spans,
+    size_t span_count, db_gl_upload_range_t *out_ranges, size_t out_capacity) {
+    if ((row_unit_width == 0U) || (dst_unit_stride_bytes == 0U) ||
+        (src_unit_stride_bytes == 0U) || (spans == NULL) ||
+        (out_ranges == NULL) || (out_capacity == 0U)) {
+        return 0U;
+    }
+
+    size_t upload_count = 0U;
+    for (size_t i = 0U; (i < span_count) && (upload_count < out_capacity);
+         i++) {
+        const uint32_t row = spans[i].row;
+        const uint32_t col_start = spans[i].col_start;
+        const uint32_t col_end = spans[i].col_end;
+        if ((col_end <= col_start) || (col_end > row_unit_width)) {
+            continue;
+        }
+        const uint32_t span_units = col_end - col_start;
+        const uint32_t first_unit = (row * row_unit_width) + col_start;
+        const size_t dst_offset = (size_t)first_unit * dst_unit_stride_bytes;
+        const size_t src_offset = (size_t)first_unit * src_unit_stride_bytes;
+        const size_t span_bytes = (size_t)span_units * dst_unit_stride_bytes;
+        out_ranges[upload_count] = (db_gl_upload_range_t){
+            .dst_offset_bytes = dst_offset,
+            .src_offset_bytes = src_offset,
+            .size_bytes = span_bytes,
+        };
+        upload_count++;
+    }
+    return upload_count;
+}
+
+size_t
+db_gl_collect_damage_upload_ranges(const db_gl_damage_upload_plan_t *plan,
+                                   db_gl_upload_range_t *out_ranges,
+                                   size_t out_capacity) {
+    if ((plan == NULL) || (out_ranges == NULL) || (out_capacity == 0U)) {
+        return 0U;
+    }
+    if (plan->force_full_upload != 0) {
+        if (plan->total_bytes == 0U) {
+            return 0U;
+        }
+        out_ranges[0] = (db_gl_upload_range_t){
+            .dst_offset_bytes = 0U,
+            .src_offset_bytes = 0U,
+            .size_bytes = plan->total_bytes,
+        };
+        return 1U;
+    }
+    if ((plan->spans != NULL) && (plan->span_count > 0U)) {
+        return db_gl_collect_span_upload_ranges(
+            plan->row_unit_width, plan->unit_stride_bytes,
+            plan->unit_stride_bytes, plan->spans, plan->span_count, out_ranges,
+            out_capacity);
+    }
+    if ((plan->dirty_rows == NULL) || (plan->dirty_row_count == 0U)) {
+        return 0U;
+    }
+    return db_gl_collect_row_upload_ranges(
+        plan->row_unit_width, plan->row_count_total, plan->unit_stride_bytes,
+        plan->dirty_rows, plan->dirty_row_count, NULL, out_ranges,
+        out_capacity);
+}
+
+size_t
+db_gl_collect_pattern_upload_ranges(const db_gl_pattern_upload_collect_t *ctx,
+                                    db_gl_upload_range_t *out_ranges,
+                                    size_t out_capacity) {
+    if ((ctx == NULL) || (out_ranges == NULL) || (out_capacity == 0U)) {
+        return 0U;
+    }
+
+    db_gl_damage_upload_plan_t upload_plan = {
+        .row_unit_width = ctx->cols,
+        .row_count_total = ctx->rows,
+        .unit_stride_bytes = ctx->upload_tile_bytes,
+        .total_bytes = ctx->upload_bytes,
+        .force_full_upload = 0,
+        .dirty_rows = NULL,
+        .dirty_row_count = 0U,
+        .spans = NULL,
+        .span_count = 0U,
+    };
+
+    if (ctx->use_damage_row_ranges != 0) {
+        upload_plan.dirty_rows = ctx->damage_row_ranges;
+        upload_plan.dirty_row_count = ctx->damage_row_count;
+        upload_plan.force_full_upload = ctx->force_full_upload;
+        return db_gl_collect_damage_upload_ranges(&upload_plan, out_ranges,
+                                                  out_capacity);
+    }
+
+    if ((ctx->pattern == DB_PATTERN_SNAKE_GRID) ||
+        (ctx->pattern == DB_PATTERN_SNAKE_RECT) ||
+        (ctx->pattern == DB_PATTERN_SNAKE_SHAPES)) {
+        const int is_grid = (ctx->pattern == DB_PATTERN_SNAKE_GRID);
+        const db_snake_plan_t empty_plan = {0};
+        const db_snake_plan_t *plan =
+            (ctx->snake_plan != NULL) ? ctx->snake_plan : &empty_plan;
+        if ((is_grid == 0) &&
+            ((ctx->force_full_upload != 0) || (plan->batch_size == 0U))) {
+            upload_plan.force_full_upload = 1;
+            return db_gl_collect_damage_upload_ranges(&upload_plan, out_ranges,
+                                                      1U);
+        }
+        const db_snake_region_t region =
+            (is_grid != 0)
+                ? (db_snake_region_t){
+                      .x = 0U,
+                      .y = 0U,
+                      .width = ctx->cols,
+                      .height = ctx->rows,
+                      .color_r = 0.0F,
+                      .color_g = 0.0F,
+                      .color_b = 0.0F,
+                  }
+                : db_snake_region_from_index(ctx->pattern_seed,
+                                             plan->active_shape_index);
+        if ((region.width == 0U) || (region.height == 0U) ||
+            (ctx->snake_spans == NULL)) {
+            return 0U;
+        }
+        const uint32_t settled_count =
+            (is_grid != 0) ? plan->prev_count : ctx->snake_prev_count;
+        const size_t max_ranges =
+            (size_t)settled_count + (size_t)plan->batch_size;
+        if ((max_ranges == 0U) || (max_ranges > ctx->snake_scratch_capacity)) {
+            return 0U;
+        }
+        db_snake_shape_cache_t shape_cache = {0};
+        const db_snake_shape_cache_t *shape_cache_ptr = NULL;
+        if ((ctx->pattern == DB_PATTERN_SNAKE_SHAPES) &&
+            (ctx->snake_row_bounds != NULL)) {
+            const db_snake_shape_kind_t shape_kind =
+                db_snake_shapes_kind_from_index(ctx->pattern_seed,
+                                                plan->active_shape_index,
+                                                DB_PALETTE_SALT);
+            if (db_snake_shape_cache_init_from_index(
+                    &shape_cache, ctx->snake_row_bounds,
+                    ctx->snake_row_bounds_capacity, ctx->pattern_seed,
+                    plan->active_shape_index, DB_PALETTE_SALT, &region,
+                    shape_kind) != 0) {
+                shape_cache_ptr = &shape_cache;
+            }
+        }
+        const size_t span_count = db_snake_collect_damage_spans(
+            ctx->snake_spans, max_ranges, &region,
+            (is_grid != 0) ? plan->prev_start : ctx->snake_prev_start,
+            settled_count, plan->active_cursor, plan->batch_size,
+            shape_cache_ptr);
+        upload_plan.spans = ctx->snake_spans;
+        upload_plan.span_count = span_count;
+        return db_gl_collect_damage_upload_ranges(
+            &upload_plan, out_ranges,
+            (max_ranges < out_capacity) ? max_ranges : out_capacity);
+    }
+
+    if ((ctx->pattern == DB_PATTERN_GRADIENT_SWEEP) ||
+        (ctx->pattern == DB_PATTERN_GRADIENT_FILL)) {
+        upload_plan.dirty_rows = ctx->damage_row_ranges;
+        upload_plan.dirty_row_count = ctx->damage_row_count;
+        upload_plan.force_full_upload = ctx->force_full_upload;
+        return db_gl_collect_damage_upload_ranges(&upload_plan, out_ranges,
+                                                  out_capacity);
+    }
+
+    upload_plan.force_full_upload = 1;
+    return db_gl_collect_damage_upload_ranges(&upload_plan, out_ranges, 1U);
+}
+
+size_t db_gl_for_each_upload_row_span(const char *backend_name,
+                                      uint32_t row_unit_width,
+                                      const db_gl_upload_range_t *ranges,
+                                      size_t range_count,
+                                      db_gl_upload_row_span_apply_fn_t apply_fn,
+                                      void *user_data) {
+    if ((backend_name == NULL) || (row_unit_width == 0U) || (ranges == NULL) ||
+        (range_count == 0U) || (apply_fn == NULL)) {
+        return 0U;
+    }
+    const size_t row_bytes = (size_t)db_checked_mul_u32(
+        backend_name, "upload_row_bytes", row_unit_width, 4U);
+    if (row_bytes == 0U) {
+        return 0U;
+    }
+
+    size_t applied_count = 0U;
+    for (size_t i = 0U; i < range_count; i++) {
+        const db_gl_upload_range_t *range = &ranges[i];
+        if ((range->size_bytes == 0U) ||
+            ((range->size_bytes % row_bytes) != 0U) ||
+            ((range->dst_offset_bytes % row_bytes) != 0U)) {
+            continue;
+        }
+        const db_gl_upload_row_span_t span = {
+            .range = *range,
+            .rows =
+                (db_dirty_row_range_t){
+                    .row_start = db_checked_size_to_u32(
+                        backend_name, "upload_row_start",
+                        range->dst_offset_bytes / row_bytes),
+                    .row_count =
+                        db_checked_size_to_u32(backend_name, "upload_row_count",
+                                               range->size_bytes / row_bytes),
+                },
+        };
+        apply_fn(&span, user_data);
+        applied_count++;
+    }
+    return applied_count;
 }
 
 int db_init_band_vertices_common(db_gl_vertex_init_t *out_state,

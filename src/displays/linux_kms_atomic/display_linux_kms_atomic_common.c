@@ -655,9 +655,6 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
         allow_gles1_1_fallback);
 
-    db_gl_set_proc_address_loader(
-        (db_gl_get_proc_address_fn_t)eglGetProcAddress);
-
     const char *runtime_version = (const char *)glGetString(GL_VERSION);
     const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
     const int runtime_is_gles = db_display_log_gl_runtime_api(
