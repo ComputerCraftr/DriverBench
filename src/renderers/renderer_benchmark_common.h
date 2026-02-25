@@ -33,12 +33,7 @@
 #define DB_COLOR_CHANNEL_BIAS 0.20F
 #define DB_COLOR_CHANNEL_SCALE 0.75F
 #define DB_GRADIENT_WINDOW_ROWS 32U
-#define DB_SALT_COMMON_COLOR_R 0x27D4EB2FU
-#define DB_SALT_COMMON_COLOR_G 0x165667B1U
-#define DB_SALT_COMMON_COLOR_B 0x85EBCA77U
-#define DB_SALT_COMMON_GOLDEN_RATIO 0x9E3779B9U
-#define DB_PALETTE_SALT 0xA511E9B3U
-#define DB_PALETTE_SALT_BASE_STEP DB_SALT_COMMON_GOLDEN_RATIO
+#define DB_PALETTE_SALT_BASE_STEP DB_U32_GOLDEN_RATIO
 
 typedef enum {
     DB_PATTERN_GRADIENT_SWEEP = 0,
@@ -192,7 +187,7 @@ static inline uint32_t db_pattern_seed_from_time(void) {
         db_failf(DB_BENCH_COMMON_BACKEND, "time() failed for random seed");
     }
     const uint32_t raw = db_fold_u64_to_u32((uint64_t)now);
-    const uint32_t salted = raw ^ DB_SALT_COMMON_GOLDEN_RATIO;
+    const uint32_t salted = raw ^ DB_U32_GOLDEN_RATIO;
     return db_mix_u32(salted);
 }
 
@@ -341,7 +336,7 @@ db_init_benchmark_runtime_common(const char *backend_name,
             db_benchmark_random_seed_from_runtime_or_time(backend_name);
         out_state->pattern_seed = out_state->random_seed;
         out_state->gradient_cycle = db_benchmark_cycle_from_seed(
-            out_state->random_seed, DB_PALETTE_SALT);
+            out_state->random_seed, DB_U32_SALT_PALETTE);
         out_state->gradient_head_row = 0U;
         out_state->mode_phase_flag =
             ((requested == DB_PATTERN_GRADIENT_SWEEP) ||
@@ -469,12 +464,12 @@ static inline float db_color_channel(uint32_t seed) {
 static inline void db_palette_cycle_color_rgb(uint32_t cycle_index,
                                               float *out_r, float *out_g,
                                               float *out_b) {
-    const uint32_t phase_seed = DB_PALETTE_SALT;
+    const uint32_t phase_seed = DB_U32_SALT_PALETTE;
     const uint32_t seed_base = db_mix_u32(
         ((cycle_index + 1U) * DB_PALETTE_SALT_BASE_STEP) ^ phase_seed);
-    *out_r = db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_R));
-    *out_g = db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_G));
-    *out_b = db_color_channel(db_mix_u32(seed_base ^ DB_SALT_COMMON_COLOR_B));
+    *out_r = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_R));
+    *out_g = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_G));
+    *out_b = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_B));
 }
 static inline db_gradient_damage_plan_t
 db_gradient_plan_next_frame(uint32_t head_row, int direction_down,

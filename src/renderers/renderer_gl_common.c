@@ -9,6 +9,7 @@
 #include "../config/benchmark_config.h"
 #include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
+#include "../core/db_hash.h"
 #include "renderer_benchmark_common.h"
 #include "renderer_snake_common.h"
 #include "renderer_snake_shape_common.h"
@@ -960,11 +961,11 @@ db_gl_collect_pattern_upload_ranges(const db_gl_pattern_upload_collect_t *ctx,
             const db_snake_shape_kind_t shape_kind =
                 db_snake_shapes_kind_from_index(ctx->pattern_seed,
                                                 plan->active_shape_index,
-                                                DB_PALETTE_SALT);
+                                                DB_U32_SALT_PALETTE);
             if (db_snake_shape_cache_init_from_index(
                     &shape_cache, ctx->snake_row_bounds,
                     ctx->snake_row_bounds_capacity, ctx->pattern_seed,
-                    plan->active_shape_index, DB_PALETTE_SALT, &region,
+                    plan->active_shape_index, DB_U32_SALT_PALETTE, &region,
                     shape_kind) != 0) {
                 shape_cache_ptr = &shape_cache;
             }

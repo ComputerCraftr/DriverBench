@@ -10,21 +10,16 @@
 #include "renderer_snake_shape_common.h"
 
 #define DB_SNAKE_COMMON_BACKEND "renderer_snake_common"
-#define DB_SNAKE_COMMON_COLOR_R 0x27D4EB2FU
-#define DB_SNAKE_COMMON_COLOR_G 0x165667B1U
-#define DB_SNAKE_COMMON_COLOR_B 0x85EBCA77U
 #define DB_SNAKE_COMMON_COLOR_BIAS 0.20F
 #define DB_SNAKE_COMMON_COLOR_SCALE 0.75F
-#define DB_SNAKE_COMMON_GOLDEN_RATIO 0x9E3779B9U
-#define DB_SNAKE_COMMON_PALETTE_SALT 0xA511E9B3U
 #define DB_SNAKE_CURSOR_PRE_ENTRY UINT32_MAX
 #define DB_SNAKE_REGION_MAX_DIM_DIVISOR 3U
 #define DB_SNAKE_REGION_MIN_DIM_LARGE 8U
 #define DB_SNAKE_REGION_MIN_DIM_SMALL 1U
 #define DB_SNAKE_REGION_MIN_DIM_THRESHOLD 16U
 #define DB_SNAKE_REGION_SALT_HEIGHT 0x63D83595U
-#define DB_SNAKE_REGION_SALT_ORIGIN_X DB_SNAKE_COMMON_GOLDEN_RATIO
-#define DB_SNAKE_REGION_SALT_ORIGIN_Y 0xC2B2AE35U
+#define DB_SNAKE_REGION_SALT_ORIGIN_X DB_U32_GOLDEN_RATIO
+#define DB_SNAKE_REGION_SALT_ORIGIN_Y DB_U32_SALT_ORIGIN_Y
 
 static inline uint32_t db_snake_grid_rows_effective(void) {
     return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
@@ -157,7 +152,7 @@ db_snake_region_from_index(uint32_t seed, uint32_t shape_index) {
     }
 
     const uint32_t seed_base =
-        db_mix_u32(seed + (shape_index * DB_SNAKE_COMMON_COLOR_B) + 1U);
+        db_mix_u32(seed + (shape_index * DB_U32_SALT_COLOR_B) + 1U);
     const uint32_t min_w = (cols >= DB_SNAKE_REGION_MIN_DIM_THRESHOLD)
                                ? DB_SNAKE_REGION_MIN_DIM_LARGE
                                : DB_SNAKE_REGION_MIN_DIM_SMALL;
@@ -172,9 +167,8 @@ db_snake_region_from_index(uint32_t seed, uint32_t shape_index) {
         min_h,
         db_checked_add_u32(DB_SNAKE_COMMON_BACKEND, "region_max_h",
                            rows / DB_SNAKE_REGION_MAX_DIM_DIVISOR, min_h));
-    region.width =
-        db_u32_range(db_mix_u32(seed_base ^ DB_SNAKE_COMMON_PALETTE_SALT),
-                     min_w, db_u32_min(max_w, cols));
+    region.width = db_u32_range(db_mix_u32(seed_base ^ DB_U32_SALT_PALETTE),
+                                min_w, db_u32_min(max_w, cols));
     region.height =
         db_u32_range(db_mix_u32(seed_base ^ DB_SNAKE_REGION_SALT_HEIGHT), min_h,
                      db_u32_min(max_h, rows));
@@ -185,11 +179,11 @@ db_snake_region_from_index(uint32_t seed, uint32_t shape_index) {
     region.y = db_u32_range(
         db_mix_u32(seed_base ^ DB_SNAKE_REGION_SALT_ORIGIN_Y), 0U, max_y);
     region.color_r =
-        db_snake_color_channel(db_mix_u32(seed_base ^ DB_SNAKE_COMMON_COLOR_R));
+        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_R));
     region.color_g =
-        db_snake_color_channel(db_mix_u32(seed_base ^ DB_SNAKE_COMMON_COLOR_G));
+        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_G));
     region.color_b =
-        db_snake_color_channel(db_mix_u32(seed_base ^ DB_SNAKE_COMMON_COLOR_B));
+        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_B));
     return region;
 }
 
@@ -438,7 +432,7 @@ db_snake_step_target_from_plan(int full_grid_target_mode, uint32_t pattern_seed,
     result.target_g = result.region.color_g;
     result.target_b = result.region.color_b;
     result.shape_kind = db_snake_shapes_kind_from_index(
-        pattern_seed, plan->active_shape_index, DB_SNAKE_COMMON_PALETTE_SALT);
+        pattern_seed, plan->active_shape_index, DB_U32_SALT_PALETTE);
     result.has_next_shape_index = 1;
     result.next_shape_index = plan->next_shape_index;
     return result;

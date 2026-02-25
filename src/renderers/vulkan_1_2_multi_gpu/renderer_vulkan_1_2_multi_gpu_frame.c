@@ -735,12 +735,13 @@ void db_vk_draw_snake_region_plan(
     if (render_mode == DB_PATTERN_SNAKE_SHAPES) {
         if (g_state.snake_row_bounds != NULL) {
             const db_snake_shape_kind_t shape_kind =
-                db_snake_shapes_kind_from_index(
-                    pattern_seed, plan->active_shape_index, DB_PALETTE_SALT);
+                db_snake_shapes_kind_from_index(pattern_seed,
+                                                plan->active_shape_index,
+                                                DB_U32_SALT_PALETTE);
             if (db_snake_shape_cache_init_from_index(
                     &shape_cache, g_state.snake_row_bounds,
                     g_state.snake_row_bounds_capacity, pattern_seed,
-                    plan->active_shape_index, DB_PALETTE_SALT, &region,
+                    plan->active_shape_index, DB_U32_SALT_PALETTE, &region,
                     shape_kind) != 0) {
                 shape_cache_ptr = &shape_cache;
             }

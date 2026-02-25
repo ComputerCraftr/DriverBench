@@ -7,6 +7,7 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
+#include "../../core/db_hash.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_snake_common.h"
 #include "../renderer_snake_shape_common.h"
@@ -389,7 +390,7 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
                      &shape_cache, g_state.snake_row_bounds,
                      g_state.snake_row_bounds_capacity,
                      g_state.runtime.pattern_seed, plan.active_shape_index,
-                     DB_PALETTE_SALT, &target.region, shape_kind) != 0)) {
+                     DB_U32_SALT_PALETTE, &target.region, shape_kind) != 0)) {
                 shape_cache_ptr = &shape_cache;
             }
         }

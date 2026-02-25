@@ -6,6 +6,7 @@
 
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
+#include "../../core/db_hash.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
 #include "../renderer_snake_common.h"
@@ -107,7 +108,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
             (db_snake_shape_cache_init_from_index(
                  &shape_cache, g_state.snake_row_bounds,
                  g_state.snake_row_bounds_capacity, pattern_seed, shape_index,
-                 DB_PALETTE_SALT, region,
+                 DB_U32_SALT_PALETTE, region,
                  (db_snake_shape_kind_t)shape_kind) != 0)) {
             shape_cache_ptr = &shape_cache;
         }
