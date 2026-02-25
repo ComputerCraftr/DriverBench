@@ -704,13 +704,10 @@ void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
     }
 }
 
-void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
-                                  const db_snake_plan_t *plan,
-                                  uint32_t pattern_seed,
-                                  uint32_t snake_prev_start,
-                                  uint32_t snake_prev_count,
-                                  int snake_reset_pending,
-                                  const float color[3]) {
+void db_vk_draw_snake_region_plan(
+    const db_vk_owner_draw_ctx_t *ctx, const db_snake_plan_t *plan,
+    uint32_t pattern_seed, uint32_t snake_prev_start, uint32_t snake_prev_count,
+    int snake_reset_pending, const float color[3]) {
     const uint32_t render_mode = (uint32_t)g_state.runtime.pattern;
     const db_snake_region_t region =
         db_snake_region_from_index(pattern_seed, plan->active_shape_index);

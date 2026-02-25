@@ -829,6 +829,7 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
 #endif
 
 #ifdef DB_HAS_VULKAN_API
+// NOLINTBEGIN(misc-include-cleaner)
 static const char *const *
 db_glfw_vk_required_instance_extensions(uint32_t *count, void *user_data) {
     (void)user_data;
@@ -925,6 +926,7 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
     db_glfw_destroy_window(window);
     return 0;
 }
+// NOLINTEND(misc-include-cleaner)
 #endif
 
 int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer,

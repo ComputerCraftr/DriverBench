@@ -79,9 +79,9 @@ static int db_init_vertices_for_mode(size_t vertex_stride) {
 
 static void db_render_snake_step(const db_snake_plan_t *plan,
                                  const db_snake_region_t *region,
-                                 int apply_shape_clip, uint32_t shape_kind,
-                                 uint32_t pattern_seed, uint32_t shape_index,
-                                 float target_r, float target_g, float target_b,
+                                 uint32_t shape_kind, uint32_t pattern_seed,
+                                 uint32_t shape_index, float target_r,
+                                 float target_g, float target_b,
                                  int full_fill_on_phase_completed) {
     if ((plan == NULL) || (region == NULL)) {
         return;
@@ -102,7 +102,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
     }
     db_snake_shape_cache_t shape_cache = {0};
     const db_snake_shape_cache_t *shape_cache_ptr = NULL;
-    if (apply_shape_clip != 0) {
+    if (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES) {
         if ((g_state.snake_row_bounds != NULL) &&
             (db_snake_shape_cache_init_from_index(
                  &shape_cache, g_state.snake_row_bounds,
@@ -491,11 +491,10 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                 g_state.runtime.snake_prev_count = 0U;
             }
         }
-        db_render_snake_step(&plan, &target.region, is_shapes, shape_kind,
-                             g_state.runtime.pattern_seed,
-                             plan.active_shape_index, target.target_r,
-                             target.target_g, target.target_b,
-                             target.full_fill_on_phase_completed);
+        db_render_snake_step(
+            &plan, &target.region, shape_kind, g_state.runtime.pattern_seed,
+            plan.active_shape_index, target.target_r, target.target_g,
+            target.target_b, target.full_fill_on_phase_completed);
         g_state.runtime.snake_prev_start = plan.next_prev_start;
         g_state.runtime.snake_prev_count = plan.next_prev_count;
         g_state.runtime.snake_cursor = plan.next_cursor;

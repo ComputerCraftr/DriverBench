@@ -377,13 +377,10 @@ void db_vk_owner_timing_end(VkCommandBuffer cmd, int timing_enabled,
 void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
                                 const db_snake_plan_t *plan,
                                 uint32_t work_unit_count, const float color[3]);
-void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
-                                  const db_snake_plan_t *plan,
-                                  uint32_t pattern_seed,
-                                  uint32_t snake_prev_start,
-                                  uint32_t snake_prev_count,
-                                  int snake_reset_pending,
-                                  const float color[3]);
+void db_vk_draw_snake_region_plan(
+    const db_vk_owner_draw_ctx_t *ctx, const db_snake_plan_t *plan,
+    uint32_t pattern_seed, uint32_t snake_prev_start, uint32_t snake_prev_count,
+    int snake_reset_pending, const float color[3]);
 void db_vk_update_ema_fallback(db_pattern_t pattern, uint32_t gpu_count,
                                const uint32_t *work_owner,
                                const uint32_t *grid_tiles_per_gpu,

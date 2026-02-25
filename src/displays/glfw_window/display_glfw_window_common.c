@@ -7,7 +7,6 @@
 #ifndef __APPLE__
 #include <sys/errno.h>
 #endif
-#include <stdlib.h>
 #include <time.h>
 
 #include "../../core/db_core.h"

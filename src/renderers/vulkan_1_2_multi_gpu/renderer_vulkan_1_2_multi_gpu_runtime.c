@@ -338,8 +338,6 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
                (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
         const int is_grid = (g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID);
-        const int is_shapes =
-            (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES);
         const db_snake_plan_request_t request = db_snake_plan_request_make(
             is_grid, g_state.runtime.pattern_seed,
             g_state.runtime.snake_shape_index, g_state.runtime.snake_cursor,

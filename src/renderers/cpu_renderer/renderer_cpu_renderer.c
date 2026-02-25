@@ -175,13 +175,11 @@ static void db_render_bands(db_cpu_bo_t *bo, double time_s) {
     }
 }
 
-static void
-db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
-                     const db_snake_plan_t *plan,
-                     const db_snake_region_t *region, int apply_shape_clip,
-                     const db_snake_shape_cache_t *shape_cache_ptr,
-                     float target_red, float target_green, float target_blue,
-                     int full_fill_on_phase_completed) {
+static void db_render_snake_step(
+    db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
+    const db_snake_plan_t *plan, const db_snake_region_t *region,
+    const db_snake_shape_cache_t *shape_cache_ptr, float target_red,
+    float target_green, float target_blue, int full_fill_on_phase_completed) {
     if ((plan == NULL) || (region == NULL)) {
         return;
     }
@@ -193,8 +191,6 @@ db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
     const uint32_t rows = write_bo->height;
     const uint32_t target_rgba =
         db_pack_rgb(target_red, target_green, target_blue);
-    const db_snake_shape_cache_t *active_shape_cache =
-        (apply_shape_clip != 0) ? shape_cache_ptr : NULL;
     if ((full_fill_on_phase_completed != 0) && (plan->phase_completed != 0)) {
         db_bo_fill_solid(write_bo, target_rgba);
         return;
@@ -212,9 +208,9 @@ db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
         if ((row >= rows) || (col >= cols)) {
             continue;
         }
-        if (active_shape_cache != NULL) {
-            const int inside = db_snake_shape_cache_contains_tile(
-                active_shape_cache, row, col);
+        if (shape_cache_ptr != NULL) {
+            const int inside =
+                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
             if (inside == 0) {
                 continue;
             }
@@ -234,9 +230,9 @@ db_render_snake_step(db_cpu_bo_t *write_bo, const db_cpu_bo_t *read_bo,
         if ((row >= rows) || (col >= cols)) {
             continue;
         }
-        if (active_shape_cache != NULL) {
-            const int inside = db_snake_shape_cache_contains_tile(
-                active_shape_cache, row, col);
+        if (shape_cache_ptr != NULL) {
+            const int inside =
+                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
             if (inside == 0) {
                 continue;
             }
@@ -404,8 +400,8 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
             g_state.runtime.snake_shape_index = target.next_shape_index;
         }
         db_render_snake_step(write_bo, read_bo, &plan, &target.region,
-                             is_shapes, shape_cache_ptr, target.target_r,
-                             target.target_g, target.target_b,
+                             shape_cache_ptr, target.target_r, target.target_g,
+                             target.target_b,
                              target.full_fill_on_phase_completed);
         if ((target.full_fill_on_phase_completed != 0) &&
             (plan.phase_completed != 0)) {

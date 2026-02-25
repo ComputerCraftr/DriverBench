@@ -1,5 +1,8 @@
 #include "db_hash.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 uint32_t db_fold_u64_to_u32(uint64_t value) {
     return (uint32_t)(value ^ (value >> 32U));
 }
