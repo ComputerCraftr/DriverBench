@@ -223,7 +223,7 @@ static void db_present_cpu_try_init_pbo(db_cpu_present_gl_state_t *state,
     if ((state == NULL) || (enable_pbo_probe == 0)) {
         return;
     }
-    if (db_gl_has_pbo_upload_support() == 0) {
+    if (db_gl_context_supports_pbo_upload() == 0) {
         return;
     }
     state->pbo = (GLuint)db_gl_pbo_create_or_zero();
@@ -324,7 +324,7 @@ static void db_present_cpu_upload_spans(db_cpu_present_gl_state_t *state,
                  total_bytes);
     }
     const int use_pbo = (state->has_pbo != 0) && (state->pbo != 0U) &&
-                        (db_gl_has_pbo_upload_support() != 0);
+                        (db_gl_context_supports_pbo_upload() != 0);
     if (use_pbo != 0) {
         db_gl_upload_ranges_target(pixels, total_bytes, ranges, span_count,
                                    DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
@@ -516,7 +516,7 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
     db_present_cpu_init_state(&present, has_pbo);
     const char *capability_mode =
         ((present.has_pbo != 0) && (present.pbo != 0U) &&
-         (db_gl_has_pbo_upload_support() != 0))
+         (db_gl_context_supports_pbo_upload() != 0))
             ? DB_CAP_MODE_CPU_GLFW_PBO
             : DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE;
 

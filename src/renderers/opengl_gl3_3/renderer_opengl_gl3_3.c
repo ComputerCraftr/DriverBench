@@ -352,13 +352,23 @@ void db_renderer_opengl_gl3_3_init(void) {
     }
 
     glGenVertexArrays(1, &g_state.vao);
-    glGenBuffers(1, &g_state.vbo);
+    unsigned int vbo_u32 = 0U;
+    if (db_gl_vbo_create_or_zero(&vbo_u32) != 0) {
+        g_state.vbo = (GLuint)vbo_u32;
+    }
+    if (g_state.vbo == 0U) {
+        failf("failed to create GL array buffer");
+    }
     glBindVertexArray(g_state.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
+    if (db_gl_vbo_bind((unsigned int)g_state.vbo) == 0) {
+        failf("failed to bind GL array buffer");
+    }
     g_state.vbo_bytes = (size_t)g_state.vertex.draw_vertex_count *
                         DB_VERTEX_FLOAT_STRIDE * sizeof(float);
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)g_state.vbo_bytes,
-                 g_state.vertex.vertices, GL_DYNAMIC_DRAW);
+    if (db_gl_vbo_init_data(g_state.vbo_bytes, g_state.vertex.vertices,
+                            GL_DYNAMIC_DRAW) == 0) {
+        failf("failed to initialize GL array buffer");
+    }
 
     glEnableVertexAttribArray(ATTR_POSITION_LOC);
     glVertexAttribPointer(
@@ -592,7 +602,7 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
 
 void db_renderer_opengl_gl3_3_shutdown(void) {
     if (g_state.vertex.upload.persistent_mapped_ptr != NULL) {
-        glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
+        (void)db_gl_vbo_bind((unsigned int)g_state.vbo);
         db_gl_unmap_current_array_buffer();
     }
     db_gl3_destroy_history_targets();
@@ -601,7 +611,7 @@ void db_renderer_opengl_gl3_3_shutdown(void) {
         g_state.fallback_tex = 0U;
     }
     glDeleteProgram(g_state.program);
-    glDeleteBuffers(1, &g_state.vbo);
+    db_gl_vbo_delete_if_valid((unsigned int)g_state.vbo);
     glDeleteVertexArrays(1, &g_state.vao);
     free(g_state.vertex.vertices);
     g_state = (renderer_state_t){0};

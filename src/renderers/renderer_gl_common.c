@@ -88,22 +88,20 @@ extern db_glfw_proc_t glfwGetProcAddress(const char *procname);
 #endif
 
 typedef struct {
-    db_gl_map_buffer_fn_t map_buffer;
-    db_gl_unmap_buffer_fn_t unmap_buffer;
-    db_gl_get_buffer_sub_data_fn_t get_buffer_sub_data;
-    db_gl_map_buffer_range_fn_t map_buffer_range;
-    db_gl_buffer_storage_fn_t buffer_storage;
     db_gl_bind_buffer_fn_t bind_buffer;
     db_gl_buffer_data_fn_t buffer_data;
+    db_gl_buffer_storage_fn_t buffer_storage;
     db_gl_buffer_sub_data_fn_t buffer_sub_data;
-    db_gl_gen_buffers_fn_t gen_buffers;
     db_gl_delete_buffers_fn_t delete_buffers;
+    db_gl_gen_buffers_fn_t gen_buffers;
+    db_gl_get_buffer_sub_data_fn_t get_buffer_sub_data;
+    db_gl_map_buffer_fn_t map_buffer;
+    db_gl_map_buffer_range_fn_t map_buffer_range;
+    db_gl_unmap_buffer_fn_t unmap_buffer;
     int loaded;
 } db_gl_upload_proc_table_t;
 
 static db_gl_upload_proc_table_t g_upload_proc_table = {0};
-static void db_gl_load_upload_proc_table(void);
-static void db_gl_require_upload_proc_table_loaded(const char *func_name);
 
 int db_has_gl_extension_token(const char *exts, const char *needle) {
     if ((exts == NULL) || (needle == NULL)) {
@@ -193,9 +191,20 @@ void db_gl_fill_probe_pattern(uint8_t *pattern, size_t count) {
     }
 }
 
-int db_gl_runtime_supports_vbo(const char *version_text, const char *exts) {
+int db_gl_runtime_supports_buffer_storage(const char *version_text,
+                                          const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
-        return db_gl_version_text_at_least(version_text, 1, 1);
+        return db_has_gl_extension_token(exts, "GL_EXT_buffer_storage");
+    }
+
+    return db_has_gl_extension_token(exts, "GL_ARB_buffer_storage") ||
+           db_gl_version_text_at_least(version_text, 4, 4);
+}
+
+int db_gl_runtime_supports_map_buffer(const char *version_text,
+                                      const char *exts) {
+    if (db_gl_is_es_context(version_text) != 0) {
+        return db_has_gl_extension_token(exts, "GL_OES_mapbuffer");
     }
 
     return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
@@ -214,26 +223,6 @@ int db_gl_runtime_supports_map_buffer_range(const char *version_text,
            db_gl_version_text_at_least(version_text, 3, 0);
 }
 
-int db_gl_runtime_supports_map_buffer(const char *version_text,
-                                      const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_has_gl_extension_token(exts, "GL_OES_mapbuffer");
-    }
-
-    return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
-           db_gl_version_text_at_least(version_text, 1, 5);
-}
-
-int db_gl_runtime_supports_buffer_storage(const char *version_text,
-                                          const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_has_gl_extension_token(exts, "GL_EXT_buffer_storage");
-    }
-
-    return db_has_gl_extension_token(exts, "GL_ARB_buffer_storage") ||
-           db_gl_version_text_at_least(version_text, 4, 4);
-}
-
 int db_gl_runtime_supports_pbo(const char *version_text, const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_gl_version_text_at_least(version_text, 3, 0) ||
@@ -244,7 +233,14 @@ int db_gl_runtime_supports_pbo(const char *version_text, const char *exts) {
            db_has_gl_extension_token(exts, "GL_ARB_pixel_buffer_object");
 }
 
-void db_gl_preload_upload_proc_table(void) { db_gl_load_upload_proc_table(); }
+int db_gl_runtime_supports_vbo(const char *version_text, const char *exts) {
+    if (db_gl_is_es_context(version_text) != 0) {
+        return db_gl_version_text_at_least(version_text, 1, 1);
+    }
+
+    return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
+           db_gl_version_text_at_least(version_text, 1, 5);
+}
 
 static void db_gl_require_upload_proc_table_loaded(const char *func_name) {
     if (g_upload_proc_table.loaded == 0) {
@@ -288,6 +284,76 @@ static void db_gl_load_upload_proc_table(void) {
         return;
     }
 
+    g_upload_proc_table.bind_buffer =
+        (db_gl_bind_buffer_fn_t)(db_gl_get_proc("glBindBuffer"));
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        g_upload_proc_table.bind_buffer =
+            (db_gl_bind_buffer_fn_t)(db_gl_get_proc("glBindBufferARB"));
+    }
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        g_upload_proc_table.bind_buffer =
+            (db_gl_bind_buffer_fn_t)(db_gl_get_proc("glBindBufferOES"));
+    }
+
+    g_upload_proc_table.buffer_data =
+        (db_gl_buffer_data_fn_t)(db_gl_get_proc("glBufferData"));
+    if (g_upload_proc_table.buffer_data == NULL) {
+        g_upload_proc_table.buffer_data =
+            (db_gl_buffer_data_fn_t)(db_gl_get_proc("glBufferDataARB"));
+    }
+    if (g_upload_proc_table.buffer_data == NULL) {
+        g_upload_proc_table.buffer_data =
+            (db_gl_buffer_data_fn_t)(db_gl_get_proc("glBufferDataOES"));
+    }
+
+    g_upload_proc_table.buffer_storage =
+        (db_gl_buffer_storage_fn_t)(db_gl_get_proc("glBufferStorage"));
+    if (g_upload_proc_table.buffer_storage == NULL) {
+        g_upload_proc_table.buffer_storage =
+            (db_gl_buffer_storage_fn_t)(db_gl_get_proc("glBufferStorageEXT"));
+    }
+
+    g_upload_proc_table.buffer_sub_data =
+        (db_gl_buffer_sub_data_fn_t)(db_gl_get_proc("glBufferSubData"));
+    if (g_upload_proc_table.buffer_sub_data == NULL) {
+        g_upload_proc_table.buffer_sub_data =
+            (db_gl_buffer_sub_data_fn_t)(db_gl_get_proc("glBufferSubDataARB"));
+    }
+    if (g_upload_proc_table.buffer_sub_data == NULL) {
+        g_upload_proc_table.buffer_sub_data =
+            (db_gl_buffer_sub_data_fn_t)(db_gl_get_proc("glBufferSubDataOES"));
+    }
+
+    g_upload_proc_table.delete_buffers =
+        (db_gl_delete_buffers_fn_t)(db_gl_get_proc("glDeleteBuffers"));
+    if (g_upload_proc_table.delete_buffers == NULL) {
+        g_upload_proc_table.delete_buffers =
+            (db_gl_delete_buffers_fn_t)(db_gl_get_proc("glDeleteBuffersARB"));
+    }
+    if (g_upload_proc_table.delete_buffers == NULL) {
+        g_upload_proc_table.delete_buffers =
+            (db_gl_delete_buffers_fn_t)(db_gl_get_proc("glDeleteBuffersOES"));
+    }
+
+    g_upload_proc_table.gen_buffers =
+        (db_gl_gen_buffers_fn_t)(db_gl_get_proc("glGenBuffers"));
+    if (g_upload_proc_table.gen_buffers == NULL) {
+        g_upload_proc_table.gen_buffers =
+            (db_gl_gen_buffers_fn_t)(db_gl_get_proc("glGenBuffersARB"));
+    }
+    if (g_upload_proc_table.gen_buffers == NULL) {
+        g_upload_proc_table.gen_buffers =
+            (db_gl_gen_buffers_fn_t)(db_gl_get_proc("glGenBuffersOES"));
+    }
+
+    g_upload_proc_table.get_buffer_sub_data =
+        (db_gl_get_buffer_sub_data_fn_t)(db_gl_get_proc("glGetBufferSubData"));
+    if (g_upload_proc_table.get_buffer_sub_data == NULL) {
+        g_upload_proc_table.get_buffer_sub_data =
+            (db_gl_get_buffer_sub_data_fn_t)(db_gl_get_proc(
+                "glGetBufferSubDataARB"));
+    }
+
     g_upload_proc_table.map_buffer =
         (db_gl_map_buffer_fn_t)(db_gl_get_proc("glMapBuffer"));
     if (g_upload_proc_table.map_buffer == NULL) {
@@ -297,6 +363,14 @@ static void db_gl_load_upload_proc_table(void) {
     if (g_upload_proc_table.map_buffer == NULL) {
         g_upload_proc_table.map_buffer =
             (db_gl_map_buffer_fn_t)(db_gl_get_proc("glMapBufferOES"));
+    }
+
+    g_upload_proc_table.map_buffer_range =
+        (db_gl_map_buffer_range_fn_t)(db_gl_get_proc("glMapBufferRange"));
+    if (g_upload_proc_table.map_buffer_range == NULL) {
+        g_upload_proc_table.map_buffer_range =
+            (db_gl_map_buffer_range_fn_t)(db_gl_get_proc(
+                "glMapBufferRangeEXT"));
     }
 
     g_upload_proc_table.unmap_buffer =
@@ -310,75 +384,36 @@ static void db_gl_load_upload_proc_table(void) {
             (db_gl_unmap_buffer_fn_t)(db_gl_get_proc("glUnmapBufferOES"));
     }
 
-    g_upload_proc_table.get_buffer_sub_data =
-        (db_gl_get_buffer_sub_data_fn_t)(db_gl_get_proc("glGetBufferSubData"));
-    if (g_upload_proc_table.get_buffer_sub_data == NULL) {
-        g_upload_proc_table.get_buffer_sub_data =
-            (db_gl_get_buffer_sub_data_fn_t)(db_gl_get_proc(
-                "glGetBufferSubDataARB"));
+#if defined(DB_HAS_OPENGL_DESKTOP) && !defined(__APPLE__)
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        g_upload_proc_table.bind_buffer = (db_gl_bind_buffer_fn_t)glBindBuffer;
     }
-
-    g_upload_proc_table.map_buffer_range =
-        (db_gl_map_buffer_range_fn_t)(db_gl_get_proc("glMapBufferRange"));
-    if (g_upload_proc_table.map_buffer_range == NULL) {
-        g_upload_proc_table.map_buffer_range =
-            (db_gl_map_buffer_range_fn_t)(db_gl_get_proc(
-                "glMapBufferRangeEXT"));
+    if (g_upload_proc_table.buffer_data == NULL) {
+        g_upload_proc_table.buffer_data = (db_gl_buffer_data_fn_t)glBufferData;
     }
-
-    g_upload_proc_table.buffer_storage =
-        (db_gl_buffer_storage_fn_t)(db_gl_get_proc("glBufferStorage"));
+#if defined(GL_VERSION_4_4) || defined(GL_ARB_buffer_storage)
     if (g_upload_proc_table.buffer_storage == NULL) {
         g_upload_proc_table.buffer_storage =
-            (db_gl_buffer_storage_fn_t)(db_gl_get_proc("glBufferStorageEXT"));
+            (db_gl_buffer_storage_fn_t)glBufferStorage;
     }
-
-    g_upload_proc_table.bind_buffer =
-        (db_gl_bind_buffer_fn_t)(db_gl_get_proc("glBindBuffer"));
-    if (g_upload_proc_table.bind_buffer == NULL) {
-        g_upload_proc_table.bind_buffer =
-            (db_gl_bind_buffer_fn_t)(db_gl_get_proc("glBindBufferARB"));
-    }
-
-    g_upload_proc_table.buffer_data =
-        (db_gl_buffer_data_fn_t)(db_gl_get_proc("glBufferData"));
-    if (g_upload_proc_table.buffer_data == NULL) {
-        g_upload_proc_table.buffer_data =
-            (db_gl_buffer_data_fn_t)(db_gl_get_proc("glBufferDataARB"));
-    }
-
-    g_upload_proc_table.buffer_sub_data =
-        (db_gl_buffer_sub_data_fn_t)(db_gl_get_proc("glBufferSubData"));
+#endif
     if (g_upload_proc_table.buffer_sub_data == NULL) {
         g_upload_proc_table.buffer_sub_data =
-            (db_gl_buffer_sub_data_fn_t)(db_gl_get_proc("glBufferSubDataARB"));
+            (db_gl_buffer_sub_data_fn_t)glBufferSubData;
     }
-
-    g_upload_proc_table.gen_buffers =
-        (db_gl_gen_buffers_fn_t)(db_gl_get_proc("glGenBuffers"));
-    if (g_upload_proc_table.gen_buffers == NULL) {
-        g_upload_proc_table.gen_buffers =
-            (db_gl_gen_buffers_fn_t)(db_gl_get_proc("glGenBuffersARB"));
-    }
-
-    g_upload_proc_table.delete_buffers =
-        (db_gl_delete_buffers_fn_t)(db_gl_get_proc("glDeleteBuffers"));
     if (g_upload_proc_table.delete_buffers == NULL) {
         g_upload_proc_table.delete_buffers =
-            (db_gl_delete_buffers_fn_t)(db_gl_get_proc("glDeleteBuffersARB"));
+            (db_gl_delete_buffers_fn_t)glDeleteBuffers;
     }
-
-#if defined(DB_HAS_OPENGL_DESKTOP) && !defined(__APPLE__)
-    if (g_upload_proc_table.map_buffer == NULL) {
-        g_upload_proc_table.map_buffer = (db_gl_map_buffer_fn_t)glMapBuffer;
-    }
-    if (g_upload_proc_table.unmap_buffer == NULL) {
-        g_upload_proc_table.unmap_buffer =
-            (db_gl_unmap_buffer_fn_t)glUnmapBuffer;
+    if (g_upload_proc_table.gen_buffers == NULL) {
+        g_upload_proc_table.gen_buffers = (db_gl_gen_buffers_fn_t)glGenBuffers;
     }
     if (g_upload_proc_table.get_buffer_sub_data == NULL) {
         g_upload_proc_table.get_buffer_sub_data =
             (db_gl_get_buffer_sub_data_fn_t)glGetBufferSubData;
+    }
+    if (g_upload_proc_table.map_buffer == NULL) {
+        g_upload_proc_table.map_buffer = (db_gl_map_buffer_fn_t)glMapBuffer;
     }
 #if defined(GL_VERSION_3_0) || defined(GL_ARB_map_buffer_range)
     if (g_upload_proc_table.map_buffer_range == NULL) {
@@ -386,47 +421,71 @@ static void db_gl_load_upload_proc_table(void) {
             (db_gl_map_buffer_range_fn_t)glMapBufferRange;
     }
 #endif
-#if defined(GL_VERSION_4_4) || defined(GL_ARB_buffer_storage)
-    if (g_upload_proc_table.buffer_storage == NULL) {
-        g_upload_proc_table.buffer_storage =
-            (db_gl_buffer_storage_fn_t)glBufferStorage;
-    }
-#endif
-    if (g_upload_proc_table.bind_buffer == NULL) {
-        g_upload_proc_table.bind_buffer = (db_gl_bind_buffer_fn_t)glBindBuffer;
-    }
-    if (g_upload_proc_table.buffer_data == NULL) {
-        g_upload_proc_table.buffer_data = (db_gl_buffer_data_fn_t)glBufferData;
-    }
-    if (g_upload_proc_table.buffer_sub_data == NULL) {
-        g_upload_proc_table.buffer_sub_data =
-            (db_gl_buffer_sub_data_fn_t)glBufferSubData;
-    }
-    if (g_upload_proc_table.gen_buffers == NULL) {
-        g_upload_proc_table.gen_buffers = (db_gl_gen_buffers_fn_t)glGenBuffers;
-    }
-    if (g_upload_proc_table.delete_buffers == NULL) {
-        g_upload_proc_table.delete_buffers =
-            (db_gl_delete_buffers_fn_t)glDeleteBuffers;
+    if (g_upload_proc_table.unmap_buffer == NULL) {
+        g_upload_proc_table.unmap_buffer =
+            (db_gl_unmap_buffer_fn_t)glUnmapBuffer;
     }
 #endif
 
     g_upload_proc_table.loaded = 1;
 }
 
-int db_gl_has_vbo_support(void) {
-    const char *version = (const char *)glGetString(GL_VERSION);
-    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
-    return db_gl_runtime_supports_vbo(version, exts);
+int db_gl_vbo_bind(unsigned int buffer) {
+    db_gl_require_upload_proc_table_loaded("db_gl_vbo_bind");
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        return 0;
+    }
+    g_upload_proc_table.bind_buffer(GL_ARRAY_BUFFER, (GLuint)buffer);
+    return 1;
 }
 
-int db_gl_has_pbo_upload_support(void) {
-    db_gl_require_upload_proc_table_loaded("db_gl_has_pbo_upload_support");
+int db_gl_vbo_create_or_zero(unsigned int *out_buffer) {
+    db_gl_require_upload_proc_table_loaded("db_gl_vbo_create_or_zero");
+    if (out_buffer == NULL) {
+        return 0;
+    }
+    *out_buffer = 0U;
+    if (g_upload_proc_table.gen_buffers == NULL) {
+        return 0;
+    }
+    GLuint buffer = 0U;
+    g_upload_proc_table.gen_buffers(1, &buffer);
+    *out_buffer = (unsigned int)buffer;
+    return (buffer != 0U) ? 1 : 0;
+}
+
+void db_gl_vbo_delete_if_valid(unsigned int buffer) {
+    db_gl_require_upload_proc_table_loaded("db_gl_vbo_delete_if_valid");
+    if ((buffer == 0U) || (g_upload_proc_table.delete_buffers == NULL)) {
+        return;
+    }
+    const GLuint gl_buffer = (GLuint)buffer;
+    g_upload_proc_table.delete_buffers(1, &gl_buffer);
+}
+
+int db_gl_vbo_init_data(size_t bytes, const void *data, unsigned int usage) {
+    db_gl_require_upload_proc_table_loaded("db_gl_vbo_init_data");
+    if (g_upload_proc_table.buffer_data == NULL) {
+        return 0;
+    }
+    g_upload_proc_table.buffer_data(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, data,
+                                    (GLenum)usage);
+    return (glGetError() == GL_NO_ERROR) ? 1 : 0;
+}
+
+int db_gl_context_supports_pbo_upload(void) {
+    db_gl_require_upload_proc_table_loaded("db_gl_context_supports_pbo_upload");
     return (g_upload_proc_table.bind_buffer != NULL) &&
            (g_upload_proc_table.buffer_data != NULL) &&
            (g_upload_proc_table.buffer_sub_data != NULL) &&
            (g_upload_proc_table.gen_buffers != NULL) &&
            (g_upload_proc_table.delete_buffers != NULL);
+}
+
+int db_gl_context_supports_vbo(void) {
+    const char *version = (const char *)glGetString(GL_VERSION);
+    const char *exts = (const char *)glGetString(GL_EXTENSIONS);
+    return db_gl_runtime_supports_vbo(version, exts);
 }
 
 unsigned int db_gl_pbo_create_or_zero(void) {
@@ -455,6 +514,8 @@ void db_gl_pbo_unbind_unpack(void) {
     }
     g_upload_proc_table.bind_buffer(GL_PIXEL_UNPACK_BUFFER, 0U);
 }
+
+void db_gl_preload_upload_proc_table(void) { db_gl_load_upload_proc_table(); }
 
 static int db_gl_verify_buffer_prefix(const uint8_t *expected,
                                       size_t expected_size) {
@@ -521,7 +582,8 @@ static int db_gl_try_init_persistent_upload(size_t bytes,
 static int db_gl_probe_map_range_upload(size_t bytes,
                                         const float *initial_vertices) {
     if ((g_upload_proc_table.map_buffer_range == NULL) ||
-        (g_upload_proc_table.unmap_buffer == NULL)) {
+        (g_upload_proc_table.unmap_buffer == NULL) ||
+        (g_upload_proc_table.buffer_sub_data == NULL)) {
         return 0;
     }
 
@@ -552,15 +614,16 @@ static int db_gl_probe_map_range_upload(size_t bytes,
         return 0;
     }
 
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size,
-                    initial_vertices);
+    g_upload_proc_table.buffer_sub_data(
+        GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size, initial_vertices);
     return glGetError() == GL_NO_ERROR;
 }
 
 static int db_gl_probe_map_buffer_upload(size_t bytes,
                                          const float *initial_vertices) {
     if ((g_upload_proc_table.map_buffer == NULL) ||
-        (g_upload_proc_table.unmap_buffer == NULL)) {
+        (g_upload_proc_table.unmap_buffer == NULL) ||
+        (g_upload_proc_table.buffer_sub_data == NULL)) {
         return 0;
     }
 
@@ -588,8 +651,8 @@ static int db_gl_probe_map_buffer_upload(size_t bytes,
         return 0;
     }
 
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size,
-                    initial_vertices);
+    g_upload_proc_table.buffer_sub_data(
+        GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size, initial_vertices);
     return glGetError() == GL_NO_ERROR;
 }
 
@@ -602,7 +665,7 @@ void db_gl_probe_upload_capabilities(size_t bytes,
     }
 
     *out = (db_gl_upload_probe_result_t){0};
-    if (db_gl_has_vbo_support() == 0) {
+    if (db_gl_context_supports_vbo() == 0) {
         return;
     }
 
@@ -619,8 +682,11 @@ void db_gl_probe_upload_capabilities(size_t bytes,
         return;
     }
 
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, initial_vertices,
-                 GL_DYNAMIC_DRAW);
+    if (g_upload_proc_table.buffer_data == NULL) {
+        return;
+    }
+    g_upload_proc_table.buffer_data(GL_ARRAY_BUFFER, (GLsizeiptr)bytes,
+                                    initial_vertices, GL_DYNAMIC_DRAW);
     if (glGetError() != GL_NO_ERROR) {
         return;
     }
@@ -652,18 +718,6 @@ static void *db_gl_try_map_upload_buffer(size_t bytes, int try_map_range,
     }
 
     return NULL;
-}
-
-static void db_gl_upload_ranges_subdata(const void *source_base,
-                                        const db_gl_upload_range_t *ranges,
-                                        size_t range_count) {
-    const uint8_t *src_base = (const uint8_t *)source_base;
-    for (size_t i = 0; i < range_count; i++) {
-        const db_gl_upload_range_t *range = &ranges[i];
-        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)range->dst_offset_bytes,
-                        (GLsizeiptr)range->size_bytes,
-                        src_base + range->src_offset_bytes);
-    }
 }
 
 static void
@@ -746,12 +800,8 @@ void db_gl_upload_ranges_target(
         return;
     }
 
-    if (g_upload_proc_table.buffer_sub_data != NULL) {
-        db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
-                                           range_count);
-    } else {
-        db_gl_upload_ranges_subdata(source_base, ranges, range_count);
-    }
+    db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
+                                       range_count);
 }
 
 void db_gl_upload_buffer(const void *source, size_t bytes,

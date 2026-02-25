@@ -88,28 +88,32 @@ int db_gl_version_text_at_least(const char *version_text, int req_major,
                                 int req_minor);
 int db_gl_is_es_context(const char *version_text);
 
-int db_gl_runtime_supports_vbo(const char *version_text, const char *exts);
-int db_gl_runtime_supports_map_buffer_range(const char *version_text,
-                                            const char *exts);
-int db_gl_runtime_supports_map_buffer(const char *version_text,
-                                      const char *exts);
 int db_gl_runtime_supports_buffer_storage(const char *version_text,
                                           const char *exts);
+int db_gl_runtime_supports_map_buffer(const char *version_text,
+                                      const char *exts);
+int db_gl_runtime_supports_map_buffer_range(const char *version_text,
+                                            const char *exts);
 int db_gl_runtime_supports_pbo(const char *version_text, const char *exts);
+int db_gl_runtime_supports_vbo(const char *version_text, const char *exts);
 
 void db_gl_clear_errors(db_gl_get_error_fn_t get_error);
 size_t db_gl_probe_size(size_t bytes);
 void db_gl_fill_probe_pattern(uint8_t *pattern, size_t count);
 
-void db_gl_probe_upload_capabilities(size_t bytes,
-                                     const float *initial_vertices,
-                                     db_gl_upload_probe_result_t *out);
-int db_gl_has_vbo_support(void);
-int db_gl_has_pbo_upload_support(void);
+int db_gl_vbo_bind(unsigned int buffer);
+int db_gl_vbo_create_or_zero(unsigned int *out_buffer);
+void db_gl_vbo_delete_if_valid(unsigned int buffer);
+int db_gl_vbo_init_data(size_t bytes, const void *data, unsigned int usage);
+int db_gl_context_supports_pbo_upload(void);
+int db_gl_context_supports_vbo(void);
 unsigned int db_gl_pbo_create_or_zero(void);
 void db_gl_pbo_delete_if_valid(unsigned int pbo);
 void db_gl_pbo_unbind_unpack(void);
 void db_gl_preload_upload_proc_table(void);
+void db_gl_probe_upload_capabilities(size_t bytes,
+                                     const float *initial_vertices,
+                                     db_gl_upload_probe_result_t *out);
 void db_gl_upload_ranges_target(
     const void *source_base, size_t total_bytes,
     const db_gl_upload_range_t *ranges, size_t range_count,

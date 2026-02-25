@@ -662,6 +662,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     if (runtime_check != NULL) {
         runtime_check(backend, runtime_version, runtime_is_gles);
     }
+    db_gl_preload_upload_proc_table();
 
     glViewport(
         0, 0, (GLint)db_checked_u32_to_i32(backend, "viewport_width", width),

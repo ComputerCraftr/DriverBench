@@ -264,7 +264,7 @@ static size_t db_rect_tile_bytes(size_t floats_per_vertex) {
 static void db_bind_client_arrays_from_cpu_vertices(void) {
     // Client-array mode must ensure ARRAY_BUFFER is unbound so pointers are CPU
     // addresses.
-    glBindBuffer(GL_ARRAY_BUFFER, 0U);
+    (void)db_gl_vbo_bind(0U);
     const GLsizei client_stride =
         (g_state.is_es_context != 0) ? ES_STRIDE_BYTES : STRIDE_BYTES;
     const GLint client_color_components = (g_state.is_es_context != 0)
@@ -414,12 +414,20 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     glColorPointer(client_color_components, GL_FLOAT, client_stride,
                    &g_state.vertex.vertices[DB_VERTEX_POSITION_FLOAT_COUNT]);
 
-    if (db_gl_has_vbo_support() != 0) {
+    if (db_gl_context_supports_vbo() != 0) {
         const size_t probe_bytes = (size_t)g_state.vertex.draw_vertex_count *
                                    g_state.vertex.vertex_stride * sizeof(float);
-        glGenBuffers(1, &g_state.vbo);
+        unsigned int vbo_u32 = 0U;
+        if (db_gl_vbo_create_or_zero(&vbo_u32) != 0) {
+            g_state.vbo = (GLuint)vbo_u32;
+        }
         if (g_state.vbo != 0U) {
-            glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
+            if (db_gl_vbo_bind((unsigned int)g_state.vbo) == 0) {
+                db_gl_vbo_delete_if_valid((unsigned int)g_state.vbo);
+                g_state.vbo = 0U;
+            }
+        }
+        if (g_state.vbo != 0U) {
             db_gl_probe_upload_capabilities(
                 probe_bytes, g_state.vertex.vertices, &probe_result);
             g_state.vertex.upload = probe_result;
@@ -535,11 +543,11 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
 
 void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
     if (g_state.vertex.upload.persistent_mapped_ptr != NULL) {
-        glBindBuffer(GL_ARRAY_BUFFER, g_state.vbo);
+        (void)db_gl_vbo_bind((unsigned int)g_state.vbo);
         db_gl_unmap_current_array_buffer();
     }
     if (g_state.vbo != 0U) {
-        glDeleteBuffers(1, &g_state.vbo);
+        db_gl_vbo_delete_if_valid((unsigned int)g_state.vbo);
         g_state.vbo = 0U;
     }
     glDisableClientState(GL_VERTEX_ARRAY);
