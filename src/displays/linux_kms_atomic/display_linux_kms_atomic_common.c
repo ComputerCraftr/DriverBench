@@ -43,6 +43,10 @@
 
 static const char *g_active_backend = BACKEND_NAME;
 
+static db_gl_generic_proc_t db_kms_egl_resolve_proc(const char *name) {
+    return (db_gl_generic_proc_t)eglGetProcAddress(name);
+}
+
 static __attribute__((noreturn)) void failf(const char *fmt, ...) {
     char message[LOG_MSG_CAPACITY];
     va_list ap;
@@ -662,6 +666,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     if (runtime_check != NULL) {
         runtime_check(backend, runtime_version, runtime_is_gles);
     }
+    db_gl_set_proc_resolver(db_kms_egl_resolve_proc);
     db_gl_preload_upload_proc_table();
 
     glViewport(

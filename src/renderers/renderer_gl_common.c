@@ -22,10 +22,6 @@
 #elifdef __linux__
 #include <dlfcn.h>
 #define DB_HAS_DLSYM_PROC_ADDRESS 1
-#ifdef DB_HAS_LINUX_KMS_ATOMIC
-#include <EGL/egl.h>
-#define DB_HAS_EGL_GET_PROC_ADDRESS 1
-#endif
 #endif
 
 #ifndef __APPLE__
@@ -82,11 +78,6 @@ typedef void (*db_gl_buffer_sub_data_fn_t)(GLenum target, GLintptr offset,
                                            GLsizeiptr size, const void *data);
 typedef void (*db_gl_gen_buffers_fn_t)(GLsizei count, GLuint *buffers);
 typedef void (*db_gl_delete_buffers_fn_t)(GLsizei count, const GLuint *buffers);
-#ifdef DB_HAS_GLFW
-typedef void (*db_glfw_proc_t)(void);
-extern db_glfw_proc_t glfwGetProcAddress(const char *procname);
-#endif
-
 typedef struct {
     db_gl_bind_buffer_fn_t bind_buffer;
     db_gl_buffer_data_fn_t buffer_data;
@@ -102,6 +93,7 @@ typedef struct {
 } db_gl_upload_proc_table_t;
 
 static db_gl_upload_proc_table_t g_upload_proc_table = {0};
+static db_gl_proc_resolver_fn_t g_proc_resolver = NULL;
 
 int db_has_gl_extension_token(const char *exts, const char *needle) {
     if ((exts == NULL) || (needle == NULL)) {
@@ -256,6 +248,13 @@ static db_gl_generic_proc_t db_gl_get_proc(const char *name) {
         return NULL;
     }
 
+    if (g_proc_resolver != NULL) {
+        db_gl_generic_proc_t resolver_proc = g_proc_resolver(name);
+        if (resolver_proc != NULL) {
+            return resolver_proc;
+        }
+    }
+
 #ifdef DB_HAS_DLSYM_PROC_ADDRESS
     db_gl_generic_proc_t dlsym_proc =
         (db_gl_generic_proc_t)dlsym(RTLD_DEFAULT, name);
@@ -264,19 +263,16 @@ static db_gl_generic_proc_t db_gl_get_proc(const char *name) {
     }
 #endif
 
-#ifdef DB_HAS_GLFW
-    db_gl_generic_proc_t glfw_proc =
-        (db_gl_generic_proc_t)glfwGetProcAddress(name);
-    if (glfw_proc != NULL) {
-        return glfw_proc;
-    }
-#endif
-
-#ifdef DB_HAS_EGL_GET_PROC_ADDRESS
-    return (db_gl_generic_proc_t)eglGetProcAddress(name);
-#else
     return NULL;
-#endif
+}
+
+void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver) {
+    if ((g_upload_proc_table.loaded != 0) && (g_proc_resolver != resolver)) {
+        db_failf("renderer_gl_common",
+                 "db_gl_set_proc_resolver must be called before proc table "
+                 "preload");
+    }
+    g_proc_resolver = resolver;
 }
 
 static void db_gl_load_upload_proc_table(void) {

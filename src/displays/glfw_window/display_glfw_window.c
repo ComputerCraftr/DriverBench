@@ -157,6 +157,10 @@ typedef struct {
     GLFWwindow *window;
 } db_glfw_opengl_loop_ctx_t;
 
+static db_gl_generic_proc_t db_glfw_resolve_proc(const char *name) {
+    return (db_gl_generic_proc_t)glfwGetProcAddress(name);
+}
+
 enum {
     DB_CPU_QUAD_V0_X = 0,
     DB_CPU_QUAD_V0_Y = 1,
@@ -497,6 +501,7 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         db_has_gl_extension_token(runtime_exts, "GL_OES_texture_npot");
     const int has_pbo =
         db_gl_runtime_supports_pbo(runtime_version, runtime_exts);
+    db_gl_set_proc_resolver(db_glfw_resolve_proc);
     db_gl_preload_upload_proc_table();
     if ((is_gles != 0) && (runtime_is_gles == 0)) {
         db_infof(BACKEND_NAME_CPU, "context creation reported GLES fallback, "
@@ -774,6 +779,7 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
     }
 #endif
 
+    db_gl_set_proc_resolver(db_glfw_resolve_proc);
     db_gl_preload_upload_proc_table();
     db_gl_renderer_init(renderer);
     const char *capability_mode = db_gl_renderer_capability_mode(renderer);

@@ -13,6 +13,7 @@
 
 typedef void (*db_gl_generic_proc_t)(void);
 typedef unsigned int (*db_gl_get_error_fn_t)(void);
+typedef db_gl_generic_proc_t (*db_gl_proc_resolver_fn_t)(const char *name);
 
 typedef struct {
     int use_map_buffer_upload;
@@ -110,6 +111,7 @@ int db_gl_context_supports_vbo(void);
 unsigned int db_gl_pbo_create_or_zero(void);
 void db_gl_pbo_delete_if_valid(unsigned int pbo);
 void db_gl_pbo_unbind_unpack(void);
+void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver);
 void db_gl_preload_upload_proc_table(void);
 void db_gl_probe_upload_capabilities(size_t bytes,
                                      const float *initial_vertices,
