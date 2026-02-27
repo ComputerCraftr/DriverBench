@@ -59,8 +59,17 @@ else()
   set(run2_args "${run1_args}")
 endif()
 
+if(DEFINED TEST_ARGS_C AND NOT "${TEST_ARGS_C}" STREQUAL "")
+  set(run3_args "${TEST_ARGS_C}")
+else()
+  set(run3_args "")
+endif()
+
 db_run_once(run1_output "${run1_args}")
 db_run_once(run2_output "${run2_args}")
+if(NOT "${run3_args}" STREQUAL "")
+  db_run_once(run3_output "${run3_args}")
+endif()
 
 set(hash_summary "")
 foreach(hash_check IN LISTS TEST_HASH_CHECKS)
@@ -82,6 +91,16 @@ foreach(hash_check IN LISTS TEST_HASH_CHECKS)
       "Determinism mismatch for ${TEST_BIN} key '${hash_key}': ${run1_hash} != ${run2_hash}\n"
       "run1:\n${run1_output}\n"
       "run2:\n${run2_output}\n")
+  endif()
+
+  if(NOT "${run3_args}" STREQUAL "")
+    db_extract_hash_or_fail("${run3_output}" "${hash_key}" run3_hash)
+    if(NOT run1_hash STREQUAL run3_hash)
+      message(FATAL_ERROR
+        "Determinism mismatch for ${TEST_BIN} key '${hash_key}': ${run1_hash} != ${run3_hash}\n"
+        "run1:\n${run1_output}\n"
+        "run3:\n${run3_output}\n")
+    endif()
   endif()
 
   if(NOT "${expected_hash}" STREQUAL "" AND NOT run1_hash STREQUAL expected_hash)

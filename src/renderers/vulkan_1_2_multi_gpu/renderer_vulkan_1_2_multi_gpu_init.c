@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "../../config/benchmark_config.h"
@@ -10,13 +11,12 @@
 // NOLINTBEGIN(misc-include-cleaner)
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
-#define DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU                              \
-    "vulkan_device_group_multi_gpu"
-#define DB_CAP_MODE_VULKAN_SINGLE_GPU "vulkan_single_gpu"
 #define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
 #define MASK_GPU0 1U
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
+
+static char g_vk_capability_mode[DB_VK_CAPABILITY_MODE_MAX] = {0};
 
 typedef struct {
     VkInstance instance;
@@ -66,6 +66,14 @@ typedef struct {
     db_benchmark_runtime_init_t runtime;
     uint32_t work_owner[MAX_BAND_OWNER];
 } db_vk_init_scheduler_phase_t;
+
+static const char *db_vk_compose_capability_mode(db_pattern_t pattern) {
+    const char *draw_mode = db_vk_capability_draw_mode_name(pattern);
+    (void)db_snprintf(g_vk_capability_mode, sizeof(g_vk_capability_mode),
+                      "%s(upload=%s,backbuffer_replay=no)", draw_mode,
+                      DB_CAP_MODE_VK_UPLOAD_NONE);
+    return g_vk_capability_mode;
+}
 
 DeviceSelectionState db_vk_select_devices_and_group(VkInstance instance,
                                                     VkSurfaceKHR surface) {
@@ -674,10 +682,9 @@ db_vk_init_phase_scheduler(const db_vk_init_device_phase_t *device_phase,
     const db_pattern_t pattern = out_phase->runtime.pattern;
     const int multi_gpu =
         device_phase->have_group && (device_phase->gpu_count > 1U);
-    out_phase->capability_mode = multi_gpu
-                                     ? DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU
-                                     : DB_CAP_MODE_VULKAN_SINGLE_GPU;
+    out_phase->capability_mode = db_vk_compose_capability_mode(pattern);
     infof("using capability mode: %s", out_phase->capability_mode);
+    infof("using scheduler mode: %s", db_vk_scheduler_mode_name(multi_gpu));
 
     if (pattern == DB_PATTERN_BANDS) {
         for (uint32_t b = 0; b < BENCH_BANDS; b++) {

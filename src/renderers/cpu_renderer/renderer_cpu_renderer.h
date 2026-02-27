@@ -7,7 +7,7 @@
 #include "../renderer_benchmark_common.h"
 
 void db_renderer_cpu_renderer_init(void);
-void db_renderer_cpu_renderer_render_frame(double time_s);
+void db_renderer_cpu_renderer_render_frame(uint32_t frame_index);
 void db_renderer_cpu_renderer_shutdown(void);
 
 uint32_t db_renderer_cpu_renderer_work_unit_count(void);

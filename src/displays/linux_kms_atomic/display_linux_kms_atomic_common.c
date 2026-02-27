@@ -31,11 +31,12 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
-#include "../../driverbench_cli.h"
+#include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../display_dispatch.h"
 #include "../display_gl_runtime_common.h"
+#include "../display_types.h"
 
 #define DRM_SRC_FP_SHIFT 16U
 #define LOG_MSG_CAPACITY 2048U
@@ -430,7 +431,7 @@ static void db_kms_atomic_flip_to_fb(const struct kms_atomic *kms,
 }
 
 typedef struct fb *(*db_kms_atomic_next_fb_fn_t)(void *user_ctx,
-                                                 uint64_t frame_index);
+                                                 uint32_t frame_index);
 
 typedef struct {
     db_api_t api;
@@ -477,6 +478,7 @@ db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
 }
 
 typedef struct {
+    int debug_clear_default_framebuffer;
     int kms_fd;
     EGLDisplay dpy;
     EGLSurface surf;
@@ -485,14 +487,15 @@ typedef struct {
 } db_kms_atomic_gl_frame_producer_t;
 
 static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
-                                           uint64_t frame_index) {
+                                           uint32_t frame_index) {
     db_kms_atomic_gl_frame_producer_t *producer =
         (db_kms_atomic_gl_frame_producer_t *)user_ctx;
-    const double time_s = (double)frame_index / BENCH_TARGET_FPS_D;
-    glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                 BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-    glClear(GL_COLOR_BUFFER_BIT);
-    producer->renderer->render_frame(time_s);
+    if (producer->debug_clear_default_framebuffer != 0) {
+        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    producer->renderer->render_frame(frame_index);
     eglSwapBuffers(producer->dpy, producer->surf);
 
     struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(producer->gbm_surf);
@@ -669,9 +672,11 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     db_gl_set_proc_resolver(db_kms_egl_resolve_proc);
     db_gl_preload_upload_proc_table();
 
-    glViewport(
-        0, 0, (GLint)db_checked_u32_to_i32(backend, "viewport_width", width),
-        (GLint)db_checked_u32_to_i32(backend, "viewport_height", height));
+    const int viewport_width =
+        db_checked_u32_to_i32(backend, "viewport_width", width);
+    const int viewport_height =
+        db_checked_u32_to_i32(backend, "viewport_height", height);
+    db_gl_set_viewport_px(viewport_width, viewport_height);
 
     renderer->init();
     const char *capability_mode = renderer->capability_mode();
@@ -685,10 +690,14 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
     struct fb *cur = NULL;
 
-    glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                 BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-    glClear(GL_COLOR_BUFFER_BIT);
-    renderer->render_frame(0.0);
+    const int debug_clear_default_framebuffer =
+        (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0;
+    if (debug_clear_default_framebuffer != 0) {
+        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    renderer->render_frame(0);
     eglSwapBuffers(dpy, surf);
 
     struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbm_surf);
@@ -713,6 +722,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         .cur_fb = &cur,
     };
     db_kms_atomic_gl_frame_producer_t producer = {
+        .debug_clear_default_framebuffer = debug_clear_default_framebuffer,
         .kms_fd = kms.fd,
         .dpy = dpy,
         .surf = surf,
@@ -724,6 +734,15 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         &loop, &producer, db_kms_atomic_next_gl_fb);
     const double bench_ms =
         (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
+    if (renderer->draw_stats != NULL) {
+        uint64_t full_draw_frames = 0U;
+        uint64_t dirty_draw_frames = 0U;
+        renderer->draw_stats(&full_draw_frames, &dirty_draw_frames);
+        db_infof(backend,
+                 "draw stats: full_draw_frames=%llu dirty_draw_frames=%llu",
+                 (unsigned long long)full_draw_frames,
+                 (unsigned long long)dirty_draw_frames);
+    }
     db_benchmark_log_final(db_dispatch_api_name(DB_API_OPENGL), renderer_name,
                            backend, bench_frames, work_unit_count, bench_ms,
                            capability_mode);
@@ -794,11 +813,10 @@ typedef struct {
 } db_kms_atomic_cpu_frame_producer_t;
 
 static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
-                                            uint64_t frame_index) {
+                                            uint32_t frame_index) {
     db_kms_atomic_cpu_frame_producer_t *producer =
         (db_kms_atomic_cpu_frame_producer_t *)user_ctx;
-    const double time_s = (double)frame_index / BENCH_TARGET_FPS_D;
-    db_renderer_cpu_renderer_render_frame(time_s);
+    db_renderer_cpu_renderer_render_frame(frame_index);
     const uint32_t *pixels = db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
     if (pixels == NULL) {
         db_failf(producer->backend, "cpu renderer returned NULL framebuffer");
@@ -838,7 +856,7 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
     const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
 
-    db_renderer_cpu_renderer_render_frame(0.0);
+    db_renderer_cpu_renderer_render_frame(0);
     const uint32_t *initial_pixels =
         db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
     if (initial_pixels == NULL) {

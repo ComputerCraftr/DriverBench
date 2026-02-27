@@ -29,5 +29,7 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void);
 const char *db_renderer_vulkan_1_2_multi_gpu_capability_mode(void);
 uint32_t db_renderer_vulkan_1_2_multi_gpu_work_unit_count(void);
 uint64_t db_renderer_vulkan_1_2_multi_gpu_state_hash(void);
+void db_renderer_vulkan_1_2_multi_gpu_draw_stats(uint64_t *full_draw_frames,
+                                                 uint64_t *dirty_draw_frames);
 
 #endif

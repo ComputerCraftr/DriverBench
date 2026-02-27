@@ -1,7 +1,9 @@
 #include "display_linux_kms_atomic_common.h"
 
+#include <stdint.h>
+
 #include "../../core/db_core.h"
-#include "../../driverbench_cli.h"
+#include "../../driverbench_config.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
 #ifdef DB_HAS_OPENGL_DESKTOP
 #include "../../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
@@ -10,9 +12,20 @@
 #include "../../renderers/renderer_identity.h"
 #include "../display_dispatch.h"
 #include "../display_gl_runtime_common.h"
+#include "../display_types.h"
 
 #define BACKEND_NAME_GL "display_linux_kms_atomic_opengl"
 #define BACKEND_NAME_CPU "display_linux_kms_atomic_cpu"
+
+static void db_kms_gl1_render_frame_adapter(uint32_t frame_index) {
+    db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_index, 0, 0, 1);
+}
+
+#ifdef DB_HAS_OPENGL_DESKTOP
+static void db_kms_gl3_render_frame_adapter(uint32_t frame_index) {
+    db_renderer_opengl_gl3_3_render_frame(frame_index, 0, 0);
+}
+#endif
 
 static const char *db_kms_backend_name(db_gl_renderer_t renderer) {
     (void)renderer;
@@ -80,8 +93,8 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
                     ? db_renderer_opengl_gl1_5_gles1_1_init
                     : db_renderer_opengl_gl3_3_init,
         .render_frame = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                            ? db_renderer_opengl_gl1_5_gles1_1_render_frame
-                            : db_renderer_opengl_gl3_3_render_frame,
+                            ? db_kms_gl1_render_frame_adapter
+                            : db_kms_gl3_render_frame_adapter,
         .shutdown = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
                         ? db_renderer_opengl_gl1_5_gles1_1_shutdown
                         : db_renderer_opengl_gl3_3_shutdown,
@@ -89,6 +102,9 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
             (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
                 ? db_renderer_opengl_gl1_5_gles1_1_capability_mode
                 : db_renderer_opengl_gl3_3_capability_mode,
+        .draw_stats = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
+                          ? db_renderer_opengl_gl1_5_gles1_1_draw_stats
+                          : db_renderer_opengl_gl3_3_draw_stats,
         .work_unit_count =
             (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
                 ? db_renderer_opengl_gl1_5_gles1_1_work_unit_count
@@ -109,9 +125,10 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
     }
     const db_kms_atomic_renderer_vtable_t vtable = {
         .init = db_renderer_opengl_gl1_5_gles1_1_init,
-        .render_frame = db_renderer_opengl_gl1_5_gles1_1_render_frame,
+        .render_frame = db_kms_gl1_render_frame_adapter,
         .shutdown = db_renderer_opengl_gl1_5_gles1_1_shutdown,
         .capability_mode = db_renderer_opengl_gl1_5_gles1_1_capability_mode,
+        .draw_stats = db_renderer_opengl_gl1_5_gles1_1_draw_stats,
         .work_unit_count = db_renderer_opengl_gl1_5_gles1_1_work_unit_count,
     };
     const db_kms_atomic_runtime_check_fn_t runtime_check = db_runtime_check_gl1;

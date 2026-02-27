@@ -12,8 +12,9 @@ typedef enum {
 
 typedef struct {
     const char *(*capability_mode)(void);
+    void (*draw_stats)(uint64_t *full_draw_frames, uint64_t *dirty_draw_frames);
     void (*init)(void);
-    void (*render_frame)(double time_s);
+    void (*render_frame)(uint32_t frame_index);
     void (*shutdown)(void);
     uint32_t (*work_unit_count)(void);
 } db_kms_atomic_renderer_vtable_t;

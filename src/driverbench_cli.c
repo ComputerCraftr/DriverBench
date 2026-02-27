@@ -1,4 +1,5 @@
 #include "driverbench_cli.h"
+#include "driverbench_config.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -9,6 +10,7 @@
 #include "config/benchmark_config.h"
 #include "core/db_core.h"
 #include "displays/display_dispatch.h"
+#include "displays/display_types.h"
 #include "renderers/renderer_benchmark_common.h"
 
 static int db_string_is(const char *value, const char *expected) {
@@ -33,10 +35,12 @@ static void db_usage(void) {
           "  --kms-card <path>\n"
           "\nRuntime options:\n"
           "  --allow-remote-display <0|1>\n"
+          "  --backbuffer-draw-mode <dirty|full>\n"
           "  --benchmark-mode "
           "<gradient_sweep|bands|snake_grid|gradient_fill|snake_rect|snake_"
           "shapes>\n"
           "  --bench-speed <value>\n"
+          "  --debug-clear-default-framebuffer <0|1>\n"
           "  --fps-cap <value>\n"
           "  --hash <none|state|pixel|both>\n"
           "  --frame-limit <value>\n"
@@ -87,6 +91,8 @@ enum {
     DB_CLI_RT_BENCH_SPEED = 7,
     DB_CLI_RT_OFFSCREEN = 8,
     DB_CLI_RT_VSYNC = 9,
+    DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER = 10,
+    DB_CLI_RT_BACKBUFFER_DRAW_MODE = 11,
 };
 
 #define DB_CLI_RUNTIME_TEXT_LEN 64U
@@ -194,6 +200,25 @@ static void db_cli_set_runtime_mode_or_exit(const char *raw_value) {
     db_runtime_option_set(DB_RUNTIME_OPT_BENCHMARK_MODE, normalized);
 }
 
+static void
+db_cli_set_runtime_backbuffer_draw_mode_or_exit(const char *raw_value,
+                                                db_cli_config_t *cfg) {
+    if (db_string_is(raw_value, "dirty")) {
+        cfg->backbuffer_draw_full = 0;
+        db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "dirty");
+        return;
+    }
+    if (db_string_is(raw_value, "full")) {
+        cfg->backbuffer_draw_full = 1;
+        db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "full");
+        return;
+    }
+    db_failf("driverbench_cli",
+             "invalid value for --backbuffer-draw-mode: %s "
+             "(expected: dirty|full)",
+             raw_value);
+}
+
 static const char *db_cli_parse_hash_report_or_exit(const char *raw_value) {
     if (db_string_is(raw_value, "final") ||
         db_string_is(raw_value, "aggregate") ||
@@ -296,7 +321,11 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
         {"--allow-remote-display", DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY,
          DB_CLI_RT_BOOL},
         {"--bench-speed", DB_RUNTIME_OPT_BENCH_SPEED, DB_CLI_RT_BENCH_SPEED},
+        {"--backbuffer-draw-mode", DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE,
+         DB_CLI_RT_BACKBUFFER_DRAW_MODE},
         {"--benchmark-mode", DB_RUNTIME_OPT_BENCHMARK_MODE, DB_CLI_RT_MODE},
+        {"--debug-clear-default-framebuffer", NULL,
+         DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER},
         {"--fps-cap", DB_RUNTIME_OPT_FPS_CAP, DB_CLI_RT_FPS_CAP},
         {"--hash", DB_RUNTIME_OPT_HASH, DB_CLI_RT_HASH_MODE},
         {"--frame-limit", DB_RUNTIME_OPT_FRAME_LIMIT, DB_CLI_RT_FRAME_LIMIT},
@@ -319,6 +348,9 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                     mappings[map_index].cli_option, value);
             } else if (mappings[map_index].kind == DB_CLI_RT_MODE) {
                 db_cli_set_runtime_mode_or_exit(value);
+            } else if (mappings[map_index].kind ==
+                       DB_CLI_RT_BACKBUFFER_DRAW_MODE) {
+                db_cli_set_runtime_backbuffer_draw_mode_or_exit(value, cfg);
             } else if (mappings[map_index].kind == DB_CLI_RT_FPS_CAP) {
                 cfg->fps_cap = db_cli_parse_fps_cap_or_exit(value);
             } else if (mappings[map_index].kind == DB_CLI_RT_RANDOM_SEED) {
@@ -346,6 +378,17 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                              value);
                 }
                 cfg->vsync_enabled = (parsed != 0);
+            } else if (mappings[map_index].kind ==
+                       DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER) {
+                int parsed = 0;
+                if (db_parse_bool_text(value, &parsed) == 0) {
+                    db_failf("driverbench_cli",
+                             "invalid value for "
+                             "--debug-clear-default-framebuffer: %s "
+                             "(expected bool)",
+                             value);
+                }
+                cfg->debug_clear_default_framebuffer = (parsed != 0);
             }
             return 1;
         }
@@ -476,6 +519,8 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
         .hash_report = "both",
         .fps_cap = BENCH_FPS_CAP_D,
         .frame_limit = 0U,
+        .backbuffer_draw_full = 0,
+        .debug_clear_default_framebuffer = 0,
         .offscreen_enabled = 0,
         .vsync_enabled = (BENCH_GLFW_SWAP_INTERVAL != 0),
         .api_is_auto = 1,

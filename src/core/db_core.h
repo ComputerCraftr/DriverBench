@@ -17,7 +17,10 @@
 #define DB_NS_PER_SECOND_D 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
 #define DB_U24_MAX_F 16777215.0F
+#define DB_U8_MAX_F 255.0F
+#define DB_ROUND_HALF_UP_F 0.5F
 #define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "allow_remote_display"
+#define DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE "backbuffer_draw_mode"
 #define DB_RUNTIME_OPT_BENCH_SPEED "bench_speed"
 #define DB_RUNTIME_OPT_BENCHMARK_MODE "benchmark_mode"
 #define DB_RUNTIME_OPT_FPS_CAP "fps_cap"
@@ -147,6 +150,20 @@ static inline float db_u32_to_unit_f32(uint32_t value) {
     return (float)value_24 / DB_U24_MAX_F;
 }
 
+static inline uint8_t db_float01_to_u8_clamped(float value01) {
+    float clamped = value01;
+    if (clamped < 0.0F) {
+        clamped = 0.0F;
+    } else if (clamped > 1.0F) {
+        clamped = 1.0F;
+    }
+    float scaled = (clamped * DB_U8_MAX_F) + DB_ROUND_HALF_UP_F;
+    if (scaled > DB_U8_MAX_F) {
+        scaled = DB_U8_MAX_F;
+    }
+    return (uint8_t)scaled;
+}
+
 static inline float db_u32_to_range_f32(uint32_t value, float min_value,
                                         float max_value) {
     if (max_value <= min_value) {
@@ -184,6 +201,17 @@ static inline uint32_t db_u32_max(uint32_t lhs, uint32_t rhs) {
     return (lhs > rhs) ? lhs : rhs;
 }
 
+static inline uint32_t db_u32_clamp(uint32_t value, uint32_t min_value,
+                                    uint32_t max_value) {
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
 static inline uint32_t db_u32_next_pow2(uint32_t value) {
     if (value <= 1U) {
         return 1U;
@@ -199,6 +227,10 @@ static inline uint32_t db_u32_next_pow2(uint32_t value) {
 
 static inline uint32_t db_u32_saturating_sub(uint32_t lhs, uint32_t rhs) {
     return (lhs > rhs) ? (lhs - rhs) : 0U;
+}
+
+static inline uint32_t db_u32_wrapping_sub(uint32_t lhs, uint32_t rhs) {
+    return lhs - rhs;
 }
 
 static inline uint32_t db_checked_add_u32(const char *backend,

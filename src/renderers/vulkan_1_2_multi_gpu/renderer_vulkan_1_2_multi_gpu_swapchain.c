@@ -19,17 +19,6 @@ uint32_t db_vk_build_device_group_mask(uint32_t device_count) {
     return mask;
 }
 
-static uint32_t db_vk_clamp_u32(uint32_t value, uint32_t min_v,
-                                uint32_t max_v) {
-    if (value < min_v) {
-        return min_v;
-    }
-    if (value > max_v) {
-        return max_v;
-    }
-    return value;
-}
-
 static VkExtent2D
 db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
                             const VkSurfaceCapabilitiesKHR *caps) {
@@ -47,11 +36,10 @@ db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
             db_checked_int_to_u32(BACKEND_NAME, "surface_extent_width", width);
         extent.height = db_checked_int_to_u32(BACKEND_NAME,
                                               "surface_extent_height", height);
-        extent.width = db_vk_clamp_u32(extent.width, caps->minImageExtent.width,
-                                       caps->maxImageExtent.width);
-        extent.height =
-            db_vk_clamp_u32(extent.height, caps->minImageExtent.height,
-                            caps->maxImageExtent.height);
+        extent.width = db_u32_clamp(extent.width, caps->minImageExtent.width,
+                                    caps->maxImageExtent.width);
+        extent.height = db_u32_clamp(extent.height, caps->minImageExtent.height,
+                                     caps->maxImageExtent.height);
     }
     return extent;
 }

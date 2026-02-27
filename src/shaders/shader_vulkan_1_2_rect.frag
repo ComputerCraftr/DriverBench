@@ -24,6 +24,8 @@ layout(push_constant) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
+    uint frame_index;
+    uint band_count;
 } pc;
 #else
 layout(std140, binding = 0) uniform PC {
@@ -46,6 +48,8 @@ layout(std140, binding = 0) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
+    uint frame_index;
+    uint band_count;
 } pc;
 #endif
 
@@ -89,6 +93,14 @@ struct db_snake_shape_desc_t {
 
 vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
+}
+
+vec3 db_band_color(uint band_index, uint band_count, uint frame_index) {
+    float band_f = float(band_index);
+    float frame_f = float(frame_index);
+    float pulse = 0.5 + (0.5 * sin((frame_f * 0.03) + (band_f * 0.3)));
+    float color_r = pulse * (0.2 + (0.8 * band_f / float(max(band_count, 1u))));
+    return vec3(color_r, pulse * 0.6, 1.0 - color_r);
 }
 
 float db_window_blend(int batch_size, int window_index) {
@@ -168,12 +180,20 @@ db_snake_region_desc_t db_snake_region_desc(
     return region;
 }
 
-bool db_snake_region_contains(db_snake_region_desc_t region, uint row_u, uint col_u) {
+bool db_snake_region_contains(
+    db_snake_region_desc_t region,
+    uint row_u,
+    uint col_u
+) {
     return (row_u >= region.y) && (row_u < (region.y + region.height)) &&
         (col_u >= region.x) && (col_u < (region.x + region.width));
 }
 
-uint db_snake_region_step(db_snake_region_desc_t region, uint row_u, uint col_u) {
+uint db_snake_region_step(
+    db_snake_region_desc_t region,
+    uint row_u,
+    uint col_u
+) {
     uint local_row = row_u - region.y;
     uint local_col = col_u - region.x;
     uint snake_col = ((local_row & 1u) == 0u) ? local_col : ((region.width - 1u) - local_col);
@@ -326,8 +346,10 @@ bool db_shape_contains(
     if(!db_snake_region_contains(shape_desc.region, row_u, col_u)) {
         return false;
     }
-    float fx = (float((col_u - shape_desc.region.x)) + SHAPE_CENTER) / float(max(shape_desc.region.width, 1u));
-    float fy = (float((row_u - shape_desc.region.y)) + SHAPE_CENTER) / float(max(shape_desc.region.height, 1u));
+    float fx = (float((col_u - shape_desc.region.x)) + SHAPE_CENTER) /
+        float(max(shape_desc.region.width, 1u));
+    float fy = (float((row_u - shape_desc.region.y)) + SHAPE_CENTER) /
+        float(max(shape_desc.region.height, 1u));
     float dx = fx - SHAPE_CENTER;
     float dy = fy - SHAPE_CENTER;
     db_snake_shape_profile_t profile = shape_desc.profile;
@@ -391,11 +413,15 @@ db_snake_region_desc_t db_full_grid_region(uint rows_u, uint cols_u) {
     return region;
 }
 
-int db_row_from_frag_coord() {
+void db_row_col_from_frag_coord(out int row_i, out int col_i) {
     float rows = float(max(pc.grid_rows, 1u));
+    float cols = float(max(pc.grid_cols, 1u));
     float viewport_height = float(max(pc.viewport_height, 1u));
+    float viewport_width = float(max(pc.viewport_width, 1u));
     float y = clamp(gl_FragCoord.y, 0.0, viewport_height - 1.0);
-    return int(floor((y * rows) / viewport_height));
+    float x = clamp(gl_FragCoord.x, 0.0, viewport_width - 1.0);
+    row_i = int(floor((y * rows) / viewport_height));
+    col_i = int(floor((x * cols) / viewport_width));
 }
 
 vec4 db_gradient_color(
@@ -425,11 +451,10 @@ vec4 db_gradient_color(
     return db_rgba(mix(source_color, target_color, blend));
 }
 
-int db_col_from_frag_coord() {
-    float cols = float(max(pc.grid_cols, 1u));
-    float viewport_width = float(max(pc.viewport_width, 1u));
-    float x = clamp(gl_FragCoord.x, 0.0, viewport_width - 1.0);
-    return int(floor((x * cols) / viewport_width));
+uint db_band_index_from_col(uint col_u, uint cols_u, uint band_count_u) {
+    uint safe_cols = max(cols_u, 1u);
+    uint safe_bands = max(band_count_u, 1u);
+    return (col_u * safe_bands) / safe_cols;
 }
 
 vec4 db_snake_color(
@@ -476,11 +501,17 @@ void main() {
     const uint RENDER_MODE_SNAKE_RECT = 4u;
     const uint RENDER_MODE_SNAKE_SHAPES = 5u;
     uint render_mode = pc.render_mode;
+    int row_i = 0;
+    int col_i = 0;
+    db_row_col_from_frag_coord(row_i, col_i);
+
     if(render_mode == RENDER_MODE_BANDS) {
-        out_color = v_color;
+        uint col_u = uint(max(col_i, 0));
+        uint cols_u = max(pc.grid_cols, 1u);
+        uint band_count_u = max(pc.band_count, 1u);
+        out_color = db_rgba(db_band_color(db_band_index_from_col(col_u, cols_u, band_count_u), band_count_u, pc.frame_index));
         return;
     }
-    int row_i = db_row_from_frag_coord();
     if((render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
         (render_mode == RENDER_MODE_GRADIENT_FILL)) {
         bool is_sweep = (render_mode == RENDER_MODE_GRADIENT_SWEEP);
@@ -493,7 +524,6 @@ void main() {
         (render_mode == RENDER_MODE_SNAKE_SHAPES)) {
         ivec2 history_coord = ivec2(gl_FragCoord.xy);
         vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
-        int col_i = db_col_from_frag_coord();
         uint row_u = uint(max(row_i, 0));
         uint col_u = uint(max(col_i, 0));
         uint rows_u = max(pc.grid_rows, 1u);

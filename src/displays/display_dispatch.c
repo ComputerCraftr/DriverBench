@@ -1,6 +1,7 @@
 #include "display_dispatch.h"
 #include "../core/db_core.h"
-#include "../driverbench_cli.h"
+#include "../driverbench_config.h"
+#include "display_types.h"
 
 int db_run_display_auto(db_display_t display, db_gl_renderer_t renderer,
                         const char *kms_card_path, const db_cli_config_t *cfg) {

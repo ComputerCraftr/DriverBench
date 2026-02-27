@@ -6,10 +6,11 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
-#include "../../driverbench_cli.h"
+#include "../../driverbench_config.h"
 #ifdef DB_HAS_OPENGL_API
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
@@ -27,6 +28,7 @@
 #include "../display_dispatch.h"
 #include "../display_gl_runtime_common.h"
 #include "../display_hash_common.h"
+#include "../display_types.h"
 #include "display_glfw_window_common.h"
 #ifdef DB_HAS_OPENGL_API
 #include "../display_gl_hash_readback_common.h"
@@ -69,7 +71,7 @@ typedef enum {
 } db_glfw_loop_result_t;
 
 typedef db_glfw_loop_result_t (*db_glfw_frame_fn_t)(void *user_data,
-                                                    uint64_t frame_index);
+                                                    uint32_t frame_index);
 
 typedef struct {
     const char *backend;
@@ -119,7 +121,55 @@ typedef struct {
     uint32_t texture_width;
     GLfloat texcoords[8];
     GLfloat vertices[8];
+    GLint last_viewport_w;
+    GLint last_viewport_h;
+    // Scratch buffer for upload ranges (damage row -> byte range conversion).
+    // Allocated once (or on rare resize), never allocated in the hot path.
+    db_gl_upload_range_t *upload_ranges_buf;
+    size_t upload_ranges_cap;
+    // Debug-only scratch buffer used to clear the CPU present texture without
+    // allocating in the hot path. Sized for chunked row uploads.
+    uint8_t *debug_clear_buf;
+    size_t debug_clear_buf_bytes;
+    uint32_t debug_clear_row_bytes;
+    uint32_t debug_clear_chunk_rows;
+    uint32_t debug_clear_pixel_width;
+    uint8_t debug_clear_rgba[4];
+    int debug_clear_ready;
 } db_cpu_present_gl_state_t;
+
+static void
+db_present_cpu_upload_ranges_prepare(db_cpu_present_gl_state_t *state,
+                                     uint32_t pixel_height) {
+    if ((state == NULL) || (pixel_height == 0U)) {
+        return;
+    }
+
+    // Worst-case: every row is a separate dirty range.
+    const size_t needed = (size_t)pixel_height;
+    if ((state->upload_ranges_buf != NULL) &&
+        (state->upload_ranges_cap >= needed)) {
+        return;
+    }
+
+    const size_t bytes = needed * sizeof(db_gl_upload_range_t);
+    if (state->upload_ranges_buf == NULL) {
+        state->upload_ranges_buf =
+            (db_gl_upload_range_t *)db_alloc_array_or_fail(
+                BACKEND_NAME_CPU, "upload_ranges_buf", needed,
+                sizeof(db_gl_upload_range_t));
+    } else {
+        db_gl_upload_range_t *new_buf =
+            (db_gl_upload_range_t *)realloc(state->upload_ranges_buf, bytes);
+        if (new_buf == NULL) {
+            db_failf(BACKEND_NAME_CPU,
+                     "cpu upload ranges realloc failed (bytes=%zu)", bytes);
+        }
+        state->upload_ranges_buf = new_buf;
+    }
+
+    state->upload_ranges_cap = needed;
+}
 
 typedef struct {
     db_cpu_present_gl_state_t *state;
@@ -136,6 +186,7 @@ typedef struct {
     db_display_hash_tracker_t *bo_hash_tracker;
     int state_hash_enabled;
     int output_hash_enabled;
+    int debug_clear_default_framebuffer;
     db_cpu_present_gl_state_t *present;
     uint32_t work_unit_count;
     GLFWwindow *window;
@@ -153,6 +204,7 @@ typedef struct {
     db_gl_renderer_t renderer;
     int state_hash_enabled;
     int output_hash_enabled;
+    int debug_clear_default_framebuffer;
     uint32_t work_unit_count;
     GLFWwindow *window;
 } db_glfw_opengl_loop_ctx_t;
@@ -160,17 +212,6 @@ typedef struct {
 static db_gl_generic_proc_t db_glfw_resolve_proc(const char *name) {
     return (db_gl_generic_proc_t)glfwGetProcAddress(name);
 }
-
-enum {
-    DB_CPU_QUAD_V0_X = 0,
-    DB_CPU_QUAD_V0_Y = 1,
-    DB_CPU_QUAD_V1_X = 2,
-    DB_CPU_QUAD_V1_Y = 3,
-    DB_CPU_QUAD_V2_X = 4,
-    DB_CPU_QUAD_V2_Y = 5,
-    DB_CPU_QUAD_V3_X = 6,
-    DB_CPU_QUAD_V3_Y = 7,
-};
 
 static void db_present_cpu_texture_init(db_cpu_present_gl_state_t *state) {
     if (state == NULL) {
@@ -244,14 +285,7 @@ static void db_present_cpu_init_state(db_cpu_present_gl_state_t *state,
     db_present_cpu_texture_init(state);
     db_present_cpu_try_init_pbo(state, enable_pbo_probe);
 
-    state->vertices[DB_CPU_QUAD_V0_X] = -1.0F;
-    state->vertices[DB_CPU_QUAD_V0_Y] = -1.0F;
-    state->vertices[DB_CPU_QUAD_V1_X] = 1.0F;
-    state->vertices[DB_CPU_QUAD_V1_Y] = -1.0F;
-    state->vertices[DB_CPU_QUAD_V2_X] = -1.0F;
-    state->vertices[DB_CPU_QUAD_V2_Y] = 1.0F;
-    state->vertices[DB_CPU_QUAD_V3_X] = 1.0F;
-    state->vertices[DB_CPU_QUAD_V3_Y] = 1.0F;
+    db_gl_quad_init(state->vertices);
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -348,10 +382,231 @@ static void db_present_cpu_upload_spans(db_cpu_present_gl_state_t *state,
     }
 }
 
+static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
+                                               uint32_t pixel_width) {
+    if ((state == NULL) || (pixel_width == 0U)) {
+        return;
+    }
+
+    const uint32_t row_bytes = db_checked_mul_u32(
+        BACKEND_NAME_CPU, "cpu_debug_clear_row_bytes", pixel_width, 4U);
+
+    // Fixed chunk size to keep uploads bounded; this buffer is reused.
+    const uint32_t chunk_rows = 64U;
+    const uint32_t chunk_bytes_u32 = db_checked_mul_u32(
+        BACKEND_NAME_CPU, "cpu_debug_clear_chunk_bytes", row_bytes, chunk_rows);
+    const size_t chunk_bytes = (size_t)chunk_bytes_u32;
+
+    // If already prepared for this pixel width, nothing to do.
+    if ((state->debug_clear_ready != 0) &&
+        (state->debug_clear_pixel_width == pixel_width) &&
+        (state->debug_clear_row_bytes == row_bytes) &&
+        (state->debug_clear_chunk_rows == chunk_rows) &&
+        (state->debug_clear_buf != NULL) &&
+        (state->debug_clear_buf_bytes == chunk_bytes)) {
+        return;
+    }
+
+    // Allocate or resize the reusable scratch buffer.
+    if (state->debug_clear_buf == NULL) {
+        state->debug_clear_buf = (uint8_t *)db_alloc_array_or_fail(
+            BACKEND_NAME_CPU, "debug_clear_buf", 1, chunk_bytes);
+    } else if (state->debug_clear_buf_bytes != chunk_bytes) {
+        uint8_t *new_buf =
+            (uint8_t *)realloc(state->debug_clear_buf, chunk_bytes);
+        if (new_buf != NULL) {
+            state->debug_clear_buf = new_buf;
+        } else {
+            // Allocation failure: disable debug clear buffer and force full
+            // upload as a safe fallback.
+            state->debug_clear_ready = 0;
+            state->needs_full_frame_upload = 1;
+            return;
+        }
+    }
+
+    state->debug_clear_pixel_width = pixel_width;
+    state->debug_clear_row_bytes = row_bytes;
+    state->debug_clear_chunk_rows = chunk_rows;
+    state->debug_clear_buf_bytes = chunk_bytes;
+
+    // Cache clear color bytes.
+    state->debug_clear_rgba[0] =
+        db_float01_to_u8_clamped(BENCH_CLEAR_COLOR_R_F);
+    state->debug_clear_rgba[1] =
+        db_float01_to_u8_clamped(BENCH_CLEAR_COLOR_G_F);
+    state->debug_clear_rgba[2] =
+        db_float01_to_u8_clamped(BENCH_CLEAR_COLOR_B_F);
+    state->debug_clear_rgba[3] =
+        db_float01_to_u8_clamped(BENCH_CLEAR_COLOR_A_F);
+
+    // Fill the buffer once.
+    for (size_t i = 0U; i + 3U < chunk_bytes; i += 4U) {
+        state->debug_clear_buf[i + 0U] = state->debug_clear_rgba[0];
+        state->debug_clear_buf[i + 1U] = state->debug_clear_rgba[1];
+        state->debug_clear_buf[i + 2U] = state->debug_clear_rgba[2];
+        state->debug_clear_buf[i + 3U] = state->debug_clear_rgba[3];
+    }
+
+    state->debug_clear_ready = 1;
+}
+
+// Helper: clear the CPU present texture to the debug clear color (for debug
+// mode).
+static void db_present_cpu_clear_texture_debug(db_cpu_present_gl_state_t *state,
+                                               uint32_t pixel_width,
+                                               uint32_t pixel_height) {
+    if ((state == NULL) || (state->texture == 0U) || (pixel_width == 0U) ||
+        (pixel_height == 0U)) {
+        return;
+    }
+
+    // Must be prepared by init/resize; never allocate in the hot path.
+    if ((state->debug_clear_ready == 0) || (state->debug_clear_buf == NULL) ||
+        (state->debug_clear_pixel_width != pixel_width) ||
+        (state->debug_clear_row_bytes == 0U) ||
+        (state->debug_clear_chunk_rows == 0U)) {
+        state->needs_full_frame_upload = 1;
+        return;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, state->texture);
+
+    const uint32_t chunk_rows = state->debug_clear_chunk_rows;
+    uint32_t row = 0U;
+    while (row < pixel_height) {
+        const uint32_t rows_left = pixel_height - row;
+        const uint32_t upload_rows =
+            (rows_left < chunk_rows) ? rows_left : chunk_rows;
+        glTexSubImage2D(
+            GL_TEXTURE_2D, 0, 0,
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_debug_clear_y", row),
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_debug_clear_w",
+                                  pixel_width),
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_debug_clear_h",
+                                  upload_rows),
+            GL_RGBA, GL_UNSIGNED_BYTE, state->debug_clear_buf);
+        row += upload_rows;
+    }
+}
+
+static void
+db_present_cpu_prepare_scratch(db_cpu_present_gl_state_t *state,
+                               uint32_t pixel_width, uint32_t pixel_height,
+                               int debug_clear_default_framebuffer) {
+    if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
+        return;
+    }
+
+    db_present_cpu_upload_ranges_prepare(state, pixel_height);
+
+    if (debug_clear_default_framebuffer != 0) {
+        db_present_cpu_debug_clear_prepare(state, pixel_width);
+    }
+}
+
+// New: build upload ranges directly from dirty row ranges, using persistent
+// scratch buffer.
+static size_t db_cpu_build_upload_ranges_from_dirty_rows(
+    const char *backend_name, db_cpu_present_gl_state_t *state,
+    uint32_t pixel_width, uint32_t pixel_height,
+    const db_dirty_row_range_t *ranges, size_t range_count,
+    db_gl_upload_range_t **out_ranges) {
+    if ((out_ranges == NULL) || (state == NULL) || (pixel_width == 0U) ||
+        (pixel_height == 0U)) {
+        return 0U;
+    }
+    *out_ranges = NULL;
+
+    if ((ranges == NULL) || (range_count == 0U)) {
+        return 0U;
+    }
+
+    // Use persistent scratch buffer; never allocate in the hot path.
+    if ((state->upload_ranges_buf == NULL) ||
+        (state->upload_ranges_cap < (size_t)pixel_height)) {
+        // Should have been prepared at init/resize; as a safe fallback, force
+        // full upload.
+        state->needs_full_frame_upload = 1;
+        return 0U;
+    }
+
+    db_gl_upload_range_t *tmp = state->upload_ranges_buf;
+
+    const uint32_t row_bytes =
+        db_checked_mul_u32(backend_name, "cpu_row_bytes", pixel_width, 4U);
+
+    size_t out_count = 0U;
+    for (size_t i = 0U; i < range_count; i++) {
+        const uint32_t row_start = ranges[i].row_start;
+        const uint32_t row_count = ranges[i].row_count;
+        if ((row_count == 0U) || (row_start >= pixel_height)) {
+            continue;
+        }
+        const uint32_t clamped_count = (row_start + row_count > pixel_height)
+                                           ? (pixel_height - row_start)
+                                           : row_count;
+        const uint64_t offset_u64 = (uint64_t)row_start * (uint64_t)row_bytes;
+        const uint64_t size_u64 = (uint64_t)clamped_count * (uint64_t)row_bytes;
+        if ((offset_u64 > UINT32_MAX) || (size_u64 > UINT32_MAX)) {
+            // pixel dimensions in DriverBench should never hit this, but keep
+            // it safe.
+            continue;
+        }
+        tmp[out_count++] = (db_gl_upload_range_t){
+            .src_offset_bytes = (uint32_t)offset_u64,
+            .dst_offset_bytes = (uint32_t)offset_u64,
+            .size_bytes = (uint32_t)size_u64,
+        };
+    }
+
+    if (out_count == 0U) {
+        return 0U;
+    }
+
+    // Sort by dst_offset_bytes (simple insertion sort; out_count is small).
+    for (size_t i = 1U; i < out_count; i++) {
+        const db_gl_upload_range_t key = tmp[i];
+        size_t insert_index = i;
+        while ((insert_index > 0U) && (tmp[insert_index - 1U].dst_offset_bytes >
+                                       key.dst_offset_bytes)) {
+            tmp[insert_index] = tmp[insert_index - 1U];
+            insert_index--;
+        }
+        tmp[insert_index] = key;
+    }
+
+    // Merge adjacent/overlapping ranges.
+    size_t merged_count = 0U;
+    for (size_t i = 0U; i < out_count; i++) {
+        const db_gl_upload_range_t cur = tmp[i];
+        if (merged_count == 0U) {
+            tmp[merged_count++] = cur;
+            continue;
+        }
+        db_gl_upload_range_t *prev = &tmp[merged_count - 1U];
+        const uint32_t prev_end = prev->dst_offset_bytes + prev->size_bytes;
+        if (cur.dst_offset_bytes <= prev_end) {
+            const uint32_t cur_end = cur.dst_offset_bytes + cur.size_bytes;
+            if (cur_end > prev_end) {
+                prev->size_bytes = cur_end - prev->dst_offset_bytes;
+            }
+            // Keep src aligned with dst for CPU buffer.
+            prev->src_offset_bytes = prev->dst_offset_bytes;
+        } else {
+            tmp[merged_count++] = cur;
+        }
+    }
+
+    *out_ranges = tmp;
+    return merged_count;
+}
+
 static void db_present_cpu_framebuffer(GLFWwindow *window,
                                        db_cpu_present_gl_state_t *state,
                                        const db_dirty_row_range_t *ranges,
-                                       size_t range_count) {
+                                       size_t range_count,
+                                       int debug_clear_default_framebuffer) {
     uint32_t pixel_width = 0U;
     uint32_t pixel_height = 0U;
     const uint32_t *pixels =
@@ -364,50 +619,77 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
     int framebuffer_height_px = 0;
     glfwGetFramebufferSize(window, &framebuffer_width_px,
                            &framebuffer_height_px);
-    glViewport(0, 0, framebuffer_width_px, framebuffer_height_px);
+    if (framebuffer_width_px <= 0 || framebuffer_height_px <= 0) {
+        framebuffer_width_px = db_checked_u32_to_i32(
+            BACKEND_NAME_CPU, "framebuffer_width_px", db_grid_cols_effective());
+        framebuffer_height_px =
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "framebuffer_height_px",
+                                  db_grid_rows_effective());
+    }
+
+    const int viewport_changed =
+        (state->last_viewport_w != framebuffer_width_px) ||
+        (state->last_viewport_h != framebuffer_height_px);
+
+    if (viewport_changed != 0) {
+        state->last_viewport_w = framebuffer_width_px;
+        state->last_viewport_h = framebuffer_height_px;
+        db_gl_set_viewport_px(state->last_viewport_w, state->last_viewport_h);
+    }
+
+    // Do not clear here by default. Some renderers rely on keeping the prior
+    // frame in the default framebuffer (damage-only updates) and will
+    // clear/draw explicitly as needed.
+    const int debug_clear = (debug_clear_default_framebuffer != 0) ? 1 : 0;
+    if (debug_clear != 0) {
+        // Debug mode: clear the default framebuffer and also clear the CPU
+        // present texture so missed uploads show up as the clear color.
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 
     db_present_cpu_texture_resize(state, pixel_width, pixel_height);
     if (state->texture == 0U) {
         db_failf(BACKEND_NAME_CPU, "CPU present texture is not initialized");
     }
-    glBindTexture(GL_TEXTURE_2D, state->texture);
+    db_present_cpu_prepare_scratch(state, pixel_width, pixel_height,
+                                   debug_clear);
+
+    if (debug_clear != 0) {
+        db_present_cpu_clear_texture_debug(state, pixel_width, pixel_height);
+    }
+
+    // Direct row-based uploading, no pattern planner.
     const int force_full_upload = (state->needs_full_frame_upload != 0) ? 1 : 0;
-    const size_t damage_row_count = db_u32_min((uint32_t)range_count, 2U);
-    db_gl_upload_range_t upload_ranges[2] = {{0U, 0U, 0U}, {0U, 0U, 0U}};
-    const db_gl_pattern_upload_collect_t upload_collect = {
-        .pattern = DB_PATTERN_BANDS,
-        .cols = pixel_width,
-        .rows = pixel_height,
-        .upload_bytes = (size_t)db_checked_mul_u32(
-            BACKEND_NAME_CPU, "cpu_upload_total_bytes",
-            db_checked_mul_u32(BACKEND_NAME_CPU, "cpu_upload_row_bytes",
-                               pixel_width, 4U),
-            pixel_height),
-        .upload_tile_bytes = 4U,
-        .force_full_upload = force_full_upload,
-        .snake_plan = NULL,
-        .snake_prev_start = 0U,
-        .snake_prev_count = 0U,
-        .pattern_seed = 0U,
-        .snake_spans = NULL,
-        .snake_scratch_capacity = 0U,
-        .snake_row_bounds = NULL,
-        .snake_row_bounds_capacity = 0U,
-        .damage_row_ranges = ranges,
-        .damage_row_count = damage_row_count,
-        .use_damage_row_ranges = 1,
-    };
-    const size_t upload_span_count =
-        db_gl_collect_pattern_upload_ranges(&upload_collect, upload_ranges, 2U);
-    if ((force_full_upload != 0) && (upload_span_count == 0U)) {
-        db_failf(BACKEND_NAME_CPU, "failed to compute cpu upload spans");
-    }
-    if (upload_span_count > 0U) {
+    const uint32_t row_bytes = db_checked_mul_u32(
+        BACKEND_NAME_CPU, "cpu_upload_row_bytes", pixel_width, 4U);
+
+    if (force_full_upload != 0) {
+        const db_gl_upload_range_t full = {
+            .src_offset_bytes = 0U,
+            .dst_offset_bytes = 0U,
+            .size_bytes =
+                db_checked_mul_u32(BACKEND_NAME_CPU, "cpu_upload_full_bytes",
+                                   row_bytes, pixel_height),
+        };
         db_present_cpu_upload_spans(state, (const uint8_t *)pixels, pixel_width,
-                                    pixel_height, upload_ranges,
-                                    upload_span_count);
+                                    pixel_height, &full, 1U);
+        state->needs_full_frame_upload = 0;
+    } else {
+        db_gl_upload_range_t *upload_ranges = NULL;
+        const size_t upload_span_count =
+            db_cpu_build_upload_ranges_from_dirty_rows(
+                BACKEND_NAME_CPU, state, pixel_width, pixel_height, ranges,
+                range_count, &upload_ranges);
+        if ((upload_span_count > 0U) && (upload_ranges != NULL)) {
+            db_present_cpu_upload_spans(state, (const uint8_t *)pixels,
+                                        pixel_width, pixel_height,
+                                        upload_ranges, upload_span_count);
+        }
+        // upload_ranges points into state scratch; do NOT free.
     }
-    state->needs_full_frame_upload = 0;
 
     const float tex_u = (state->texture_width == 0U)
                             ? 1.0F
@@ -416,27 +698,27 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
         (state->texture_height == 0U)
             ? 1.0F
             : (float)pixel_height / (float)state->texture_height;
-    state->texcoords[DB_CPU_QUAD_V0_X] = 0.0F;
-    state->texcoords[DB_CPU_QUAD_V0_Y] = tex_v;
-    state->texcoords[DB_CPU_QUAD_V1_X] = tex_u;
-    state->texcoords[DB_CPU_QUAD_V1_Y] = tex_v;
-    state->texcoords[DB_CPU_QUAD_V2_X] = 0.0F;
-    state->texcoords[DB_CPU_QUAD_V2_Y] = 0.0F;
-    state->texcoords[DB_CPU_QUAD_V3_X] = tex_u;
-    state->texcoords[DB_CPU_QUAD_V3_Y] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V0_X] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V0_Y] = tex_v;
+    state->texcoords[DB_GL_QUAD_V1_X] = tex_u;
+    state->texcoords[DB_GL_QUAD_V1_Y] = tex_v;
+    state->texcoords[DB_GL_QUAD_V2_X] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V2_Y] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V3_X] = tex_u;
+    state->texcoords[DB_GL_QUAD_V3_Y] = 0.0F;
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
 static db_glfw_loop_result_t db_glfw_cpu_frame(void *user_data,
-                                               uint64_t frame_index) {
+                                               uint32_t frame_index) {
     db_glfw_cpu_loop_ctx_t *ctx = (db_glfw_cpu_loop_ctx_t *)user_data;
-    const double frame_time_s = (double)frame_index / BENCH_TARGET_FPS_D;
-    db_renderer_cpu_renderer_render_frame(frame_time_s);
+    db_renderer_cpu_renderer_render_frame(frame_index);
     size_t damage_count = 0U;
     const db_dirty_row_range_t *damage_ranges =
         db_renderer_cpu_renderer_damage_rows(&damage_count);
     db_present_cpu_framebuffer(ctx->window, ctx->present, damage_ranges,
-                               damage_count);
+                               damage_count,
+                               ctx->debug_clear_default_framebuffer);
 
     if (ctx->state_hash_enabled != 0) {
         const uint64_t state_hash = db_renderer_cpu_renderer_state_hash();
@@ -519,6 +801,16 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         .use_npot = has_npot,
     };
     db_present_cpu_init_state(&present, has_pbo);
+
+    // Prepare upload range scratch buffer up-front to avoid per-frame
+    // allocations.
+    uint32_t init_pixel_width = 0U;
+    uint32_t init_pixel_height = 0U;
+    (void)db_renderer_cpu_renderer_pixels_rgba8(&init_pixel_width,
+                                                &init_pixel_height);
+    db_present_cpu_prepare_scratch(
+        &present, init_pixel_width, init_pixel_height,
+        (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0);
     const char *capability_mode =
         ((present.has_pbo != 0) && (present.pbo != 0U) &&
          (db_gl_context_supports_pbo_upload() != 0))
@@ -542,6 +834,8 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         .bo_hash_tracker = &bo_hash_tracker,
         .state_hash_enabled = hash_settings.state_hash_enabled,
         .output_hash_enabled = hash_settings.output_hash_enabled,
+        .debug_clear_default_framebuffer =
+            (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0,
         .present = &present,
         .work_unit_count = work_unit_count,
         .window = window,
@@ -570,6 +864,17 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
     }
     if (present.texture != 0U) {
         glDeleteTextures(1, &present.texture);
+    }
+    if (present.upload_ranges_buf != NULL) {
+        free(present.upload_ranges_buf);
+        present.upload_ranges_buf = NULL;
+        present.upload_ranges_cap = 0U;
+    }
+    if (present.debug_clear_buf != NULL) {
+        free(present.debug_clear_buf);
+        present.debug_clear_buf = NULL;
+        present.debug_clear_buf_bytes = 0U;
+        present.debug_clear_ready = 0;
     }
     db_glfw_destroy_window(window);
     return 0;
@@ -614,13 +919,17 @@ static void db_gl_renderer_init(db_gl_renderer_t renderer) {
 }
 
 static void db_gl_renderer_render_frame(db_gl_renderer_t renderer,
-                                        double frame_time_s) {
+                                        uint32_t frame_index,
+                                        int framebuffer_width_px,
+                                        int framebuffer_height_px) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
-        db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_time_s);
+        db_renderer_opengl_gl1_5_gles1_1_render_frame(
+            frame_index, framebuffer_width_px, framebuffer_height_px, 1);
         return;
     }
 #ifdef DB_HAS_OPENGL_DESKTOP
-    db_renderer_opengl_gl3_3_render_frame(frame_time_s);
+    db_renderer_opengl_gl3_3_render_frame(frame_index, framebuffer_width_px,
+                                          framebuffer_height_px);
 #else
     (void)frame_time_s;
     db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
@@ -672,20 +981,43 @@ static uint64_t db_gl_renderer_state_hash(db_gl_renderer_t renderer) {
 #endif
 }
 
+static void db_gl_renderer_draw_stats(db_gl_renderer_t renderer,
+                                      uint64_t *full_draw_frames,
+                                      uint64_t *dirty_draw_frames) {
+    if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
+        db_renderer_opengl_gl1_5_gles1_1_draw_stats(full_draw_frames,
+                                                    dirty_draw_frames);
+        return;
+    }
+#ifdef DB_HAS_OPENGL_DESKTOP
+    db_renderer_opengl_gl3_3_draw_stats(full_draw_frames, dirty_draw_frames);
+#else
+    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
+#endif
+}
+
 static db_glfw_loop_result_t db_glfw_opengl_frame(void *user_data,
-                                                  uint64_t frame_index) {
+                                                  uint32_t frame_index) {
     db_glfw_opengl_loop_ctx_t *ctx = (db_glfw_opengl_loop_ctx_t *)user_data;
     int framebuffer_width_px = 0;
     int framebuffer_height_px = 0;
     glfwGetFramebufferSize(ctx->window, &framebuffer_width_px,
                            &framebuffer_height_px);
-    glViewport(0, 0, framebuffer_width_px, framebuffer_height_px);
-    glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                 BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-    glClear(GL_COLOR_BUFFER_BIT);
+    // Do not clear here. Some renderers rely on keeping the prior frame in the
+    // default framebuffer (damage-only updates) and will clear/draw explicitly
+    // as needed.
+    if (ctx->debug_clear_default_framebuffer != 0) {
+        // Debug mode: clear the default framebuffer so damage-only renderers
+        // can be visually validated (you should see missing regions as the
+        // clear color).
+        glDisable(GL_SCISSOR_TEST);
+        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 
-    const double frame_time_s = (double)frame_index / BENCH_TARGET_FPS_D;
-    db_gl_renderer_render_frame(ctx->renderer, frame_time_s);
+    db_gl_renderer_render_frame(ctx->renderer, frame_index,
+                                framebuffer_width_px, framebuffer_height_px);
 
     if (ctx->state_hash_enabled != 0) {
         const uint64_t state_hash = db_gl_renderer_state_hash(ctx->renderer);
@@ -806,6 +1138,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         .next_progress_log_due_ms = 0.0,
         .state_hash_enabled = hash_settings.state_hash_enabled,
         .output_hash_enabled = hash_settings.output_hash_enabled,
+        .debug_clear_default_framebuffer =
+            (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0,
         .work_unit_count = work_unit_count,
         .window = window,
     };
@@ -821,6 +1155,13 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
 
     const double bench_ms =
         (db_glfw_time_seconds() - bench_start) * DB_MS_PER_SECOND_D;
+    uint64_t full_draw_frames = 0U;
+    uint64_t dirty_draw_frames = 0U;
+    db_gl_renderer_draw_stats(renderer, &full_draw_frames, &dirty_draw_frames);
+    db_infof(backend_name,
+             "draw stats: full_draw_frames=%llu dirty_draw_frames=%llu",
+             (unsigned long long)full_draw_frames,
+             (unsigned long long)dirty_draw_frames);
     db_benchmark_log_final(db_dispatch_api_name(DB_API_OPENGL),
                            db_gl_renderer_name(renderer), backend_name, frames,
                            work_unit_count, bench_ms, capability_mode);
@@ -858,7 +1199,7 @@ static void db_glfw_vk_get_framebuffer_size(void *window_handle, int *width,
 }
 
 static db_glfw_loop_result_t db_glfw_vulkan_frame(void *user_data,
-                                                  uint64_t frame_index) {
+                                                  uint32_t frame_index) {
     const db_glfw_vulkan_loop_ctx_t *ctx =
         (const db_glfw_vulkan_loop_ctx_t *)user_data;
     const db_vk_frame_result_t frame_result =
@@ -927,6 +1268,14 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
         .window = window,
     };
     (void)db_glfw_run_loop(&loop);
+    uint64_t full_draw_frames = 0U;
+    uint64_t dirty_draw_frames = 0U;
+    db_renderer_vulkan_1_2_multi_gpu_draw_stats(&full_draw_frames,
+                                                &dirty_draw_frames);
+    db_infof(BACKEND_NAME_VK,
+             "draw stats: full_draw_frames=%llu dirty_draw_frames=%llu",
+             (unsigned long long)full_draw_frames,
+             (unsigned long long)dirty_draw_frames);
     db_renderer_vulkan_1_2_multi_gpu_shutdown();
     db_display_hash_tracker_log_final(BACKEND_NAME_VK, &hash_tracker);
     db_glfw_destroy_window(window);

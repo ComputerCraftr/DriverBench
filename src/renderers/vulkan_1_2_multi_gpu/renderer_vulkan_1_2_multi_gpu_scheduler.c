@@ -1,6 +1,5 @@
 #include <stdint.h>
 
-#include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 
@@ -42,35 +41,24 @@ uint32_t db_vk_select_owner_for_work(uint32_t candidate_owner,
     return owner;
 }
 
-void db_vk_update_ema_fallback(db_pattern_t pattern, uint32_t gpu_count,
-                               const uint32_t *work_owner,
-                               const uint32_t *grid_tiles_per_gpu,
-                               uint32_t grid_tiles_drawn, double frame_ms,
-                               double *ema_ms_per_work_unit) {
-    if (pattern == DB_PATTERN_BANDS) {
-        const double ms_per_work_unit = frame_ms / (double)BENCH_BANDS;
-        uint32_t bands_per_gpu[MAX_GPU_COUNT] = {0};
-        for (uint32_t b = 0; b < BENCH_BANDS; b++) {
-            bands_per_gpu[work_owner[b]]++;
-        }
-        for (uint32_t g = 0; g < gpu_count; g++) {
-            if (bands_per_gpu[g] == 0U) {
-                continue;
-            }
-            ema_ms_per_work_unit[g] = (EMA_KEEP * ema_ms_per_work_unit[g]) +
-                                      (EMA_NEW * ms_per_work_unit);
-        }
+void db_vk_update_ema_fallback(uint32_t gpu_count,
+                               const uint32_t *frame_work_units,
+                               double frame_ms, double *ema_ms_per_work_unit) {
+    if ((frame_work_units == NULL) || (ema_ms_per_work_unit == NULL)) {
         return;
     }
-
-    const double ms_per_tile =
-        frame_ms / (double)((grid_tiles_drawn > 0U) ? grid_tiles_drawn : 1U);
+    uint32_t total_work_units = 0U;
     for (uint32_t g = 0; g < gpu_count; g++) {
-        if (grid_tiles_per_gpu[g] == 0U) {
+        total_work_units += frame_work_units[g];
+    }
+    const double ms_per_work_unit =
+        frame_ms / (double)((total_work_units > 0U) ? total_work_units : 1U);
+    for (uint32_t g = 0; g < gpu_count; g++) {
+        if (frame_work_units[g] == 0U) {
             continue;
         }
         ema_ms_per_work_unit[g] =
-            (EMA_KEEP * ema_ms_per_work_unit[g]) + (EMA_NEW * ms_per_tile);
+            (EMA_KEEP * ema_ms_per_work_unit[g]) + (EMA_NEW * ms_per_work_unit);
     }
 }
 

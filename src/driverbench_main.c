@@ -1,5 +1,7 @@
 #include "displays/display_dispatch.h"
+#include "displays/display_types.h"
 #include "driverbench_cli.h"
+#include "driverbench_config.h"
 
 int main(int argc, char **argv) {
     db_cli_config_t cfg = {0};

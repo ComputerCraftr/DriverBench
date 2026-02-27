@@ -6,6 +6,7 @@ out vec4 out_color;
 uniform uint u_gradient_head_row;
 uniform uint u_gradient_window_rows;
 uniform vec3 u_grid_base_color;
+uniform uint u_band_count;
 uniform uint u_grid_cols;
 uniform uint u_grid_rows;
 uniform vec3 u_grid_target_color;
@@ -17,6 +18,7 @@ uniform uint u_render_mode;
 uniform uint u_snake_batch_size;
 uniform uint u_snake_cursor;
 uniform uint u_snake_shape_index;
+uniform uint u_frame_index;
 
 const uint SHAPE_KIND_RECT = 0u;
 const uint SHAPE_KIND_CIRCLE = 1u;
@@ -58,6 +60,14 @@ struct db_snake_shape_desc_t {
 
 vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
+}
+
+vec3 db_band_color(uint band_index, uint band_count, uint frame_index) {
+    float band_f = float(band_index);
+    float frame_f = float(frame_index);
+    float pulse = 0.5 + (0.5 * sin((frame_f * 0.03) + (band_f * 0.3)));
+    float color_r = pulse * (0.2 + (0.8 * band_f / float(max(band_count, 1u))));
+    return vec3(color_r, pulse * 0.6, 1.0 - color_r);
 }
 
 float db_window_blend(int batch_size, int window_index) {
@@ -137,12 +147,20 @@ db_snake_region_desc_t db_snake_region_desc(
     return region;
 }
 
-bool db_snake_region_contains(db_snake_region_desc_t region, uint row_u, uint col_u) {
+bool db_snake_region_contains(
+    db_snake_region_desc_t region,
+    uint row_u,
+    uint col_u
+) {
     return (row_u >= region.y) && (row_u < (region.y + region.height)) &&
         (col_u >= region.x) && (col_u < (region.x + region.width));
 }
 
-uint db_snake_region_step(db_snake_region_desc_t region, uint row_u, uint col_u) {
+uint db_snake_region_step(
+    db_snake_region_desc_t region,
+    uint row_u,
+    uint col_u
+) {
     uint local_row = row_u - region.y;
     uint local_col = col_u - region.x;
     uint snake_col = ((local_row & 1u) == 0u) ? local_col : ((region.width - 1u) - local_col);
@@ -295,8 +313,10 @@ bool db_shape_contains(
     if(!db_snake_region_contains(shape_desc.region, row_u, col_u)) {
         return false;
     }
-    float fx = (float((col_u - shape_desc.region.x)) + SHAPE_CENTER) / float(max(shape_desc.region.width, 1u));
-    float fy = (float((row_u - shape_desc.region.y)) + SHAPE_CENTER) / float(max(shape_desc.region.height, 1u));
+    float fx = (float((col_u - shape_desc.region.x)) + SHAPE_CENTER) /
+        float(max(shape_desc.region.width, 1u));
+    float fy = (float((row_u - shape_desc.region.y)) + SHAPE_CENTER) /
+        float(max(shape_desc.region.height, 1u));
     float dx = fx - SHAPE_CENTER;
     float dy = fy - SHAPE_CENTER;
     db_snake_shape_profile_t profile = shape_desc.profile;
@@ -388,6 +408,13 @@ vec4 db_gradient_color(
     return db_rgba(mix(source_color, target_color, blend));
 }
 
+uint db_band_index_from_tile(uint tile_index, uint cols, uint band_count) {
+    uint safe_cols = max(cols, 1u);
+    uint safe_bands = max(band_count, 1u);
+    uint col_u = tile_index % safe_cols;
+    return (col_u * safe_bands) / safe_cols;
+}
+
 vec4 db_snake_color(
     db_snake_shape_desc_t shape_desc,
     bool apply_shape_clip,
@@ -427,12 +454,17 @@ void main() {
     const uint RENDER_MODE_GRADIENT_FILL = 3u;
     const uint RENDER_MODE_SNAKE_RECT = 4u;
     const uint RENDER_MODE_SNAKE_SHAPES = 5u;
+
+    uint tile_index_u = uint(max(v_tile_index, 0));
+    uint cols_u = max(u_grid_cols, 1u);
+    uint band_count = max(u_band_count, 1u);
+
     if(u_render_mode == RENDER_MODE_BANDS) {
-        out_color = db_rgba(v_color);
+        out_color = db_rgba(db_band_color(db_band_index_from_tile(tile_index_u, cols_u, band_count), band_count, u_frame_index));
         return;
     }
-    int tile_index = v_tile_index;
-    int cols = max(int(u_grid_cols), 1);
+    int tile_index = int(tile_index_u);
+    int cols = int(cols_u);
     int row = tile_index / cols;
 
     if((u_render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
@@ -452,7 +484,6 @@ void main() {
     uint row_u = uint(max(row, 0));
     uint col_u = uint(max(col, 0));
     uint rows_u = max(u_grid_rows, 1u);
-    uint cols_u = max(u_grid_cols, 1u);
     ivec2 history_coord = ivec2(gl_FragCoord.xy);
     vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
     uint batch_size_u = u_snake_batch_size;

@@ -67,20 +67,21 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.timestamp_period_ns = ctx->timestamp_period_ns;
     g_state.bench_start_ns = db_now_ns_monotonic();
     g_state.bench_frames = 0U;
+    g_state.full_draw_frames = 0U;
+    g_state.dirty_draw_frames = 0U;
     g_state.state_hash = DB_FNV1A64_OFFSET;
     g_state.next_progress_log_due_ms = 0.0;
     g_state.frame_index = 0U;
     if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
         (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
         (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
-        g_state.runtime.snake_cursor = DB_SNAKE_CURSOR_PRE_ENTRY;
+        g_state.runtime.snake.cursor = DB_SNAKE_CURSOR_PRE_ENTRY;
     } else {
-        g_state.runtime.snake_cursor = 0U;
+        g_state.runtime.snake.cursor = 0U;
     }
-    g_state.runtime.snake_shape_index = 0U;
-    g_state.runtime.snake_prev_start = 0U;
-    g_state.runtime.snake_prev_count = 0U;
-    g_state.snake_reset_pending = 1;
+    g_state.runtime.snake.shape_index = 0U;
+    g_state.runtime.snake.prev_start = 0U;
+    g_state.runtime.snake.prev_count = 0U;
     g_state.snake_spans = NULL;
     g_state.snake_row_bounds = NULL;
     g_state.snake_row_bounds_capacity = 0U;
@@ -102,6 +103,13 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
         g_state.snake_span_capacity = scratch_capacity;
     }
     g_state.gradient_window_rows = db_gradient_window_rows_effective();
+    g_state.gradient_prev_draw_rows[0] = (db_dirty_row_range_t){0U, 0U};
+    g_state.gradient_prev_draw_rows[1] = (db_dirty_row_range_t){0U, 0U};
+    g_state.gradient_prev_draw_count = 0U;
+    g_state.gradient_prev_head_row = 0U;
+    g_state.gradient_prev_direction_down = 1;
+    g_state.gradient_prev_cycle_index = 0U;
+    g_state.gradient_history_valid = 0;
 }
 
 void db_renderer_vulkan_1_2_multi_gpu_init(
@@ -125,6 +133,11 @@ uint32_t db_renderer_vulkan_1_2_multi_gpu_work_unit_count(void) {
 
 uint64_t db_renderer_vulkan_1_2_multi_gpu_state_hash(void) {
     return db_vk_state_hash_impl();
+}
+
+void db_renderer_vulkan_1_2_multi_gpu_draw_stats(uint64_t *full_draw_frames,
+                                                 uint64_t *dirty_draw_frames) {
+    db_vk_draw_stats_impl(full_draw_frames, dirty_draw_frames);
 }
 
 // NOLINTEND(misc-include-cleaner)
