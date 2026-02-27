@@ -18,7 +18,7 @@ uniform uint u_render_mode;
 uniform uint u_snake_batch_size;
 uniform uint u_snake_cursor;
 uniform uint u_snake_shape_index;
-uniform float u_time_s;
+uniform uint u_frame_index;
 uniform uint u_viewport_width;
 
 const uint SHAPE_KIND_RECT = 0u;
@@ -63,18 +63,12 @@ vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
 }
 
-vec3 db_band_color(uint band_index, uint band_count, float time_s) {
+vec3 db_band_color(uint band_index, uint band_count, uint frame_index) {
     float band_f = float(band_index);
-    float pulse = 0.5 + (0.5 * sin((time_s * 2.5) + (band_f * 0.4)));
-    float color_r = pulse * (0.1 + (0.8 * band_f / float(max(band_count, 1u))));
-    return vec3(color_r, pulse * 0.7, 1.0 - color_r);
-}
-
-uint db_band_index_from_frag_coord_x() {
-    float viewport_width = float(max(u_viewport_width, 1u));
-    float bands = float(max(u_band_count, 1u));
-    float x = clamp(gl_FragCoord.x, 0.0, viewport_width - 1.0);
-    return uint(floor((x * bands) / viewport_width));
+    float frame_f = float(frame_index);
+    float pulse = 0.5 + (0.5 * sin((frame_f * 0.03) + (band_f * 0.3)));
+    float color_r = pulse * (0.2 + (0.8 * band_f / float(max(band_count, 1u))));
+    return vec3(color_r, pulse * 0.6, 1.0 - color_r);
 }
 
 float db_window_blend(int batch_size, int window_index) {
@@ -415,6 +409,13 @@ vec4 db_gradient_color(
     return db_rgba(mix(source_color, target_color, blend));
 }
 
+uint db_band_index_from_frag_coord() {
+    float bands = float(max(u_band_count, 1u));
+    float viewport_width = float(max(u_viewport_width, 1u));
+    float x = clamp(gl_FragCoord.x, 0.0, viewport_width - 1.0);
+    return uint(floor((x * bands) / viewport_width));
+}
+
 vec4 db_snake_color(
     db_snake_shape_desc_t shape_desc,
     bool apply_shape_clip,
@@ -454,8 +455,9 @@ void main() {
     const uint RENDER_MODE_GRADIENT_FILL = 3u;
     const uint RENDER_MODE_SNAKE_RECT = 4u;
     const uint RENDER_MODE_SNAKE_SHAPES = 5u;
+
     if(u_render_mode == RENDER_MODE_BANDS) {
-        out_color = db_rgba(db_band_color(db_band_index_from_frag_coord_x(), max(u_band_count, 1u), u_time_s));
+        out_color = db_rgba(db_band_color(db_band_index_from_frag_coord(), max(u_band_count, 1u), u_frame_index));
         return;
     }
     int tile_index = v_tile_index;

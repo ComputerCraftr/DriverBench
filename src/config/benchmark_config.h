@@ -21,10 +21,9 @@
 #define BENCH_LOG_INTERVAL_MS_D 5000.0
 #define BENCH_PULSE_AMP_F 0.5F
 #define BENCH_PULSE_BASE_F 0.5F
-#define BENCH_PULSE_FREQ_F 2.0F
+#define BENCH_PULSE_FREQ_F 0.03F
 #define BENCH_PULSE_PHASE_F 0.3F
 #define BENCH_SNAKE_PHASE_WINDOW_TILES 64U
-#define BENCH_TARGET_FPS_D 60.0
 // Can be overridden at runtime with --vsync 1|0|on|off|true|false.
 #define BENCH_VSYNC_ENABLED 1
 #define BENCH_WINDOW_HEIGHT_PX 600

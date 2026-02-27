@@ -19,7 +19,7 @@
 #include <OpenGL/gltypes.h>
 #include <dlfcn.h>
 #define DB_HAS_DLSYM_PROC_ADDRESS 1
-#elif defined(__linux__)
+#elifdef __linux__
 #include <dlfcn.h>
 #define DB_HAS_DLSYM_PROC_ADDRESS 1
 #endif
@@ -1155,30 +1155,10 @@ size_t db_gl_for_each_upload_row_span(const char *backend_name,
     return applied_count;
 }
 
-int db_init_band_vertices_common(db_gl_vertex_init_t *out_state,
-                                 size_t vertex_stride) {
-    const size_t vertex_count = (size_t)BENCH_BANDS * DB_RECT_VERTEX_COUNT;
-    const size_t float_count = vertex_count * vertex_stride;
-
-    float *vertices = (float *)calloc(float_count, sizeof(float));
-    if (vertices == NULL) {
-        return 0;
-    }
-
-    *out_state = (db_gl_vertex_init_t){0};
-    out_state->vertices = vertices;
-    out_state->vertex_stride = vertex_stride;
-    out_state->pattern = DB_PATTERN_BANDS;
-    out_state->work_unit_count = BENCH_BANDS;
-    out_state->draw_vertex_count = db_checked_size_to_u32(
-        DB_BENCH_COMMON_BACKEND, "bands_draw_vertex_count", vertex_count);
-    return 1;
-}
-
 int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
-                                 size_t vertex_stride) {
+                                 db_pattern_t pattern, size_t vertex_stride) {
     const uint64_t tile_count_u64 =
-        (uint64_t)db_pattern_work_unit_count(DB_PATTERN_SNAKE_GRID);
+        (uint64_t)db_pattern_work_unit_count(pattern);
     if ((tile_count_u64 == 0U) || (tile_count_u64 > UINT32_MAX)) {
         return 0;
     }
@@ -1234,14 +1214,8 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
 int db_init_vertices_for_pattern_common_with_stride(
     const char *backend_name, db_gl_vertex_init_t *out_state,
     db_pattern_t pattern, size_t vertex_stride) {
-    const int use_grid_init = (pattern == DB_PATTERN_SNAKE_GRID) ||
-                              (pattern == DB_PATTERN_SNAKE_RECT) ||
-                              (pattern == DB_PATTERN_SNAKE_SHAPES) ||
-                              (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-                              (pattern == DB_PATTERN_GRADIENT_FILL);
     const int initialized =
-        use_grid_init ? db_init_grid_vertices_common(out_state, vertex_stride)
-                      : db_init_band_vertices_common(out_state, vertex_stride);
+        db_init_grid_vertices_common(out_state, pattern, vertex_stride);
     if (initialized == 0) {
         db_failf(backend_name, "benchmark mode '%s' initialization failed",
                  db_pattern_mode_name(pattern));
@@ -1265,6 +1239,7 @@ int db_init_vertices_for_runtime_common_with_stride(
     out_state->work_unit_count = runtime_state->work_unit_count;
     out_state->draw_vertex_count = runtime_state->draw_vertex_count;
     out_state->vertex_stride = vertex_stride;
+    // TODO delete
     if ((runtime_state->pattern == DB_PATTERN_GRADIENT_SWEEP) ||
         (runtime_state->pattern == DB_PATTERN_GRADIENT_FILL)) {
         float source_r = 0.0F;
@@ -1279,51 +1254,22 @@ int db_init_vertices_for_runtime_common_with_stride(
     return 1;
 }
 
-void db_fill_band_vertices_pos_rgb_stride(float *out_vertices,
-                                          uint32_t band_count, double time_s,
-                                          size_t stride_floats,
-                                          size_t color_offset_floats) {
-    const float inv_band_count = 1.0F / (float)band_count;
-    const float band_x_scale = 2.0F * inv_band_count;
-    for (uint32_t band_index = 0; band_index < band_count; band_index++) {
-        const float band_f = (float)band_index;
-        const float x0 = (band_f * band_x_scale) - 1.0F;
-        const float x1 = x0 + band_x_scale;
+void db_update_grid_vertices_for_bands_rgb_stride(
+    float *verts, uint32_t cols, uint32_t rows, uint32_t band_count,
+    uint32_t frame_index, size_t stride_floats, size_t color_offset_floats) {
+    const uint32_t tile_count = cols * rows;
+    for (uint32_t tile = 0; tile < tile_count; tile++) {
+        uint32_t col = tile % cols;
+        uint32_t band = (col * band_count) / cols;
+
         float color_r = 0.0F;
         float color_g = 0.0F;
         float color_b = 0.0F;
-        db_band_color_rgb(band_index, band_count, time_s, &color_r, &color_g,
+        db_band_color_rgb(band, band_count, frame_index, &color_r, &color_g,
                           &color_b);
 
-        const size_t band_base =
-            (size_t)band_index * DB_RECT_VERTEX_COUNT * stride_floats;
-        float *unit = &out_vertices[band_base];
-        db_fill_rect_unit_pos(unit, x0, -1.0F, x1, 1.0F, stride_floats);
-        db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
-                             color_g, color_b);
-        if (stride_floats == DB_ES_VERTEX_FLOAT_STRIDE) {
-            db_set_rect_unit_alpha(unit, stride_floats,
-                                   DB_VERTEX_POSITION_FLOAT_COUNT +
-                                       DB_VERTEX_COLOR_FLOAT_COUNT,
-                                   1.0F);
-        }
-    }
-}
-
-void db_update_band_vertices_rgb_stride(float *out_vertices,
-                                        uint32_t band_count, double time_s,
-                                        size_t stride_floats,
-                                        size_t color_offset_floats) {
-    for (uint32_t band_index = 0; band_index < band_count; band_index++) {
-        float color_r = 0.0F;
-        float color_g = 0.0F;
-        float color_b = 0.0F;
-        db_band_color_rgb(band_index, band_count, time_s, &color_r, &color_g,
-                          &color_b);
-
-        const size_t band_base =
-            (size_t)band_index * DB_RECT_VERTEX_COUNT * stride_floats;
-        float *unit = &out_vertices[band_base];
+        size_t base = (size_t)tile * DB_RECT_VERTEX_COUNT * stride_floats;
+        float *unit = &verts[base];
         db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
                              color_g, color_b);
     }

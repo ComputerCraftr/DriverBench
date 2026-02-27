@@ -55,7 +55,7 @@
 typedef struct {
     GLuint fallback_tex;
     uint64_t state_hash;
-    uint64_t frame_index;
+    uint32_t frame_index;
     db_benchmark_runtime_init_t runtime;
     db_gl_vertex_init_t vertex;
     GLint u_gradient_head_row;
@@ -73,7 +73,7 @@ typedef struct {
     GLint u_snake_batch_size;
     GLint u_snake_cursor;
     GLint u_snake_shape_index;
-    GLint u_time_s;
+    GLint u_frame_index;
     GLint u_viewport_width;
     int history_height;
     GLuint history_fbo[2];
@@ -402,7 +402,8 @@ void db_renderer_opengl_gl3_3_init(void) {
         glGetUniformLocation(g_state.program, "u_gradient_head_row");
     g_state.u_snake_shape_index =
         glGetUniformLocation(g_state.program, "u_snake_shape_index");
-    g_state.u_time_s = glGetUniformLocation(g_state.program, "u_time_s");
+    g_state.u_frame_index =
+        glGetUniformLocation(g_state.program, "u_frame_index");
     g_state.u_viewport_width =
         glGetUniformLocation(g_state.program, "u_viewport_width");
     g_state.u_gradient_window_rows =
@@ -467,8 +468,8 @@ void db_renderer_opengl_gl3_3_init(void) {
     }
 
     if ((g_state.runtime.pattern == DB_PATTERN_BANDS) &&
-        (g_state.u_time_s >= 0)) {
-        glUniform1f(g_state.u_time_s, 0.0F);
+        (g_state.u_frame_index >= 0)) {
+        glUniform1ui(g_state.u_frame_index, 0);
     }
 
     db_set_uniform1ui_u32_if_changed(
@@ -488,7 +489,7 @@ void db_renderer_opengl_gl3_3_init(void) {
                                 g_state.runtime.mode_phase_flag);
 }
 
-void db_renderer_opengl_gl3_3_render_frame(double time_s) {
+void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index) {
     db_gl3_ensure_history_targets();
     if (g_state.u_viewport_width >= 0) {
         int viewport_width = 0;
@@ -556,11 +557,9 @@ void db_renderer_opengl_gl3_3_render_frame(double time_s) {
             &g_state.uniform_palette_cycle_cache_valid,
             plan->render_cycle_index);
     } else if (g_state.runtime.pattern == DB_PATTERN_BANDS) {
-        if (g_state.u_time_s >= 0) {
-            glUniform1f(g_state.u_time_s, (float)time_s);
+        if (g_state.u_frame_index >= 0) {
+            glUniform1ui(g_state.u_frame_index, frame_index);
         }
-    } else {
-        // No-op: all active patterns are handled above.
     }
 
     if (db_pattern_uses_history_texture(g_state.runtime.pattern) == 0) {

@@ -22,7 +22,7 @@ layout(push_constant) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
-    float time_s;
+    uint frame_index;
     uint band_count;
 } pc;
 #else
@@ -48,7 +48,7 @@ layout(std140, binding = 0) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
-    float time_s;
+    uint frame_index;
     uint band_count;
 } pc;
 #endif

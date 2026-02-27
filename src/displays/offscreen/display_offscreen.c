@@ -14,6 +14,7 @@
 #define BACKEND_NAME "display_offscreen"
 
 static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
+    const uint64_t start_ns = db_now_ns_monotonic();
     db_install_signal_handlers();
 
     const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
@@ -41,8 +42,7 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
             break;
         }
         const uint64_t frame_start_ns = db_now_ns_monotonic();
-        const double time_s = (double)frame / BENCH_TARGET_FPS_D;
-        db_renderer_cpu_renderer_render_frame(time_s);
+        db_renderer_cpu_renderer_render_frame(frame);
 
         const uint64_t state_hash = db_renderer_cpu_renderer_state_hash();
         db_display_hash_tracker_record(&state_hash_tracker, state_hash);
@@ -61,7 +61,7 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
 
         frames++;
         const double elapsed_ms =
-            ((double)frames * DB_MS_PER_SECOND_D) / BENCH_TARGET_FPS_D;
+            (double)(db_now_ns_monotonic() - frame_start_ns) / 1000.0F;
         db_benchmark_log_periodic(
             db_dispatch_api_name(DB_API_CPU), db_renderer_name_cpu(),
             BACKEND_NAME, frames, work_unit_count, elapsed_ms, capability_mode,
@@ -88,7 +88,7 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     }
 
     const double total_ms =
-        ((double)frames * DB_MS_PER_SECOND_D) / BENCH_TARGET_FPS_D;
+        (double)(db_now_ns_monotonic() - start_ns) / 1000.0F;
     db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU),
                            db_renderer_name_cpu(), BACKEND_NAME, frames,
                            work_unit_count, total_ms, capability_mode);

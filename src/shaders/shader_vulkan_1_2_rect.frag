@@ -24,7 +24,7 @@ layout(push_constant) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
-    float time_s;
+    uint frame_index;
     uint band_count;
 } pc;
 #else
@@ -48,7 +48,7 @@ layout(std140, binding = 0) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
-    float time_s;
+    uint frame_index;
     uint band_count;
 } pc;
 #endif
@@ -95,11 +95,12 @@ vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
 }
 
-vec3 db_band_color(uint band_index, uint band_count, float time_s) {
+vec3 db_band_color(uint band_index, uint band_count, uint frame_index) {
     float band_f = float(band_index);
-    float pulse = 0.5 + (0.5 * sin((time_s * 2.5) + (band_f * 0.4)));
-    float color_r = pulse * (0.1 + (0.8 * band_f / float(max(band_count, 1u))));
-    return vec3(color_r, pulse * 0.7, 1.0 - color_r);
+    float frame_f = float(frame_index);
+    float pulse = 0.5 + (0.5 * sin((frame_f * 0.03) + (band_f * 0.3)));
+    float color_r = pulse * (0.2 + (0.8 * band_f / float(max(band_count, 1u))));
+    return vec3(color_r, pulse * 0.6, 1.0 - color_r);
 }
 
 float db_window_blend(int batch_size, int window_index) {
@@ -504,8 +505,9 @@ void main() {
     const uint RENDER_MODE_SNAKE_RECT = 4u;
     const uint RENDER_MODE_SNAKE_SHAPES = 5u;
     uint render_mode = pc.render_mode;
+
     if(render_mode == RENDER_MODE_BANDS) {
-        out_color = db_rgba(db_band_color(db_band_index_from_frag_coord(), max(pc.band_count, 1u), pc.time_s));
+        out_color = db_rgba(db_band_color(db_band_index_from_frag_coord(), max(pc.band_count, 1u), pc.frame_index));
         return;
     }
     int row_i = db_row_from_frag_coord();

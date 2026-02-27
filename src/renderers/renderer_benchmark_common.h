@@ -88,7 +88,7 @@ typedef struct {
 
 static inline uint64_t
 db_benchmark_runtime_state_hash(const db_benchmark_runtime_init_t *runtime,
-                                uint64_t frame_index, uint32_t render_width,
+                                uint32_t frame_index, uint32_t render_width,
                                 uint32_t render_height) {
     if (runtime == NULL) {
         return 0U;
@@ -278,29 +278,17 @@ static inline void db_log_benchmark_mode(const char *backend_name,
 }
 
 static inline int db_pattern_uses_history_texture(db_pattern_t pattern) {
-    return (pattern == DB_PATTERN_BANDS) ||
-           (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-           (pattern == DB_PATTERN_GRADIENT_FILL) ||
-           (pattern == DB_PATTERN_SNAKE_GRID) ||
-           (pattern == DB_PATTERN_SNAKE_RECT) ||
-           (pattern == DB_PATTERN_SNAKE_SHAPES);
+    return 1;
 }
 
 static inline uint32_t db_pattern_work_unit_count(db_pattern_t pattern) {
-    if ((pattern == DB_PATTERN_SNAKE_GRID) ||
-        (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-        (pattern == DB_PATTERN_GRADIENT_FILL) ||
-        (pattern == DB_PATTERN_SNAKE_RECT) ||
-        (pattern == DB_PATTERN_SNAKE_SHAPES)) {
-        const uint32_t rows = db_grid_rows_effective();
-        const uint32_t cols = db_grid_cols_effective();
-        const uint64_t count = (uint64_t)rows * cols;
-        if ((count == 0U) || (count > UINT32_MAX)) {
-            return 0U;
-        }
-        return (uint32_t)count;
+    const uint32_t rows = db_grid_rows_effective();
+    const uint32_t cols = db_grid_cols_effective();
+    const uint64_t count = (uint64_t)rows * cols;
+    if ((count == 0U) || (count > UINT32_MAX)) {
+        return 0U;
     }
-    return BENCH_BANDS;
+    return (uint32_t)count;
 }
 
 static inline int
@@ -444,13 +432,14 @@ db_fill_grid_all_rgb_stride(float *vertices, uint32_t tile_count,
 }
 
 static inline void db_band_color_rgb(uint32_t band_index, uint32_t band_count,
-                                     double time_s, float *out_r, float *out_g,
-                                     float *out_b) {
+                                     uint32_t frame_index, float *out_r,
+                                     float *out_g, float *out_b) {
     const float band_f = (float)band_index;
+    const float frame_f = (float)frame_index;
     const float pulse =
         BENCH_PULSE_BASE_F +
-        (BENCH_PULSE_AMP_F * sinf((float)((time_s * BENCH_PULSE_FREQ_F) +
-                                          (band_f * BENCH_PULSE_PHASE_F))));
+        (BENCH_PULSE_AMP_F *
+         sinf((frame_f * BENCH_PULSE_FREQ_F) + (band_f * BENCH_PULSE_PHASE_F)));
     const float color_r =
         pulse * (BENCH_COLOR_R_BASE_F +
                  (BENCH_COLOR_R_SCALE_F * band_f / (float)band_count));
@@ -474,6 +463,7 @@ static inline void db_palette_cycle_color_rgb(uint32_t cycle_index,
     *out_g = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_G));
     *out_b = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_B));
 }
+
 static inline db_gradient_damage_plan_t
 db_gradient_plan_next_frame(uint32_t head_row, int direction_down,
                             uint32_t cycle_index, int restart_at_top_only,

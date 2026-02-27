@@ -69,7 +69,7 @@ typedef enum {
 } db_glfw_loop_result_t;
 
 typedef db_glfw_loop_result_t (*db_glfw_frame_fn_t)(void *user_data,
-                                                    uint64_t frame_index);
+                                                    uint32_t frame_index);
 
 typedef struct {
     const char *backend;
@@ -428,10 +428,9 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
 }
 
 static db_glfw_loop_result_t db_glfw_cpu_frame(void *user_data,
-                                               uint64_t frame_index) {
+                                               uint32_t frame_index) {
     db_glfw_cpu_loop_ctx_t *ctx = (db_glfw_cpu_loop_ctx_t *)user_data;
-    const double frame_time_s = (double)frame_index / BENCH_TARGET_FPS_D;
-    db_renderer_cpu_renderer_render_frame(frame_time_s);
+    db_renderer_cpu_renderer_render_frame(frame_index);
     size_t damage_count = 0U;
     const db_dirty_row_range_t *damage_ranges =
         db_renderer_cpu_renderer_damage_rows(&damage_count);
@@ -614,13 +613,13 @@ static void db_gl_renderer_init(db_gl_renderer_t renderer) {
 }
 
 static void db_gl_renderer_render_frame(db_gl_renderer_t renderer,
-                                        double frame_time_s) {
+                                        uint32_t frame_index) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
-        db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_time_s);
+        db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_index);
         return;
     }
 #ifdef DB_HAS_OPENGL_DESKTOP
-    db_renderer_opengl_gl3_3_render_frame(frame_time_s);
+    db_renderer_opengl_gl3_3_render_frame(frame_index);
 #else
     (void)frame_time_s;
     db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
@@ -673,7 +672,7 @@ static uint64_t db_gl_renderer_state_hash(db_gl_renderer_t renderer) {
 }
 
 static db_glfw_loop_result_t db_glfw_opengl_frame(void *user_data,
-                                                  uint64_t frame_index) {
+                                                  uint32_t frame_index) {
     db_glfw_opengl_loop_ctx_t *ctx = (db_glfw_opengl_loop_ctx_t *)user_data;
     int framebuffer_width_px = 0;
     int framebuffer_height_px = 0;
@@ -684,8 +683,7 @@ static db_glfw_loop_result_t db_glfw_opengl_frame(void *user_data,
                  BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    const double frame_time_s = (double)frame_index / BENCH_TARGET_FPS_D;
-    db_gl_renderer_render_frame(ctx->renderer, frame_time_s);
+    db_gl_renderer_render_frame(ctx->renderer, frame_index);
 
     if (ctx->state_hash_enabled != 0) {
         const uint64_t state_hash = db_gl_renderer_state_hash(ctx->renderer);
@@ -858,7 +856,7 @@ static void db_glfw_vk_get_framebuffer_size(void *window_handle, int *width,
 }
 
 static db_glfw_loop_result_t db_glfw_vulkan_frame(void *user_data,
-                                                  uint64_t frame_index) {
+                                                  uint32_t frame_index) {
     const db_glfw_vulkan_loop_ctx_t *ctx =
         (const db_glfw_vulkan_loop_ctx_t *)user_data;
     const db_vk_frame_result_t frame_result =

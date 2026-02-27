@@ -158,23 +158,16 @@ size_t db_gl_for_each_upload_row_span(const char *backend_name,
                                       db_gl_upload_row_span_apply_fn_t apply_fn,
                                       void *user_data);
 
-int db_init_band_vertices_common(db_gl_vertex_init_t *out_state,
-                                 size_t vertex_stride);
 int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
-                                 size_t vertex_stride);
+                                 db_pattern_t pattern, size_t vertex_stride);
 int db_init_vertices_for_pattern_common_with_stride(
     const char *backend_name, db_gl_vertex_init_t *out_state,
     db_pattern_t pattern, size_t vertex_stride);
 int db_init_vertices_for_runtime_common_with_stride(
     const char *backend_name, db_gl_vertex_init_t *out_state,
     const db_benchmark_runtime_init_t *runtime_state, size_t vertex_stride);
-void db_fill_band_vertices_pos_rgb_stride(float *out_vertices,
-                                          uint32_t band_count, double time_s,
-                                          size_t stride_floats,
-                                          size_t color_offset_floats);
-void db_update_band_vertices_rgb_stride(float *out_vertices,
-                                        uint32_t band_count, double time_s,
-                                        size_t stride_floats,
-                                        size_t color_offset_floats);
+void db_update_grid_vertices_for_bands_rgb_stride(
+    float *verts, uint32_t cols, uint32_t rows, uint32_t band_count,
+    uint32_t frame_index, size_t stride_floats, size_t color_offset_floats);
 
 #endif

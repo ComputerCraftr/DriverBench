@@ -58,7 +58,7 @@ typedef struct {
     int32_t snake_phase_completed;
     uint32_t viewport_height;
     uint32_t viewport_width;
-    float time_s;
+    uint32_t frame_index;
     uint32_t band_count;
 } PushConstants;
 
@@ -148,7 +148,7 @@ typedef struct {
     VkDevice device;
     uint32_t device_group_mask;
     double ema_ms_per_work_unit[MAX_GPU_COUNT];
-    uint64_t frame_index;
+    uint32_t frame_index;
     uint32_t gpu_count;
     int gpu_timing_enabled;
     uint32_t gradient_window_rows;
@@ -206,7 +206,7 @@ typedef struct {
     uint32_t snake_shape_index;
     int snake_phase_completed;
     uint32_t palette_cycle;
-    float time_s;
+    uint32_t frame_index;
     uint32_t band_count;
 } db_vk_grid_row_block_draw_req_t;
 
@@ -224,7 +224,7 @@ typedef struct {
     uint32_t snake_shape_index;
     int snake_phase_completed;
     uint32_t palette_cycle;
-    float time_s;
+    uint32_t frame_index;
     uint32_t band_count;
 } db_vk_draw_dynamic_req_t;
 

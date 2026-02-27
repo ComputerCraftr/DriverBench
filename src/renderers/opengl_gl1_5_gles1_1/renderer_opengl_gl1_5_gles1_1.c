@@ -16,10 +16,9 @@
 #ifdef __APPLE__
 #include <OpenGL/gl.h>
 #include <OpenGL/gltypes.h>
-#elif defined(DB_HAS_OPENGL_DESKTOP)
+#elifdef DB_HAS_OPENGL_DESKTOP
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
-#include <GL/glext.h>
 #else
 #include <GLES/gl.h>
 #endif
@@ -51,7 +50,7 @@ enum {
 
 typedef struct {
     uint64_t state_hash;
-    uint64_t frame_index;
+    uint32_t frame_index;
     db_benchmark_runtime_init_t runtime;
     db_gl_vertex_init_t vertex;
     int is_es_context;
@@ -303,7 +302,11 @@ static void db_gl1_history_quad_init(void) {
     g_state.history_texcoords[DB_GL1_QUAD_V3_Y] = 1.0F;
 }
 
-static int db_gl1_history_texture_ensure(void) {
+static int db_gl1_ensure_history_textures(void) {
+    if (db_pattern_uses_history_texture(g_state.runtime.pattern) == 0) {
+        return 0;
+    }
+
     int viewport_w = 0;
     int viewport_h = 0;
     if (db_gl_get_viewport_size(&viewport_w, &viewport_h) == 0) {
@@ -334,7 +337,7 @@ static int db_gl1_history_texture_ensure(void) {
     return 1;
 }
 
-static void db_gl1_history_restore_to_framebuffer(void) {
+static void db_gl1_restore_history_to_framebuffer(void) {
     if ((g_state.history_tex == 0U) || (g_state.history_valid == 0)) {
         return;
     }
@@ -350,7 +353,7 @@ static void db_gl1_history_restore_to_framebuffer(void) {
     glDisable(GL_TEXTURE_2D);
 }
 
-static void db_gl1_history_capture_full_framebuffer(void) {
+static void db_gl1_capture_history_full_framebuffer(void) {
     if ((g_state.history_tex == 0U) || (g_state.history_width <= 0) ||
         (g_state.history_height <= 0)) {
         return;
@@ -442,7 +445,7 @@ static int db_gl1_history_range_to_copy_rect(const db_gl_upload_range_t *range,
     return 1;
 }
 
-static void db_gl1_history_capture_ranges(const db_gl_upload_range_t *ranges,
+static void db_gl1_capture_history_ranges(const db_gl_upload_range_t *ranges,
                                           size_t range_count,
                                           int force_full_capture) {
     if ((g_state.history_tex == 0U) || (g_state.history_width <= 0) ||
@@ -451,7 +454,7 @@ static void db_gl1_history_capture_ranges(const db_gl_upload_range_t *ranges,
     }
     glBindTexture(GL_TEXTURE_2D, g_state.history_tex);
     if ((force_full_capture != 0) || (ranges == NULL) || (range_count == 0U)) {
-        db_gl1_history_capture_full_framebuffer();
+        db_gl1_capture_history_full_framebuffer();
         return;
     }
     for (size_t i = 0U; i < range_count; i++) {
@@ -579,27 +582,22 @@ db_gl1_draw_gradient_dirty_rows_gpu(const db_dirty_row_range_t dirty_ranges[2],
     }
 }
 
-static void db_gl1_draw_bands_gpu(double time_s) {
-    int viewport_w = 0;
-    int viewport_h = 0;
-    if (db_gl_get_viewport_size(&viewport_w, &viewport_h) == 0) {
-        return;
-    }
-    if ((viewport_w <= 0) || (viewport_h <= 0)) {
-        return;
-    }
-    for (uint32_t b = 0U; b < BENCH_BANDS; b++) {
-        const GLint x0 = (GLint)((viewport_w * (int)b) / (int)BENCH_BANDS);
-        const GLint x1 =
-            (GLint)((viewport_w * (int)(b + 1U)) / (int)BENCH_BANDS);
-        float band_color_r = 0.0F;
-        float band_color_g = 0.0F;
-        float band_color_b = 0.0F;
-        db_band_color_rgb(b, BENCH_BANDS, time_s, &band_color_r, &band_color_g,
-                          &band_color_b);
-        db_gl1_scissor_clear_rect(x0, 0, (GLsizei)(x1 - x0),
-                                  (GLsizei)viewport_h, band_color_r,
-                                  band_color_g, band_color_b);
+static void db_gl1_draw_bands_gpu(float *verts, uint32_t cols, uint32_t rows,
+                                  uint32_t band_count, uint32_t frame_index,
+                                  size_t stride_floats,
+                                  size_t color_offset_floats) {
+    for (uint32_t band = 0U; band < band_count; band++) {
+        const GLint x0 = (GLint)((cols * band) / band_count);
+        const GLint x1 = (GLint)((cols * (band + 1U)) / band_count);
+
+        float color_r = 0.0F;
+        float color_g = 0.0F;
+        float color_b = 0.0F;
+        db_band_color_rgb(band, band_count, frame_index, &color_r, &color_g,
+                          &color_b);
+
+        db_gl1_scissor_clear_rect(x0, 0, (GLsizei)(x1 - x0), (GLsizei)rows,
+                                  color_r, color_g, color_b);
     }
 }
 
@@ -795,12 +793,6 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     g_state.history_height = 0;
     db_gl1_history_quad_init();
 
-    if (g_state.runtime.pattern == DB_PATTERN_BANDS) {
-        db_fill_band_vertices_pos_rgb_stride(
-            g_state.vertex.vertices, g_state.runtime.work_unit_count, 0.0,
-            g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT);
-    }
-
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
 
@@ -851,7 +843,7 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
           db_renderer_opengl_gl1_5_gles1_1_capability_mode());
 }
 
-void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
+void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index) {
     db_snake_plan_t plan = {0};
     uint32_t snake_prev_start = 0U;
     uint32_t snake_prev_count = 0U;
@@ -861,10 +853,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
     uint32_t gradient_render_head_row = 0U;
     int gradient_render_direction_down = 1;
     uint32_t gradient_render_cycle_index = 0U;
-    const int history_pattern =
-        (db_pattern_uses_history_texture(g_state.runtime.pattern) != 0);
-    const int history_available =
-        (history_pattern != 0) ? db_gl1_history_texture_ensure() : 0;
+    const int history_available = db_gl1_ensure_history_textures();
     const int gpu_history_gradient_or_bands =
         (history_available != 0) &&
         ((g_state.runtime.pattern == DB_PATTERN_BANDS) ||
@@ -944,10 +933,10 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         db_gradient_apply_step_to_runtime(&g_state.runtime, &gradient_step);
     } else {
         if (gpu_history_gradient_or_bands == 0) {
-            db_update_band_vertices_rgb_stride(
-                g_state.vertex.vertices, g_state.runtime.work_unit_count,
-                time_s, g_state.vertex.vertex_stride,
-                DB_VERTEX_POSITION_FLOAT_COUNT);
+            db_update_grid_vertices_for_bands_rgb_stride(
+                g_state.vertex.vertices, db_grid_cols_effective(),
+                db_grid_rows_effective(), BENCH_BANDS, frame_index,
+                g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT);
         }
     }
 
@@ -988,11 +977,14 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
         const int seed_history_full_frame = (g_state.history_valid == 0);
         if ((gpu_history_gradient_or_bands != 0) &&
             (g_state.runtime.pattern == DB_PATTERN_BANDS)) {
-            if (seed_history_full_frame == 0) {
-                db_gl1_history_restore_to_framebuffer();
-            }
-            db_gl1_draw_bands_gpu(time_s);
-            db_gl1_history_capture_full_framebuffer();
+            /*if (seed_history_full_frame == 0) {
+                db_gl1_restore_history_to_framebuffer();
+            }*/
+            db_gl1_draw_bands_gpu(
+                g_state.vertex.vertices, db_grid_cols_effective(),
+                db_grid_rows_effective(), BENCH_BANDS, frame_index,
+                g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT);
+            // db_gl1_capture_history_full_framebuffer();
         } else if ((gpu_history_gradient_or_bands != 0) &&
                    ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                     (g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL))) {
@@ -1005,9 +997,9 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                     gradient_dirty_ranges, gradient_dirty_count,
                     gradient_render_head_row, gradient_render_direction_down,
                     gradient_render_cycle_index);
-                db_gl1_history_capture_full_framebuffer();
+                db_gl1_capture_history_full_framebuffer();
             } else {
-                db_gl1_history_restore_to_framebuffer();
+                db_gl1_restore_history_to_framebuffer();
                 db_gl1_draw_gradient_dirty_rows_gpu(
                     gradient_dirty_ranges, gradient_dirty_count,
                     gradient_render_head_row, gradient_render_direction_down,
@@ -1023,7 +1015,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                 range_storage[0] = (db_gl_upload_range_t){0U, 0U, upload_bytes};
                 draw_range_count = 1U;
             } else {
-                db_gl1_history_restore_to_framebuffer();
+                db_gl1_restore_history_to_framebuffer();
             }
             g_state.history_fallback_warned = 0;
             db_bind_client_arrays_from_cpu_vertices();
@@ -1036,7 +1028,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(double time_s) {
                 ((draw_range_count == 1U) &&
                  (range_storage[0].src_offset_bytes == 0U) &&
                  (range_storage[0].size_bytes == upload_bytes));
-            db_gl1_history_capture_ranges(range_storage, draw_range_count,
+            db_gl1_capture_history_ranges(range_storage, draw_range_count,
                                           force_full_capture);
         }
     } else {

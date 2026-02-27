@@ -35,7 +35,7 @@ typedef struct {
     db_snake_shape_row_bounds_t *snake_row_bounds;
     size_t snake_row_bounds_capacity;
     uint64_t state_hash;
-    uint64_t frame_index;
+    uint32_t frame_index;
     int history_mode;
     int history_read_index;
     int initialized;
@@ -151,7 +151,7 @@ static size_t db_grid_index(uint32_t row, uint32_t col, uint32_t cols) {
     return ((size_t)row * (size_t)cols) + (size_t)col;
 }
 
-static void db_render_bands(db_cpu_bo_t *bo, double time_s) {
+static void db_render_bands(db_cpu_bo_t *bo, uint32_t frame_index) {
     const uint32_t cols = bo->width;
     const uint32_t rows = bo->height;
     if ((cols == 0U) || (rows == 0U)) {
@@ -162,8 +162,8 @@ static void db_render_bands(db_cpu_bo_t *bo, double time_s) {
         float band_red = 0.0F;
         float band_green = 0.0F;
         float band_blue = 0.0F;
-        db_band_color_rgb(band, BENCH_BANDS, time_s, &band_red, &band_green,
-                          &band_blue);
+        db_band_color_rgb(band, BENCH_BANDS, frame_index, &band_red,
+                          &band_green, &band_blue);
         const uint32_t color = db_pack_rgb(band_red, band_green, band_blue);
         const uint32_t x0 = (band * cols) / BENCH_BANDS;
         const uint32_t x1 = ((band + 1U) * cols) / BENCH_BANDS;
@@ -296,12 +296,14 @@ void db_renderer_cpu_renderer_init(void) {
     db_cpu_bo_t bos[2] = {
         {.width = grid_cols,
          .height = grid_rows,
-         .pixels_rgba8 =
-             (uint32_t *)calloc((size_t)pixel_count, sizeof(uint32_t))},
+         .pixels_rgba8 = (uint32_t *)db_alloc_array_or_fail(
+             BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count,
+             sizeof(uint32_t))},
         {.width = grid_cols,
          .height = grid_rows,
-         .pixels_rgba8 =
-             (uint32_t *)calloc((size_t)pixel_count, sizeof(uint32_t))},
+         .pixels_rgba8 = (uint32_t *)db_alloc_array_or_fail(
+             BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count,
+             sizeof(uint32_t))},
     };
     if ((bos[0].pixels_rgba8 == NULL) || (bos[1].pixels_rgba8 == NULL)) {
         free(bos[0].pixels_rgba8);
@@ -316,21 +318,10 @@ void db_renderer_cpu_renderer_init(void) {
     db_snake_shape_row_bounds_t *snake_row_bounds = NULL;
     size_t snake_row_bounds_capacity = 0U;
     if (init_state.pattern == DB_PATTERN_SNAKE_SHAPES) {
-        if ((size_t)grid_rows >
-            (SIZE_MAX / sizeof(db_snake_shape_row_bounds_t))) {
-            free(bos[0].pixels_rgba8);
-            free(bos[1].pixels_rgba8);
-            db_failf(BACKEND_NAME, "invalid snake row-bounds size: %u",
-                     grid_rows);
-        }
-        snake_row_bounds = (db_snake_shape_row_bounds_t *)calloc(
-            (size_t)grid_rows, sizeof(*snake_row_bounds));
-        if (snake_row_bounds == NULL) {
-            free(bos[0].pixels_rgba8);
-            free(bos[1].pixels_rgba8);
-            db_failf(BACKEND_NAME,
-                     "failed to allocate snake row-bounds scratch");
-        }
+        snake_row_bounds =
+            (db_snake_shape_row_bounds_t *)db_alloc_array_or_fail(
+                BACKEND_NAME, "snake_row_bounds", (size_t)grid_rows,
+                sizeof(*snake_row_bounds));
         snake_row_bounds_capacity = (size_t)grid_rows;
     }
 
@@ -346,7 +337,7 @@ void db_renderer_cpu_renderer_init(void) {
     g_state.snake_row_bounds_capacity = snake_row_bounds_capacity;
 }
 
-void db_renderer_cpu_renderer_render_frame(double time_s) {
+void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
     if (g_state.initialized == 0) {
         return;
     }
@@ -363,7 +354,7 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
 
     g_state.damage_row_count = 0U;
     if (g_state.runtime.pattern == DB_PATTERN_BANDS) {
-        db_render_bands(write_bo, time_s);
+        db_render_bands(write_bo, frame_index);
         db_cpu_set_full_damage(write_bo);
     } else if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
                (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
@@ -437,8 +428,6 @@ void db_renderer_cpu_renderer_render_frame(double time_s) {
                            plan->render_cycle_index);
         db_cpu_set_damage_from_gradient_plan(plan, write_bo->height);
         db_gradient_apply_step_to_runtime(&g_state.runtime, &gradient_step);
-    } else {
-        db_cpu_set_full_damage(write_bo);
     }
 
     if (g_state.history_mode != 0) {

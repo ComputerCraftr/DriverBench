@@ -258,7 +258,6 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
     vkCmdBindVertexBuffers(g_state.command_buffer, 0, 1, &g_state.vertex_buffer,
                            &off);
 
-    double time_s = (double)g_state.frame_index / BENCH_TARGET_FPS_D;
     uint64_t frameStart = db_now_ns_monotonic();
     uint32_t grid_tiles_per_gpu[MAX_GPU_COUNT] = {0};
     uint32_t grid_tiles_drawn = 0U;
@@ -296,7 +295,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             .snake_shape_index = 0U,
             .snake_phase_completed = 0,
             .palette_cycle = 0U,
-            .time_s = (float)time_s,
+            .frame_index = g_state.frame_index,
             .band_count = BENCH_BANDS,
         };
         db_vk_push_constants_draw_dynamic(g_state.command_buffer,
@@ -410,7 +409,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 .snake_batch_size = 0U,
                 .snake_phase_completed = 0,
                 .palette_cycle = plan->render_cycle_index,
-                .time_s = 0.0F,
+                .frame_index = 0,
                 .band_count = 0U,
             };
             db_vk_draw_owner_grid_row_block(&draw_ctx, &req);
