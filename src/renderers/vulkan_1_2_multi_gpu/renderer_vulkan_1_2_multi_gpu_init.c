@@ -10,9 +10,6 @@
 // NOLINTBEGIN(misc-include-cleaner)
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
-#define DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU                              \
-    "vulkan_device_group_multi_gpu"
-#define DB_CAP_MODE_VULKAN_SINGLE_GPU "vulkan_single_gpu"
 #define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
 #define MASK_GPU0 1U
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
@@ -674,9 +671,7 @@ db_vk_init_phase_scheduler(const db_vk_init_device_phase_t *device_phase,
     const db_pattern_t pattern = out_phase->runtime.pattern;
     const int multi_gpu =
         device_phase->have_group && (device_phase->gpu_count > 1U);
-    out_phase->capability_mode = multi_gpu
-                                     ? DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU
-                                     : DB_CAP_MODE_VULKAN_SINGLE_GPU;
+    out_phase->capability_mode = db_vk_capability_mode_name(multi_gpu, pattern);
     infof("using capability mode: %s", out_phase->capability_mode);
 
     if (pattern == DB_PATTERN_BANDS) {

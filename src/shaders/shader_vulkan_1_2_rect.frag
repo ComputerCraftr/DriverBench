@@ -24,6 +24,8 @@ layout(push_constant) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
+    float time_s;
+    uint band_count;
 } pc;
 #else
 layout(std140, binding = 0) uniform PC {
@@ -46,6 +48,8 @@ layout(std140, binding = 0) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
+    float time_s;
+    uint band_count;
 } pc;
 #endif
 
@@ -89,6 +93,13 @@ struct db_snake_shape_desc_t {
 
 vec4 db_rgba(vec3 color_rgb) {
     return vec4(color_rgb, 1.0);
+}
+
+vec3 db_band_color(uint band_index, uint band_count, float time_s) {
+    float band_f = float(band_index);
+    float pulse = 0.5 + (0.5 * sin((time_s * 2.5) + (band_f * 0.4)));
+    float color_r = pulse * (0.1 + (0.8 * band_f / float(max(band_count, 1u))));
+    return vec3(color_r, pulse * 0.7, 1.0 - color_r);
 }
 
 float db_window_blend(int batch_size, int window_index) {
@@ -168,12 +179,20 @@ db_snake_region_desc_t db_snake_region_desc(
     return region;
 }
 
-bool db_snake_region_contains(db_snake_region_desc_t region, uint row_u, uint col_u) {
+bool db_snake_region_contains(
+    db_snake_region_desc_t region,
+    uint row_u,
+    uint col_u
+) {
     return (row_u >= region.y) && (row_u < (region.y + region.height)) &&
         (col_u >= region.x) && (col_u < (region.x + region.width));
 }
 
-uint db_snake_region_step(db_snake_region_desc_t region, uint row_u, uint col_u) {
+uint db_snake_region_step(
+    db_snake_region_desc_t region,
+    uint row_u,
+    uint col_u
+) {
     uint local_row = row_u - region.y;
     uint local_col = col_u - region.x;
     uint snake_col = ((local_row & 1u) == 0u) ? local_col : ((region.width - 1u) - local_col);
@@ -326,8 +345,10 @@ bool db_shape_contains(
     if(!db_snake_region_contains(shape_desc.region, row_u, col_u)) {
         return false;
     }
-    float fx = (float((col_u - shape_desc.region.x)) + SHAPE_CENTER) / float(max(shape_desc.region.width, 1u));
-    float fy = (float((row_u - shape_desc.region.y)) + SHAPE_CENTER) / float(max(shape_desc.region.height, 1u));
+    float fx = (float((col_u - shape_desc.region.x)) + SHAPE_CENTER) /
+        float(max(shape_desc.region.width, 1u));
+    float fy = (float((row_u - shape_desc.region.y)) + SHAPE_CENTER) /
+        float(max(shape_desc.region.height, 1u));
     float dx = fx - SHAPE_CENTER;
     float dy = fy - SHAPE_CENTER;
     db_snake_shape_profile_t profile = shape_desc.profile;
@@ -432,6 +453,13 @@ int db_col_from_frag_coord() {
     return int(floor((x * cols) / viewport_width));
 }
 
+uint db_band_index_from_frag_coord() {
+    float bands = float(max(pc.band_count, 1u));
+    float viewport_width = float(max(pc.viewport_width, 1u));
+    float x = clamp(gl_FragCoord.x, 0.0, viewport_width - 1.0);
+    return uint(floor((x * bands) / viewport_width));
+}
+
 vec4 db_snake_color(
     db_snake_shape_desc_t shape_desc,
     bool apply_shape_clip,
@@ -477,7 +505,7 @@ void main() {
     const uint RENDER_MODE_SNAKE_SHAPES = 5u;
     uint render_mode = pc.render_mode;
     if(render_mode == RENDER_MODE_BANDS) {
-        out_color = v_color;
+        out_color = db_rgba(db_band_color(db_band_index_from_frag_coord(), max(pc.band_count, 1u), pc.time_s));
         return;
     }
     int row_i = db_row_from_frag_coord();

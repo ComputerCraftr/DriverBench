@@ -19,7 +19,7 @@
 #include <OpenGL/gltypes.h>
 #include <dlfcn.h>
 #define DB_HAS_DLSYM_PROC_ADDRESS 1
-#elifdef __linux__
+#elif defined(__linux__)
 #include <dlfcn.h>
 #define DB_HAS_DLSYM_PROC_ADDRESS 1
 #endif
@@ -482,6 +482,78 @@ int db_gl_context_supports_vbo(void) {
     const char *version = (const char *)glGetString(GL_VERSION);
     const char *exts = (const char *)glGetString(GL_EXTENSIONS);
     return db_gl_runtime_supports_vbo(version, exts);
+}
+
+int db_gl_get_viewport_size(int *width_out, int *height_out) {
+    if ((width_out == NULL) || (height_out == NULL)) {
+        return 0;
+    }
+    GLint viewport[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    if ((viewport[2] <= 0) || (viewport[3] <= 0)) {
+        return 0;
+    }
+    *width_out = (int)viewport[2];
+    *height_out = (int)viewport[3];
+    return 1;
+}
+
+static void db_gl_texture_set_nearest_clamp_2d(void) {
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+#ifdef GL_CLAMP_TO_EDGE
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+#else
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+#endif
+}
+
+int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
+                                unsigned int internal_format,
+                                const void *pixels) {
+    if ((texture == 0U) || (width <= 0) || (height <= 0)) {
+        return 0;
+    }
+    glBindTexture(GL_TEXTURE_2D, (GLuint)texture);
+    db_gl_texture_set_nearest_clamp_2d();
+    glTexImage2D(GL_TEXTURE_2D, 0, (GLint)internal_format, (GLsizei)width,
+                 (GLsizei)height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    return (glGetError() == GL_NO_ERROR) ? 1 : 0;
+}
+
+int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
+                              unsigned int internal_format,
+                              const void *pixels) {
+    if (out_texture == NULL) {
+        return 0;
+    }
+    *out_texture = 0U;
+    if ((width <= 0) || (height <= 0)) {
+        return 0;
+    }
+    GLuint texture = 0U;
+    glGenTextures(1, &texture);
+    if (texture == 0U) {
+        return 0;
+    }
+    if (db_gl_texture_allocate_rgba((unsigned int)texture, width, height,
+                                    internal_format, pixels) == 0) {
+        glDeleteTextures(1, &texture);
+        return 0;
+    }
+    *out_texture = (unsigned int)texture;
+    return 1;
+}
+
+void db_gl_texture_delete_if_valid(unsigned int *texture) {
+    if ((texture == NULL) || (*texture == 0U)) {
+        return;
+    }
+    const GLuint gl_texture = (GLuint)(*texture);
+    glDeleteTextures(1, &gl_texture);
+    *texture = 0U;
 }
 
 unsigned int db_gl_pbo_create_or_zero(void) {

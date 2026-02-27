@@ -19,6 +19,24 @@
 #define QUAD_VERT_FLOAT_COUNT 12U
 #define TIMESTAMP_QUERIES_PER_GPU 2U
 #define TIMESTAMP_QUERY_COUNT (MAX_GPU_COUNT * TIMESTAMP_QUERIES_PER_GPU)
+#define DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU                              \
+    "vulkan_device_group_multi_gpu"
+#define DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU_HISTORY                      \
+    "vulkan_device_group_multi_gpu_history"
+#define DB_CAP_MODE_VULKAN_SINGLE_GPU "vulkan_single_gpu"
+#define DB_CAP_MODE_VULKAN_SINGLE_GPU_HISTORY "vulkan_single_gpu_history"
+
+static inline const char *db_vk_capability_mode_name(int have_group,
+                                                     db_pattern_t pattern) {
+    const int history_mode = db_pattern_uses_history_texture(pattern);
+    if (have_group != 0) {
+        return (history_mode != 0)
+                   ? DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU_HISTORY
+                   : DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU;
+    }
+    return (history_mode != 0) ? DB_CAP_MODE_VULKAN_SINGLE_GPU_HISTORY
+                               : DB_CAP_MODE_VULKAN_SINGLE_GPU;
+}
 
 typedef struct {
     float offset_ndc[2];
@@ -40,6 +58,8 @@ typedef struct {
     int32_t snake_phase_completed;
     uint32_t viewport_height;
     uint32_t viewport_width;
+    float time_s;
+    uint32_t band_count;
 } PushConstants;
 
 typedef struct {
@@ -186,6 +206,8 @@ typedef struct {
     uint32_t snake_shape_index;
     int snake_phase_completed;
     uint32_t palette_cycle;
+    float time_s;
+    uint32_t band_count;
 } db_vk_grid_row_block_draw_req_t;
 
 typedef struct {
@@ -202,6 +224,8 @@ typedef struct {
     uint32_t snake_shape_index;
     int snake_phase_completed;
     uint32_t palette_cycle;
+    float time_s;
+    uint32_t band_count;
 } db_vk_draw_dynamic_req_t;
 
 typedef struct {

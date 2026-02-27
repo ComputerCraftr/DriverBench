@@ -16,9 +16,6 @@
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
 #define COLOR_CHANNEL_ALPHA 3U
-#define DB_CAP_MODE_VULKAN_DEVICE_GROUP_MULTI_GPU                              \
-    "vulkan_device_group_multi_gpu"
-#define DB_CAP_MODE_VULKAN_SINGLE_GPU "vulkan_single_gpu"
 #define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
 #define FRAME_BUDGET_NS 16666666ULL
 #define FRAME_SAFETY_NS 2000000ULL
@@ -126,6 +123,8 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
     pc.snake_batch_size = req->snake_batch_size;
     pc.snake_phase_completed = (int32_t)req->snake_phase_completed;
     pc.palette_cycle = req->palette_cycle;
+    pc.time_s = req->time_s;
+    pc.band_count = req->band_count;
     pc.pattern_seed = ((req->render_mode == DB_PATTERN_SNAKE_RECT) ||
                        (req->render_mode == DB_PATTERN_SNAKE_SHAPES))
                           ? g_state.runtime.pattern_seed
@@ -160,6 +159,12 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
                        (uint32_t)offsetof(PushConstants, pattern_seed),
                        sizeof(pc.pattern_seed), &pc.pattern_seed);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, time_s),
+                       sizeof(pc.time_s), &pc.time_s);
+    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+                       (uint32_t)offsetof(PushConstants, band_count),
+                       sizeof(pc.band_count), &pc.band_count);
 }
 
 static void db_vk_destroy_swapchain_state(VkDevice device,
@@ -523,6 +528,8 @@ static void db_vk_draw_owner_grid_span(const db_vk_owner_draw_ctx_t *ctx,
                 .snake_batch_size = req->snake_batch_size,
                 .snake_phase_completed = req->snake_phase_completed,
                 .palette_cycle = req->palette_cycle,
+                .time_s = 0.0F,
+                .band_count = 0U,
             },
     };
     db_vk_draw_grid_span(&draw_ctx, &draw_req);
@@ -578,6 +585,8 @@ void db_vk_draw_owner_grid_row_block(
                 .snake_batch_size = req->snake_batch_size,
                 .snake_phase_completed = req->snake_phase_completed,
                 .palette_cycle = req->palette_cycle,
+                .time_s = req->time_s,
+                .band_count = req->band_count,
             },
     };
     db_vk_draw_grid_row_block(&draw_ctx, &draw_req);
@@ -607,6 +616,8 @@ static void db_vk_draw_owner_grid_span_snake(
         .snake_batch_size = batch_size,
         .snake_phase_completed = phase_completed,
         .palette_cycle = 0U,
+        .time_s = 0.0F,
+        .band_count = 0U,
     };
     db_vk_draw_owner_grid_span(ctx, &req);
 }
@@ -631,6 +642,8 @@ static void db_vk_draw_owner_grid_span_rect(
         .snake_batch_size = batch_size,
         .snake_phase_completed = target_completed,
         .palette_cycle = 0U,
+        .time_s = 0.0F,
+        .band_count = 0U,
     };
     db_vk_draw_owner_grid_span(ctx, &req);
 }
@@ -654,6 +667,8 @@ static void db_vk_draw_owner_grid_row_block_rect(
         .snake_batch_size = batch_size,
         .snake_phase_completed = target_completed,
         .palette_cycle = 0U,
+        .time_s = 0.0F,
+        .band_count = 0U,
     };
     db_vk_draw_owner_grid_row_block(ctx, &req);
 }

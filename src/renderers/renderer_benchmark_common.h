@@ -278,7 +278,10 @@ static inline void db_log_benchmark_mode(const char *backend_name,
 }
 
 static inline int db_pattern_uses_history_texture(db_pattern_t pattern) {
-    return (pattern == DB_PATTERN_SNAKE_GRID) ||
+    return (pattern == DB_PATTERN_BANDS) ||
+           (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
+           (pattern == DB_PATTERN_GRADIENT_FILL) ||
+           (pattern == DB_PATTERN_SNAKE_GRID) ||
            (pattern == DB_PATTERN_SNAKE_RECT) ||
            (pattern == DB_PATTERN_SNAKE_SHAPES);
 }

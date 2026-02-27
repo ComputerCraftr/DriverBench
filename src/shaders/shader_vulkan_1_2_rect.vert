@@ -22,6 +22,8 @@ layout(push_constant) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
+    float time_s;
+    uint band_count;
 } pc;
 #else
 // OpenGL-mode GLSL tools reject push constants; keep a compatible fallback
@@ -46,6 +48,8 @@ layout(std140, binding = 0) uniform PC {
     uint snake_shape_index;
     uint viewport_height;
     uint viewport_width;
+    float time_s;
+    uint band_count;
 } pc;
 #endif
 

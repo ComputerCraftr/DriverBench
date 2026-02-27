@@ -108,9 +108,16 @@ void db_gl_vbo_delete_if_valid(unsigned int buffer);
 int db_gl_vbo_init_data(size_t bytes, const void *data, unsigned int usage);
 int db_gl_context_supports_pbo_upload(void);
 int db_gl_context_supports_vbo(void);
+int db_gl_get_viewport_size(int *width_out, int *height_out);
 unsigned int db_gl_pbo_create_or_zero(void);
 void db_gl_pbo_delete_if_valid(unsigned int pbo);
 void db_gl_pbo_unbind_unpack(void);
+int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
+                                unsigned int internal_format,
+                                const void *pixels);
+int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
+                              unsigned int internal_format, const void *pixels);
+void db_gl_texture_delete_if_valid(unsigned int *texture);
 void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver);
 void db_gl_preload_upload_proc_table(void);
 void db_gl_probe_upload_capabilities(size_t bytes,
