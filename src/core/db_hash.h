@@ -22,8 +22,11 @@ uint32_t db_mix_u32(uint32_t value);
 uint64_t db_fnv1a64_extend(uint64_t hash, const void *data, size_t size);
 uint64_t db_fnv1a64_bytes(const void *data, size_t size);
 uint64_t db_fnv1a64_mix_u64(uint64_t hash, uint64_t value);
-uint64_t db_hash_rgba8_pixels_canonical(const uint8_t *pixels, uint32_t width,
+uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
                                         uint32_t height, size_t stride_bytes,
                                         int rows_bottom_to_top);
+uint64_t db_hash_rgba32f_pixels_canonical(const float *pixels, uint32_t width,
+                                          uint32_t height, size_t stride_bytes,
+                                          int rows_bottom_to_top);
 
 #endif

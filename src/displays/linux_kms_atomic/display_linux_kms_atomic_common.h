@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "../display_dispatch.h"
+#include "../../driverbench_config.h"
 
 typedef enum {
     DB_KMS_ATOMIC_CONTEXT_GL1_5_OR_GLES1_1 = 0,

@@ -50,6 +50,7 @@ typedef unsigned char GLubyte;
 #define GL_RENDERER 0x1F01U
 #define GL_RGBA 0x1908U
 #define GL_RGBA8 0x8058U
+#define GL_RGBA32F 0x8814U
 #define GL_SCISSOR_TEST 0x0C11U
 #define GL_STATIC_DRAW 0x88E4U
 #define GL_STREAM_DRAW 0x88E0U

@@ -39,6 +39,7 @@ Runtime flags:
 - `--allow-remote-display <0|1>`
 - `--benchmark-mode <gradient_sweep|bands|snake_grid|gradient_fill|snake_rect|snake_shapes>`
 - `--bench-speed <value>` (`> 0`, max `1024`)
+- `--cpu-hdr <0|1>` (default: `1`, CPU renderer RGBA32F BO + float texture upload on GLFW)
 - `--fps-cap <value>`
 - `--hash <none|state|pixel|both>`
 - `--hash-report <final|aggregate|both>`

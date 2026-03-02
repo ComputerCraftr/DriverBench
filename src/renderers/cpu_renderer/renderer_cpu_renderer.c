@@ -13,22 +13,28 @@
 
 #define BACKEND_NAME "renderer_cpu_renderer"
 #define DB_ALPHA_U8 255U
+#define DB_ALPHA_F32 1.0F
 #define DB_CAP_MODE_CPU_OFFSCREEN_BO "cpu_offscreen_bo"
+#define DB_CAP_MODE_CPU_OFFSCREEN_BO_HDR "cpu_offscreen_bo_hdr_rgba32f"
 #define DB_COLOR_SHIFT_A 24U
 #define DB_COLOR_SHIFT_B 16U
 #define DB_COLOR_SHIFT_G 8U
 #define DB_COLOR_SHIFT_R 0U
+#define DB_FLOAT_CHANNELS_PER_PIXEL 4U
 
 typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t *pixels_rgba8;
+    float *pixels_rgba32f;
+    int is_hdr_float_bo;
 } db_cpu_bo_t;
 
 typedef struct {
     db_cpu_bo_t bo;
     db_dirty_row_range_t damage_rows[2];
     size_t damage_row_count;
+    uint32_t *pixels_rgba8_staging;
     db_snake_shape_row_bounds_t *snake_row_bounds;
     size_t snake_row_bounds_capacity;
     uint64_t state_hash;
@@ -43,6 +49,88 @@ typedef struct {
 } db_cpu_gradient_row_apply_ctx_t;
 
 static db_cpu_renderer_state_t g_state = {0};
+
+static int db_cpu_hdr_enabled_from_runtime(void) {
+    const char *value = db_runtime_option_get(DB_RUNTIME_OPT_CPU_HDR);
+    if ((value == NULL) || (value[0] == '\0')) {
+        return 1;
+    }
+    int parsed = 0;
+    if (db_parse_bool_text(value, &parsed) != 0) {
+        return (parsed != 0) ? 1 : 0;
+    }
+    db_failf(BACKEND_NAME,
+             "invalid value for %s: %s (expected bool 0/1/true/false)",
+             DB_RUNTIME_OPT_CPU_HDR, value);
+    return 1;
+}
+
+static size_t db_cpu_bo_index(const db_cpu_bo_t *bo, uint32_t row,
+                              uint32_t col) {
+    return ((size_t)row * (size_t)bo->width) + (size_t)col;
+}
+
+static void db_cpu_bo_write_rgb_index(db_cpu_bo_t *bo, size_t idx, float red,
+                                      float green, float blue) {
+    if (bo->is_hdr_float_bo != 0) {
+        const size_t base = idx * DB_FLOAT_CHANNELS_PER_PIXEL;
+        bo->pixels_rgba32f[base + 0U] = red;
+        bo->pixels_rgba32f[base + 1U] = green;
+        bo->pixels_rgba32f[base + 2U] = blue;
+        bo->pixels_rgba32f[base + 3U] = DB_ALPHA_F32;
+        return;
+    }
+    const uint32_t red_u8 = (uint32_t)db_float01_to_u8_clamped(red);
+    const uint32_t green_u8 = (uint32_t)db_float01_to_u8_clamped(green);
+    const uint32_t blue_u8 = (uint32_t)db_float01_to_u8_clamped(blue);
+    bo->pixels_rgba8[idx] =
+        (DB_ALPHA_U8 << DB_COLOR_SHIFT_A) | (blue_u8 << DB_COLOR_SHIFT_B) |
+        (green_u8 << DB_COLOR_SHIFT_G) | (red_u8 << DB_COLOR_SHIFT_R);
+}
+
+static void db_cpu_bo_read_rgb_index(const db_cpu_bo_t *bo, size_t idx,
+                                     float *out_red, float *out_green,
+                                     float *out_blue) {
+    if (bo->is_hdr_float_bo != 0) {
+        const size_t base = idx * DB_FLOAT_CHANNELS_PER_PIXEL;
+        *out_red = bo->pixels_rgba32f[base + 0U];
+        *out_green = bo->pixels_rgba32f[base + 1U];
+        *out_blue = bo->pixels_rgba32f[base + 2U];
+        return;
+    }
+    const uint32_t rgba = bo->pixels_rgba8[idx];
+    *out_red = (float)((rgba >> DB_COLOR_SHIFT_R) & 255U) / DB_U8_MAX_F;
+    *out_green = (float)((rgba >> DB_COLOR_SHIFT_G) & 255U) / DB_U8_MAX_F;
+    *out_blue = (float)((rgba >> DB_COLOR_SHIFT_B) & 255U) / DB_U8_MAX_F;
+}
+
+static void db_cpu_bo_fill_solid_rgb(db_cpu_bo_t *bo, float red, float green,
+                                     float blue) {
+    const uint64_t pixel_count = (uint64_t)bo->width * (uint64_t)bo->height;
+    for (uint64_t idx = 0U; idx < pixel_count; idx++) {
+        db_cpu_bo_write_rgb_index(bo, (size_t)idx, red, green, blue);
+    }
+}
+
+static void db_cpu_convert_rgba32f_to_rgba8(const db_cpu_bo_t *bo,
+                                            uint32_t *out_rgba8) {
+    if ((bo == NULL) || (out_rgba8 == NULL) || (bo->pixels_rgba32f == NULL)) {
+        return;
+    }
+    const uint64_t pixel_count = (uint64_t)bo->width * (uint64_t)bo->height;
+    for (uint64_t idx = 0U; idx < pixel_count; idx++) {
+        const size_t base = (size_t)idx * DB_FLOAT_CHANNELS_PER_PIXEL;
+        const uint32_t red_u8 =
+            (uint32_t)db_float01_to_u8_clamped(bo->pixels_rgba32f[base + 0U]);
+        const uint32_t green_u8 =
+            (uint32_t)db_float01_to_u8_clamped(bo->pixels_rgba32f[base + 1U]);
+        const uint32_t blue_u8 =
+            (uint32_t)db_float01_to_u8_clamped(bo->pixels_rgba32f[base + 2U]);
+        out_rgba8[idx] =
+            (DB_ALPHA_U8 << DB_COLOR_SHIFT_A) | (blue_u8 << DB_COLOR_SHIFT_B) |
+            (green_u8 << DB_COLOR_SHIFT_G) | (red_u8 << DB_COLOR_SHIFT_R);
+    }
+}
 
 static void db_cpu_set_full_damage(const db_cpu_bo_t *bo) {
     if ((bo == NULL) || (bo->height == 0U)) {
@@ -109,32 +197,6 @@ static void db_cpu_set_damage_from_spans(const db_snake_col_span_t *spans,
     g_state.damage_row_count = 1U;
 }
 
-static uint32_t db_pack_rgb(float red, float green, float blue) {
-    const uint32_t red_u8 = (uint32_t)db_float01_to_u8_clamped(red);
-    const uint32_t green_u8 = (uint32_t)db_float01_to_u8_clamped(green);
-    const uint32_t blue_u8 = (uint32_t)db_float01_to_u8_clamped(blue);
-    return (DB_ALPHA_U8 << DB_COLOR_SHIFT_A) | (blue_u8 << DB_COLOR_SHIFT_B) |
-           (green_u8 << DB_COLOR_SHIFT_G) | (red_u8 << DB_COLOR_SHIFT_R);
-}
-
-static void db_unpack_rgb(uint32_t rgba, float *out_red, float *out_green,
-                          float *out_blue) {
-    *out_red = (float)((rgba >> DB_COLOR_SHIFT_R) & 255U) / DB_U8_MAX_F;
-    *out_green = (float)((rgba >> DB_COLOR_SHIFT_G) & 255U) / DB_U8_MAX_F;
-    *out_blue = (float)((rgba >> DB_COLOR_SHIFT_B) & 255U) / DB_U8_MAX_F;
-}
-
-static void db_bo_fill_solid(db_cpu_bo_t *bo, uint32_t rgba) {
-    const uint64_t pixel_count = (uint64_t)bo->width * (uint64_t)bo->height;
-    for (uint64_t idx = 0U; idx < pixel_count; idx++) {
-        bo->pixels_rgba8[idx] = rgba;
-    }
-}
-
-static size_t db_grid_index(uint32_t row, uint32_t col, uint32_t cols) {
-    return ((size_t)row * (size_t)cols) + (size_t)col;
-}
-
 static void db_cpu_apply_gradient_row_color(uint32_t row, float row_red,
                                             float row_green, float row_blue,
                                             void *user_data) {
@@ -143,10 +205,10 @@ static void db_cpu_apply_gradient_row_color(uint32_t row, float row_red,
     if ((ctx == NULL) || (ctx->bo == NULL)) {
         return;
     }
-    const uint32_t rgba = db_pack_rgb(row_red, row_green, row_blue);
     const size_t row_base = (size_t)row * ctx->cols;
     for (uint32_t col = 0U; col < ctx->cols; col++) {
-        ctx->bo->pixels_rgba8[row_base + col] = rgba;
+        db_cpu_bo_write_rgb_index(ctx->bo, row_base + col, row_red, row_green,
+                                  row_blue);
     }
 }
 
@@ -163,13 +225,13 @@ static void db_render_bands(db_cpu_bo_t *bo, uint32_t frame_index) {
         float band_blue = 0.0F;
         db_band_color_rgb(band, BENCH_BANDS, frame_index, &band_red,
                           &band_green, &band_blue);
-        const uint32_t color = db_pack_rgb(band_red, band_green, band_blue);
         const uint32_t x0 = (band * cols) / BENCH_BANDS;
         const uint32_t x1 = ((band + 1U) * cols) / BENCH_BANDS;
         for (uint32_t row = 0U; row < rows; row++) {
             const size_t row_base = (size_t)row * cols;
             for (uint32_t col = x0; col < x1; col++) {
-                bo->pixels_rgba8[row_base + col] = color;
+                db_cpu_bo_write_rgb_index(bo, row_base + col, band_red,
+                                          band_green, band_blue);
             }
         }
     }
@@ -190,9 +252,6 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
 
     const uint32_t cols = bo->width;
     const uint32_t rows = bo->height;
-    const uint32_t target_rgba =
-        db_pack_rgb(target_red, target_green, target_blue);
-
     // Snapshot prior colors for the active blend window BEFORE we mutate the
     // buffer. This mirrors the GL1.5 path and is required for determinism.
     float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
@@ -220,11 +279,11 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
                 continue;
             }
         }
-        const size_t idx = db_grid_index(row, col, cols);
+        const size_t idx = db_cpu_bo_index(bo, row, col);
         float pr = 0.0F;
         float pg = 0.0F;
         float pb = 0.0F;
-        db_unpack_rgb(bo->pixels_rgba8[idx], &pr, &pg, &pb);
+        db_cpu_bo_read_rgb_index(bo, idx, &pr, &pg, &pb);
         const size_t base = (size_t)update_index * 3U;
         prior_rgb[base + 0U] = pr;
         prior_rgb[base + 1U] = pg;
@@ -232,7 +291,7 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
     }
 
     if ((full_fill_on_phase_completed != 0) && (plan->phase_completed != 0)) {
-        db_bo_fill_solid(bo, target_rgba);
+        db_cpu_bo_fill_solid_rgb(bo, target_red, target_green, target_blue);
         return;
     }
 
@@ -255,7 +314,8 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
                 continue;
             }
         }
-        bo->pixels_rgba8[db_grid_index(row, col, cols)] = target_rgba;
+        db_cpu_bo_write_rgb_index(bo, db_cpu_bo_index(bo, row, col), target_red,
+                                  target_green, target_blue);
     }
 
     // Blend the active window using the snapshotted prior colors.
@@ -293,8 +353,8 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
                      target_green, target_blue, blend, &out_red, &out_green,
                      &out_blue);
 
-        bo->pixels_rgba8[db_grid_index(row, col, cols)] =
-            db_pack_rgb(out_red, out_green, out_blue);
+        db_cpu_bo_write_rgb_index(bo, db_cpu_bo_index(bo, row, col), out_red,
+                                  out_green, out_blue);
     }
 }
 
@@ -331,17 +391,21 @@ void db_renderer_cpu_renderer_init(void) {
     db_cpu_bo_t bo = {
         .width = grid_cols,
         .height = grid_rows,
-        .pixels_rgba8 = (uint32_t *)db_alloc_array_or_fail(
-            BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count,
-            sizeof(uint32_t)),
+        .pixels_rgba8 = NULL,
+        .pixels_rgba32f = NULL,
+        .is_hdr_float_bo = db_cpu_hdr_enabled_from_runtime(),
     };
-    if (bo.pixels_rgba8 == NULL) {
-        db_failf(BACKEND_NAME, "failed to allocate offscreen BO");
+    if (bo.is_hdr_float_bo != 0) {
+        bo.pixels_rgba32f = (float *)db_alloc_array_or_fail(
+            BACKEND_NAME, "pixels_rgba32f",
+            (size_t)pixel_count * DB_FLOAT_CHANNELS_PER_PIXEL, sizeof(float));
+    } else {
+        bo.pixels_rgba8 = (uint32_t *)db_alloc_array_or_fail(
+            BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count,
+            sizeof(uint32_t));
     }
-
-    const uint32_t phase0 = db_pack_rgb(
-        BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B);
-    db_bo_fill_solid(&bo, phase0);
+    db_cpu_bo_fill_solid_rgb(&bo, BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                             BENCH_GRID_PHASE0_B);
     db_snake_shape_row_bounds_t *snake_row_bounds = NULL;
     size_t snake_row_bounds_capacity = 0U;
     if (init_state.pattern == DB_PATTERN_SNAKE_SHAPES) {
@@ -462,7 +526,18 @@ const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
     if (out_height != NULL) {
         *out_height = g_state.bo.height;
     }
-    return g_state.bo.pixels_rgba8;
+    if (g_state.bo.is_hdr_float_bo == 0) {
+        return g_state.bo.pixels_rgba8;
+    }
+    const uint64_t pixel_count =
+        (uint64_t)g_state.bo.width * (uint64_t)g_state.bo.height;
+    if (g_state.pixels_rgba8_staging == NULL) {
+        g_state.pixels_rgba8_staging = (uint32_t *)db_alloc_array_or_fail(
+            BACKEND_NAME, "pixels_rgba8_staging", (size_t)pixel_count,
+            sizeof(uint32_t));
+    }
+    db_cpu_convert_rgba32f_to_rgba8(&g_state.bo, g_state.pixels_rgba8_staging);
+    return g_state.pixels_rgba8_staging;
 }
 
 uint32_t db_renderer_cpu_renderer_work_unit_count(void) {
@@ -470,7 +545,31 @@ uint32_t db_renderer_cpu_renderer_work_unit_count(void) {
 }
 
 const char *db_renderer_cpu_renderer_capability_mode(void) {
+    if (g_state.bo.is_hdr_float_bo != 0) {
+        return DB_CAP_MODE_CPU_OFFSCREEN_BO_HDR;
+    }
     return DB_CAP_MODE_CPU_OFFSCREEN_BO;
+}
+
+int db_renderer_cpu_renderer_is_hdr_float_bo(void) {
+    return (g_state.initialized != 0) && (g_state.bo.is_hdr_float_bo != 0);
+}
+
+const float *db_renderer_cpu_renderer_pixels_rgba32f(uint32_t *out_width,
+                                                     uint32_t *out_height) {
+    if (g_state.initialized == 0) {
+        return NULL;
+    }
+    if (out_width != NULL) {
+        *out_width = g_state.bo.width;
+    }
+    if (out_height != NULL) {
+        *out_height = g_state.bo.height;
+    }
+    if (g_state.bo.is_hdr_float_bo == 0) {
+        return NULL;
+    }
+    return g_state.bo.pixels_rgba32f;
 }
 
 uint64_t db_renderer_cpu_renderer_state_hash(void) {
@@ -496,7 +595,9 @@ void db_renderer_cpu_renderer_shutdown(void) {
     if (g_state.initialized == 0) {
         return;
     }
+    free(g_state.pixels_rgba8_staging);
     free(g_state.snake_row_bounds);
     free(g_state.bo.pixels_rgba8);
+    free(g_state.bo.pixels_rgba32f);
     g_state = (db_cpu_renderer_state_t){0};
 }

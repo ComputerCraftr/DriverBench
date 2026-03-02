@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "db_core.h"
+
 void db_copy_bytes(void *dst, const void *src, size_t byte_count) {
     if ((dst == NULL) || (src == NULL) || (byte_count == 0U)) {
         return;
@@ -52,6 +54,30 @@ void db_convert_rgba8_to_xrgb8888_rows(uint32_t *dst, size_t dst_stride_pixels,
             const uint32_t green = (rgba & 0x0000FF00U);
             const uint32_t blue = (rgba & 0x00FF0000U);
             dst_row[col] = (red << 16U) | green | (blue >> 16U);
+        }
+    }
+}
+
+void db_convert_rgba32f_to_xrgb8888_rows(
+    uint32_t *dst, size_t dst_stride_pixels, const float *src,
+    size_t src_stride_pixels, uint32_t width_pixels, uint32_t height_rows) {
+    if ((dst == NULL) || (src == NULL) || (width_pixels == 0U) ||
+        (height_rows == 0U)) {
+        return;
+    }
+
+    for (uint32_t row = 0U; row < height_rows; row++) {
+        const float *src_row = src + ((size_t)row * src_stride_pixels);
+        uint32_t *dst_row = dst + ((size_t)row * dst_stride_pixels);
+        for (uint32_t col = 0U; col < width_pixels; col++) {
+            const size_t src_base = (size_t)col * 4U;
+            const uint32_t red =
+                (uint32_t)db_float01_to_u8_clamped(src_row[src_base + 0U]);
+            const uint32_t green =
+                (uint32_t)db_float01_to_u8_clamped(src_row[src_base + 1U]);
+            const uint32_t blue =
+                (uint32_t)db_float01_to_u8_clamped(src_row[src_base + 2U]);
+            dst_row[col] = (red << 16U) | (green << 8U) | blue;
         }
     }
 }

@@ -30,7 +30,15 @@
 
 #define BACKEND_NAME_CPU "display_glfw_window_cpu_renderer"
 #define DB_CAP_MODE_CPU_GLFW_PBO "cpu_glfw_window_pbo"
+#define DB_CAP_MODE_CPU_GLFW_PBO_HDR "cpu_glfw_window_pbo_hdr_rgba32f"
 #define DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE "cpu_glfw_window_tex_sub_image"
+#define DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE_HDR                                 \
+    "cpu_glfw_window_tex_sub_image_hdr_rgba32f"
+#define DB_CPU_DEBUG_CLEAR_CHUNK_ROWS 64U
+#define DB_CPU_RGBA32F_CHANNELS_PER_PIXEL 4U
+#define DB_CPU_RGBA32F_BYTES_PER_PIXEL                                         \
+    (sizeof(float) * DB_CPU_RGBA32F_CHANNELS_PER_PIXEL)
+#define DB_CPU_RGBA8_BYTES_PER_PIXEL 4U
 #define BACKEND_NAME_GL "display_glfw_window_opengl"
 #ifdef DB_HAS_VULKAN_API
 #define BACKEND_NAME_VK "display_glfw_window_vulkan"
@@ -94,6 +102,7 @@ typedef struct {
     int has_pbo;
     int initialized;
     int needs_full_frame_upload;
+    int use_hdr_float_bo;
     unsigned int texture;
     uint32_t texture_height;
     int use_npot;
@@ -152,7 +161,8 @@ db_present_cpu_upload_ranges_prepare(db_cpu_present_gl_state_t *state,
 
 typedef struct {
     db_cpu_present_gl_state_t *state;
-    const uint8_t *pixels;
+    const uint8_t *pixels_rgba8;
+    const float *pixels_rgba32f;
     uint32_t pixel_width;
     int use_pbo;
 } db_cpu_upload_apply_ctx_t;
@@ -207,23 +217,45 @@ static void db_present_cpu_texture_resize(db_cpu_present_gl_state_t *state,
     state->texture_width = target_width;
     state->texture_height = target_height;
     if (state->texture == 0U) {
-        if (db_gl_texture_create_rgba8(
-                &state->texture,
-                db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
-                                      state->texture_width),
-                db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
-                                      state->texture_height),
-                NULL) == 0) {
+        const int created =
+            (state->use_hdr_float_bo != 0)
+                ? db_gl_texture_create_rgba32f(
+                      &state->texture,
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
+                                            state->texture_width),
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
+                                            state->texture_height),
+                      NULL)
+                : db_gl_texture_create_rgba8(
+                      &state->texture,
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
+                                            state->texture_width),
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
+                                            state->texture_height),
+                      NULL);
+        if (created == 0) {
             db_failf(BACKEND_NAME_CPU, "failed to create CPU present texture");
         }
-    } else if (db_gl_texture_allocate_rgba8(
-                   state->texture,
-                   db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
-                                         state->texture_width),
-                   db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
-                                         state->texture_height),
-                   NULL) == 0) {
-        db_failf(BACKEND_NAME_CPU, "failed to resize CPU present texture");
+    } else {
+        const int allocated =
+            (state->use_hdr_float_bo != 0)
+                ? db_gl_texture_allocate_rgba32f(
+                      state->texture,
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
+                                            state->texture_width),
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
+                                            state->texture_height),
+                      NULL)
+                : db_gl_texture_allocate_rgba8(
+                      state->texture,
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
+                                            state->texture_width),
+                      db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
+                                            state->texture_height),
+                      NULL);
+        if (allocated == 0) {
+            db_failf(BACKEND_NAME_CPU, "failed to resize CPU present texture");
+        }
     }
     state->needs_full_frame_upload = 1;
 }
@@ -274,11 +306,23 @@ static void db_present_cpu_upload_rows(db_cpu_present_gl_state_t *state,
         ((allow_null_data == 0) && (pixel_data == NULL))) {
         return;
     }
-    db_gl_texture_sub_image_2d_rgba(
-        0, db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_y", row_start),
-        db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_w", pixel_width),
-        db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_h", row_count),
-        pixel_data);
+    if (state->use_hdr_float_bo != 0) {
+        db_gl_texture_sub_image_2d_rgba32f(
+            0,
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_y", row_start),
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_w",
+                                  pixel_width),
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_h", row_count),
+            pixel_data);
+    } else {
+        db_gl_texture_sub_image_2d_rgba(
+            0,
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_y", row_start),
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_w",
+                                  pixel_width),
+            db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_h", row_count),
+            pixel_data);
+    }
 }
 
 static void db_apply_cpu_upload_span(const db_gl_upload_row_span_t *span,
@@ -294,28 +338,41 @@ static void db_apply_cpu_upload_span(const db_gl_upload_row_span_t *span,
                                    span->rows.row_start, span->rows.row_count,
                                    pbo_offset, 1);
     } else {
+        const void *pixels_ptr =
+            (ctx->state->use_hdr_float_bo != 0)
+                ? (const void *)(ctx->pixels_rgba32f +
+                                 (span->range.src_offset_bytes /
+                                  DB_CPU_RGBA32F_BYTES_PER_PIXEL))
+                : (const void *)(ctx->pixels_rgba8 +
+                                 span->range.src_offset_bytes);
         db_present_cpu_upload_rows(ctx->state, ctx->pixel_width,
                                    span->rows.row_start, span->rows.row_count,
-                                   ctx->pixels + span->range.src_offset_bytes,
-                                   0);
+                                   pixels_ptr, 0);
     }
 }
 
-static void db_present_cpu_upload_spans(db_cpu_present_gl_state_t *state,
-                                        const uint8_t *pixels,
-                                        uint32_t pixel_width,
-                                        uint32_t pixel_height,
-                                        const db_gl_upload_range_t *ranges,
-                                        size_t span_count) {
-    if ((state == NULL) || (pixels == NULL) || (pixel_width == 0U) ||
-        (pixel_height == 0U) || (ranges == NULL) || (span_count == 0U)) {
+static void db_present_cpu_upload_spans(
+    db_cpu_present_gl_state_t *state, const uint8_t *pixels_rgba8,
+    const float *pixels_rgba32f, uint32_t pixel_width, uint32_t pixel_height,
+    const db_gl_upload_range_t *ranges, size_t span_count) {
+    if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U) ||
+        (ranges == NULL) || (span_count == 0U)) {
+        return;
+    }
+    if ((state->use_hdr_float_bo != 0) && (pixels_rgba32f == NULL)) {
+        return;
+    }
+    if ((state->use_hdr_float_bo == 0) && (pixels_rgba8 == NULL)) {
         return;
     }
 
+    const uint32_t pixel_bytes = (state->use_hdr_float_bo != 0)
+                                     ? (uint32_t)DB_CPU_RGBA32F_BYTES_PER_PIXEL
+                                     : DB_CPU_RGBA8_BYTES_PER_PIXEL;
     const size_t total_bytes = (size_t)db_checked_mul_u32(
         BACKEND_NAME_CPU, "cpu_upload_total_bytes",
         db_checked_mul_u32(BACKEND_NAME_CPU, "cpu_upload_row_bytes",
-                           pixel_width, 4U),
+                           pixel_width, pixel_bytes),
         pixel_height);
     if (total_bytes > (size_t)PTRDIFF_MAX) {
         db_failf(BACKEND_NAME_CPU, "cpu_upload_total_bytes too large: %zu",
@@ -324,19 +381,25 @@ static void db_present_cpu_upload_spans(db_cpu_present_gl_state_t *state,
     const int use_pbo = (state->has_pbo != 0) && (state->pbo != 0U) &&
                         (db_gl_context_supports_pbo_upload() != 0);
     if (use_pbo != 0) {
-        db_gl_upload_ranges_target(pixels, total_bytes, ranges, span_count,
+        const void *source_base = (state->use_hdr_float_bo != 0)
+                                      ? (const void *)pixels_rgba32f
+                                      : (const void *)pixels_rgba8;
+        db_gl_upload_ranges_target(source_base, total_bytes, ranges, span_count,
                                    DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
                                    state->pbo, 0, NULL, 0, 0);
     }
     db_cpu_upload_apply_ctx_t apply_ctx = {
         .state = state,
-        .pixels = pixels,
+        .pixels_rgba8 = pixels_rgba8,
+        .pixels_rgba32f = pixels_rgba32f,
         .pixel_width = pixel_width,
         .use_pbo = use_pbo,
     };
-    (void)db_gl_for_each_upload_row_span(BACKEND_NAME_CPU, pixel_width, ranges,
-                                         span_count, db_apply_cpu_upload_span,
-                                         &apply_ctx);
+    (void)db_gl_for_each_upload_row_span(
+        BACKEND_NAME_CPU,
+        db_checked_mul_u32(BACKEND_NAME_CPU, "cpu_row_unit_width", pixel_width,
+                           pixel_bytes / DB_CPU_RGBA8_BYTES_PER_PIXEL),
+        ranges, span_count, db_apply_cpu_upload_span, &apply_ctx);
     if (use_pbo != 0) {
         db_gl_pbo_unbind_unpack();
     }
@@ -348,11 +411,12 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
         return;
     }
 
-    const uint32_t row_bytes = db_checked_mul_u32(
-        BACKEND_NAME_CPU, "cpu_debug_clear_row_bytes", pixel_width, 4U);
+    const uint32_t row_bytes =
+        db_checked_mul_u32(BACKEND_NAME_CPU, "cpu_debug_clear_row_bytes",
+                           pixel_width, DB_CPU_RGBA8_BYTES_PER_PIXEL);
 
     // Fixed chunk size to keep uploads bounded; this buffer is reused.
-    const uint32_t chunk_rows = 64U;
+    const uint32_t chunk_rows = DB_CPU_DEBUG_CLEAR_CHUNK_ROWS;
     const uint32_t chunk_bytes_u32 = db_checked_mul_u32(
         BACKEND_NAME_CPU, "cpu_debug_clear_chunk_bytes", row_bytes, chunk_rows);
     const size_t chunk_bytes = (size_t)chunk_bytes_u32;
@@ -470,7 +534,8 @@ db_present_cpu_prepare_resources(db_cpu_present_gl_state_t *state,
         db_present_cpu_upload_ranges_prepare(state, pixel_height);
     }
 
-    if (debug_clear_default_framebuffer != 0) {
+    if ((debug_clear_default_framebuffer != 0) &&
+        (state->use_hdr_float_bo == 0)) {
         db_present_cpu_debug_clear_prepare(state, pixel_width);
     }
 }
@@ -479,7 +544,7 @@ db_present_cpu_prepare_resources(db_cpu_present_gl_state_t *state,
 // scratch buffer.
 static size_t db_cpu_build_upload_ranges_from_dirty_rows(
     const char *backend_name, db_cpu_present_gl_state_t *state,
-    uint32_t pixel_width, uint32_t pixel_height,
+    uint32_t pixel_width, uint32_t pixel_height, uint32_t pixel_bytes,
     const db_dirty_row_range_t *ranges, size_t range_count,
     db_gl_upload_range_t **out_ranges) {
     if ((out_ranges == NULL) || (state == NULL) || (pixel_width == 0U) ||
@@ -503,8 +568,8 @@ static size_t db_cpu_build_upload_ranges_from_dirty_rows(
 
     db_gl_upload_range_t *tmp = state->upload_ranges_buf;
 
-    const uint32_t row_bytes =
-        db_checked_mul_u32(backend_name, "cpu_row_bytes", pixel_width, 4U);
+    const uint32_t row_bytes = db_checked_mul_u32(backend_name, "cpu_row_bytes",
+                                                  pixel_width, pixel_bytes);
 
     size_t out_count = 0U;
     for (size_t i = 0U; i < range_count; i++) {
@@ -579,11 +644,22 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
                                        int debug_clear_default_framebuffer) {
     uint32_t pixel_width = 0U;
     uint32_t pixel_height = 0U;
-    const uint32_t *pixels =
-        db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
-    if ((pixels == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
+    const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
+    const uint32_t *pixels_rgba8 = NULL;
+    const float *pixels_rgba32f = NULL;
+    if (use_hdr_float_bo != 0) {
+        pixels_rgba32f = db_renderer_cpu_renderer_pixels_rgba32f(&pixel_width,
+                                                                 &pixel_height);
+    } else {
+        pixels_rgba8 =
+            db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
+    }
+    if (((use_hdr_float_bo != 0) && (pixels_rgba32f == NULL)) ||
+        ((use_hdr_float_bo == 0) && (pixels_rgba8 == NULL)) ||
+        (pixel_width == 0U) || (pixel_height == 0U)) {
         db_failf(BACKEND_NAME_CPU, "cpu renderer returned invalid framebuffer");
     }
+    state->use_hdr_float_bo = use_hdr_float_bo;
 
     int framebuffer_width_px = 0;
     int framebuffer_height_px = 0;
@@ -631,8 +707,11 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
 
     // Direct row-based uploading, no pattern planner.
     const int force_full_upload = (state->needs_full_frame_upload != 0) ? 1 : 0;
+    const uint32_t pixel_bytes = (state->use_hdr_float_bo != 0)
+                                     ? (uint32_t)DB_CPU_RGBA32F_BYTES_PER_PIXEL
+                                     : DB_CPU_RGBA8_BYTES_PER_PIXEL;
     const uint32_t row_bytes = db_checked_mul_u32(
-        BACKEND_NAME_CPU, "cpu_upload_row_bytes", pixel_width, 4U);
+        BACKEND_NAME_CPU, "cpu_upload_row_bytes", pixel_width, pixel_bytes);
 
     if (force_full_upload != 0) {
         const db_gl_upload_range_t full = {
@@ -642,19 +721,20 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
                 db_checked_mul_u32(BACKEND_NAME_CPU, "cpu_upload_full_bytes",
                                    row_bytes, pixel_height),
         };
-        db_present_cpu_upload_spans(state, (const uint8_t *)pixels, pixel_width,
-                                    pixel_height, &full, 1U);
+        db_present_cpu_upload_spans(state, (const uint8_t *)pixels_rgba8,
+                                    pixels_rgba32f, pixel_width, pixel_height,
+                                    &full, 1U);
         state->needs_full_frame_upload = 0;
     } else {
         db_gl_upload_range_t *upload_ranges = NULL;
         const size_t upload_span_count =
             db_cpu_build_upload_ranges_from_dirty_rows(
-                BACKEND_NAME_CPU, state, pixel_width, pixel_height, ranges,
-                range_count, &upload_ranges);
+                BACKEND_NAME_CPU, state, pixel_width, pixel_height, pixel_bytes,
+                ranges, range_count, &upload_ranges);
         if ((upload_span_count > 0U) && (upload_ranges != NULL)) {
-            db_present_cpu_upload_spans(state, (const uint8_t *)pixels,
-                                        pixel_width, pixel_height,
-                                        upload_ranges, upload_span_count);
+            db_present_cpu_upload_spans(
+                state, (const uint8_t *)pixels_rgba8, pixels_rgba32f,
+                pixel_width, pixel_height, upload_ranges, upload_span_count);
         }
         // upload_ranges points into state scratch; do NOT free.
     }
@@ -695,15 +775,28 @@ static db_glfw_loop_result_t db_glfw_cpu_frame(void *user_data,
     if (ctx->output_hash_enabled != 0) {
         uint32_t pixel_width = 0U;
         uint32_t pixel_height = 0U;
-        const uint32_t *pixels =
-            db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
-        if (pixels == NULL) {
-            db_failf(BACKEND_NAME_CPU,
-                     "cpu renderer returned invalid framebuffer");
+        uint64_t bo_hash = 0U;
+        if (db_renderer_cpu_renderer_is_hdr_float_bo() != 0) {
+            const float *pixels = db_renderer_cpu_renderer_pixels_rgba32f(
+                &pixel_width, &pixel_height);
+            if (pixels == NULL) {
+                db_failf(BACKEND_NAME_CPU,
+                         "cpu renderer returned invalid HDR framebuffer");
+            }
+            bo_hash = db_hash_rgba32f_pixels_canonical(
+                pixels, pixel_width, pixel_height,
+                (size_t)pixel_width * 4U * sizeof(float), 0);
+        } else {
+            const uint32_t *pixels = db_renderer_cpu_renderer_pixels_rgba8(
+                &pixel_width, &pixel_height);
+            if (pixels == NULL) {
+                db_failf(BACKEND_NAME_CPU,
+                         "cpu renderer returned invalid framebuffer");
+            }
+            bo_hash = db_hash_rgba8_pixels_canonical(
+                (const uint8_t *)pixels, pixel_width, pixel_height,
+                (size_t)pixel_width * 4U, 0);
         }
-        const uint64_t bo_hash = db_hash_rgba8_pixels_canonical(
-            (const uint8_t *)pixels, pixel_width, pixel_height,
-            (size_t)pixel_width * 4U, 0);
         db_display_hash_tracker_record(ctx->bo_hash_tracker, bo_hash);
     }
 
@@ -753,6 +846,8 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         db_has_gl_extension_token(runtime_exts, "GL_OES_texture_npot");
     const int has_pbo =
         db_gl_runtime_supports_pbo(runtime_version, runtime_exts);
+    const int has_texture_float =
+        db_gl_runtime_supports_texture_float(runtime_version, runtime_exts);
     if ((is_gles != 0) && (runtime_is_gles == 0)) {
         db_infof(BACKEND_NAME_CPU, "context creation reported GLES fallback, "
                                    "but runtime API is OpenGL");
@@ -762,28 +857,49 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
     db_cpu_present_gl_state_t present = {
         .has_pbo = 0,
         .initialized = 0,
+        .use_hdr_float_bo = 0,
         .pbo = 0U,
         .texture = 0U,
         .texture_height = 0U,
         .texture_width = 0U,
         .use_npot = has_npot,
     };
+    const int cpu_hdr_requested = db_renderer_cpu_renderer_is_hdr_float_bo();
+    if ((cpu_hdr_requested != 0) && (has_texture_float == 0)) {
+        db_failf(BACKEND_NAME_CPU,
+                 "cpu_hdr requested but runtime has no float texture support");
+    }
+    present.use_hdr_float_bo = cpu_hdr_requested;
     db_present_cpu_init_state(&present, has_pbo);
 
     // Prepare upload range scratch buffer up-front to avoid per-frame
     // allocations.
     uint32_t init_pixel_width = 0U;
     uint32_t init_pixel_height = 0U;
-    (void)db_renderer_cpu_renderer_pixels_rgba8(&init_pixel_width,
-                                                &init_pixel_height);
+    if (present.use_hdr_float_bo != 0) {
+        (void)db_renderer_cpu_renderer_pixels_rgba32f(&init_pixel_width,
+                                                      &init_pixel_height);
+    } else {
+        (void)db_renderer_cpu_renderer_pixels_rgba8(&init_pixel_width,
+                                                    &init_pixel_height);
+    }
     db_present_cpu_prepare_resources(
         &present, init_pixel_width, init_pixel_height,
         (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0);
-    const char *capability_mode =
-        ((present.has_pbo != 0) && (present.pbo != 0U) &&
-         (db_gl_context_supports_pbo_upload() != 0))
-            ? DB_CAP_MODE_CPU_GLFW_PBO
-            : DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE;
+    const int use_pbo_mode = ((present.has_pbo != 0) && (present.pbo != 0U) &&
+                              (db_gl_context_supports_pbo_upload() != 0))
+                                 ? 1
+                                 : 0;
+    const char *capability_mode = NULL;
+    if (use_pbo_mode != 0) {
+        capability_mode = (present.use_hdr_float_bo != 0)
+                              ? DB_CAP_MODE_CPU_GLFW_PBO_HDR
+                              : DB_CAP_MODE_CPU_GLFW_PBO;
+    } else {
+        capability_mode = (present.use_hdr_float_bo != 0)
+                              ? DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE_HDR
+                              : DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE;
+    }
 
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
     const double bench_start = db_glfw_time_seconds();

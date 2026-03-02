@@ -12,8 +12,11 @@ void db_renderer_cpu_renderer_shutdown(void);
 
 uint32_t db_renderer_cpu_renderer_work_unit_count(void);
 const char *db_renderer_cpu_renderer_capability_mode(void);
+int db_renderer_cpu_renderer_is_hdr_float_bo(void);
 const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
                                                       uint32_t *out_height);
+const float *db_renderer_cpu_renderer_pixels_rgba32f(uint32_t *out_width,
+                                                     uint32_t *out_height);
 const db_dirty_row_range_t *
 db_renderer_cpu_renderer_damage_rows(size_t *out_count);
 uint64_t db_renderer_cpu_renderer_state_hash(void);

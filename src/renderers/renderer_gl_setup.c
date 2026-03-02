@@ -376,6 +376,16 @@ int db_gl_runtime_supports_pbo(const char *version_text, const char *exts) {
            db_has_gl_extension_token(exts, "GL_ARB_pixel_buffer_object");
 }
 
+int db_gl_runtime_supports_texture_float(const char *version_text,
+                                         const char *exts) {
+    if (db_gl_is_es_context(version_text) != 0) {
+        return db_gl_version_text_at_least(version_text, 3, 0) ||
+               db_has_gl_extension_token(exts, "GL_OES_texture_float");
+    }
+    return db_gl_version_text_at_least(version_text, 3, 0) ||
+           db_has_gl_extension_token(exts, "GL_ARB_texture_float");
+}
+
 int db_gl_runtime_supports_vbo(const char *version_text, const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_gl_version_text_at_least(version_text, 1, 1);
@@ -789,9 +799,11 @@ static void db_gl_texture_set_nearest_clamp_2d(void) {
 #endif
 }
 
-int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
-                                unsigned int internal_format,
-                                const void *pixels) {
+static int db_gl_texture_allocate_rgba_typed(unsigned int texture, int width,
+                                             int height,
+                                             unsigned int internal_format,
+                                             unsigned int pixel_type,
+                                             const void *pixels) {
     if ((texture == 0U) || (width <= 0) || (height <= 0)) {
         return 0;
     }
@@ -804,16 +816,25 @@ int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
     db_gl_texture_set_nearest_clamp_2d();
     g_upload_proc_table.tex_image_2d(GL_TEXTURE_2D, 0, (GLint)internal_format,
                                      (GLsizei)width, (GLsizei)height, 0,
-                                     GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                                     GL_RGBA, (GLenum)pixel_type, pixels);
     return ((g_upload_proc_table.get_error != NULL) &&
             (g_upload_proc_table.get_error() == GL_NO_ERROR))
                ? 1
                : 0;
 }
 
-int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
-                              unsigned int internal_format,
-                              const void *pixels) {
+int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
+                                unsigned int internal_format,
+                                const void *pixels) {
+    return db_gl_texture_allocate_rgba_typed(
+        texture, width, height, internal_format, GL_UNSIGNED_BYTE, pixels);
+}
+
+static int db_gl_texture_create_rgba_typed(unsigned int *out_texture, int width,
+                                           int height,
+                                           unsigned int internal_format,
+                                           unsigned int pixel_type,
+                                           const void *pixels) {
     if (out_texture == NULL) {
         return 0;
     }
@@ -830,8 +851,9 @@ int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
     if (texture == 0U) {
         return 0;
     }
-    if (db_gl_texture_allocate_rgba((unsigned int)texture, width, height,
-                                    internal_format, pixels) == 0) {
+    if (db_gl_texture_allocate_rgba_typed((unsigned int)texture, width, height,
+                                          internal_format, pixel_type,
+                                          pixels) == 0) {
         if (g_upload_proc_table.delete_textures != NULL) {
             g_upload_proc_table.delete_textures(1, &texture);
         }
@@ -839,6 +861,13 @@ int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
     }
     *out_texture = (unsigned int)texture;
     return 1;
+}
+
+int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
+                              unsigned int internal_format,
+                              const void *pixels) {
+    return db_gl_texture_create_rgba_typed(
+        out_texture, width, height, internal_format, GL_UNSIGNED_BYTE, pixels);
 }
 
 int db_gl_texture_allocate_rgba8(unsigned int texture, int width, int height,
@@ -850,6 +879,18 @@ int db_gl_texture_create_rgba8(unsigned int *out_texture, int width, int height,
                                const void *pixels) {
     return db_gl_texture_create_rgba(out_texture, width, height, GL_RGBA,
                                      pixels);
+}
+
+int db_gl_texture_allocate_rgba32f(unsigned int texture, int width, int height,
+                                   const void *pixels) {
+    return db_gl_texture_allocate_rgba_typed(texture, width, height, GL_RGBA32F,
+                                             GL_FLOAT, pixels);
+}
+
+int db_gl_texture_create_rgba32f(unsigned int *out_texture, int width,
+                                 int height, const void *pixels) {
+    return db_gl_texture_create_rgba_typed(out_texture, width, height,
+                                           GL_RGBA32F, GL_FLOAT, pixels);
 }
 
 void db_gl_texture_delete_if_valid(unsigned int *texture) {
@@ -881,6 +922,19 @@ void db_gl_texture_sub_image_2d_rgba(int x_px, int y_px, int width, int height,
         g_upload_proc_table.tex_sub_image_2d(GL_TEXTURE_2D, 0, x_px, y_px,
                                              (GLsizei)width, (GLsizei)height,
                                              GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    }
+}
+
+void db_gl_texture_sub_image_2d_rgba32f(int x_px, int y_px, int width,
+                                        int height, const void *pixels) {
+    if ((width <= 0) || (height <= 0)) {
+        return;
+    }
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.tex_sub_image_2d != NULL) {
+        g_upload_proc_table.tex_sub_image_2d(GL_TEXTURE_2D, 0, x_px, y_px,
+                                             (GLsizei)width, (GLsizei)height,
+                                             GL_RGBA, GL_FLOAT, pixels);
     }
 }
 
@@ -1551,18 +1605,19 @@ void db_gl_probe_upload_capabilities(size_t bytes,
     }
 }
 
-static void *db_gl_try_map_upload_buffer(size_t bytes, int try_map_range,
-                                         int try_map_buffer) {
+static void *db_gl_try_map_upload_buffer_target(GLenum target, size_t bytes,
+                                                int try_map_range,
+                                                int try_map_buffer) {
     if ((try_map_range != 0) &&
         (g_upload_proc_table.map_buffer_range != NULL)) {
         return g_upload_proc_table.map_buffer_range(
-            GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes,
+            target, 0, (GLsizeiptr)bytes,
             GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
                 GL_MAP_UNSYNCHRONIZED_BIT);
     }
 
     if ((try_map_buffer != 0) && (g_upload_proc_table.map_buffer != NULL)) {
-        return g_upload_proc_table.map_buffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+        return g_upload_proc_table.map_buffer(target, GL_WRITE_ONLY);
     }
 
     return NULL;
@@ -1621,17 +1676,14 @@ void db_gl_upload_ranges_target(
             (total_bytes > (size_t)PTRDIFF_MAX)) {
             return;
         }
-        const GLuint gl_buffer = (GLuint)target_buffer;
-        g_upload_proc_table.bind_buffer(gl_target, gl_buffer);
+        g_upload_proc_table.bind_buffer(gl_target, (GLuint)target_buffer);
+        // PBO path: orphan storage each upload pass to avoid GPU/CPU stalls.
         g_upload_proc_table.buffer_data(gl_target, (GLsizeiptr)total_bytes,
                                         NULL, GL_STREAM_DRAW);
-        db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
-                                           range_count);
-        return;
     }
 
-    void *mapped_ptr = db_gl_try_map_upload_buffer(
-        total_bytes, use_map_range_upload, use_map_buffer_upload);
+    void *mapped_ptr = db_gl_try_map_upload_buffer_target(
+        gl_target, total_bytes, use_map_range_upload, use_map_buffer_upload);
     if ((mapped_ptr != NULL) && (g_upload_proc_table.unmap_buffer != NULL)) {
         uint8_t *dst_base = (uint8_t *)mapped_ptr;
         const uint8_t *src_base = (const uint8_t *)source_base;
@@ -1641,7 +1693,7 @@ void db_gl_upload_ranges_target(
                           src_base + range->src_offset_bytes,
                           range->size_bytes);
         }
-        if (g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER) == GL_FALSE) {
+        if (g_upload_proc_table.unmap_buffer(gl_target) == GL_FALSE) {
             db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
                                                range_count);
         }

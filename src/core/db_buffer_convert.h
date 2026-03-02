@@ -16,5 +16,8 @@ void db_convert_rgba8_to_xrgb8888_rows(uint32_t *dst, size_t dst_stride_pixels,
                                        size_t src_stride_pixels,
                                        uint32_t width_pixels,
                                        uint32_t height_rows);
+void db_convert_rgba32f_to_xrgb8888_rows(
+    uint32_t *dst, size_t dst_stride_pixels, const float *src,
+    size_t src_stride_pixels, uint32_t width_pixels, uint32_t height_rows);
 
 #endif

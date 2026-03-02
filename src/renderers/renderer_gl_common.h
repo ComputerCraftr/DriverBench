@@ -125,6 +125,8 @@ int db_gl_runtime_supports_map_buffer(const char *version_text,
 int db_gl_runtime_supports_map_buffer_range(const char *version_text,
                                             const char *exts);
 int db_gl_runtime_supports_pbo(const char *version_text, const char *exts);
+int db_gl_runtime_supports_texture_float(const char *version_text,
+                                         const char *exts);
 int db_gl_runtime_supports_vbo(const char *version_text, const char *exts);
 
 void db_gl_clear_errors(db_gl_get_error_fn_t get_error);
@@ -163,10 +165,16 @@ int db_gl_texture_allocate_rgba8(unsigned int texture, int width, int height,
                                  const void *pixels);
 int db_gl_texture_create_rgba8(unsigned int *out_texture, int width, int height,
                                const void *pixels);
+int db_gl_texture_allocate_rgba32f(unsigned int texture, int width, int height,
+                                   const void *pixels);
+int db_gl_texture_create_rgba32f(unsigned int *out_texture, int width,
+                                 int height, const void *pixels);
 void db_gl_texture_delete_if_valid(unsigned int *texture);
 void db_gl_texture_bind_2d(unsigned int texture);
 void db_gl_texture_sub_image_2d_rgba(int x_px, int y_px, int width, int height,
                                      const void *pixels);
+void db_gl_texture_sub_image_2d_rgba32f(int x_px, int y_px, int width,
+                                        int height, const void *pixels);
 void db_gl_clear_color_rgba(float red, float green, float blue, float alpha);
 void db_gl_clear_color_rgb(float red, float green, float blue);
 void db_gl_clear_color_buffer(void);

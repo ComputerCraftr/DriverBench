@@ -48,17 +48,33 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
         const uint64_t state_hash = db_renderer_cpu_renderer_state_hash();
         db_display_hash_tracker_record(&state_hash_tracker, state_hash);
 
-        uint32_t pixel_width = 0U;
-        uint32_t pixel_height = 0U;
-        const uint32_t *pixels =
-            db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
-        if (pixels == NULL) {
-            db_failf(BACKEND_NAME, "cpu renderer returned NULL framebuffer");
+        if (hash_settings.output_hash_enabled != 0) {
+            uint32_t pixel_width = 0U;
+            uint32_t pixel_height = 0U;
+            uint64_t bo_hash = 0U;
+            if (db_renderer_cpu_renderer_is_hdr_float_bo() != 0) {
+                const float *pixels = db_renderer_cpu_renderer_pixels_rgba32f(
+                    &pixel_width, &pixel_height);
+                if (pixels == NULL) {
+                    db_failf(BACKEND_NAME,
+                             "cpu renderer returned NULL HDR framebuffer");
+                }
+                bo_hash = db_hash_rgba32f_pixels_canonical(
+                    pixels, pixel_width, pixel_height,
+                    (size_t)pixel_width * 4U * sizeof(float), 0);
+            } else {
+                const uint32_t *pixels = db_renderer_cpu_renderer_pixels_rgba8(
+                    &pixel_width, &pixel_height);
+                if (pixels == NULL) {
+                    db_failf(BACKEND_NAME,
+                             "cpu renderer returned NULL framebuffer");
+                }
+                bo_hash = db_hash_rgba8_pixels_canonical(
+                    (const uint8_t *)pixels, pixel_width, pixel_height,
+                    (size_t)pixel_width * 4U, 0);
+            }
+            db_display_hash_tracker_record(&bo_hash_tracker, bo_hash);
         }
-        const uint64_t bo_hash = db_hash_rgba8_pixels_canonical(
-            (const uint8_t *)pixels, pixel_width, pixel_height,
-            (size_t)pixel_width * 4U, 0);
-        db_display_hash_tracker_record(&bo_hash_tracker, bo_hash);
 
         frames++;
         const double elapsed_ms =
@@ -75,17 +91,31 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
         state_hash_tracker.final_hash = final_hash;
     }
 
-    uint32_t final_width = 0U;
-    uint32_t final_height = 0U;
-    const uint32_t *final_pixels =
-        db_renderer_cpu_renderer_pixels_rgba8(&final_width, &final_height);
-    if (final_pixels == NULL) {
-        db_failf(BACKEND_NAME, "cpu renderer returned NULL framebuffer");
-    }
     if (hash_settings.output_hash_enabled != 0) {
-        bo_hash_tracker.final_hash = db_hash_rgba8_pixels_canonical(
-            (const uint8_t *)final_pixels, final_width, final_height,
-            (size_t)final_width * 4U, 0);
+        uint32_t final_width = 0U;
+        uint32_t final_height = 0U;
+        if (db_renderer_cpu_renderer_is_hdr_float_bo() != 0) {
+            const float *final_pixels = db_renderer_cpu_renderer_pixels_rgba32f(
+                &final_width, &final_height);
+            if (final_pixels == NULL) {
+                db_failf(BACKEND_NAME,
+                         "cpu renderer returned NULL HDR framebuffer");
+            }
+            bo_hash_tracker.final_hash = db_hash_rgba32f_pixels_canonical(
+                final_pixels, final_width, final_height,
+                (size_t)final_width * 4U * sizeof(float), 0);
+        } else {
+            const uint32_t *final_pixels =
+                db_renderer_cpu_renderer_pixels_rgba8(&final_width,
+                                                      &final_height);
+            if (final_pixels == NULL) {
+                db_failf(BACKEND_NAME,
+                         "cpu renderer returned NULL framebuffer");
+            }
+            bo_hash_tracker.final_hash = db_hash_rgba8_pixels_canonical(
+                (const uint8_t *)final_pixels, final_width, final_height,
+                (size_t)final_width * 4U, 0);
+        }
     }
 
     const double total_ms =

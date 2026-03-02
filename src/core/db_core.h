@@ -23,6 +23,7 @@
 #define DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE "backbuffer_draw_mode"
 #define DB_RUNTIME_OPT_BENCH_SPEED "bench_speed"
 #define DB_RUNTIME_OPT_BENCHMARK_MODE "benchmark_mode"
+#define DB_RUNTIME_OPT_CPU_HDR "cpu_hdr"
 #define DB_RUNTIME_OPT_FPS_CAP "fps_cap"
 #define DB_RUNTIME_OPT_FRAME_LIMIT "frame_limit"
 #define DB_RUNTIME_OPT_HASH "hash"

@@ -37,6 +37,7 @@ static void db_usage(void) {
           "shapes>\n"
           "  --bench-speed <value>\n"
           "  --debug-clear-default-framebuffer <0|1>\n"
+          "  --cpu-hdr <0|1>\n"
           "  --fps-cap <value>\n"
           "  --hash <none|state|pixel|both>\n"
           "  --frame-limit <value>\n"
@@ -89,6 +90,7 @@ enum {
     DB_CLI_RT_VSYNC = 9,
     DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER = 10,
     DB_CLI_RT_BACKBUFFER_DRAW_MODE = 11,
+    DB_CLI_RT_CPU_HDR = 12,
 };
 
 #define DB_CLI_RUNTIME_TEXT_LEN 64U
@@ -316,6 +318,7 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
         {"--backbuffer-draw-mode", DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE,
          DB_CLI_RT_BACKBUFFER_DRAW_MODE},
         {"--benchmark-mode", DB_RUNTIME_OPT_BENCHMARK_MODE, DB_CLI_RT_MODE},
+        {"--cpu-hdr", DB_RUNTIME_OPT_CPU_HDR, DB_CLI_RT_CPU_HDR},
         {"--debug-clear-default-framebuffer", NULL,
          DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER},
         {"--fps-cap", DB_RUNTIME_OPT_FPS_CAP, DB_CLI_RT_FPS_CAP},
@@ -331,29 +334,39 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
          map_index < (sizeof(mappings) / sizeof(mappings[0])); map_index++) {
         if (db_string_is(arg, mappings[map_index].cli_option)) {
             const char *value = db_expect_value(argc, argv, index);
-            if (mappings[map_index].kind == DB_CLI_RT_BOOL) {
+            switch (mappings[map_index].kind) {
+            case DB_CLI_RT_BOOL:
+            case DB_CLI_RT_CPU_HDR:
                 db_cli_set_runtime_bool_or_exit(
                     mappings[map_index].runtime_option,
                     mappings[map_index].cli_option, value);
-            } else if (mappings[map_index].kind == DB_CLI_RT_FRAME_LIMIT) {
+                break;
+            case DB_CLI_RT_FRAME_LIMIT:
                 cfg->frame_limit = db_cli_parse_frame_limit_or_exit(
                     mappings[map_index].cli_option, value);
-            } else if (mappings[map_index].kind == DB_CLI_RT_MODE) {
+                break;
+            case DB_CLI_RT_MODE:
                 db_cli_set_runtime_mode_or_exit(value);
-            } else if (mappings[map_index].kind ==
-                       DB_CLI_RT_BACKBUFFER_DRAW_MODE) {
+                break;
+            case DB_CLI_RT_BACKBUFFER_DRAW_MODE:
                 db_cli_set_runtime_backbuffer_draw_mode_or_exit(value, cfg);
-            } else if (mappings[map_index].kind == DB_CLI_RT_FPS_CAP) {
+                break;
+            case DB_CLI_RT_FPS_CAP:
                 cfg->fps_cap = db_cli_parse_fps_cap_or_exit(value);
-            } else if (mappings[map_index].kind == DB_CLI_RT_RANDOM_SEED) {
+                break;
+            case DB_CLI_RT_RANDOM_SEED:
                 db_cli_set_runtime_random_seed_or_exit(value);
-            } else if (mappings[map_index].kind == DB_CLI_RT_HASH_REPORT) {
+                break;
+            case DB_CLI_RT_HASH_REPORT:
                 cfg->hash_report = db_cli_parse_hash_report_or_exit(value);
-            } else if (mappings[map_index].kind == DB_CLI_RT_HASH_MODE) {
+                break;
+            case DB_CLI_RT_HASH_MODE:
                 cfg->hash_mode = db_cli_parse_hash_mode_or_exit(value);
-            } else if (mappings[map_index].kind == DB_CLI_RT_BENCH_SPEED) {
+                break;
+            case DB_CLI_RT_BENCH_SPEED:
                 db_cli_set_runtime_bench_speed_or_exit(value);
-            } else if (mappings[map_index].kind == DB_CLI_RT_OFFSCREEN) {
+                break;
+            case DB_CLI_RT_OFFSCREEN: {
                 int parsed = 0;
                 if (db_parse_bool_text(value, &parsed) == 0) {
                     db_failf("driverbench_cli",
@@ -362,7 +375,9 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                              value);
                 }
                 cfg->offscreen_enabled = (parsed != 0);
-            } else if (mappings[map_index].kind == DB_CLI_RT_VSYNC) {
+                break;
+            }
+            case DB_CLI_RT_VSYNC: {
                 int parsed = 0;
                 if (db_parse_bool_text(value, &parsed) == 0) {
                     db_failf("driverbench_cli",
@@ -370,8 +385,9 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                              value);
                 }
                 cfg->vsync_enabled = (parsed != 0);
-            } else if (mappings[map_index].kind ==
-                       DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER) {
+                break;
+            }
+            case DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER: {
                 int parsed = 0;
                 if (db_parse_bool_text(value, &parsed) == 0) {
                     db_failf("driverbench_cli",
@@ -381,6 +397,11 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                              value);
                 }
                 cfg->debug_clear_default_framebuffer = (parsed != 0);
+                break;
+            }
+            default:
+                db_failf("driverbench_cli", "Unhandled runtime option kind: %d",
+                         mappings[map_index].kind);
             }
             return 1;
         }

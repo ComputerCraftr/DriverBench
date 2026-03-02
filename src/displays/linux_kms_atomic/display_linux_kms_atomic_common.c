@@ -91,6 +91,40 @@ struct fb {
     int is_surface_buffer;
 };
 
+typedef struct fb *(*db_kms_atomic_next_fb_fn_t)(void *user_ctx,
+                                                 uint32_t frame_index);
+
+typedef struct {
+    db_api_t api;
+    const char *backend;
+    const char *renderer_name;
+    const char *capability_mode;
+    double fps_cap;
+    uint32_t frame_limit;
+    uint32_t work_unit_count;
+    struct kms_atomic *kms;
+    struct gbm_surface *release_surface;
+    drmEventContext *event_context;
+    struct fb **cur_fb;
+} db_kms_atomic_frame_loop_t;
+
+typedef struct {
+    int debug_clear_default_framebuffer;
+    int kms_fd;
+    EGLDisplay dpy;
+    EGLSurface surf;
+    struct gbm_surface *gbm_surf;
+    const db_kms_atomic_renderer_vtable_t *renderer;
+} db_kms_atomic_gl_frame_producer_t;
+
+typedef struct {
+    int kms_fd;
+    struct gbm_device *gbm;
+    uint32_t width;
+    uint32_t height;
+    const char *backend;
+} db_kms_atomic_cpu_frame_producer_t;
+
 static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
                             const char *name) {
     drmModeObjectProperties *props =
@@ -409,7 +443,11 @@ static void db_kms_atomic_flip_to_fb(const struct kms_atomic *kms,
         die("drmModeAtomicCommit flip");
     }
     drmModeAtomicFree(commit_req);
-    while (waiting != 0) {
+    for (;;) {
+        if (waiting == 0) {
+            break;
+        }
+
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(kms->fd, &fds);
@@ -423,23 +461,6 @@ static void db_kms_atomic_flip_to_fb(const struct kms_atomic *kms,
         drmHandleEvent(kms->fd, ev);
     }
 }
-
-typedef struct fb *(*db_kms_atomic_next_fb_fn_t)(void *user_ctx,
-                                                 uint32_t frame_index);
-
-typedef struct {
-    db_api_t api;
-    const char *backend;
-    const char *renderer_name;
-    const char *capability_mode;
-    double fps_cap;
-    uint32_t frame_limit;
-    uint32_t work_unit_count;
-    struct kms_atomic *kms;
-    struct gbm_surface *release_surface;
-    drmEventContext *event_context;
-    struct fb **cur_fb;
-} db_kms_atomic_frame_loop_t;
 
 static uint64_t
 db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
@@ -470,15 +491,6 @@ db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
     }
     return bench_frames;
 }
-
-typedef struct {
-    int debug_clear_default_framebuffer;
-    int kms_fd;
-    EGLDisplay dpy;
-    EGLSurface surf;
-    struct gbm_surface *gbm_surf;
-    const db_kms_atomic_renderer_vtable_t *renderer;
-} db_kms_atomic_gl_frame_producer_t;
 
 static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
                                            uint32_t frame_index) {
@@ -765,9 +777,10 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     return 0;
 }
 
-static struct fb *db_cpu_create_fb_from_rgba8(struct gbm_device *gbm, int fd,
-                                              const uint32_t *pixels_rgba8,
-                                              uint32_t width, uint32_t height) {
+static struct fb *db_cpu_create_fb_from_framebuffer(
+    struct gbm_device *gbm, int fd, const uint32_t *pixels_rgba8,
+    const float *pixels_rgba32f, int use_hdr_float_bo, uint32_t width,
+    uint32_t height) {
     uint32_t bo_flags = GBM_BO_USE_SCANOUT;
 #ifdef GBM_BO_USE_WRITE
     bo_flags |= GBM_BO_USE_WRITE;
@@ -792,33 +805,50 @@ static struct fb *db_cpu_create_fb_from_rgba8(struct gbm_device *gbm, int fd,
 
     const size_t dst_stride_pixels =
         (size_t)map_stride_bytes / sizeof(uint32_t);
-    db_convert_rgba8_to_xrgb8888_rows((uint32_t *)map_ptr, dst_stride_pixels,
-                                      pixels_rgba8, (size_t)width, width,
-                                      height);
+    if (use_hdr_float_bo != 0) {
+        if (pixels_rgba32f == NULL) {
+            gbm_bo_unmap(bo, map_data);
+            gbm_bo_destroy(bo);
+            diex("cpu hdr framebuffer is NULL");
+        }
+        db_convert_rgba32f_to_xrgb8888_rows((uint32_t *)map_ptr,
+                                            dst_stride_pixels, pixels_rgba32f,
+                                            (size_t)width * 4U, width, height);
+    } else {
+        if (pixels_rgba8 == NULL) {
+            gbm_bo_unmap(bo, map_data);
+            gbm_bo_destroy(bo);
+            diex("cpu rgba8 framebuffer is NULL");
+        }
+        db_convert_rgba8_to_xrgb8888_rows((uint32_t *)map_ptr,
+                                          dst_stride_pixels, pixels_rgba8,
+                                          (size_t)width, width, height);
+    }
     gbm_bo_unmap(bo, map_data);
 
     return fb_from_bo(fd, bo, 0);
 }
-
-typedef struct {
-    int kms_fd;
-    struct gbm_device *gbm;
-    uint32_t width;
-    uint32_t height;
-    const char *backend;
-} db_kms_atomic_cpu_frame_producer_t;
 
 static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
                                             uint32_t frame_index) {
     db_kms_atomic_cpu_frame_producer_t *producer =
         (db_kms_atomic_cpu_frame_producer_t *)user_ctx;
     db_renderer_cpu_renderer_render_frame(frame_index);
-    const uint32_t *pixels = db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
-    if (pixels == NULL) {
+    const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
+    const uint32_t *pixels_rgba8 = NULL;
+    const float *pixels_rgba32f = NULL;
+    if (use_hdr_float_bo != 0) {
+        pixels_rgba32f = db_renderer_cpu_renderer_pixels_rgba32f(NULL, NULL);
+    } else {
+        pixels_rgba8 = db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
+    }
+    if (((use_hdr_float_bo != 0) && (pixels_rgba32f == NULL)) ||
+        ((use_hdr_float_bo == 0) && (pixels_rgba8 == NULL))) {
         db_failf(producer->backend, "cpu renderer returned NULL framebuffer");
     }
-    return db_cpu_create_fb_from_rgba8(producer->gbm, producer->kms_fd, pixels,
-                                       producer->width, producer->height);
+    return db_cpu_create_fb_from_framebuffer(
+        producer->gbm, producer->kms_fd, pixels_rgba8, pixels_rgba32f,
+        use_hdr_float_bo, producer->width, producer->height);
 }
 
 int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
@@ -853,13 +883,23 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
 
     db_renderer_cpu_renderer_render_frame(0);
-    const uint32_t *initial_pixels =
-        db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
-    if (initial_pixels == NULL) {
+    const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
+    const uint32_t *initial_pixels_rgba8 = NULL;
+    const float *initial_pixels_rgba32f = NULL;
+    if (use_hdr_float_bo != 0) {
+        initial_pixels_rgba32f =
+            db_renderer_cpu_renderer_pixels_rgba32f(NULL, NULL);
+    } else {
+        initial_pixels_rgba8 =
+            db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
+    }
+    if (((use_hdr_float_bo != 0) && (initial_pixels_rgba32f == NULL)) ||
+        ((use_hdr_float_bo == 0) && (initial_pixels_rgba8 == NULL))) {
         db_failf(backend, "cpu renderer returned NULL framebuffer");
     }
-    struct fb *cur =
-        db_cpu_create_fb_from_rgba8(gbm, kms.fd, initial_pixels, width, height);
+    struct fb *cur = db_cpu_create_fb_from_framebuffer(
+        gbm, kms.fd, initial_pixels_rgba8, initial_pixels_rgba32f,
+        use_hdr_float_bo, width, height);
 
     db_kms_atomic_commit_modeset(&kms, width, height, cur->fb_id);
 
