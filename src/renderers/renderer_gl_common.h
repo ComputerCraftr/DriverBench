@@ -159,7 +159,78 @@ int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
                                 const void *pixels);
 int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
                               unsigned int internal_format, const void *pixels);
+int db_gl_texture_allocate_rgba8(unsigned int texture, int width, int height,
+                                 const void *pixels);
+int db_gl_texture_create_rgba8(unsigned int *out_texture, int width, int height,
+                               const void *pixels);
 void db_gl_texture_delete_if_valid(unsigned int *texture);
+void db_gl_texture_bind_2d(unsigned int texture);
+void db_gl_texture_sub_image_2d_rgba(int x_px, int y_px, int width, int height,
+                                     const void *pixels);
+void db_gl_clear_color_rgba(float red, float green, float blue, float alpha);
+void db_gl_clear_color_rgb(float red, float green, float blue);
+void db_gl_clear_color_buffer(void);
+void db_gl_set_blend_enabled(int enabled);
+void db_gl_set_cull_face_enabled(int enabled);
+void db_gl_set_depth_test_enabled(int enabled);
+void db_gl_set_scissor_enabled(int enabled);
+void db_gl_set_scissor_rect(int x_px, int y_px, int width, int height);
+void db_gl_set_pack_alignment_1(void);
+void db_gl_read_pixels_rgba8(int x_px, int y_px, int width, int height,
+                             void *pixels);
+void db_gl_set_texture_2d_enabled(int enabled);
+void db_gl_set_client_state_vertex_array_enabled(int enabled);
+void db_gl_set_client_state_color_array_enabled(int enabled);
+void db_gl_set_client_state_texcoord_array_enabled(int enabled);
+void db_gl_set_vertex_pointer_2f(int stride_bytes, const void *pointer);
+void db_gl_set_color_pointer_f(int component_count, int stride_bytes,
+                               const void *pointer);
+void db_gl_set_texcoord_pointer_2f(int stride_bytes, const void *pointer);
+void db_gl_draw_arrays_triangles(int first, int count);
+void db_gl_draw_arrays_triangle_strip(int first, int count);
+void db_gl_active_texture(unsigned int texture_unit);
+void db_gl_attach_shader(unsigned int program, unsigned int shader);
+void db_gl_bind_framebuffer(unsigned int target, unsigned int framebuffer);
+void db_gl_bind_vertex_array(unsigned int vao);
+void db_gl_blit_framebuffer(int src_x0, int src_y0, int src_x1, int src_y1,
+                            int dst_x0, int dst_y0, int dst_x1, int dst_y1,
+                            unsigned int mask, unsigned int filter);
+unsigned int db_gl_check_framebuffer_status(unsigned int target);
+void db_gl_compile_shader(unsigned int shader);
+unsigned int db_gl_create_program(void);
+unsigned int db_gl_create_shader(unsigned int shader_type);
+void db_gl_delete_framebuffers(int count, const unsigned int *framebuffers);
+void db_gl_delete_program(unsigned int program);
+void db_gl_delete_shader(unsigned int shader);
+void db_gl_delete_vertex_arrays(int count, const unsigned int *arrays);
+void db_gl_enable_vertex_attrib_array(unsigned int index);
+void db_gl_framebuffer_texture_2d(unsigned int target, unsigned int attachment,
+                                  unsigned int textarget, unsigned int texture,
+                                  int level);
+void db_gl_gen_framebuffers(int count, unsigned int *framebuffers);
+void db_gl_gen_vertex_arrays(int count, unsigned int *arrays);
+void db_gl_get_integerv(unsigned int pname, int *value);
+void db_gl_get_program_info_log(unsigned int program, int buf_size, int *length,
+                                char *log);
+void db_gl_get_program_iv(unsigned int program, unsigned int pname, int *value);
+void db_gl_get_shader_info_log(unsigned int shader, int buf_size, int *length,
+                               char *log);
+void db_gl_get_shader_iv(unsigned int shader, unsigned int pname, int *value);
+int db_gl_get_uniform_location(unsigned int program, const char *name);
+void db_gl_link_program(unsigned int program);
+void db_gl_shader_source_single(unsigned int shader, const char *source);
+void db_gl_uniform1i(int location, int value);
+void db_gl_uniform1ui(int location, unsigned int value);
+void db_gl_uniform3f(int location, float x_val, float y_val, float z_val);
+void db_gl_use_program(unsigned int program);
+void db_gl_vertex_attrib_pointer_2f(unsigned int index, int stride_bytes,
+                                    size_t byte_offset);
+void db_gl_vertex_attrib_pointer_3f(unsigned int index, int stride_bytes,
+                                    size_t byte_offset);
+unsigned int db_gl_get_error_code(void);
+const char *db_gl_get_version_string(void);
+const char *db_gl_get_renderer_string(void);
+const char *db_gl_get_extensions_string(void);
 void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver);
 void db_gl_preload_upload_proc_table(void);
 void db_gl_probe_upload_capabilities(size_t bytes,
@@ -176,6 +247,10 @@ void db_gl_upload_buffer(const void *source, size_t bytes,
                          int use_persistent_upload, void *persistent_mapped_ptr,
                          int use_map_range_upload, int use_map_buffer_upload);
 void db_gl_unmap_current_array_buffer(void);
+int db_gl_row_range_to_scissor_rect(uint32_t row_start, uint32_t row_count,
+                                    uint32_t total_rows, int viewport_width,
+                                    int viewport_height, int *x_out, int *y_out,
+                                    int *width_out, int *height_out);
 size_t db_gl_collect_row_upload_ranges(
     uint32_t row_unit_width, uint32_t row_count_total, size_t unit_stride_bytes,
     const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,

@@ -14,23 +14,13 @@
 #include "../renderer_snake_common.h"
 #include "../renderer_snake_shape_common.h"
 
-#ifdef __APPLE__
-#include <OpenGL/gl.h>
-#include <OpenGL/gltypes.h>
-#elifdef DB_HAS_OPENGL_DESKTOP
-#define GL_GLEXT_PROTOTYPES
-#include <GL/gl.h>
-#else
-#include <GLES/gl.h>
-#endif
-
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
 #define DB_NDC_TO_VIEWPORT_HALF_F 0.5F
 #define DB_GL1_GRADIENT_DIRTY_RANGE_CAP 2U
 #define DB_GL1_GRADIENT_MESH_ROW_THRESHOLD 8U
 #define DB_GL1_GRADIENT_REPLAY_ROW_CAP 4U
-#define ES_STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_ES_VERTEX_FLOAT_STRIDE))
-#define STRIDE_BYTES ((GLsizei)(sizeof(float) * DB_VERTEX_FLOAT_STRIDE))
+#define ES_STRIDE_BYTES ((int)(sizeof(float) * DB_ES_VERTEX_FLOAT_STRIDE))
+#define STRIDE_BYTES ((int)(sizeof(float) * DB_VERTEX_FLOAT_STRIDE))
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
@@ -57,10 +47,10 @@ typedef struct {
     db_snake_shape_row_bounds_t *snake_row_bounds;
     size_t snake_row_bounds_capacity;
     size_t snake_scratch_capacity;
-    GLint last_viewport_w;
-    GLint last_viewport_h;
+    int last_viewport_w;
+    int last_viewport_h;
     int backbuffer_valid;
-    GLuint vbo;
+    unsigned int vbo;
     unsigned int bound_array_buffer;
     int client_arrays_configured;
     int rect_clear_scope_active;
@@ -69,8 +59,8 @@ typedef struct {
 
 typedef struct {
     uint32_t total_rows;
-    GLint viewport_h;
-    GLint viewport_w;
+    int viewport_h;
+    int viewport_w;
 } db_gl1_gradient_gpu_apply_ctx_t;
 
 typedef struct {
@@ -300,83 +290,22 @@ static void db_gl1_write_gradient_row_color_to_mesh(uint32_t row, float row_r,
                                      row_b);
 }
 
-static int db_gl1_row_range_to_copy_rect(uint32_t row_start, uint32_t row_count,
-                                         uint32_t total_rows,
-                                         GLint viewport_width,
-                                         GLint viewport_height, GLint *x_out,
-                                         GLint *y_out, GLsizei *width_out,
-                                         GLsizei *height_out) {
-    if ((row_count == 0U) || (total_rows == 0U) || (row_start >= total_rows) ||
-        (viewport_width <= 0) || (viewport_height <= 0) || (x_out == NULL) ||
-        (y_out == NULL) || (width_out == NULL) || (height_out == NULL)) {
-        return 0;
-    }
-
-    const uint32_t row_end = db_u32_min(total_rows, row_start + row_count);
-    if (row_end <= row_start) {
-        return 0;
-    }
-
-    // Compute bounds in top-origin tile space -> top-origin pixel space.
-    // py_top/py_bottom are measured from the TOP of the framebuffer.
-    GLint py_top = (GLint)(((uint64_t)row_start * (uint64_t)viewport_height) /
-                           (uint64_t)total_rows);
-    GLint py_bottom = (GLint)(((uint64_t)row_end * (uint64_t)viewport_height) /
-                              (uint64_t)total_rows);
-
-    // Ensure final row reaches the bottom edge.
-    if (row_end == total_rows) {
-        py_bottom = viewport_height;
-    }
-
-    if (py_top < 0) {
-        py_top = 0;
-    }
-    if (py_bottom > viewport_height) {
-        py_bottom = viewport_height;
-    }
-    if (py_bottom <= py_top) {
-        return 0;
-    }
-
-    // Convert to OpenGL scissor space (bottom-origin).
-    GLint rect_y = viewport_height - py_bottom;
-    GLsizei rect_h = (GLsizei)(py_bottom - py_top);
-
-    if (rect_y < 0) {
-        rect_h = (GLsizei)(rect_h + rect_y);
-        rect_y = 0;
-    }
-    if ((rect_y + (GLint)rect_h) > viewport_height) {
-        rect_h = (GLsizei)(viewport_height - rect_y);
-    }
-    if (rect_h <= 0) {
-        return 0;
-    }
-
-    *x_out = 0;
-    *y_out = rect_y;
-    *width_out = (GLsizei)viewport_width;
-    *height_out = rect_h;
-    return 1;
-}
-
 static void db_gl1_configure_client_arrays_if_needed(void) {
     if (g_state.client_arrays_configured != 0) {
         return;
     }
     (void)db_gl_bind_array_buffer_cached(0U, &g_state.bound_array_buffer);
 
-    const GLsizei client_stride =
+    const int client_stride =
         (g_state.is_es_context != 0) ? ES_STRIDE_BYTES : STRIDE_BYTES;
-    const GLint client_color_components = (g_state.is_es_context != 0)
-                                              ? DB_ES_VERTEX_COLOR_FLOAT_COUNT
-                                              : DB_VERTEX_COLOR_FLOAT_COUNT;
+    const int client_color_components = (g_state.is_es_context != 0)
+                                            ? DB_ES_VERTEX_COLOR_FLOAT_COUNT
+                                            : DB_VERTEX_COLOR_FLOAT_COUNT;
 
-    glVertexPointer(DB_VERTEX_POSITION_FLOAT_COUNT, GL_FLOAT, client_stride,
-                    &g_state.vertex.vertices[0]);
-    glColorPointer(client_color_components, GL_FLOAT, client_stride,
-                   &g_state.vertex.vertices[DB_VERTEX_POSITION_FLOAT_COUNT]);
+    db_gl_set_vertex_pointer_2f(client_stride, &g_state.vertex.vertices[0]);
+    db_gl_set_color_pointer_f(
+        client_color_components, client_stride,
+        &g_state.vertex.vertices[DB_VERTEX_POSITION_FLOAT_COUNT]);
 
     g_state.client_arrays_configured = 1;
     g_state.vbo_arrays_configured = 0;
@@ -386,40 +315,39 @@ static void db_gl1_configure_vbo_arrays_if_needed(void) {
     if (g_state.vbo == 0U || g_state.vbo_arrays_configured != 0) {
         return;
     }
-    (void)db_gl_bind_array_buffer_cached((unsigned int)g_state.vbo,
+    (void)db_gl_bind_array_buffer_cached(g_state.vbo,
                                          &g_state.bound_array_buffer);
 
-    const GLsizei vbo_stride =
+    const int vbo_stride =
         (g_state.is_es_context != 0) ? ES_STRIDE_BYTES : STRIDE_BYTES;
-    const GLint vbo_color_components = (g_state.is_es_context != 0)
-                                           ? DB_ES_VERTEX_COLOR_FLOAT_COUNT
-                                           : DB_VERTEX_COLOR_FLOAT_COUNT;
+    const int vbo_color_components = (g_state.is_es_context != 0)
+                                         ? DB_ES_VERTEX_COLOR_FLOAT_COUNT
+                                         : DB_VERTEX_COLOR_FLOAT_COUNT;
 
-    glVertexPointer(DB_VERTEX_POSITION_FLOAT_COUNT, GL_FLOAT, vbo_stride,
-                    db_gl_vbo_offset_ptr(0U));
-    glColorPointer(
-        vbo_color_components, GL_FLOAT, vbo_stride,
+    db_gl_set_vertex_pointer_2f(vbo_stride, db_gl_vbo_offset_ptr(0U));
+    db_gl_set_color_pointer_f(
+        vbo_color_components, vbo_stride,
         db_gl_vbo_offset_ptr(sizeof(float) * DB_VERTEX_POSITION_FLOAT_COUNT));
 
     g_state.vbo_arrays_configured = 1;
     g_state.client_arrays_configured = 0;
 }
 
-static void db_gl1_draw_solid_rect_pixels(GLint rect_x, GLint rect_y,
-                                          GLsizei rect_width,
-                                          GLsizei rect_height, GLint viewport_w,
-                                          GLint viewport_h, float color_r,
-                                          float color_g, float color_b) {
+static void db_gl1_draw_solid_rect_pixels(int rect_x, int rect_y,
+                                          int rect_width, int rect_height,
+                                          int viewport_w, int viewport_h,
+                                          float color_r, float color_g,
+                                          float color_b) {
     if ((rect_width <= 0) || (rect_height <= 0) || (viewport_w <= 0) ||
         (viewport_h <= 0)) {
         return;
     }
 
     // Clamp to framebuffer.
-    GLint x0 = rect_x;
-    GLint y0 = rect_y;
-    GLint x1 = rect_x + (GLint)rect_width;
-    GLint y1 = rect_y + (GLint)rect_height;
+    int x0 = rect_x;
+    int y0 = rect_y;
+    int x1 = rect_x + rect_width;
+    int y1 = rect_y + rect_height;
     if (x0 < 0) {
         x0 = 0;
     }
@@ -436,9 +364,9 @@ static void db_gl1_draw_solid_rect_pixels(GLint rect_x, GLint rect_y,
         return;
     }
 
-    glScissor(x0, y0, x1 - x0, y1 - y0);
-    glClearColor(color_r, color_g, color_b, 1.0F);
-    glClear(GL_COLOR_BUFFER_BIT);
+    db_gl_set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+    db_gl_clear_color_rgb(color_r, color_g, color_b);
+    db_gl_clear_color_buffer();
 }
 
 static void db_gl1_draw_gradient_row_color(uint32_t row, float row_r,
@@ -449,13 +377,13 @@ static void db_gl1_draw_gradient_row_color(uint32_t row, float row_r,
     if (ctx == NULL) {
         return;
     }
-    GLint rect_x = 0;
-    GLint rect_y = 0;
-    GLsizei rect_width = 0;
-    GLsizei rect_height = 0;
-    if (db_gl1_row_range_to_copy_rect(row, 1U, ctx->total_rows, ctx->viewport_w,
-                                      ctx->viewport_h, &rect_x, &rect_y,
-                                      &rect_width, &rect_height) == 0) {
+    int rect_x = 0;
+    int rect_y = 0;
+    int rect_width = 0;
+    int rect_height = 0;
+    if (db_gl_row_range_to_scissor_rect(
+            row, 1U, ctx->total_rows, ctx->viewport_w, ctx->viewport_h, &rect_x,
+            &rect_y, &rect_width, &rect_height) == 0) {
         return;
     }
     db_gl1_draw_solid_rect_pixels(rect_x, rect_y, rect_width, rect_height,
@@ -467,7 +395,7 @@ static void
 db_gl1_draw_gradient_dirty_rows_gpu(const db_dirty_row_range_t *dirty_ranges,
                                     size_t dirty_count, uint32_t head_row,
                                     int direction_down, uint32_t cycle_index,
-                                    GLint viewport_w, GLint viewport_h) {
+                                    int viewport_w, int viewport_h) {
     if (viewport_w <= 0 || viewport_h <= 0) {
         return;
     }
@@ -622,15 +550,15 @@ db_gl1_draw_gradient_dirty_rows_mesh(const db_dirty_row_range_t *dirty_ranges,
             (size_t)g_state.vertex.draw_vertex_count) {
             continue;
         }
-        const GLuint first_vertex_u32 =
+        const unsigned int first_vertex_u32 =
             db_checked_size_to_u32(BACKEND_NAME, "first_vertex", first_vertex);
-        const GLuint vertex_count_u32 =
+        const unsigned int vertex_count_u32 =
             db_checked_size_to_u32(BACKEND_NAME, "vertex_count", vertex_count);
-        glDrawArrays(GL_TRIANGLES,
-                     db_checked_u32_to_i32(BACKEND_NAME, "first_vertex",
-                                           first_vertex_u32),
-                     db_checked_u32_to_i32(BACKEND_NAME, "vertex_count",
-                                           vertex_count_u32));
+        db_gl_draw_arrays_triangles(
+            db_checked_u32_to_i32(BACKEND_NAME, "first_vertex",
+                                  first_vertex_u32),
+            db_checked_u32_to_i32(BACKEND_NAME, "vertex_count",
+                                  vertex_count_u32));
     }
 }
 
@@ -638,18 +566,18 @@ static void
 db_gl1_draw_gradient_dirty_rows_hybrid(const db_dirty_row_range_t *dirty_ranges,
                                        size_t dirty_count, uint32_t head_row,
                                        int direction_down, uint32_t cycle_index,
-                                       GLint viewport_w, GLint viewport_h) {
+                                       int viewport_w, int viewport_h) {
     const int use_mesh =
         db_gl1_gradient_should_use_mesh(dirty_ranges, dirty_count);
     if (use_mesh != 0) {
         const int reopen_scissor = (g_state.rect_clear_scope_active != 0);
         if (reopen_scissor != 0) {
-            glDisable(GL_SCISSOR_TEST);
+            db_gl_set_scissor_enabled(0);
         }
         db_gl1_draw_gradient_dirty_rows_mesh(
             dirty_ranges, dirty_count, head_row, direction_down, cycle_index);
         if (reopen_scissor != 0) {
-            glEnable(GL_SCISSOR_TEST);
+            db_gl_set_scissor_enabled(1);
         }
         return;
     }
@@ -682,15 +610,15 @@ static void db_gl1_draw_bands_gpu(uint32_t cols, uint32_t band_count,
                        (uint64_t)band_count);
 
         // Map tile-space edges to framebuffer pixels (HiDPI-safe).
-        GLint x0 = (GLint)(((uint64_t)tile_x0 * (uint64_t)viewport_w) /
-                           (uint64_t)cols);
-        GLint x1 = (GLint)(((uint64_t)tile_x1 * (uint64_t)viewport_w) /
-                           (uint64_t)cols);
+        int x0 =
+            (int)(((uint64_t)tile_x0 * (uint64_t)viewport_w) / (uint64_t)cols);
+        int x1 =
+            (int)(((uint64_t)tile_x1 * (uint64_t)viewport_w) / (uint64_t)cols);
 
         // Ensure the last band reaches the right edge (avoid division
         // gaps).
         if (band + 1U == band_count) {
-            x1 = (GLint)viewport_w;
+            x1 = (int)viewport_w;
         }
 
         float color_r = 0.0F;
@@ -703,15 +631,15 @@ static void db_gl1_draw_bands_gpu(uint32_t cols, uint32_t band_count,
         if (x0 < 0) {
             x0 = 0;
         }
-        if (x1 > (GLint)viewport_w) {
-            x1 = (GLint)viewport_w;
+        if (x1 > (int)viewport_w) {
+            x1 = (int)viewport_w;
         }
-        const GLsizei rect_w = (GLsizei)(x1 - x0);
+        const int rect_w = x1 - x0;
         if (rect_w <= 0) {
             continue;
         }
 
-        db_gl1_draw_solid_rect_pixels(x0, 0, rect_w, (GLsizei)viewport_h,
+        db_gl1_draw_solid_rect_pixels(x0, 0, rect_w, (int)viewport_h,
                                       viewport_w, viewport_h, color_r, color_g,
                                       color_b);
     }
@@ -858,15 +786,15 @@ static void db_gl1_dirty_ranges_draw(const db_gl_upload_range_t *ranges,
             (size_t)g_state.vertex.draw_vertex_count) {
             continue;
         }
-        const GLuint first_vertex_u32 =
+        const unsigned int first_vertex_u32 =
             db_checked_size_to_u32(BACKEND_NAME, "first_vertex", first_vertex);
-        const GLuint vertex_count_u32 =
+        const unsigned int vertex_count_u32 =
             db_checked_size_to_u32(BACKEND_NAME, "vertex_count", vertex_count);
-        glDrawArrays(GL_TRIANGLES,
-                     db_checked_u32_to_i32(BACKEND_NAME, "first_vertex",
-                                           first_vertex_u32),
-                     db_checked_u32_to_i32(BACKEND_NAME, "vertex_count",
-                                           vertex_count_u32));
+        db_gl_draw_arrays_triangles(
+            db_checked_u32_to_i32(BACKEND_NAME, "first_vertex",
+                                  first_vertex_u32),
+            db_checked_u32_to_i32(BACKEND_NAME, "vertex_count",
+                                  vertex_count_u32));
     }
 }
 
@@ -895,25 +823,24 @@ static void db_gl1_dirty_ranges_draw_vbo(const db_gl_upload_range_t *ranges,
             continue;
         }
 
-        const GLuint first_vertex_u32 =
+        const unsigned int first_vertex_u32 =
             db_checked_size_to_u32(BACKEND_NAME, "first_vertex", first_vertex);
-        const GLuint vertex_count_u32 =
+        const unsigned int vertex_count_u32 =
             db_checked_size_to_u32(BACKEND_NAME, "vertex_count", vertex_count);
 
-        glDrawArrays(GL_TRIANGLES,
-                     db_checked_u32_to_i32(BACKEND_NAME, "first_vertex",
-                                           first_vertex_u32),
-                     db_checked_u32_to_i32(BACKEND_NAME, "vertex_count",
-                                           vertex_count_u32));
+        db_gl_draw_arrays_triangles(
+            db_checked_u32_to_i32(BACKEND_NAME, "first_vertex",
+                                  first_vertex_u32),
+            db_checked_u32_to_i32(BACKEND_NAME, "vertex_count",
+                                  vertex_count_u32));
     }
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_init(void) {
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
+    db_gl_set_depth_test_enabled(0);
+    db_gl_set_cull_face_enabled(0);
 
-    g_state.is_es_context =
-        db_gl_is_es_context((const char *)glGetString(GL_VERSION));
+    g_state.is_es_context = db_gl_is_es_context(db_gl_get_version_string());
     g_state.vertex.vertex_stride = (g_state.is_es_context != 0)
                                        ? DB_ES_VERTEX_FLOAT_STRIDE
                                        : DB_VERTEX_FLOAT_STRIDE;
@@ -971,8 +898,8 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     g_state.capability_mode[0] = '\0';
     db_gl1_refresh_capability_mode();
 
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_COLOR_ARRAY);
+    db_gl_set_client_state_vertex_array_enabled(1);
+    db_gl_set_client_state_color_array_enabled(1);
     g_state.client_arrays_configured = 0;
     g_state.vbo_arrays_configured = 0;
     db_gl1_configure_client_arrays_if_needed();
@@ -982,13 +909,12 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
                                    g_state.vertex.vertex_stride * sizeof(float);
         unsigned int vbo_u32 = 0U;
         if (db_gl_vbo_create_or_zero(&vbo_u32) != 0) {
-            g_state.vbo = (GLuint)vbo_u32;
+            g_state.vbo = vbo_u32;
         }
         if (g_state.vbo != 0U) {
-            if (db_gl_bind_array_buffer_cached((unsigned int)g_state.vbo,
-                                               &g_state.bound_array_buffer) ==
-                0) {
-                db_gl_vbo_delete_if_valid((unsigned int)g_state.vbo);
+            if (db_gl_bind_array_buffer_cached(
+                    g_state.vbo, &g_state.bound_array_buffer) == 0) {
+                db_gl_vbo_delete_if_valid(g_state.vbo);
                 g_state.vbo = 0U;
             }
         }
@@ -1057,8 +983,8 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
     // Use a known viewport size without querying GL state.
     // Pixel-space ops must use drawable pixels; tile math stays on grid
     // cols/rows.
-    const GLint viewport_w = (GLint)viewport_width_px;
-    const GLint viewport_h = (GLint)viewport_height_px;
+    const int viewport_w = viewport_width_px;
+    const int viewport_h = viewport_height_px;
     const int is_snake_pattern =
         db_pattern_uses_history_texture(g_state.runtime.pattern);
     const int is_gradient_pattern =
@@ -1069,7 +995,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
         (is_gradient_pattern != 0) || (is_bands_pattern != 0);
 
     if (use_frame_solid_rect_scope != 0) {
-        glEnable(GL_SCISSOR_TEST);
+        db_gl_set_scissor_enabled(1);
         g_state.rect_clear_scope_active = 1;
     }
 
@@ -1447,9 +1373,9 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
             } else {
                 db_gl1_configure_client_arrays_if_needed();
             }
-            glDrawArrays(GL_TRIANGLES, 0,
-                         (GLsizei)db_gl_draw_vertex_count_i32(
-                             BACKEND_NAME, g_state.vertex.draw_vertex_count));
+            db_gl_draw_arrays_triangles(
+                0, db_gl_draw_vertex_count_i32(
+                       BACKEND_NAME, g_state.vertex.draw_vertex_count));
             g_state.full_draw_frames++;
         } else {
             // Preserved-backbuffer dirty redraw path: upload+draw changed
@@ -1480,7 +1406,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
         g_state.backbuffer_valid = 1;
     }
     if (use_frame_solid_rect_scope != 0) {
-        glDisable(GL_SCISSOR_TEST);
+        db_gl_set_scissor_enabled(0);
         g_state.rect_clear_scope_active = 0;
     }
 
@@ -1492,16 +1418,16 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
 
 void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
     if (g_state.vertex.upload.persistent_mapped_ptr != NULL) {
-        (void)db_gl_bind_array_buffer_cached((unsigned int)g_state.vbo,
+        (void)db_gl_bind_array_buffer_cached(g_state.vbo,
                                              &g_state.bound_array_buffer);
         db_gl_unmap_current_array_buffer();
     }
     if (g_state.vbo != 0U) {
-        db_gl_vbo_delete_if_valid((unsigned int)g_state.vbo);
+        db_gl_vbo_delete_if_valid(g_state.vbo);
         g_state.vbo = 0U;
     }
-    glDisableClientState(GL_VERTEX_ARRAY);
-    glDisableClientState(GL_COLOR_ARRAY);
+    db_gl_set_client_state_vertex_array_enabled(0);
+    db_gl_set_client_state_color_array_enabled(0);
     free(g_state.snake_replay.curr_upload_ranges);
     free(g_state.snake_replay.prev_upload_ranges);
     free(g_state.snake_spans);

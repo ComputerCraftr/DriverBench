@@ -19,11 +19,7 @@ static int db_string_is(const char *value, const char *expected) {
 }
 
 static void db_usage(void) {
-#ifdef DB_HAS_OPENGL_DESKTOP
     const char *renderer_usage = "auto|gl1_5_gles1_1|gl3_3";
-#else
-    const char *renderer_usage = "auto|gl1_5_gles1_1";
-#endif
     fputs("Usage: driverbench [dispatch options] [runtime options]\n"
           "\nDispatch options:\n"
           "  --api <auto|cpu|opengl|vulkan>\n"
@@ -304,10 +300,6 @@ static void db_parse_renderer_or_exit(const char *value, db_cli_config_t *cfg) {
         return;
     }
     if (db_string_is(value, "gl3_3")) {
-#ifndef DB_HAS_OPENGL_DESKTOP
-        db_failf("driverbench_cli",
-                 "renderer gl3_3 is not compiled in this build");
-#endif
         cfg->renderer = DB_GL_RENDERER_GL3_3;
         return;
     }
@@ -405,31 +397,26 @@ db_cli_validate_compiled_support_or_exit(const db_cli_config_t *cfg) {
 
     if (db_dispatch_display_is_compiled(cfg->display) == 0) {
         db_failf("driverbench_cli",
-                 "requested display is not compiled in this build");
+                 "requested display is unavailable in this build");
     }
 
     if (cfg->api_is_auto != 0) {
         if (db_dispatch_display_has_any_api(cfg->display) == 0) {
             db_failf("driverbench_cli",
-                     "requested display has no compatible compiled API");
+                     "requested display has no compatible API");
         }
         return;
     }
 
     if (db_dispatch_api_is_compiled(cfg->api) == 0) {
         db_failf("driverbench_cli",
-                 "requested API is not compiled in this build");
+                 "requested API is unavailable in this build");
     }
 
     if (db_dispatch_display_supports_api(cfg->display, cfg->api) == 0) {
         db_failf("driverbench_cli",
                  "requested display/API combination is unavailable in this "
                  "build");
-    }
-    if ((cfg->api == DB_API_OPENGL) && (cfg->renderer_is_auto == 0) &&
-        (db_dispatch_renderer_is_compiled(cfg->renderer) == 0)) {
-        db_failf("driverbench_cli",
-                 "requested OpenGL renderer is not compiled in this build");
     }
 }
 
@@ -447,9 +434,32 @@ db_cli_resolve_effective_api_or_exit(const db_cli_config_t *cfg) {
     if (db_dispatch_display_supports_api(cfg->display, DB_API_CPU) != 0) {
         return DB_API_CPU;
     }
-    db_failf("driverbench_cli",
-             "requested display has no compatible compiled API");
+    db_failf("driverbench_cli", "requested display has no compatible API");
     return DB_API_CPU;
+}
+
+static void
+db_cli_validate_renderer_selection_or_exit(const db_cli_config_t *cfg) {
+    if ((cfg == NULL) || (cfg->renderer_is_auto != 0)) {
+        return;
+    }
+    if (cfg->api_is_auto != 0) {
+        db_failf("driverbench_cli",
+                 "--renderer requires an explicit API; set --api opengl");
+    }
+
+    const db_api_t effective_api = db_cli_resolve_effective_api_or_exit(cfg);
+    if (effective_api != DB_API_OPENGL) {
+        db_failf("driverbench_cli",
+                 "--renderer requires effective API OpenGL, but effective API "
+                 "is %s; set --api opengl",
+                 db_dispatch_api_name(effective_api));
+    }
+
+    if (db_dispatch_display_supports_api(cfg->display, DB_API_OPENGL) == 0) {
+        db_failf("driverbench_cli",
+                 "--renderer requires OpenGL support for selected display");
+    }
 }
 
 static int db_cli_hash_mode_requests_state(const char *hash_mode) {
@@ -509,11 +519,7 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
     *out_cfg = (db_cli_config_t){
         .api = DB_API_OPENGL,
         .display = DB_DISPLAY_OFFSCREEN,
-#ifdef DB_HAS_OPENGL_DESKTOP
         .renderer = DB_GL_RENDERER_GL3_3,
-#else
-        .renderer = DB_GL_RENDERER_GL1_5_GLES1_1,
-#endif
         .kms_card = "/dev/dri/card0",
         .hash_mode = "none",
         .hash_report = "both",
@@ -566,5 +572,6 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
     }
 
     db_cli_validate_compiled_support_or_exit(out_cfg);
+    db_cli_validate_renderer_selection_or_exit(out_cfg);
     db_cli_validate_hash_mode_or_exit(out_cfg);
 }

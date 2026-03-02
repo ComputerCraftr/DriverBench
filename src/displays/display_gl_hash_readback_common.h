@@ -6,15 +6,7 @@
 #include <stdlib.h>
 
 #include "../core/db_core.h"
-
-#ifdef __APPLE__
-#include <OpenGL/gl.h>
-#elifdef DB_HAS_OPENGL_DESKTOP
-#define GL_GLEXT_PROTOTYPES
-#include <GL/gl.h>
-#else
-#include <GLES/gl.h>
-#endif
+#include "../renderers/renderer_gl_common.h"
 
 typedef struct {
     uint8_t *bytes;
@@ -47,9 +39,8 @@ static inline const uint8_t *db_gl_read_framebuffer_rgba8_or_fail(
         scratch->size = byte_count;
     }
 
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    glReadPixels(0, 0, width_px, height_px, GL_RGBA, GL_UNSIGNED_BYTE,
-                 scratch->bytes);
+    db_gl_set_pack_alignment_1();
+    db_gl_read_pixels_rgba8(0, 0, width_px, height_px, scratch->bytes);
     return scratch->bytes;
 }
 

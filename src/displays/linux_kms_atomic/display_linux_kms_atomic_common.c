@@ -10,12 +10,6 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
-#ifdef DB_HAS_OPENGL_DESKTOP
-#include <GL/gl.h>
-#else
-#include <GLES/gl.h>
-#endif
-
 #include <errno.h>
 #include <fcntl.h>
 #include <gbm.h>
@@ -491,9 +485,9 @@ static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
     db_kms_atomic_gl_frame_producer_t *producer =
         (db_kms_atomic_gl_frame_producer_t *)user_ctx;
     if (producer->debug_clear_default_framebuffer != 0) {
-        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-        glClear(GL_COLOR_BUFFER_BIT);
+        db_gl_clear_color_rgba(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                               BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        db_gl_clear_color_buffer();
     }
     producer->renderer->render_frame(frame_index);
     eglSwapBuffers(producer->dpy, producer->surf);
@@ -547,7 +541,9 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
                     dpy, cfg, (EGLNativeWindowType)gbm_surf, NULL);
                 if ((surf != EGL_NO_SURFACE) &&
                     eglMakeCurrent(dpy, surf, surf, ctx)) {
-                    const char *ver = (const char *)glGetString(GL_VERSION);
+                    db_gl_set_proc_resolver(db_kms_egl_resolve_proc);
+                    db_gl_preload_upload_proc_table();
+                    const char *ver = db_gl_get_version_string();
                     if (db_gl_version_text_at_least(ver, req_gl_major,
                                                     req_gl_minor)) {
                         *out_cfg = cfg;
@@ -662,15 +658,15 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
         allow_gles1_1_fallback);
 
-    const char *runtime_version = (const char *)glGetString(GL_VERSION);
-    const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
+    db_gl_set_proc_resolver(db_kms_egl_resolve_proc);
+    db_gl_preload_upload_proc_table();
+    const char *runtime_version = db_gl_get_version_string();
+    const char *runtime_renderer = db_gl_get_renderer_string();
     const int runtime_is_gles = db_display_log_gl_runtime_api(
         backend, runtime_version, runtime_renderer);
     if (runtime_check != NULL) {
         runtime_check(backend, runtime_version, runtime_is_gles);
     }
-    db_gl_set_proc_resolver(db_kms_egl_resolve_proc);
-    db_gl_preload_upload_proc_table();
 
     const int viewport_width =
         db_checked_u32_to_i32(backend, "viewport_width", width);
@@ -693,9 +689,9 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     const int debug_clear_default_framebuffer =
         (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0;
     if (debug_clear_default_framebuffer != 0) {
-        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-        glClear(GL_COLOR_BUFFER_BIT);
+        db_gl_clear_color_rgba(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                               BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        db_gl_clear_color_buffer();
     }
     renderer->render_frame(0);
     eglSwapBuffers(dpy, surf);

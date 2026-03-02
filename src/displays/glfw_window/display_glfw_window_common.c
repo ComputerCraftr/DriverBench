@@ -103,8 +103,6 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
         *out_is_gles = 0;
     }
     db_glfw_init_or_fail(backend);
-
-#ifdef DB_HAS_OPENGL_DESKTOP
     GLFWwindow *window = db_glfw_try_context_window(
         title, width_px, height_px, GLFW_OPENGL_API, gl_context_major,
         gl_context_minor, 0, swap_interval, offscreen_enabled);
@@ -125,21 +123,6 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     }
     db_infof(backend, "OpenGL context creation failed; fell back to GLES 1.1");
     return window;
-#else
-    (void)gl_context_major;
-    (void)gl_context_minor;
-    GLFWwindow *window = db_glfw_try_context_window(
-        title, width_px, height_px, GLFW_OPENGL_ES_API, 1, 1, 0, swap_interval,
-        offscreen_enabled);
-    if (window == NULL) {
-        glfwTerminate();
-        db_failf(backend, "glfwCreateWindow failed for OpenGL ES 1.1");
-    }
-    if (out_is_gles != NULL) {
-        *out_is_gles = 1;
-    }
-    return window;
-#endif
 }
 
 void db_glfw_destroy_window(GLFWwindow *window) {

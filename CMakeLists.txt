@@ -29,10 +29,6 @@ set(DB_CORE_SOURCES
 )
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
-option(DB_BUILD_OPENGL "Build OpenGL benchmark backend" ON)
-option(DB_FORCE_GLES_ONLY
-  "Force OpenGL backend to compile in GLES-only mode (for build validation/testing)"
-  OFF)
 option(DB_BUILD_GLFW_WINDOW_DISPLAY "Build GLFW window display backend" ON)
 option(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY
   "Build Linux KMS atomic display backend" ON)
@@ -194,79 +190,34 @@ if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET)
   list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_GLFW=1)
 endif()
 
-if(DB_BUILD_OPENGL)
-  find_package(OpenGL QUIET)
-  set(DB_OPENGL_RUNTIME_ENABLED OFF)
-  set(DB_OPENGL_DESKTOP_AVAILABLE OFF)
+list(APPEND DB_DRIVERBENCH_SOURCES
+  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
+  src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c
+  src/renderers/renderer_gl_common.c
+  src/renderers/renderer_gl_setup.c
+)
+list(APPEND DB_DRIVERBENCH_DEFS
+  OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
+  OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+)
 
-  if(NOT DB_FORCE_GLES_ONLY)
-    if(APPLE)
-      set(DB_OPENGL_DESKTOP_AVAILABLE ON)
-    elseif(TARGET OpenGL::OpenGL OR TARGET OpenGL::GL)
-      set(DB_OPENGL_DESKTOP_AVAILABLE ON)
-    endif()
-  else()
-    message(STATUS
-      "DB_FORCE_GLES_ONLY=ON: skipping desktop OpenGL sources/libraries for OpenGL backend")
-  endif()
-
-  if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET)
-    set(DB_OPENGL_RUNTIME_ENABLED ON)
-  endif()
-
-  if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND UNIX AND NOT APPLE)
-    find_package(PkgConfig QUIET)
-    if(PKG_CONFIG_FOUND)
-      pkg_check_modules(GBM QUIET gbm)
-      pkg_check_modules(EGL QUIET egl)
-      pkg_check_modules(GLES QUIET glesv1_cm)
-      pkg_check_modules(DRM QUIET libdrm)
-      if(GBM_FOUND AND EGL_FOUND AND DRM_FOUND AND GLES_FOUND)
-        list(APPEND DB_DRIVERBENCH_SOURCES
-          src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
-          src/displays/linux_kms_atomic/display_linux_kms_atomic.c
-        )
-        list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_LINUX_KMS_ATOMIC=1)
-        list(APPEND DB_DRIVERBENCH_LIBS
-          ${GBM_LIBRARIES}
-          ${EGL_LIBRARIES}
-          ${GLES_LIBRARIES}
-          ${DRM_LIBRARIES}
-        )
-        set(DB_OPENGL_RUNTIME_ENABLED ON)
-      endif()
-    endif()
-  endif()
-
-  if(DB_OPENGL_RUNTIME_ENABLED)
-    list(APPEND DB_DRIVERBENCH_SOURCES
-      src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
-      src/renderers/renderer_gl_common.c
-      src/renderers/renderer_gl_setup.c
-    )
-    list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_OPENGL_API=1)
-
-    if(DB_OPENGL_DESKTOP_AVAILABLE)
+if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND UNIX AND NOT APPLE)
+  find_package(PkgConfig QUIET)
+  if(PKG_CONFIG_FOUND)
+    pkg_check_modules(GBM QUIET gbm)
+    pkg_check_modules(EGL QUIET egl)
+    pkg_check_modules(DRM QUIET libdrm)
+    if(GBM_FOUND AND EGL_FOUND AND DRM_FOUND)
       list(APPEND DB_DRIVERBENCH_SOURCES
-        src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c
+        src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
+        src/displays/linux_kms_atomic/display_linux_kms_atomic.c
       )
-      list(APPEND DB_DRIVERBENCH_DEFS
-        DB_HAS_OPENGL_DESKTOP=1
-        OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
-        OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+      list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_LINUX_KMS_ATOMIC=1)
+      list(APPEND DB_DRIVERBENCH_LIBS
+        ${GBM_LIBRARIES}
+        ${EGL_LIBRARIES}
+        ${DRM_LIBRARIES}
       )
-      if(APPLE)
-        list(APPEND DB_DRIVERBENCH_LIBS "-framework OpenGL")
-        list(APPEND DB_DRIVERBENCH_DEFS GL_SILENCE_DEPRECATION=1)
-      else()
-        if(TARGET OpenGL::OpenGL)
-          list(APPEND DB_DRIVERBENCH_LIBS OpenGL::OpenGL)
-        elseif(TARGET OpenGL::GL)
-          list(APPEND DB_DRIVERBENCH_LIBS OpenGL::GL)
-        else()
-          list(APPEND DB_DRIVERBENCH_LIBS GL)
-        endif()
-      endif()
     endif()
   endif()
 endif()
@@ -330,12 +281,11 @@ add_executable(${DB_UNIFIED_TARGET}
 )
 db_apply_perf_options(${DB_UNIFIED_TARGET})
 target_compile_definitions(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_DEFS})
-if(GBM_FOUND OR EGL_FOUND OR DRM_FOUND OR GLES_FOUND)
+if(GBM_FOUND OR EGL_FOUND OR DRM_FOUND)
   target_include_directories(${DB_UNIFIED_TARGET} PRIVATE
     ${GBM_INCLUDE_DIRS}
     ${EGL_INCLUDE_DIRS}
     ${DRM_INCLUDE_DIRS}
-    ${GLES_INCLUDE_DIRS}
   )
 endif()
 target_link_libraries(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_LIBS})

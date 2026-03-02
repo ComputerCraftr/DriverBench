@@ -11,47 +11,27 @@
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
 #include "../../driverbench_config.h"
-#ifdef DB_HAS_OPENGL_API
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
-#ifdef DB_HAS_OPENGL_DESKTOP
 #include "../../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
-#endif
 #include "../../renderers/renderer_benchmark_common.h"
 #include "../../renderers/renderer_gl_common.h"
-#endif
 #include "../../renderers/renderer_identity.h"
 #ifdef DB_HAS_VULKAN_API
 #include "../../renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.h"
 #endif
 #include "../../config/benchmark_config.h"
 #include "../display_dispatch.h"
+#include "../display_gl_hash_readback_common.h"
 #include "../display_gl_runtime_common.h"
 #include "../display_hash_common.h"
 #include "../display_types.h"
 #include "display_glfw_window_common.h"
-#ifdef DB_HAS_OPENGL_API
-#include "../display_gl_hash_readback_common.h"
-#endif
-
-#ifdef DB_HAS_OPENGL_API
-#ifdef __APPLE__
-#include <OpenGL/gl.h>
-#include <OpenGL/gltypes.h>
-#elifdef DB_HAS_OPENGL_DESKTOP
-#define GL_GLEXT_PROTOTYPES
-#include <GL/gl.h>
-#else
-#include <GLES/gl.h>
-#endif
-#endif
 
 #define BACKEND_NAME_CPU "display_glfw_window_cpu_renderer"
 #define DB_CAP_MODE_CPU_GLFW_PBO "cpu_glfw_window_pbo"
 #define DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE "cpu_glfw_window_tex_sub_image"
-#ifdef DB_HAS_OPENGL_API
 #define BACKEND_NAME_GL "display_glfw_window_opengl"
-#endif
 #ifdef DB_HAS_VULKAN_API
 #define BACKEND_NAME_VK "display_glfw_window_vulkan"
 #endif
@@ -109,20 +89,19 @@ db_glfw_hash_settings_for_backend(const db_cli_config_t *cfg) {
         0, 0, (cfg != NULL) ? cfg->hash_mode : "none");
 }
 
-#ifdef DB_HAS_OPENGL_API
 typedef struct {
-    GLuint pbo;
+    unsigned int pbo;
     int has_pbo;
     int initialized;
     int needs_full_frame_upload;
-    GLuint texture;
+    unsigned int texture;
     uint32_t texture_height;
     int use_npot;
     uint32_t texture_width;
-    GLfloat texcoords[8];
-    GLfloat vertices[8];
-    GLint last_viewport_w;
-    GLint last_viewport_h;
+    float texcoords[8];
+    float vertices[8];
+    int last_viewport_w;
+    int last_viewport_h;
     // Scratch buffer for upload ranges (damage row -> byte range conversion).
     // Allocated once (or on rare resize), never allocated in the hot path.
     db_gl_upload_range_t *upload_ranges_buf;
@@ -213,32 +192,10 @@ static db_gl_generic_proc_t db_glfw_resolve_proc(const char *name) {
     return (db_gl_generic_proc_t)glfwGetProcAddress(name);
 }
 
-static void db_present_cpu_texture_init(db_cpu_present_gl_state_t *state) {
-    if (state == NULL) {
-        return;
-    }
-    glGenTextures(1, &state->texture);
-    if (state->texture == 0U) {
-        db_failf(BACKEND_NAME_CPU, "failed to create CPU present texture");
-    }
-    glBindTexture(GL_TEXTURE_2D, state->texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-#ifdef GL_CLAMP_TO_EDGE
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-#else
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-#endif
-    state->needs_full_frame_upload = 1;
-}
-
 static void db_present_cpu_texture_resize(db_cpu_present_gl_state_t *state,
                                           uint32_t pixel_width,
                                           uint32_t pixel_height) {
-    if ((state == NULL) || (state->texture == 0U) || (pixel_width == 0U) ||
-        (pixel_height == 0U)) {
+    if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
         return;
     }
 
@@ -246,20 +203,28 @@ static void db_present_cpu_texture_resize(db_cpu_present_gl_state_t *state,
         (state->use_npot != 0) ? pixel_width : db_u32_next_pow2(pixel_width);
     const uint32_t target_height =
         (state->use_npot != 0) ? pixel_height : db_u32_next_pow2(pixel_height);
-    if ((target_width == state->texture_width) &&
-        (target_height == state->texture_height)) {
-        return;
-    }
 
     state->texture_width = target_width;
     state->texture_height = target_height;
-    glBindTexture(GL_TEXTURE_2D, state->texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                 db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
-                                       state->texture_width),
-                 db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
-                                       state->texture_height),
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    if (state->texture == 0U) {
+        if (db_gl_texture_create_rgba8(
+                &state->texture,
+                db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
+                                      state->texture_width),
+                db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
+                                      state->texture_height),
+                NULL) == 0) {
+            db_failf(BACKEND_NAME_CPU, "failed to create CPU present texture");
+        }
+    } else if (db_gl_texture_allocate_rgba8(
+                   state->texture,
+                   db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_width",
+                                         state->texture_width),
+                   db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_tex_height",
+                                         state->texture_height),
+                   NULL) == 0) {
+        db_failf(BACKEND_NAME_CPU, "failed to resize CPU present texture");
+    }
     state->needs_full_frame_upload = 1;
 }
 
@@ -271,7 +236,7 @@ static void db_present_cpu_try_init_pbo(db_cpu_present_gl_state_t *state,
     if (db_gl_context_supports_pbo_upload() == 0) {
         return;
     }
-    state->pbo = (GLuint)db_gl_pbo_create_or_zero();
+    state->pbo = db_gl_pbo_create_or_zero();
     if (state->pbo != 0U) {
         state->has_pbo = 1;
     }
@@ -282,19 +247,21 @@ static void db_present_cpu_init_state(db_cpu_present_gl_state_t *state,
     if ((state == NULL) || (state->initialized != 0)) {
         return;
     }
-    db_present_cpu_texture_init(state);
+    state->texture = 0U;
+    state->needs_full_frame_upload = 1;
     db_present_cpu_try_init_pbo(state, enable_pbo_probe);
 
     db_gl_quad_init(state->vertices);
 
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
-    glEnable(GL_TEXTURE_2D);
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    glVertexPointer(2, GL_FLOAT, 0, state->vertices);
-    glTexCoordPointer(2, GL_FLOAT, 0, state->texcoords);
+    db_gl_set_depth_test_enabled(0);
+    db_gl_set_cull_face_enabled(0);
+    db_gl_set_blend_enabled(0);
+    db_gl_set_scissor_enabled(0);
+    db_gl_set_texture_2d_enabled(1);
+    db_gl_set_client_state_vertex_array_enabled(1);
+    db_gl_set_client_state_texcoord_array_enabled(1);
+    db_gl_set_vertex_pointer_2f(0, state->vertices);
+    db_gl_set_texcoord_pointer_2f(0, state->texcoords);
     state->initialized = 1;
 }
 
@@ -307,19 +274,12 @@ static void db_present_cpu_upload_rows(db_cpu_present_gl_state_t *state,
         ((allow_null_data == 0) && (pixel_data == NULL))) {
         return;
     }
-    glTexSubImage2D(
-        GL_TEXTURE_2D, 0, 0,
-        db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_y", row_start),
+    db_gl_texture_sub_image_2d_rgba(
+        0, db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_y", row_start),
         db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_w", pixel_width),
         db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_upload_h", row_count),
-        GL_RGBA, GL_UNSIGNED_BYTE, pixel_data);
+        pixel_data);
 }
-
-// NOLINTBEGIN(performance-no-int-to-ptr)
-static const GLubyte *db_pbo_offset_ptr(size_t byte_offset) {
-    return (const GLubyte *)(uintptr_t)byte_offset;
-}
-// NOLINTEND(performance-no-int-to-ptr)
 
 static void db_apply_cpu_upload_span(const db_gl_upload_row_span_t *span,
                                      void *user_data) {
@@ -328,8 +288,8 @@ static void db_apply_cpu_upload_span(const db_gl_upload_row_span_t *span,
         return;
     }
     if (ctx->use_pbo != 0) {
-        const GLubyte *pbo_offset =
-            db_pbo_offset_ptr(span->range.dst_offset_bytes);
+        const void *pbo_offset =
+            db_gl_vbo_offset_ptr(span->range.dst_offset_bytes);
         db_present_cpu_upload_rows(ctx->state, ctx->pixel_width,
                                    span->rows.row_start, span->rows.row_count,
                                    pbo_offset, 1);
@@ -366,7 +326,7 @@ static void db_present_cpu_upload_spans(db_cpu_present_gl_state_t *state,
     if (use_pbo != 0) {
         db_gl_upload_ranges_target(pixels, total_bytes, ranges, span_count,
                                    DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
-                                   (unsigned int)state->pbo, 0, NULL, 0, 0);
+                                   state->pbo, 0, NULL, 0, 0);
     }
     db_cpu_upload_apply_ctx_t apply_ctx = {
         .state = state,
@@ -470,7 +430,7 @@ static void db_present_cpu_clear_texture_debug(db_cpu_present_gl_state_t *state,
         return;
     }
 
-    glBindTexture(GL_TEXTURE_2D, state->texture);
+    db_gl_texture_bind_2d(state->texture);
 
     const uint32_t chunk_rows = state->debug_clear_chunk_rows;
     uint32_t row = 0U;
@@ -478,27 +438,37 @@ static void db_present_cpu_clear_texture_debug(db_cpu_present_gl_state_t *state,
         const uint32_t rows_left = pixel_height - row;
         const uint32_t upload_rows =
             (rows_left < chunk_rows) ? rows_left : chunk_rows;
-        glTexSubImage2D(
-            GL_TEXTURE_2D, 0, 0,
+        db_gl_texture_sub_image_2d_rgba(
+            0,
             db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_debug_clear_y", row),
             db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_debug_clear_w",
                                   pixel_width),
             db_checked_u32_to_i32(BACKEND_NAME_CPU, "cpu_debug_clear_h",
                                   upload_rows),
-            GL_RGBA, GL_UNSIGNED_BYTE, state->debug_clear_buf);
+            state->debug_clear_buf);
         row += upload_rows;
     }
 }
 
 static void
-db_present_cpu_prepare_scratch(db_cpu_present_gl_state_t *state,
-                               uint32_t pixel_width, uint32_t pixel_height,
-                               int debug_clear_default_framebuffer) {
+db_present_cpu_prepare_resources(db_cpu_present_gl_state_t *state,
+                                 uint32_t pixel_width, uint32_t pixel_height,
+                                 int debug_clear_default_framebuffer) {
     if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
         return;
     }
 
-    db_present_cpu_upload_ranges_prepare(state, pixel_height);
+    const uint32_t target_width =
+        (state->use_npot != 0) ? pixel_width : db_u32_next_pow2(pixel_width);
+    const uint32_t target_height =
+        (state->use_npot != 0) ? pixel_height : db_u32_next_pow2(pixel_height);
+    if ((target_width != state->texture_width) ||
+        (target_height != state->texture_height)) {
+        db_present_cpu_texture_resize(state, pixel_width, pixel_height);
+    }
+    if (state->upload_ranges_cap < (size_t)pixel_height) {
+        db_present_cpu_upload_ranges_prepare(state, pixel_height);
+    }
 
     if (debug_clear_default_framebuffer != 0) {
         db_present_cpu_debug_clear_prepare(state, pixel_width);
@@ -644,18 +614,16 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
     if (debug_clear != 0) {
         // Debug mode: clear the default framebuffer and also clear the CPU
         // present texture so missed uploads show up as the clear color.
-        glDisable(GL_SCISSOR_TEST);
-        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-        glClear(GL_COLOR_BUFFER_BIT);
+        db_gl_clear_color_rgb(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                              BENCH_CLEAR_COLOR_B_F);
+        db_gl_clear_color_buffer();
     }
 
-    db_present_cpu_texture_resize(state, pixel_width, pixel_height);
+    db_present_cpu_prepare_resources(state, pixel_width, pixel_height,
+                                     debug_clear);
     if (state->texture == 0U) {
         db_failf(BACKEND_NAME_CPU, "CPU present texture is not initialized");
     }
-    db_present_cpu_prepare_scratch(state, pixel_width, pixel_height,
-                                   debug_clear);
 
     if (debug_clear != 0) {
         db_present_cpu_clear_texture_debug(state, pixel_width, pixel_height);
@@ -706,7 +674,7 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
     state->texcoords[DB_GL_QUAD_V2_Y] = 0.0F;
     state->texcoords[DB_GL_QUAD_V3_X] = tex_u;
     state->texcoords[DB_GL_QUAD_V3_Y] = 0.0F;
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    db_gl_draw_arrays_triangle_strip(0, 4);
 }
 
 static db_glfw_loop_result_t db_glfw_cpu_frame(void *user_data,
@@ -771,20 +739,20 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX, gl_legacy_context_major,
         gl_legacy_context_minor, swap_interval, &is_gles,
         (cfg != NULL) ? cfg->offscreen_enabled : 0);
+    db_gl_set_proc_resolver(db_glfw_resolve_proc);
+    db_gl_preload_upload_proc_table();
 
-    const char *runtime_version = (const char *)glGetString(GL_VERSION);
-    const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
+    const char *runtime_version = db_gl_get_version_string();
+    const char *runtime_renderer = db_gl_get_renderer_string();
     const int runtime_is_gles = db_display_log_gl_runtime_api(
         BACKEND_NAME_CPU, runtime_version, runtime_renderer);
-    const char *runtime_exts = (const char *)glGetString(GL_EXTENSIONS);
+    const char *runtime_exts = db_gl_get_extensions_string();
     const int has_npot =
         (runtime_is_gles == 0) ||
         db_gl_version_text_at_least(runtime_version, 2, 0) ||
         db_has_gl_extension_token(runtime_exts, "GL_OES_texture_npot");
     const int has_pbo =
         db_gl_runtime_supports_pbo(runtime_version, runtime_exts);
-    db_gl_set_proc_resolver(db_glfw_resolve_proc);
-    db_gl_preload_upload_proc_table();
     if ((is_gles != 0) && (runtime_is_gles == 0)) {
         db_infof(BACKEND_NAME_CPU, "context creation reported GLES fallback, "
                                    "but runtime API is OpenGL");
@@ -808,7 +776,7 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
     uint32_t init_pixel_height = 0U;
     (void)db_renderer_cpu_renderer_pixels_rgba8(&init_pixel_width,
                                                 &init_pixel_height);
-    db_present_cpu_prepare_scratch(
+    db_present_cpu_prepare_resources(
         &present, init_pixel_width, init_pixel_height,
         (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0);
     const char *capability_mode =
@@ -860,10 +828,10 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
 
     db_renderer_cpu_renderer_shutdown();
     if (present.pbo != 0U) {
-        db_gl_pbo_delete_if_valid((unsigned int)present.pbo);
+        db_gl_pbo_delete_if_valid(present.pbo);
     }
     if (present.texture != 0U) {
-        glDeleteTextures(1, &present.texture);
+        db_gl_texture_delete_if_valid(&present.texture);
     }
     if (present.upload_ranges_buf != NULL) {
         free(present.upload_ranges_buf);
@@ -879,31 +847,15 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
     db_glfw_destroy_window(window);
     return 0;
 }
-#else
-static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
-    (void)cfg;
-    db_failf(BACKEND_NAME_CPU,
-             "CPU + glfw_window presentation requires OpenGL support in this "
-             "build");
-    return 1;
-}
-#endif
-
-#ifdef DB_HAS_OPENGL_API
 static const char *db_gl_backend_name(db_gl_renderer_t renderer) {
     (void)renderer;
     return BACKEND_NAME_GL;
 }
 
 static const char *db_gl_renderer_name(db_gl_renderer_t renderer) {
-#ifdef DB_HAS_OPENGL_DESKTOP
     return (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
                ? db_renderer_name_opengl_gl1_5_gles1_1()
                : db_renderer_name_opengl_gl3_3();
-#else
-    (void)renderer;
-    return db_renderer_name_opengl_gl1_5_gles1_1();
-#endif
 }
 
 static void db_gl_renderer_init(db_gl_renderer_t renderer) {
@@ -911,11 +863,7 @@ static void db_gl_renderer_init(db_gl_renderer_t renderer) {
         db_renderer_opengl_gl1_5_gles1_1_init();
         return;
     }
-#ifdef DB_HAS_OPENGL_DESKTOP
     db_renderer_opengl_gl3_3_init();
-#else
-    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
-#endif
 }
 
 static void db_gl_renderer_render_frame(db_gl_renderer_t renderer,
@@ -927,13 +875,8 @@ static void db_gl_renderer_render_frame(db_gl_renderer_t renderer,
             frame_index, framebuffer_width_px, framebuffer_height_px, 1);
         return;
     }
-#ifdef DB_HAS_OPENGL_DESKTOP
     db_renderer_opengl_gl3_3_render_frame(frame_index, framebuffer_width_px,
                                           framebuffer_height_px);
-#else
-    (void)frame_time_s;
-    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
-#endif
 }
 
 static void db_gl_renderer_shutdown(db_gl_renderer_t renderer) {
@@ -941,44 +884,28 @@ static void db_gl_renderer_shutdown(db_gl_renderer_t renderer) {
         db_renderer_opengl_gl1_5_gles1_1_shutdown();
         return;
     }
-#ifdef DB_HAS_OPENGL_DESKTOP
     db_renderer_opengl_gl3_3_shutdown();
-#else
-    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
-#endif
 }
 
 static const char *db_gl_renderer_capability_mode(db_gl_renderer_t renderer) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
         return db_renderer_opengl_gl1_5_gles1_1_capability_mode();
     }
-#ifdef DB_HAS_OPENGL_DESKTOP
     return db_renderer_opengl_gl3_3_capability_mode();
-#else
-    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
-#endif
 }
 
 static uint32_t db_gl_renderer_work_unit_count(db_gl_renderer_t renderer) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
         return db_renderer_opengl_gl1_5_gles1_1_work_unit_count();
     }
-#ifdef DB_HAS_OPENGL_DESKTOP
     return db_renderer_opengl_gl3_3_work_unit_count();
-#else
-    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
-#endif
 }
 
 static uint64_t db_gl_renderer_state_hash(db_gl_renderer_t renderer) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
         return db_renderer_opengl_gl1_5_gles1_1_state_hash();
     }
-#ifdef DB_HAS_OPENGL_DESKTOP
     return db_renderer_opengl_gl3_3_state_hash();
-#else
-    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
-#endif
 }
 
 static void db_gl_renderer_draw_stats(db_gl_renderer_t renderer,
@@ -989,11 +916,7 @@ static void db_gl_renderer_draw_stats(db_gl_renderer_t renderer,
                                                     dirty_draw_frames);
         return;
     }
-#ifdef DB_HAS_OPENGL_DESKTOP
     db_renderer_opengl_gl3_3_draw_stats(full_draw_frames, dirty_draw_frames);
-#else
-    db_failf(BACKEND_NAME_GL, "renderer gl3_3 is not compiled in this build");
-#endif
 }
 
 static db_glfw_loop_result_t db_glfw_opengl_frame(void *user_data,
@@ -1010,10 +933,10 @@ static db_glfw_loop_result_t db_glfw_opengl_frame(void *user_data,
         // Debug mode: clear the default framebuffer so damage-only renderers
         // can be visually validated (you should see missing regions as the
         // clear color).
-        glDisable(GL_SCISSOR_TEST);
-        glClearColor(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                     BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
-        glClear(GL_COLOR_BUFFER_BIT);
+        db_gl_set_scissor_enabled(0);
+        db_gl_clear_color_rgb(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
+                              BENCH_CLEAR_COLOR_B_F);
+        db_gl_clear_color_buffer();
     }
 
     db_gl_renderer_render_frame(ctx->renderer, frame_index,
@@ -1078,8 +1001,10 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
             BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
             gl_legacy_context_major, gl_legacy_context_minor, swap_interval,
             &is_gles, (cfg != NULL) ? cfg->offscreen_enabled : 0);
-        const char *runtime_version = (const char *)glGetString(GL_VERSION);
-        const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
+        db_gl_set_proc_resolver(db_glfw_resolve_proc);
+        db_gl_preload_upload_proc_table();
+        const char *runtime_version = db_gl_get_version_string();
+        const char *runtime_renderer = db_gl_get_renderer_string();
         const int runtime_is_gles = db_display_log_gl_runtime_api(
             backend_name, runtime_version, runtime_renderer);
         if (runtime_is_gles != 0) {
@@ -1090,9 +1015,7 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
             db_infof(backend_name, "context creation reported GLES fallback, "
                                    "but runtime API is OpenGL");
         }
-    }
-#ifdef DB_HAS_OPENGL_DESKTOP
-    else {
+    } else {
         const int gl3_context_major = 3;
         const int gl3_context_minor = 3;
         window = db_glfw_create_opengl_window(
@@ -1100,19 +1023,25 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
             BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX, gl3_context_major,
             gl3_context_minor, 1, swap_interval,
             (cfg != NULL) ? cfg->offscreen_enabled : 0);
-        const char *runtime_version = (const char *)glGetString(GL_VERSION);
-        const char *runtime_renderer = (const char *)glGetString(GL_RENDERER);
-        (void)db_display_log_gl_runtime_api(backend_name, runtime_version,
-                                            runtime_renderer);
+        db_gl_set_proc_resolver(db_glfw_resolve_proc);
+        db_gl_preload_upload_proc_table();
+        const char *runtime_version = db_gl_get_version_string();
+        const char *runtime_renderer = db_gl_get_renderer_string();
+        const int runtime_is_gles = db_display_log_gl_runtime_api(
+            backend_name, runtime_version, runtime_renderer);
+        if (runtime_is_gles != 0) {
+            db_failf(backend_name,
+                     "OpenGL ES runtime is unsupported for renderer gl3_3; "
+                     "requires desktop OpenGL 3.3+");
+        }
+        if (!db_gl_version_text_at_least(runtime_version, 3, 3)) {
+            db_failf(backend_name,
+                     "desktop OpenGL runtime %s is unsupported for renderer "
+                     "gl3_3; requires OpenGL 3.3+",
+                     (runtime_version != NULL) ? runtime_version : "(null)");
+        }
     }
-#else
-    else {
-        db_failf(backend_name, "renderer gl3_3 is not compiled in this build");
-    }
-#endif
 
-    db_gl_set_proc_resolver(db_glfw_resolve_proc);
-    db_gl_preload_upload_proc_table();
     db_gl_renderer_init(renderer);
     const char *capability_mode = db_gl_renderer_capability_mode(renderer);
     const uint32_t work_unit_count = db_gl_renderer_work_unit_count(renderer);
@@ -1173,7 +1102,6 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
     db_gl_hash_scratch_release(&hash_scratch);
     return 0;
 }
-#endif
 
 #ifdef DB_HAS_VULKAN_API
 // NOLINTBEGIN(misc-include-cleaner)
@@ -1294,11 +1222,5 @@ int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer,
         return db_run_glfw_window_vulkan(cfg);
     }
 #endif
-#ifdef DB_HAS_OPENGL_API
     return db_run_glfw_window_opengl(renderer, cfg);
-#else
-    (void)renderer;
-    db_failf(BACKEND_NAME_CPU, "OpenGL backend is unavailable in this build");
-    return 1;
-#endif
 }

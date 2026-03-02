@@ -21,11 +21,7 @@ static inline int db_dispatch_api_is_compiled(db_api_t api) {
         return 1;
     }
     if (api == DB_API_OPENGL) {
-#ifdef DB_HAS_OPENGL_API
         return 1;
-#else
-        return 0;
-#endif
     }
     if (api == DB_API_VULKAN) {
 #ifdef DB_HAS_VULKAN_API
@@ -76,18 +72,10 @@ static inline int db_dispatch_display_supports_api(db_display_t display,
     }
     if (display == DB_DISPLAY_GLFW_WINDOW) {
         if (api == DB_API_CPU) {
-#ifdef DB_HAS_OPENGL_API
             return 1;
-#else
-            return 0;
-#endif
         }
         if (api == DB_API_OPENGL) {
-#ifdef DB_HAS_OPENGL_API
             return 1;
-#else
-            return 0;
-#endif
         }
         if (api == DB_API_VULKAN) {
 #ifdef DB_HAS_VULKAN_API
@@ -97,24 +85,6 @@ static inline int db_dispatch_display_supports_api(db_display_t display,
 #endif
         }
         return 0;
-    }
-    return 0;
-}
-
-static inline int db_dispatch_renderer_is_compiled(db_gl_renderer_t renderer) {
-    if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
-#ifdef DB_HAS_OPENGL_API
-        return 1;
-#else
-        return 0;
-#endif
-    }
-    if (renderer == DB_GL_RENDERER_GL3_3) {
-#ifdef DB_HAS_OPENGL_DESKTOP
-        return 1;
-#else
-        return 0;
-#endif
     }
     return 0;
 }
