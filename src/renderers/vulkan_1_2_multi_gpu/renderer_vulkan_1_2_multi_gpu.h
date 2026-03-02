@@ -22,8 +22,8 @@ typedef struct {
     void *window_handle;
 } db_vk_wsi_config_t;
 
-void db_renderer_vulkan_1_2_multi_gpu_init(
-    const db_vk_wsi_config_t *wsi_config);
+void db_renderer_vulkan_1_2_multi_gpu_init(const db_vk_wsi_config_t *wsi_config,
+                                           int vsync_enabled);
 db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void);
 void db_renderer_vulkan_1_2_multi_gpu_shutdown(void);
 const char *db_renderer_vulkan_1_2_multi_gpu_capability_mode(void);

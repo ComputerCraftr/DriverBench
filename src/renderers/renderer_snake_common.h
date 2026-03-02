@@ -88,6 +88,30 @@ typedef struct {
     uint32_t col_end;
 } db_snake_col_span_t;
 
+static inline int
+db_snake_try_merge_adjacent_span(db_snake_col_span_t *existing,
+                                 const db_snake_col_span_t *candidate) {
+    if ((existing == NULL) || (candidate == NULL) ||
+        (existing->row != candidate->row)) {
+        return 0;
+    }
+    if (candidate->col_start > candidate->col_end) {
+        return 0;
+    }
+    // Merge contiguous or overlapping spans. Traversal order can be either
+    // direction within a row (snake), so handle both forward and reverse
+    // adjacency.
+    const int overlaps_or_adjacent =
+        (candidate->col_start <= existing->col_end) &&
+        (existing->col_start <= candidate->col_end);
+    if (overlaps_or_adjacent == 0) {
+        return 0;
+    }
+    existing->col_start = db_u32_min(existing->col_start, candidate->col_start);
+    existing->col_end = db_u32_max(existing->col_end, candidate->col_end);
+    return (existing->col_end > existing->col_start) ? 1 : 0;
+}
+
 static inline size_t db_snake_filter_spans_for_shape_cache(
     db_snake_col_span_t *spans, size_t span_count,
     const db_snake_shape_cache_t *shape_cache) {
@@ -231,12 +255,19 @@ static inline void db_snake_append_step_spans_for_region(
         if (*inout_span_count >= max_spans) {
             return;
         }
-        spans[*inout_span_count] = (db_snake_col_span_t){
+        const db_snake_col_span_t candidate = (db_snake_col_span_t){
             .row = region_y + local_row,
             .col_start = region_x + first_local_col,
             .col_end = region_x + first_local_col + chunk_steps,
         };
-        (*inout_span_count)++;
+        if ((*inout_span_count > 0U) &&
+            (db_snake_try_merge_adjacent_span(&spans[*inout_span_count - 1U],
+                                              &candidate) != 0)) {
+            // Merged with previous span; do not append a new entry.
+        } else {
+            spans[*inout_span_count] = candidate;
+            (*inout_span_count)++;
+        }
         step_cursor += chunk_steps;
         remaining -= chunk_steps;
     }
@@ -264,6 +295,48 @@ db_snake_collect_damage_spans(db_snake_col_span_t *spans, size_t max_spans,
                                                            shape_cache);
     }
     return span_count;
+}
+
+static inline int db_snake_span_row_bounds(const db_snake_col_span_t *spans,
+                                           size_t span_count, uint32_t max_rows,
+                                           uint32_t *out_row_start,
+                                           uint32_t *out_row_count) {
+    if ((spans == NULL) || (max_rows == 0U) || (out_row_start == NULL) ||
+        (out_row_count == NULL)) {
+        return 0;
+    }
+    // Spans are emitted in monotonic row order; find first/last valid spans to
+    // avoid a full scan in common cases.
+    size_t first_index = 0U;
+    while (first_index < span_count) {
+        const db_snake_col_span_t span = spans[first_index];
+        if ((span.col_end > span.col_start) && (span.row < max_rows)) {
+            break;
+        }
+        first_index++;
+    }
+    if (first_index == span_count) {
+        return 0;
+    }
+    size_t last_index = span_count;
+    while (last_index > first_index) {
+        const db_snake_col_span_t span = spans[last_index - 1U];
+        if ((span.col_end > span.col_start) && (span.row < max_rows)) {
+            break;
+        }
+        last_index--;
+    }
+    if (last_index <= first_index) {
+        return 0;
+    }
+    const uint32_t row_start = spans[first_index].row;
+    const uint32_t row_end_exclusive = spans[last_index - 1U].row + 1U;
+    if ((row_end_exclusive <= row_start) || (row_start >= max_rows)) {
+        return 0;
+    }
+    *out_row_start = row_start;
+    *out_row_count = row_end_exclusive - row_start;
+    return (*out_row_count != 0U) ? 1 : 0;
 }
 
 static inline db_snake_plan_t db_snake_plan_next_step_for_region(

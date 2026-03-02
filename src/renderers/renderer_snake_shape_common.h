@@ -391,6 +391,76 @@ static inline size_t db_snake_shape_build_exact_row_bounds(
     const db_snake_region_t *region = &shape_desc->region;
     const size_t row_count =
         (size_t)db_u32_min(region->height, (uint32_t)cache_capacity);
+    const db_snake_shape_profile_t *profile = &shape_desc->shape_profile;
+    float verts_x[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+    float verts_y[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+    size_t vert_count = 0U;
+    if (shape_desc->shape_kind == DB_SNAKE_SHAPE_RECT) {
+        const float x0 = -profile->rect_half_width;
+        const float x1 = profile->rect_half_width;
+        const float y0 = -profile->rect_half_height;
+        const float y1 = profile->rect_half_height;
+        const float nx[4] = {x0, x1, x1, x0};
+        const float ny[4] = {y0, y0, y1, y1};
+        vert_count = 4U;
+        for (size_t idx = 0U; idx < vert_count; idx++) {
+            db_snake_shape_transform_norm_vertex_to_local(
+                profile, nx[idx], ny[idx], &verts_x[idx], &verts_y[idx]);
+        }
+    } else if (shape_desc->shape_kind == DB_SNAKE_SHAPE_DIAMOND) {
+        const float radius = profile->diamond_radius;
+        const float nx[4] = {0.0F, radius, 0.0F, -radius};
+        const float ny[4] = {-radius, 0.0F, radius, 0.0F};
+        vert_count = 4U;
+        for (size_t idx = 0U; idx < vert_count; idx++) {
+            db_snake_shape_transform_norm_vertex_to_local(
+                profile, nx[idx], ny[idx], &verts_x[idx], &verts_y[idx]);
+        }
+    } else if (shape_desc->shape_kind == DB_SNAKE_SHAPE_TRIANGLE) {
+        float left_top = 0.0F;
+        float right_top = 0.0F;
+        float left_bottom = 0.0F;
+        float right_bottom = 0.0F;
+        if (profile->triangle_variant == 1U) {
+            left_top = -DB_SNAKE_SHAPE_CENTER_F + DB_SNAKE_SHAPE_EDGE_INSET_F;
+            right_top = left_top;
+            left_bottom = left_top;
+            right_bottom = left_top + profile->triangle_bottom_width;
+        } else if (profile->triangle_variant == 2U) {
+            right_top = DB_SNAKE_SHAPE_CENTER_F - DB_SNAKE_SHAPE_EDGE_INSET_F;
+            left_top = right_top;
+            right_bottom = right_top;
+            left_bottom = right_top - profile->triangle_bottom_width;
+        } else {
+            left_top = 0.0F;
+            right_top = 0.0F;
+            left_bottom =
+                -profile->triangle_bottom_width * DB_SNAKE_SHAPE_HALF_F;
+            right_bottom =
+                profile->triangle_bottom_width * DB_SNAKE_SHAPE_HALF_F;
+        }
+        const float nx[4] = {left_top, right_top, right_bottom, left_bottom};
+        const float ny[4] = {-DB_SNAKE_SHAPE_CENTER_F, -DB_SNAKE_SHAPE_CENTER_F,
+                             DB_SNAKE_SHAPE_CENTER_F, DB_SNAKE_SHAPE_CENTER_F};
+        vert_count = 4U;
+        for (size_t idx = 0U; idx < vert_count; idx++) {
+            db_snake_shape_transform_norm_vertex_to_local(
+                profile, nx[idx], ny[idx], &verts_x[idx], &verts_y[idx]);
+        }
+    } else if (shape_desc->shape_kind == DB_SNAKE_SHAPE_TRAPEZOID) {
+        const float top_half =
+            profile->trapezoid_top_width * DB_SNAKE_SHAPE_HALF_F;
+        const float bottom_half =
+            profile->trapezoid_bottom_width * DB_SNAKE_SHAPE_HALF_F;
+        const float nx[4] = {-top_half, top_half, bottom_half, -bottom_half};
+        const float ny[4] = {-DB_SNAKE_SHAPE_CENTER_F, -DB_SNAKE_SHAPE_CENTER_F,
+                             DB_SNAKE_SHAPE_CENTER_F, DB_SNAKE_SHAPE_CENTER_F};
+        vert_count = 4U;
+        for (size_t idx = 0U; idx < vert_count; idx++) {
+            db_snake_shape_transform_norm_vertex_to_local(
+                profile, nx[idx], ny[idx], &verts_x[idx], &verts_y[idx]);
+        }
+    }
     for (size_t i = 0U; i < row_count; i++) {
         row_bounds_cache[i] = (db_snake_shape_row_bounds_t){
             .col_start = 0U,
@@ -408,95 +478,13 @@ static inline size_t db_snake_shape_build_exact_row_bounds(
         float interval_min_x = 0.0F;
         float interval_max_x = 0.0F;
         int has_interval = 0;
-        const db_snake_shape_profile_t *profile = &shape_desc->shape_profile;
         if (shape_desc->shape_kind == DB_SNAKE_SHAPE_CIRCLE) {
             has_interval = db_snake_shape_circle_row_interval_local(
                 profile, row_center_y, &interval_min_x, &interval_max_x);
-        } else {
-            float verts_x[4] = {0.0F, 0.0F, 0.0F, 0.0F};
-            float verts_y[4] = {0.0F, 0.0F, 0.0F, 0.0F};
-            size_t vert_count = 0U;
-            if (shape_desc->shape_kind == DB_SNAKE_SHAPE_RECT) {
-                const float x0 = -profile->rect_half_width;
-                const float x1 = profile->rect_half_width;
-                const float y0 = -profile->rect_half_height;
-                const float y1 = profile->rect_half_height;
-                const float nx[4] = {x0, x1, x1, x0};
-                const float ny[4] = {y0, y0, y1, y1};
-                vert_count = 4U;
-                for (size_t idx = 0U; idx < vert_count; idx++) {
-                    db_snake_shape_transform_norm_vertex_to_local(
-                        profile, nx[idx], ny[idx], &verts_x[idx],
-                        &verts_y[idx]);
-                }
-            } else if (shape_desc->shape_kind == DB_SNAKE_SHAPE_DIAMOND) {
-                const float radius = profile->diamond_radius;
-                const float nx[4] = {0.0F, radius, 0.0F, -radius};
-                const float ny[4] = {-radius, 0.0F, radius, 0.0F};
-                vert_count = 4U;
-                for (size_t idx = 0U; idx < vert_count; idx++) {
-                    db_snake_shape_transform_norm_vertex_to_local(
-                        profile, nx[idx], ny[idx], &verts_x[idx],
-                        &verts_y[idx]);
-                }
-            } else if (shape_desc->shape_kind == DB_SNAKE_SHAPE_TRIANGLE) {
-                float left_top = 0.0F;
-                float right_top = 0.0F;
-                float left_bottom = 0.0F;
-                float right_bottom = 0.0F;
-                if (profile->triangle_variant == 1U) {
-                    left_top =
-                        -DB_SNAKE_SHAPE_CENTER_F + DB_SNAKE_SHAPE_EDGE_INSET_F;
-                    right_top = left_top;
-                    left_bottom = left_top;
-                    right_bottom = left_top + profile->triangle_bottom_width;
-                } else if (profile->triangle_variant == 2U) {
-                    right_top =
-                        DB_SNAKE_SHAPE_CENTER_F - DB_SNAKE_SHAPE_EDGE_INSET_F;
-                    left_top = right_top;
-                    right_bottom = right_top;
-                    left_bottom = right_top - profile->triangle_bottom_width;
-                } else {
-                    left_top = 0.0F;
-                    right_top = 0.0F;
-                    left_bottom =
-                        -profile->triangle_bottom_width * DB_SNAKE_SHAPE_HALF_F;
-                    right_bottom =
-                        profile->triangle_bottom_width * DB_SNAKE_SHAPE_HALF_F;
-                }
-                const float nx[4] = {left_top, right_top, right_bottom,
-                                     left_bottom};
-                const float ny[4] = {
-                    -DB_SNAKE_SHAPE_CENTER_F, -DB_SNAKE_SHAPE_CENTER_F,
-                    DB_SNAKE_SHAPE_CENTER_F, DB_SNAKE_SHAPE_CENTER_F};
-                vert_count = 4U;
-                for (size_t idx = 0U; idx < vert_count; idx++) {
-                    db_snake_shape_transform_norm_vertex_to_local(
-                        profile, nx[idx], ny[idx], &verts_x[idx],
-                        &verts_y[idx]);
-                }
-            } else if (shape_desc->shape_kind == DB_SNAKE_SHAPE_TRAPEZOID) {
-                const float top_half =
-                    profile->trapezoid_top_width * DB_SNAKE_SHAPE_HALF_F;
-                const float bottom_half =
-                    profile->trapezoid_bottom_width * DB_SNAKE_SHAPE_HALF_F;
-                const float nx[4] = {-top_half, top_half, bottom_half,
-                                     -bottom_half};
-                const float ny[4] = {
-                    -DB_SNAKE_SHAPE_CENTER_F, -DB_SNAKE_SHAPE_CENTER_F,
-                    DB_SNAKE_SHAPE_CENTER_F, DB_SNAKE_SHAPE_CENTER_F};
-                vert_count = 4U;
-                for (size_t idx = 0U; idx < vert_count; idx++) {
-                    db_snake_shape_transform_norm_vertex_to_local(
-                        profile, nx[idx], ny[idx], &verts_x[idx],
-                        &verts_y[idx]);
-                }
-            }
-            if (vert_count > 0U) {
-                has_interval = db_snake_shape_polygon_row_interval_local(
-                    verts_x, verts_y, vert_count, row_center_y, &interval_min_x,
-                    &interval_max_x);
-            }
+        } else if (vert_count > 0U) {
+            has_interval = db_snake_shape_polygon_row_interval_local(
+                verts_x, verts_y, vert_count, row_center_y, &interval_min_x,
+                &interval_max_x);
         }
         uint32_t col_start = 0U;
         uint32_t col_end = 0U;

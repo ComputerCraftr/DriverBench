@@ -22,40 +22,6 @@
 
 static const float DB_VK_SHADER_IGNORED_COLOR_RGB[3] = {0.0F, 0.0F, 0.0F};
 
-static size_t
-db_vk_gradient_plan_dirty_ranges(const db_gradient_damage_plan_t *plan,
-                                 uint32_t max_rows,
-                                 db_dirty_row_range_t out_ranges[2]) {
-    if ((plan == NULL) || (out_ranges == NULL) || (max_rows == 0U)) {
-        return 0U;
-    }
-    out_ranges[0] = (db_dirty_row_range_t){0U, 0U};
-    out_ranges[1] = (db_dirty_row_range_t){0U, 0U};
-    size_t count = 0U;
-    if ((plan->dirty_row_count > 0U) && (plan->dirty_row_start < max_rows)) {
-        const uint32_t bounded_end =
-            db_u32_min(plan->dirty_row_start + plan->dirty_row_count, max_rows);
-        const uint32_t bounded_count = bounded_end - plan->dirty_row_start;
-        if (bounded_count > 0U) {
-            out_ranges[count++] =
-                (db_dirty_row_range_t){plan->dirty_row_start, bounded_count};
-        }
-    }
-    if ((plan->dirty_row_count_second > 0U) &&
-        (plan->dirty_row_start_second < max_rows)) {
-        const uint32_t bounded_end = db_u32_min(
-            plan->dirty_row_start_second + plan->dirty_row_count_second,
-            max_rows);
-        const uint32_t bounded_count =
-            bounded_end - plan->dirty_row_start_second;
-        if ((bounded_count > 0U) && (count < 2U)) {
-            out_ranges[count++] = (db_dirty_row_range_t){
-                plan->dirty_row_start_second, bounded_count};
-        }
-    }
-    return count;
-}
-
 db_vk_frame_result_t db_vk_render_frame_impl(void) {
     if (!g_state.initialized) {
         return DB_VK_FRAME_STOP;
@@ -423,7 +389,6 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
         };
         if (is_grid != 0) {
             db_vk_draw_snake_grid_plan(&draw_ctx, &plan,
-                                       g_state.runtime.work_unit_count,
                                        DB_VK_SHADER_IGNORED_COLOR_RGB);
             frame_dirty_draw = 1;
             if (target.has_next_mode_phase_flag != 0) {
@@ -475,8 +440,8 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 .grid_cols = grid_cols,
             };
             db_dirty_row_range_t curr_ranges[2] = {{0U, 0U}, {0U, 0U}};
-            size_t curr_count =
-                db_vk_gradient_plan_dirty_ranges(&plan, grid_rows, curr_ranges);
+            size_t curr_count = db_gradient_collect_dirty_ranges_clamped(
+                &plan, grid_rows, curr_ranges, 2U);
             const int need_seed_full = (g_state.gradient_history_valid == 0);
             if (need_seed_full != 0) {
                 curr_ranges[0] = (db_dirty_row_range_t){0U, grid_rows};
@@ -485,9 +450,16 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 g_state.gradient_history_valid = 1;
                 frame_full_draw = 1;
             } else if (g_state.gradient_prev_draw_count > 0U) {
-                for (size_t i = 0U; i < g_state.gradient_prev_draw_count; i++) {
-                    const db_dirty_row_range_t replay =
-                        g_state.gradient_prev_draw_rows[i];
+                db_dirty_row_range_t replay_ranges[2] = {{0U, 0U}, {0U, 0U}};
+                const size_t replay_base_count =
+                    (g_state.gradient_prev_draw_count < 2U)
+                        ? g_state.gradient_prev_draw_count
+                        : 2U;
+                size_t replay_count = db_gradient_subtract_replay_ranges(
+                    g_state.gradient_prev_draw_rows, replay_base_count,
+                    curr_ranges, curr_count, replay_ranges, 2U);
+                for (size_t i = 0U; i < replay_count; i++) {
+                    const db_dirty_row_range_t replay = replay_ranges[i];
                     if (replay.row_count == 0U) {
                         continue;
                     }

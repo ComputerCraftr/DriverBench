@@ -11,6 +11,102 @@
 #include "renderer_snake_common.h"
 #include "renderer_snake_shape_common.h"
 
+static int db_gl_upload_ranges_can_merge(const db_gl_upload_range_t *left,
+                                         const db_gl_upload_range_t *right) {
+    if ((left == NULL) || (right == NULL) || (left->size_bytes == 0U) ||
+        (right->size_bytes == 0U)) {
+        return 0;
+    }
+    if ((left->src_offset_bytes > (SIZE_MAX - left->size_bytes)) ||
+        (left->dst_offset_bytes > (SIZE_MAX - left->size_bytes))) {
+        return 0;
+    }
+    const size_t left_src_end = left->src_offset_bytes + left->size_bytes;
+    const size_t left_dst_end = left->dst_offset_bytes + left->size_bytes;
+    if ((left_src_end != right->src_offset_bytes) ||
+        (left_dst_end != right->dst_offset_bytes)) {
+        return 0;
+    }
+
+    int same_delta = 0;
+    if ((left->dst_offset_bytes >= left->src_offset_bytes) &&
+        (right->dst_offset_bytes >= right->src_offset_bytes)) {
+        same_delta = ((left->dst_offset_bytes - left->src_offset_bytes) ==
+                      (right->dst_offset_bytes - right->src_offset_bytes));
+    } else if ((left->dst_offset_bytes <= left->src_offset_bytes) &&
+               (right->dst_offset_bytes <= right->src_offset_bytes)) {
+        same_delta = ((left->src_offset_bytes - left->dst_offset_bytes) ==
+                      (right->src_offset_bytes - right->dst_offset_bytes));
+    }
+    return same_delta;
+}
+
+static size_t
+db_gl_upload_range_lower_bound_by_dst(const db_gl_upload_range_t *ranges,
+                                      size_t sorted_count,
+                                      size_t dst_offset_bytes) {
+    if ((ranges == NULL) || (sorted_count == 0U)) {
+        return 0U;
+    }
+    if (dst_offset_bytes <= ranges[0].dst_offset_bytes) {
+        return 0U;
+    }
+
+    size_t hi = 1U;
+    while ((hi < sorted_count) &&
+           (ranges[hi].dst_offset_bytes < dst_offset_bytes)) {
+        hi <<= 1U;
+    }
+    size_t lo = hi >> 1U;
+    if (hi > sorted_count) {
+        hi = sorted_count;
+    }
+    while (lo < hi) {
+        const size_t mid = lo + ((hi - lo) >> 1U);
+        if (ranges[mid].dst_offset_bytes < dst_offset_bytes) {
+            lo = mid + 1U;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static size_t db_gl_normalize_upload_ranges(
+    const db_gl_upload_range_t *source_ranges, size_t source_count,
+    db_gl_upload_range_t *out_ranges, size_t out_capacity) {
+    if ((source_ranges == NULL) || (out_ranges == NULL) ||
+        (out_capacity == 0U)) {
+        return 0U;
+    }
+
+    size_t out_count = 0U;
+    for (size_t index = 0U;
+         (index < source_count) && (out_count < out_capacity); index++) {
+        const db_gl_upload_range_t candidate = source_ranges[index];
+        if ((candidate.size_bytes == 0U) ||
+            (candidate.dst_offset_bytes > (SIZE_MAX - candidate.size_bytes)) ||
+            (candidate.src_offset_bytes > (SIZE_MAX - candidate.size_bytes))) {
+            continue;
+        }
+        if ((out_count == 0U) ||
+            (candidate.dst_offset_bytes >=
+             out_ranges[out_count - 1U].dst_offset_bytes)) {
+            out_ranges[out_count++] = candidate;
+            continue;
+        }
+        const size_t insert_index = db_gl_upload_range_lower_bound_by_dst(
+            out_ranges, out_count, candidate.dst_offset_bytes);
+        for (size_t shift_index = out_count; shift_index > insert_index;
+             shift_index--) {
+            out_ranges[shift_index] = out_ranges[shift_index - 1U];
+        }
+        out_ranges[insert_index] = candidate;
+        out_count++;
+    }
+    return db_gl_coalesce_upload_ranges_in_place(out_ranges, out_count);
+}
+
 int db_gl_row_range_to_scissor_rect(uint32_t row_start, uint32_t row_count,
                                     uint32_t total_rows, int viewport_width,
                                     int viewport_height, int *x_out, int *y_out,
@@ -85,8 +181,14 @@ size_t db_gl_collect_row_upload_ranges(
     if (dirty_count == 0U) {
         return 0U;
     }
+    DB_LOG_CAPACITY_EXCEEDED_ONCE("renderer_gl_common",
+                                  "collect_row_upload_ranges", dirty_count,
+                                  out_capacity);
 
     size_t span_count = 0U;
+    int has_pending = 0;
+    db_gl_upload_range_t pending_range = {0U, 0U, 0U};
+    db_dirty_row_range_t pending_rows = {0U, 0U};
     for (size_t i = 0U; (i < dirty_count) && (span_count < out_capacity); i++) {
         const uint32_t row_start = dirty_ranges[i].row_start;
         const uint32_t row_count = dirty_ranges[i].row_count;
@@ -100,15 +202,42 @@ size_t db_gl_collect_row_upload_ranges(
         }
         const size_t byte_offset = row_bytes * (size_t)row_start;
         const size_t byte_size = row_bytes * (size_t)clamped_count;
-        if (out_rows != NULL) {
-            out_rows[span_count] = (db_dirty_row_range_t){
-                .row_start = row_start, .row_count = clamped_count};
-        }
-        out_ranges[span_count] = (db_gl_upload_range_t){
+        const db_gl_upload_range_t candidate = (db_gl_upload_range_t){
             .dst_offset_bytes = byte_offset,
             .src_offset_bytes = byte_offset,
             .size_bytes = byte_size,
         };
+        const db_dirty_row_range_t candidate_rows = (db_dirty_row_range_t){
+            .row_start = row_start, .row_count = clamped_count};
+
+        if (has_pending == 0) {
+            pending_range = candidate;
+            pending_rows = candidate_rows;
+            has_pending = 1;
+            continue;
+        }
+        if (db_gl_upload_ranges_can_merge(&pending_range, &candidate) != 0) {
+            pending_range.size_bytes += candidate.size_bytes;
+            pending_rows.row_count += candidate_rows.row_count;
+            continue;
+        }
+
+        if (out_rows != NULL) {
+            out_rows[span_count] = pending_rows;
+        }
+        out_ranges[span_count] = pending_range;
+        span_count++;
+
+        pending_range = candidate;
+        pending_rows = candidate_rows;
+        has_pending = 1;
+    }
+
+    if ((has_pending != 0) && (span_count < out_capacity)) {
+        if (out_rows != NULL) {
+            out_rows[span_count] = pending_rows;
+        }
+        out_ranges[span_count] = pending_range;
         span_count++;
     }
     return span_count;
@@ -125,8 +254,12 @@ size_t db_gl_collect_span_upload_ranges(
     }
 
     size_t upload_count = 0U;
-    for (size_t i = 0U; (i < span_count) && (upload_count < out_capacity);
-         i++) {
+    DB_LOG_CAPACITY_EXCEEDED_ONCE("renderer_gl_common",
+                                  "collect_span_upload_ranges", span_count,
+                                  out_capacity);
+    int has_pending = 0;
+    db_gl_upload_range_t pending_range = {0U, 0U, 0U};
+    for (size_t i = 0U; i < span_count; i++) {
         const uint32_t row = spans[i].row;
         const uint32_t col_start = spans[i].col_start;
         const uint32_t col_end = spans[i].col_end;
@@ -138,12 +271,30 @@ size_t db_gl_collect_span_upload_ranges(
         const size_t dst_offset = (size_t)first_unit * dst_unit_stride_bytes;
         const size_t src_offset = (size_t)first_unit * src_unit_stride_bytes;
         const size_t span_bytes = (size_t)span_units * dst_unit_stride_bytes;
-        out_ranges[upload_count] = (db_gl_upload_range_t){
+        const db_gl_upload_range_t candidate = (db_gl_upload_range_t){
             .dst_offset_bytes = dst_offset,
             .src_offset_bytes = src_offset,
             .size_bytes = span_bytes,
         };
-        upload_count++;
+        if (has_pending == 0) {
+            pending_range = candidate;
+            has_pending = 1;
+            continue;
+        }
+        if (db_gl_upload_ranges_can_merge(&pending_range, &candidate) != 0) {
+            pending_range.size_bytes += candidate.size_bytes;
+            continue;
+        }
+        if (upload_count >= out_capacity) {
+            break;
+        }
+        out_ranges[upload_count++] = pending_range;
+        pending_range = candidate;
+        has_pending = 1;
+    }
+
+    if ((has_pending != 0) && (upload_count < out_capacity)) {
+        out_ranges[upload_count++] = pending_range;
     }
     return upload_count;
 }
@@ -216,7 +367,7 @@ db_gl_collect_pattern_upload_ranges(const db_gl_pattern_upload_collect_t *ctx,
         const db_snake_plan_t empty_plan = {0};
         const db_snake_plan_t *plan =
             (ctx->snake_plan != NULL) ? ctx->snake_plan : &empty_plan;
-        if ((is_grid == 0) && (ctx->force_full_upload != 0)) {
+        if (ctx->force_full_upload != 0) {
             upload_plan.force_full_upload = 1;
             return db_gl_collect_damage_upload_ranges(&upload_plan, out_ranges,
                                                       1U);
@@ -326,6 +477,152 @@ size_t db_gl_for_each_upload_row_span(const char *backend_name,
         applied_count++;
     }
     return applied_count;
+}
+
+size_t db_gl_coalesce_upload_ranges_in_place(db_gl_upload_range_t *ranges,
+                                             size_t range_count) {
+    if ((ranges == NULL) || (range_count <= 1U)) {
+        return range_count;
+    }
+
+    size_t write_index = 0U;
+    db_gl_upload_range_t current = ranges[0];
+    for (size_t index = 1U; index < range_count; index++) {
+        const db_gl_upload_range_t next = ranges[index];
+        if ((next.size_bytes == 0U) || (current.size_bytes == 0U)) {
+            continue;
+        }
+        if (db_gl_upload_ranges_can_merge(&current, &next) == 0) {
+            ranges[write_index++] = current;
+            current = next;
+            continue;
+        }
+        current.size_bytes += next.size_bytes;
+    }
+    ranges[write_index++] = current;
+    return write_index;
+}
+
+size_t db_gl_copy_upload_ranges(const db_gl_upload_range_t *source_ranges,
+                                size_t source_count,
+                                db_gl_upload_range_t *out_ranges,
+                                size_t out_capacity) {
+    if ((source_ranges == NULL) || (out_ranges == NULL) ||
+        (out_capacity == 0U)) {
+        return 0U;
+    }
+    DB_LOG_CAPACITY_EXCEEDED_ONCE("renderer_gl_common", "copy_upload_ranges",
+                                  source_count, out_capacity);
+    size_t out_count = 0U;
+    const size_t copy_limit =
+        (source_count < out_capacity) ? source_count : out_capacity;
+    size_t index = 0U;
+    while ((index < copy_limit) && (source_ranges[index].size_bytes != 0U)) {
+        index++;
+    }
+    if (index == copy_limit) {
+        for (size_t copy_index = 0U; copy_index < copy_limit; copy_index++) {
+            out_ranges[copy_index] = source_ranges[copy_index];
+        }
+        return copy_limit;
+    }
+    if (index > 0U) {
+        for (size_t copy_index = 0U; copy_index < index; copy_index++) {
+            out_ranges[copy_index] = source_ranges[copy_index];
+        }
+        out_count = index;
+    }
+    for (; (index < source_count) && (out_count < out_capacity); index++) {
+        if (source_ranges[index].size_bytes == 0U) {
+            continue;
+        }
+        out_ranges[out_count++] = source_ranges[index];
+    }
+    return out_count;
+}
+
+size_t db_gl_subtract_upload_ranges(const db_gl_upload_range_t *base_ranges,
+                                    size_t base_count,
+                                    const db_gl_upload_range_t *cut_ranges,
+                                    size_t cut_count,
+                                    db_gl_upload_range_t *out_ranges,
+                                    size_t out_capacity) {
+    if ((base_ranges == NULL) || (base_count == 0U) || (out_ranges == NULL) ||
+        (out_capacity == 0U)) {
+        return 0U;
+    }
+    db_gl_upload_range_t normalized_base[BENCH_SNAKE_PHASE_WINDOW_TILES] = {
+        {0U, 0U, 0U}};
+    DB_LOG_CAPACITY_EXCEEDED_ONCE("renderer_gl_common",
+                                  "subtract_upload_ranges.base_normalize",
+                                  base_count, BENCH_SNAKE_PHASE_WINDOW_TILES);
+    const size_t normalized_base_count =
+        db_gl_normalize_upload_ranges(base_ranges, base_count, normalized_base,
+                                      BENCH_SNAKE_PHASE_WINDOW_TILES);
+    if (normalized_base_count == 0U) {
+        return 0U;
+    }
+
+    db_gl_upload_range_t normalized_cut[BENCH_SNAKE_PHASE_WINDOW_TILES] = {
+        {0U, 0U, 0U}};
+    DB_LOG_CAPACITY_EXCEEDED_ONCE("renderer_gl_common",
+                                  "subtract_upload_ranges.cut_normalize",
+                                  cut_count, BENCH_SNAKE_PHASE_WINDOW_TILES);
+    const size_t normalized_cut_count = db_gl_normalize_upload_ranges(
+        cut_ranges, cut_count, normalized_cut, BENCH_SNAKE_PHASE_WINDOW_TILES);
+    if (normalized_cut_count == 0U) {
+        const size_t out_count = db_gl_copy_upload_ranges(
+            normalized_base, normalized_base_count, out_ranges, out_capacity);
+        return db_gl_coalesce_upload_ranges_in_place(out_ranges, out_count);
+    }
+
+    size_t out_count = 0U;
+    size_t cut_index = 0U;
+    for (size_t base_index = 0U;
+         (base_index < normalized_base_count) && (out_count < out_capacity);
+         base_index++) {
+        const db_gl_upload_range_t base = normalized_base[base_index];
+        const size_t base_start = base.dst_offset_bytes;
+        const size_t base_end = base.dst_offset_bytes + base.size_bytes;
+        size_t current_start = base_start;
+
+        while (cut_index < normalized_cut_count) {
+            const db_gl_upload_range_t cut = normalized_cut[cut_index];
+            const size_t cut_start = cut.dst_offset_bytes;
+            const size_t cut_end = cut.dst_offset_bytes + cut.size_bytes;
+            if (cut_end <= current_start) {
+                cut_index++;
+                continue;
+            }
+            if (cut_start >= base_end) {
+                break;
+            }
+            if ((current_start < cut_start) && (out_count < out_capacity)) {
+                out_ranges[out_count++] = (db_gl_upload_range_t){
+                    .dst_offset_bytes = current_start,
+                    .src_offset_bytes =
+                        base.src_offset_bytes + (current_start - base_start),
+                    .size_bytes = cut_start - current_start,
+                };
+            }
+            if (cut_end >= base_end) {
+                current_start = base_end;
+                break;
+            }
+            current_start = cut_end;
+            cut_index++;
+        }
+
+        if ((current_start < base_end) && (out_count < out_capacity)) {
+            out_ranges[out_count++] = (db_gl_upload_range_t){
+                .dst_offset_bytes = current_start,
+                .src_offset_bytes =
+                    base.src_offset_bytes + (current_start - base_start),
+                .size_bytes = base_end - current_start,
+            };
+        }
+    }
+    return db_gl_coalesce_upload_ranges_in_place(out_ranges, out_count);
 }
 
 int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,

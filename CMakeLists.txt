@@ -192,7 +192,11 @@ endif()
 
 list(APPEND DB_DRIVERBENCH_SOURCES
   src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
+  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_damage.c
+  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_primitives.c
+  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_ranges.c
   src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c
+  src/renderers/opengl_gl3_3/renderer_opengl_gl3_3_ranges.c
   src/renderers/renderer_gl_common.c
   src/renderers/renderer_gl_setup.c
 )

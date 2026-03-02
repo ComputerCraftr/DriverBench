@@ -549,7 +549,7 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
         .backbuffer_draw_full = 0,
         .debug_clear_default_framebuffer = 0,
         .offscreen_enabled = 0,
-        .vsync_enabled = (BENCH_GLFW_SWAP_INTERVAL != 0),
+        .vsync_enabled = BENCH_DEFAULT_VSYNC_ENABLED,
         .api_is_auto = 1,
         .display_is_set = 0,
         .renderer_is_auto = 1,

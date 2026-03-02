@@ -33,6 +33,7 @@
 #define DB_COLOR_CHANNEL_BIAS 0.20F
 #define DB_COLOR_CHANNEL_SCALE 0.75F
 #define DB_GRADIENT_WINDOW_ROWS 32U
+#define DB_GRADIENT_DRAW_RANGE_WORK_CAP 8U
 #define DB_PALETTE_SALT_BASE_STEP DB_U32_GOLDEN_RATIO
 
 typedef enum {
@@ -766,6 +767,293 @@ db_gradient_collect_dirty_ranges(const db_gradient_damage_plan_t *plan,
         };
     }
     return count;
+}
+
+static inline size_t db_gradient_collect_dirty_ranges_clamped(
+    const db_gradient_damage_plan_t *plan, uint32_t max_rows,
+    db_dirty_row_range_t *out_ranges, size_t out_capacity) {
+    if ((plan == NULL) || (out_ranges == NULL) || (out_capacity == 0U) ||
+        (max_rows == 0U)) {
+        return 0U;
+    }
+    db_dirty_row_range_t raw[2] = {{0U, 0U}, {0U, 0U}};
+    const size_t raw_count = db_gradient_collect_dirty_ranges(plan, raw);
+    size_t out_count = 0U;
+    for (size_t index = 0U; (index < raw_count) && (out_count < out_capacity);
+         index++) {
+        const db_dirty_row_range_t range = raw[index];
+        if ((range.row_count == 0U) || (range.row_start >= max_rows)) {
+            continue;
+        }
+        const uint32_t clamped_end =
+            db_u32_min(max_rows, range.row_start + range.row_count);
+        if (clamped_end <= range.row_start) {
+            continue;
+        }
+        out_ranges[out_count++] = (db_dirty_row_range_t){
+            .row_start = range.row_start,
+            .row_count = clamped_end - range.row_start,
+        };
+    }
+    return out_count;
+}
+
+static inline size_t db_append_nonzero_row_ranges(
+    const db_dirty_row_range_t *ranges, size_t range_count,
+    db_dirty_row_range_t *out_ranges, size_t out_capacity, size_t out_count) {
+    if ((ranges == NULL) || (out_ranges == NULL) || (out_capacity == 0U)) {
+        return out_count;
+    }
+    if (out_count >= out_capacity) {
+        return out_count;
+    }
+
+    const size_t copy_capacity = out_capacity - out_count;
+    DB_LOG_CAPACITY_EXCEEDED_ONCE(DB_BENCH_COMMON_BACKEND,
+                                  "append_nonzero_row_ranges", range_count,
+                                  copy_capacity);
+    const size_t copy_limit =
+        (range_count < copy_capacity) ? range_count : copy_capacity;
+    if (copy_limit == 0U) {
+        return out_count;
+    }
+
+    // Fast path: dense nonzero prefix can be copied directly.
+    // Typical after normalization/coalescing.
+    size_t index = 0U;
+    while ((index < copy_limit) && (ranges[index].row_count != 0U)) {
+        index++;
+    }
+    if (index == copy_limit) {
+        for (size_t copy_index = 0U; copy_index < copy_limit; copy_index++) {
+            out_ranges[out_count + copy_index] = ranges[copy_index];
+        }
+        return out_count + copy_limit;
+    }
+    if (index > 0U) {
+        for (size_t copy_index = 0U; copy_index < index; copy_index++) {
+            out_ranges[out_count + copy_index] = ranges[copy_index];
+        }
+        out_count += index;
+    }
+
+    for (; index < copy_limit; index++) {
+        if (ranges[index].row_count == 0U) {
+            continue;
+        }
+        out_ranges[out_count++] = ranges[index];
+    }
+    return out_count;
+}
+
+static inline size_t db_gradient_build_curr_draw_ranges(
+    const db_dirty_row_range_t *skipped_ranges, size_t skipped_count,
+    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
+    db_dirty_row_range_t *out_ranges, size_t out_capacity) {
+    if ((out_ranges == NULL) || (out_capacity == 0U)) {
+        return 0U;
+    }
+    // Fast path: only dirty ranges contributed this frame.
+    // Avoids an unnecessary append pass over skipped ranges.
+    if ((skipped_count == 0U) && (dirty_ranges != NULL) && (dirty_count > 0U) &&
+        (dirty_count <= out_capacity)) {
+        return db_append_nonzero_row_ranges(dirty_ranges, dirty_count,
+                                            out_ranges, out_capacity, 0U);
+    }
+    // Fast path: only skipped/replay ranges contributed this frame.
+    // Avoids an unnecessary append pass over current dirty ranges.
+    if ((dirty_count == 0U) && (skipped_ranges != NULL) &&
+        (skipped_count > 0U) && (skipped_count <= out_capacity)) {
+        return db_append_nonzero_row_ranges(skipped_ranges, skipped_count,
+                                            out_ranges, out_capacity, 0U);
+    }
+
+    size_t out_count = db_append_nonzero_row_ranges(
+        skipped_ranges, skipped_count, out_ranges, out_capacity, 0U);
+    out_count = db_append_nonzero_row_ranges(
+        dirty_ranges, dirty_count, out_ranges, out_capacity, out_count);
+    return out_count;
+}
+
+static inline size_t
+db_gradient_row_range_lower_bound(const db_dirty_row_range_t *ranges,
+                                  size_t sorted_count, uint32_t row_start) {
+    if ((ranges == NULL) || (sorted_count == 0U)) {
+        return 0U;
+    }
+    if (row_start <= ranges[0].row_start) {
+        return 0U;
+    }
+
+    size_t hi = 1U;
+    while ((hi < sorted_count) && (ranges[hi].row_start < row_start)) {
+        hi <<= 1U;
+    }
+    size_t lo = hi >> 1U;
+    if (hi > sorted_count) {
+        hi = sorted_count;
+    }
+    while (lo < hi) {
+        const size_t mid = lo + ((hi - lo) >> 1U);
+        if (ranges[mid].row_start < row_start) {
+            lo = mid + 1U;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+static inline size_t db_gradient_normalize_row_ranges(
+    const db_dirty_row_range_t *source_ranges, size_t source_count,
+    db_dirty_row_range_t *out_ranges, size_t out_capacity) {
+    if ((source_ranges == NULL) || (out_ranges == NULL) ||
+        (out_capacity == 0U)) {
+        return 0U;
+    }
+
+    DB_LOG_CAPACITY_EXCEEDED_ONCE(DB_BENCH_COMMON_BACKEND,
+                                  "gradient_normalize_row_ranges", source_count,
+                                  out_capacity);
+    size_t out_count = 0U;
+    for (size_t index = 0U;
+         (index < source_count) && (out_count < out_capacity); index++) {
+        const db_dirty_row_range_t candidate = source_ranges[index];
+        if (candidate.row_count == 0U) {
+            continue;
+        }
+        if ((out_count == 0U) ||
+            (candidate.row_start >= out_ranges[out_count - 1U].row_start)) {
+            out_ranges[out_count++] = candidate;
+            continue;
+        }
+        const size_t insert_index = db_gradient_row_range_lower_bound(
+            out_ranges, out_count, candidate.row_start);
+        for (size_t shift_index = out_count; shift_index > insert_index;
+             shift_index--) {
+            out_ranges[shift_index] = out_ranges[shift_index - 1U];
+        }
+        out_ranges[insert_index] = candidate;
+        out_count++;
+    }
+
+    if (out_count <= 1U) {
+        return out_count;
+    }
+
+    size_t merged_count = 0U;
+    for (size_t index = 0U; index < out_count; index++) {
+        const db_dirty_row_range_t current = out_ranges[index];
+        if (merged_count == 0U) {
+            out_ranges[merged_count++] = current;
+            continue;
+        }
+        db_dirty_row_range_t *tail = &out_ranges[merged_count - 1U];
+        const uint32_t tail_end =
+            db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "gradient_tail_end",
+                               tail->row_start, tail->row_count);
+        const uint32_t current_end =
+            db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "gradient_current_end",
+                               current.row_start, current.row_count);
+        if (current.row_start <= tail_end) {
+            if (current_end > tail_end) {
+                tail->row_count = db_checked_sub_u32(
+                    DB_BENCH_COMMON_BACKEND, "gradient_merged_count",
+                    current_end, tail->row_start);
+            }
+            continue;
+        }
+        out_ranges[merged_count++] = current;
+    }
+    return merged_count;
+}
+
+static inline size_t db_gradient_subtract_replay_ranges(
+    const db_dirty_row_range_t *base_ranges, size_t base_count,
+    const db_dirty_row_range_t *cut_ranges, size_t cut_count,
+    db_dirty_row_range_t *out_ranges, size_t out_capacity) {
+    if ((base_ranges == NULL) || (base_count == 0U) || (out_ranges == NULL) ||
+        (out_capacity == 0U)) {
+        return 0U;
+    }
+    db_dirty_row_range_t normalized_base[DB_GRADIENT_DRAW_RANGE_WORK_CAP] = {
+        {0U, 0U}};
+    DB_LOG_CAPACITY_EXCEEDED_ONCE(DB_BENCH_COMMON_BACKEND,
+                                  "gradient_subtract_replay.base_normalize",
+                                  base_count, DB_GRADIENT_DRAW_RANGE_WORK_CAP);
+    const size_t normalized_base_count = db_gradient_normalize_row_ranges(
+        base_ranges, base_count, normalized_base,
+        DB_GRADIENT_DRAW_RANGE_WORK_CAP);
+    if (normalized_base_count == 0U) {
+        return 0U;
+    }
+
+    db_dirty_row_range_t normalized_cut[DB_GRADIENT_DRAW_RANGE_WORK_CAP] = {
+        {0U, 0U}};
+    DB_LOG_CAPACITY_EXCEEDED_ONCE(DB_BENCH_COMMON_BACKEND,
+                                  "gradient_subtract_replay.cut_normalize",
+                                  cut_count, DB_GRADIENT_DRAW_RANGE_WORK_CAP);
+    const size_t normalized_cut_count = db_gradient_normalize_row_ranges(
+        cut_ranges, cut_count, normalized_cut, DB_GRADIENT_DRAW_RANGE_WORK_CAP);
+    if (normalized_cut_count == 0U) {
+        // Fast path: normalized cut set is empty, so subtraction is a copy.
+        return db_append_nonzero_row_ranges(normalized_base,
+                                            normalized_base_count, out_ranges,
+                                            out_capacity, 0U);
+    }
+
+    // Main path: linear two-pointer subtraction over normalized ranges.
+    size_t out_count = 0U;
+    size_t cut_index = 0U;
+    for (size_t base_index = 0U;
+         (base_index < normalized_base_count) && (out_count < out_capacity);
+         base_index++) {
+        const db_dirty_row_range_t base = normalized_base[base_index];
+        const uint32_t base_start = base.row_start;
+        const uint32_t base_end =
+            db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "gradient_base_end",
+                               base_start, base.row_count);
+        uint32_t current_start = base_start;
+
+        while (cut_index < normalized_cut_count) {
+            const db_dirty_row_range_t cut = normalized_cut[cut_index];
+            const uint32_t cut_start = cut.row_start;
+            const uint32_t cut_end =
+                db_checked_add_u32(DB_BENCH_COMMON_BACKEND, "gradient_cut_end",
+                                   cut_start, cut.row_count);
+
+            if (cut_end <= current_start) {
+                cut_index++;
+                continue;
+            }
+            if (cut_start >= base_end) {
+                break;
+            }
+            if ((current_start < cut_start) && (out_count < out_capacity)) {
+                out_ranges[out_count++] = (db_dirty_row_range_t){
+                    .row_start = current_start,
+                    .row_count = db_checked_sub_u32(DB_BENCH_COMMON_BACKEND,
+                                                    "gradient_left_count",
+                                                    cut_start, current_start),
+                };
+            }
+            if (cut_end >= base_end) {
+                current_start = base_end;
+                break;
+            }
+            current_start = cut_end;
+            cut_index++;
+        }
+        if ((current_start < base_end) && (out_count < out_capacity)) {
+            out_ranges[out_count++] = (db_dirty_row_range_t){
+                .row_start = current_start,
+                .row_count = db_checked_sub_u32(DB_BENCH_COMMON_BACKEND,
+                                                "gradient_right_count",
+                                                base_end, current_start),
+            };
+        }
+    }
+    return out_count;
 }
 
 static inline void

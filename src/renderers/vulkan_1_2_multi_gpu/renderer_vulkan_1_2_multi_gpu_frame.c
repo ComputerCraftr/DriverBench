@@ -652,47 +652,42 @@ static void db_vk_draw_owner_grid_span_rect(
 
 void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
                                 const db_snake_plan_t *plan,
-                                uint32_t work_unit_count,
                                 const float color[3]) {
-    const uint32_t batch_size = plan->batch_size;
-    const uint32_t active_cursor = plan->active_cursor;
-    const uint32_t full_rows = active_cursor / ctx->grid_cols;
-    const uint32_t row_remainder = active_cursor % ctx->grid_cols;
-    const uint32_t row_span_units = ctx->grid_cols;
-
-    for (uint32_t row = 0; row < full_rows; row++) {
-        db_vk_draw_owner_grid_span_snake(
-            ctx, row % ctx->active_gpu_count, row_span_units, row, 0U,
-            ctx->grid_cols, color, active_cursor, plan->clearing_phase,
-            batch_size, plan->phase_completed);
+    if ((ctx == NULL) || (plan == NULL) || (color == NULL)) {
+        return;
     }
-
-    if ((row_remainder > 0U) && (full_rows < ctx->grid_rows)) {
-        const uint32_t span_units = row_remainder;
-        uint32_t col_start = 0U;
-        uint32_t col_end = row_remainder;
-        if ((full_rows & 1U) != 0U) {
-            col_start = ctx->grid_cols - row_remainder;
-            col_end = ctx->grid_cols;
+    const db_snake_region_t grid_region = {
+        .x = 0U,
+        .y = 0U,
+        .width = ctx->grid_cols,
+        .height = ctx->grid_rows,
+        .color_r = 0.0F,
+        .color_g = 0.0F,
+        .color_b = 0.0F,
+    };
+    const size_t max_spans =
+        (size_t)plan->prev_count + (size_t)plan->batch_size;
+    if (max_spans == 0U) {
+        return;
+    }
+    if (max_spans > g_state.snake_span_capacity) {
+        failf("Vulkan snake grid scratch overflow (required=%zu capacity=%zu)",
+              max_spans, g_state.snake_span_capacity);
+    }
+    db_snake_col_span_t *spans = g_state.snake_spans;
+    const size_t span_count = db_snake_collect_damage_spans(
+        spans, max_spans, &grid_region, plan->prev_start, plan->prev_count,
+        plan->active_cursor, plan->batch_size, NULL);
+    for (size_t span_index = 0U; span_index < span_count; span_index++) {
+        const db_snake_col_span_t span = spans[span_index];
+        const uint32_t span_units = span.col_end - span.col_start;
+        if (span_units == 0U) {
+            continue;
         }
         db_vk_draw_owner_grid_span_snake(
-            ctx, full_rows % ctx->active_gpu_count, span_units, full_rows,
-            col_start, col_end, color, active_cursor, plan->clearing_phase,
-            batch_size, plan->phase_completed);
-    }
-
-    for (uint32_t update_index = 0; update_index < batch_size; update_index++) {
-        const uint32_t tile_step = active_cursor + update_index;
-        if (tile_step >= work_unit_count) {
-            break;
-        }
-        const uint32_t tile_index = db_grid_tile_index_from_step(tile_step);
-        const uint32_t row = tile_index / ctx->grid_cols;
-        const uint32_t col = tile_index % ctx->grid_cols;
-        db_vk_draw_owner_grid_span_snake(ctx, tile_step % ctx->active_gpu_count,
-                                         1U, row, col, col + 1U, color,
-                                         active_cursor, plan->clearing_phase,
-                                         batch_size, plan->phase_completed);
+            ctx, span.row % ctx->active_gpu_count, span_units, span.row,
+            span.col_start, span.col_end, color, plan->active_cursor,
+            plan->clearing_phase, plan->batch_size, plan->phase_completed);
     }
 }
 

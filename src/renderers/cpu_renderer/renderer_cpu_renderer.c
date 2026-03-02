@@ -148,24 +148,8 @@ static void db_cpu_set_full_damage(const db_cpu_bo_t *bo) {
 static void
 db_cpu_set_damage_from_gradient_plan(const db_gradient_damage_plan_t *plan,
                                      uint32_t rows) {
-    db_dirty_row_range_t ranges[2] = {{0U, 0U}, {0U, 0U}};
-    const size_t count = db_gradient_collect_dirty_ranges(plan, ranges);
-    g_state.damage_row_count = 0U;
-    for (size_t i = 0U; (i < count) && (g_state.damage_row_count < 2U); i++) {
-        if ((ranges[i].row_count == 0U) || (ranges[i].row_start >= rows)) {
-            continue;
-        }
-        const uint32_t clamped_count =
-            db_u32_min(ranges[i].row_count, rows - ranges[i].row_start);
-        if (clamped_count == 0U) {
-            continue;
-        }
-        g_state.damage_rows[g_state.damage_row_count++] =
-            (db_dirty_row_range_t){
-                .row_start = ranges[i].row_start,
-                .row_count = clamped_count,
-            };
-    }
+    g_state.damage_row_count = db_gradient_collect_dirty_ranges_clamped(
+        plan, rows, g_state.damage_rows, 2U);
     if (g_state.damage_row_count == 0U) {
         db_cpu_set_full_damage(&g_state.bo);
     }
@@ -173,25 +157,16 @@ db_cpu_set_damage_from_gradient_plan(const db_gradient_damage_plan_t *plan,
 
 static void db_cpu_set_damage_from_spans(const db_snake_col_span_t *spans,
                                          size_t span_count, uint32_t rows) {
-    uint32_t row_min = rows;
-    uint32_t row_max_exclusive = 0U;
-    for (size_t i = 0U; i < span_count; i++) {
-        if (spans[i].col_end <= spans[i].col_start) {
-            continue;
-        }
-        if (spans[i].row >= rows) {
-            continue;
-        }
-        row_min = db_u32_min(row_min, spans[i].row);
-        row_max_exclusive = db_u32_max(row_max_exclusive, spans[i].row + 1U);
-    }
-    if ((row_max_exclusive <= row_min) || (row_min >= rows)) {
+    uint32_t row_start = 0U;
+    uint32_t row_count = 0U;
+    if (db_snake_span_row_bounds(spans, span_count, rows, &row_start,
+                                 &row_count) == 0) {
         g_state.damage_row_count = 0U;
         return;
     }
     g_state.damage_rows[0] = (db_dirty_row_range_t){
-        .row_start = row_min,
-        .row_count = row_max_exclusive - row_min,
+        .row_start = row_start,
+        .row_count = row_count,
     };
     g_state.damage_rows[1] = (db_dirty_row_range_t){0U, 0U};
     g_state.damage_row_count = 1U;
@@ -489,6 +464,9 @@ void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
                 db_cpu_set_damage_from_spans(spans, span_count,
                                              write_bo->height);
             } else {
+                DB_LOG_CAPACITY_EXCEEDED_ONCE(
+                    BACKEND_NAME, "cpu_snake_damage_spans", max_spans,
+                    (size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * 2U);
                 db_cpu_set_full_damage(write_bo);
             }
         }

@@ -356,7 +356,8 @@ uint32_t db_vk_build_device_group_mask(uint32_t device_count);
 VkSurfaceFormatKHR
 db_vk_choose_surface_format(const VkSurfaceFormatKHR *formats, uint32_t count);
 VkPresentModeKHR db_vk_choose_present_mode(VkPhysicalDevice present_phys,
-                                           VkSurfaceKHR surface);
+                                           VkSurfaceKHR surface,
+                                           int vsync_enabled);
 void db_vk_create_history_target(VkPhysicalDevice phys, VkDevice device,
                                  VkFormat format, VkExtent2D extent,
                                  VkRenderPass render_pass,
@@ -409,7 +410,7 @@ void db_vk_owner_timing_end(VkCommandBuffer cmd, int timing_enabled,
                             uint8_t *owner_finished);
 void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
                                 const db_snake_plan_t *plan,
-                                uint32_t work_unit_count, const float color[3]);
+                                const float color[3]);
 void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
                                   const db_snake_plan_t *plan,
                                   uint32_t pattern_seed,
@@ -421,7 +422,7 @@ void db_vk_update_ema_fallback(uint32_t gpu_count,
                                double frame_ms, double *ema_ms_per_work_unit);
 void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx);
 void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx);
-void db_vk_init_impl(const db_vk_wsi_config_t *wsi_config);
+void db_vk_init_impl(const db_vk_wsi_config_t *wsi_config, int vsync_enabled);
 db_vk_frame_result_t db_vk_render_frame_impl(void);
 void db_vk_shutdown_impl(void);
 const char *db_vk_capability_mode_impl(void);

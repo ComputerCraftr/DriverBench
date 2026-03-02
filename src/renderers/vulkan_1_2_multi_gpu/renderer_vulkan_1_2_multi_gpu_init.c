@@ -241,6 +241,7 @@ static void db_vk_init_phase_instance_surface(
 }
 
 static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
+                                    int vsync_enabled,
                                     db_vk_init_device_phase_t *out_phase) {
     if (out_phase == NULL) {
         return;
@@ -328,8 +329,8 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
                                                      surface, &fmtN, fmts));
     out_phase->surface_format = db_vk_choose_surface_format(fmts, fmtN);
     free(fmts);
-    out_phase->present_mode =
-        db_vk_choose_present_mode(out_phase->present_phys, surface);
+    out_phase->present_mode = db_vk_choose_present_mode(out_phase->present_phys,
+                                                        surface, vsync_enabled);
 }
 
 static void db_vk_init_phase_pipeline_resources(
@@ -696,7 +697,7 @@ db_vk_init_phase_scheduler(const db_vk_init_device_phase_t *device_phase,
     }
 }
 
-void db_vk_init_impl(const db_vk_wsi_config_t *wsi_config) {
+void db_vk_init_impl(const db_vk_wsi_config_t *wsi_config, int vsync_enabled) {
     db_vk_init_instance_surface_phase_t instance_surface_phase = {0};
     db_vk_init_device_phase_t device_phase = {0};
     db_vk_init_pipeline_resources_phase_t pipeline_phase = {0};
@@ -704,7 +705,8 @@ void db_vk_init_impl(const db_vk_wsi_config_t *wsi_config) {
 
     db_vk_init_phase_instance_surface(wsi_config, &instance_surface_phase);
     db_vk_init_phase_device(instance_surface_phase.instance,
-                            instance_surface_phase.surface, &device_phase);
+                            instance_surface_phase.surface, vsync_enabled,
+                            &device_phase);
     db_vk_init_phase_pipeline_resources(wsi_config,
                                         instance_surface_phase.surface,
                                         &device_phase, &pipeline_phase);

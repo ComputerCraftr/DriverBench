@@ -1,4 +1,5 @@
 #include "renderer_opengl_gl3_3.h"
+#include "renderer_opengl_gl3_3_ranges.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -10,7 +11,6 @@
 #include "../renderer_gl_api.h"
 #include "../renderer_gl_common.h"
 #include "../renderer_snake_common.h"
-#include "../renderer_snake_shape_common.h"
 
 #if !defined(OPENGL_GL3_3_VERT_SHADER_PATH) ||                                 \
     !defined(OPENGL_GL3_3_FRAG_SHADER_PATH)
@@ -107,105 +107,6 @@ static void db_set_uniform1ui_if_changed(int location, uint32_t *cache,
         *cache = value;
         *cache_valid = 1;
     }
-}
-
-static int db_gl3_step_span_row_range(uint32_t region_width,
-                                      uint32_t region_height,
-                                      uint32_t span_start, uint32_t span_count,
-                                      db_dirty_row_range_t *out_range) {
-    if ((out_range == NULL) || (region_width == 0U) || (region_height == 0U) ||
-        (span_count == 0U)) {
-        return 0;
-    }
-    const uint64_t total_tiles = (uint64_t)region_width * region_height;
-    uint64_t start = span_start;
-    if (start > total_tiles) {
-        start = total_tiles;
-    }
-    uint64_t end = start + span_count;
-    if (end > total_tiles) {
-        end = total_tiles;
-    }
-    if (end <= start) {
-        return 0;
-    }
-
-    const uint32_t row_start = db_checked_u64_to_u32(
-        BACKEND_NAME, "gl3_dirty_row_start", start / region_width);
-    const uint32_t row_end_exclusive =
-        db_checked_u64_to_u32(BACKEND_NAME, "gl3_dirty_row_end",
-                              (end - 1U) / region_width) +
-        1U;
-    out_range->row_start = row_start;
-    out_range->row_count = row_end_exclusive - row_start;
-    return (out_range->row_count > 0U) ? 1 : 0;
-}
-
-static size_t db_gl3_coalesce_dirty_row_ranges(db_dirty_row_range_t *ranges,
-                                               size_t range_count) {
-    if ((ranges == NULL) || (range_count == 0U)) {
-        return 0U;
-    }
-    for (size_t i = 1U; i < range_count; i++) {
-        db_dirty_row_range_t key = ranges[i];
-        size_t insert_index = i;
-        while ((insert_index > 0U) &&
-               (ranges[insert_index - 1U].row_start > key.row_start)) {
-            ranges[insert_index] = ranges[insert_index - 1U];
-            insert_index--;
-        }
-        ranges[insert_index] = key;
-    }
-
-    size_t out_count = 0U;
-    for (size_t i = 0U; i < range_count; i++) {
-        if (ranges[i].row_count == 0U) {
-            continue;
-        }
-        if (out_count == 0U) {
-            ranges[out_count++] = ranges[i];
-            continue;
-        }
-        db_dirty_row_range_t *tail = &ranges[out_count - 1U];
-        const uint32_t tail_end = tail->row_start + tail->row_count;
-        const uint32_t curr_end = ranges[i].row_start + ranges[i].row_count;
-        if (ranges[i].row_start <= tail_end) {
-            if (curr_end > tail_end) {
-                tail->row_count = curr_end - tail->row_start;
-            }
-        } else {
-            ranges[out_count++] = ranges[i];
-        }
-    }
-    return out_count;
-}
-
-static size_t db_gl3_collect_snake_dirty_rows(const db_snake_plan_t *plan,
-                                              const db_snake_region_t *region,
-                                              db_dirty_row_range_t out[4]) {
-    if ((plan == NULL) || (region == NULL) || (out == NULL) ||
-        (region->width == 0U) || (region->height == 0U)) {
-        return 0U;
-    }
-
-    size_t range_count = 0U;
-    db_dirty_row_range_t local = {0U, 0U};
-    if ((range_count < 4U) &&
-        db_gl3_step_span_row_range(region->width, region->height,
-                                   plan->prev_start, plan->prev_count,
-                                   &local) != 0) {
-        local.row_start += region->y;
-        out[range_count++] = local;
-    }
-    if ((range_count < 4U) &&
-        db_gl3_step_span_row_range(region->width, region->height,
-                                   plan->active_cursor, plan->batch_size,
-                                   &local) != 0) {
-        local.row_start += region->y;
-        out[range_count++] = local;
-    }
-
-    return db_gl3_coalesce_dirty_row_ranges(out, range_count);
 }
 
 static void db_gl3_destroy_history_targets(void) {
@@ -693,7 +594,7 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
         db_dirty_row_range_t dirty_rows[4] = {
             {0U, 0U}, {0U, 0U}, {0U, 0U}, {0U, 0U}};
         const size_t dirty_count = db_gl3_collect_snake_dirty_rows(
-            &snake_plan, &snake_target.region, dirty_rows);
+            BACKEND_NAME, &snake_plan, &snake_target.region, dirty_rows);
         if (dirty_count > 0U) {
             const uint32_t total_rows = db_grid_rows_effective();
             db_gl_bind_framebuffer(GL_READ_FRAMEBUFFER,

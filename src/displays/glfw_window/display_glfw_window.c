@@ -540,11 +540,11 @@ db_present_cpu_prepare_resources(db_cpu_present_gl_state_t *state,
     }
 }
 
-// New: build upload ranges directly from dirty row ranges, using persistent
+// Build upload ranges directly from dirty row ranges, using persistent
 // scratch buffer.
 static size_t db_cpu_build_upload_ranges_from_dirty_rows(
-    const char *backend_name, db_cpu_present_gl_state_t *state,
-    uint32_t pixel_width, uint32_t pixel_height, uint32_t pixel_bytes,
+    db_cpu_present_gl_state_t *state, uint32_t pixel_width,
+    uint32_t pixel_height, uint32_t pixel_bytes,
     const db_dirty_row_range_t *ranges, size_t range_count,
     db_gl_upload_range_t **out_ranges) {
     if ((out_ranges == NULL) || (state == NULL) || (pixel_width == 0U) ||
@@ -567,71 +567,9 @@ static size_t db_cpu_build_upload_ranges_from_dirty_rows(
     }
 
     db_gl_upload_range_t *tmp = state->upload_ranges_buf;
-
-    const uint32_t row_bytes = db_checked_mul_u32(backend_name, "cpu_row_bytes",
-                                                  pixel_width, pixel_bytes);
-
-    size_t out_count = 0U;
-    for (size_t i = 0U; i < range_count; i++) {
-        const uint32_t row_start = ranges[i].row_start;
-        const uint32_t row_count = ranges[i].row_count;
-        if ((row_count == 0U) || (row_start >= pixel_height)) {
-            continue;
-        }
-        const uint32_t clamped_count = (row_start + row_count > pixel_height)
-                                           ? (pixel_height - row_start)
-                                           : row_count;
-        const uint64_t offset_u64 = (uint64_t)row_start * (uint64_t)row_bytes;
-        const uint64_t size_u64 = (uint64_t)clamped_count * (uint64_t)row_bytes;
-        if ((offset_u64 > UINT32_MAX) || (size_u64 > UINT32_MAX)) {
-            // pixel dimensions in DriverBench should never hit this, but keep
-            // it safe.
-            continue;
-        }
-        tmp[out_count++] = (db_gl_upload_range_t){
-            .src_offset_bytes = (uint32_t)offset_u64,
-            .dst_offset_bytes = (uint32_t)offset_u64,
-            .size_bytes = (uint32_t)size_u64,
-        };
-    }
-
-    if (out_count == 0U) {
-        return 0U;
-    }
-
-    // Sort by dst_offset_bytes (simple insertion sort; out_count is small).
-    for (size_t i = 1U; i < out_count; i++) {
-        const db_gl_upload_range_t key = tmp[i];
-        size_t insert_index = i;
-        while ((insert_index > 0U) && (tmp[insert_index - 1U].dst_offset_bytes >
-                                       key.dst_offset_bytes)) {
-            tmp[insert_index] = tmp[insert_index - 1U];
-            insert_index--;
-        }
-        tmp[insert_index] = key;
-    }
-
-    // Merge adjacent/overlapping ranges.
-    size_t merged_count = 0U;
-    for (size_t i = 0U; i < out_count; i++) {
-        const db_gl_upload_range_t cur = tmp[i];
-        if (merged_count == 0U) {
-            tmp[merged_count++] = cur;
-            continue;
-        }
-        db_gl_upload_range_t *prev = &tmp[merged_count - 1U];
-        const uint32_t prev_end = prev->dst_offset_bytes + prev->size_bytes;
-        if (cur.dst_offset_bytes <= prev_end) {
-            const uint32_t cur_end = cur.dst_offset_bytes + cur.size_bytes;
-            if (cur_end > prev_end) {
-                prev->size_bytes = cur_end - prev->dst_offset_bytes;
-            }
-            // Keep src aligned with dst for CPU buffer.
-            prev->src_offset_bytes = prev->dst_offset_bytes;
-        } else {
-            tmp[merged_count++] = cur;
-        }
-    }
+    const size_t merged_count = db_gl_collect_row_upload_ranges(
+        pixel_width, pixel_height, pixel_bytes, ranges, range_count, NULL, tmp,
+        state->upload_ranges_cap);
 
     *out_ranges = tmp;
     return merged_count;
@@ -729,8 +667,8 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
         db_gl_upload_range_t *upload_ranges = NULL;
         const size_t upload_span_count =
             db_cpu_build_upload_ranges_from_dirty_rows(
-                BACKEND_NAME_CPU, state, pixel_width, pixel_height, pixel_bytes,
-                ranges, range_count, &upload_ranges);
+                state, pixel_width, pixel_height, pixel_bytes, ranges,
+                range_count, &upload_ranges);
         if ((upload_span_count > 0U) && (upload_ranges != NULL)) {
             db_present_cpu_upload_spans(
                 state, (const uint8_t *)pixels_rgba8, pixels_rgba32f,
@@ -1294,7 +1232,9 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
         .create_window_surface = db_glfw_vk_create_surface,
         .get_framebuffer_size = db_glfw_vk_get_framebuffer_size,
     };
-    db_renderer_vulkan_1_2_multi_gpu_init(&wsi_config);
+    db_renderer_vulkan_1_2_multi_gpu_init(
+        &wsi_config,
+        (cfg != NULL) ? cfg->vsync_enabled : BENCH_DEFAULT_VSYNC_ENABLED);
     db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
         BACKEND_NAME_VK, hash_settings.state_hash_enabled, "state_hash",
         (cfg != NULL) ? cfg->hash_report : "both");

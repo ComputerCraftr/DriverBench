@@ -66,6 +66,21 @@ void db_benchmark_log_final(const char *api_name, const char *renderer_name,
                             uint32_t work_units, double elapsed_ms,
                             const char *capability_mode);
 
+#define DB_LOG_CAPACITY_EXCEEDED_ONCE(backend, tag, required, capacity)        \
+    do {                                                                       \
+        static int db_capacity_warned_once_ = 0;                               \
+        const size_t db_required_ = (size_t)(required);                        \
+        const size_t db_capacity_ = (size_t)(capacity);                        \
+        if ((db_capacity_warned_once_ == 0) &&                                 \
+            (db_required_ > db_capacity_)) {                                   \
+            db_infof((backend),                                                \
+                     "capacity exceeded for %s: required=%zu capacity=%zu "    \
+                     "(truncating)",                                           \
+                     (tag), db_required_, db_capacity_);                       \
+            db_capacity_warned_once_ = 1;                                      \
+        }                                                                      \
+    } while (0)
+
 static inline int32_t db_checked_u32_to_i32(const char *backend,
                                             const char *field_name,
                                             uint32_t value) {

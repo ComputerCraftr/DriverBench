@@ -112,9 +112,9 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.gradient_history_valid = 0;
 }
 
-void db_renderer_vulkan_1_2_multi_gpu_init(
-    const db_vk_wsi_config_t *wsi_config) {
-    db_vk_init_impl(wsi_config);
+void db_renderer_vulkan_1_2_multi_gpu_init(const db_vk_wsi_config_t *wsi_config,
+                                           int vsync_enabled) {
+    db_vk_init_impl(wsi_config, vsync_enabled);
 }
 
 db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {

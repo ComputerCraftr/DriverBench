@@ -45,7 +45,8 @@ db_vk_choose_surface_extent(const db_vk_wsi_config_t *wsi_config,
 }
 
 VkPresentModeKHR db_vk_choose_present_mode(VkPhysicalDevice present_phys,
-                                           VkSurfaceKHR surface) {
+                                           VkSurfaceKHR surface,
+                                           int vsync_enabled) {
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     uint32_t mode_count = 0;
     DB_VK_CHECK(BACKEND_NAME, vkGetPhysicalDeviceSurfacePresentModesKHR(
@@ -54,7 +55,7 @@ VkPresentModeKHR db_vk_choose_present_mode(VkPhysicalDevice present_phys,
         (VkPresentModeKHR *)calloc(mode_count, sizeof(VkPresentModeKHR));
     DB_VK_CHECK(BACKEND_NAME, vkGetPhysicalDeviceSurfacePresentModesKHR(
                                   present_phys, surface, &mode_count, modes));
-    if (BENCH_VSYNC_ENABLED != 0) {
+    if (vsync_enabled != 0) {
         present_mode = VK_PRESENT_MODE_FIFO_KHR;
     } else {
         present_mode = VK_PRESENT_MODE_FIFO_KHR;
