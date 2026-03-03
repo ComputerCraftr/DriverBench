@@ -42,6 +42,16 @@ option(DB_ENABLE_LTO_RELWITHDEBINFO
   "Enable LTO specifically for RelWithDebInfo builds" OFF)
 option(DB_ENABLE_SANITIZERS "Enable sanitizers for debug builds" ON)
 option(DB_ENABLE_DSYM "Generate dSYM bundles for Apple debug-like builds" ON)
+option(DB_TARGET_LINUX_MUSL
+  "Enable Linux musl target flags for cross-compilation" OFF)
+set(DB_TARGET_LINUX_MUSL_TRIPLE "x86_64-linux-musl" CACHE STRING
+  "Target triple used when DB_TARGET_LINUX_MUSL is ON (for clang-style --target)"
+)
+set(DB_TARGET_LINUX_MUSL_SYSROOT "" CACHE PATH
+  "Optional sysroot path used when DB_TARGET_LINUX_MUSL is ON"
+)
+option(DB_TARGET_LINUX_32BIT
+  "Enable 32-bit target flags (-m32) for Linux cross-compilation" OFF)
 
 set(DB_IS_RELEASE_LIKE OFF)
 if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
@@ -87,9 +97,160 @@ if(DB_EFFECTIVE_LTO AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
   endif()
 endif()
 
+set(DB_CROSS_COMPILE_FLAGS "")
+set(DB_CROSS_LINK_FLAGS "")
+
+if(DB_TARGET_LINUX_MUSL)
+  if(NOT UNIX OR APPLE)
+    message(FATAL_ERROR
+      "DB_TARGET_LINUX_MUSL is only supported for non-Apple UNIX builds."
+    )
+  endif()
+
+  if(DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
+    set(DB_AUTO_MUSL_SYSROOT "/usr/${DB_TARGET_LINUX_MUSL_TRIPLE}")
+    if(EXISTS "${DB_AUTO_MUSL_SYSROOT}")
+      set(DB_TARGET_LINUX_MUSL_SYSROOT "${DB_AUTO_MUSL_SYSROOT}" CACHE PATH
+        "Optional sysroot path used when DB_TARGET_LINUX_MUSL is ON"
+        FORCE
+      )
+      message(STATUS
+        "DB_TARGET_LINUX_MUSL=ON: auto-detected musl sysroot at "
+        "${DB_TARGET_LINUX_MUSL_SYSROOT}"
+      )
+    endif()
+  endif()
+
+  if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
+    list(APPEND DB_CROSS_COMPILE_FLAGS
+      "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}"
+    )
+    list(APPEND DB_CROSS_LINK_FLAGS
+      "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}"
+    )
+    if(NOT DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
+      list(APPEND DB_CROSS_COMPILE_FLAGS
+        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
+      )
+      list(APPEND DB_CROSS_LINK_FLAGS
+        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
+      )
+    endif()
+  elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    message(STATUS
+      "DB_TARGET_LINUX_MUSL is ON with GCC; ensure a musl-targeted GCC toolchain "
+      "(e.g. musl-gcc or <triple>-gcc) is selected."
+    )
+    if(NOT DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
+      list(APPEND DB_CROSS_COMPILE_FLAGS
+        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
+      )
+      list(APPEND DB_CROSS_LINK_FLAGS
+        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
+      )
+    endif()
+  else()
+    message(FATAL_ERROR
+      "DB_TARGET_LINUX_MUSL is unsupported for compiler '${CMAKE_C_COMPILER_ID}'."
+    )
+  endif()
+  # Musl target binaries should be fully static by default.
+  list(APPEND DB_CROSS_LINK_FLAGS -static)
+  message(STATUS
+    "DB_TARGET_LINUX_MUSL=ON: enabling static linking (-static). Ensure all "
+    "required third-party libraries are available as static archives."
+  )
+
+  if(NOT DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
+    # Make CMake package/library discovery prefer the musl sysroot over host
+    # glibc locations so static musl dependencies can be resolved correctly.
+    list(PREPEND CMAKE_FIND_ROOT_PATH "${DB_TARGET_LINUX_MUSL_SYSROOT}")
+    list(PREPEND CMAKE_PREFIX_PATH
+      "${DB_TARGET_LINUX_MUSL_SYSROOT}"
+      "${DB_TARGET_LINUX_MUSL_SYSROOT}/usr"
+    )
+    set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+    set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+    set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+    set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+    set(CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH OFF)
+    set(CMAKE_FIND_USE_PACKAGE_REGISTRY OFF)
+    set(CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY OFF)
+
+    # Force pkg-config lookup into the musl sysroot only.
+    set(ENV{PKG_CONFIG_DIR} "")
+    set(ENV{PKG_CONFIG_PATH} "")
+    set(DB_MUSL_PKGCONFIG_LIBDIRS "")
+    foreach(DB_PKG_DIR
+      "${DB_TARGET_LINUX_MUSL_SYSROOT}/lib/pkgconfig"
+      "${DB_TARGET_LINUX_MUSL_SYSROOT}/share/pkgconfig"
+      "${DB_TARGET_LINUX_MUSL_SYSROOT}/usr/lib/pkgconfig"
+      "${DB_TARGET_LINUX_MUSL_SYSROOT}/usr/share/pkgconfig")
+      if(EXISTS "${DB_PKG_DIR}")
+        list(APPEND DB_MUSL_PKGCONFIG_LIBDIRS "${DB_PKG_DIR}")
+      endif()
+    endforeach()
+    if(DB_MUSL_PKGCONFIG_LIBDIRS)
+      list(JOIN DB_MUSL_PKGCONFIG_LIBDIRS ":" DB_MUSL_PKGCONFIG_LIBDIR)
+      set(ENV{PKG_CONFIG_LIBDIR} "${DB_MUSL_PKGCONFIG_LIBDIR}")
+      set(ENV{PKG_CONFIG_SYSROOT_DIR} "${DB_TARGET_LINUX_MUSL_SYSROOT}")
+    endif()
+  endif()
+endif()
+
+if(DB_TARGET_LINUX_32BIT)
+  if(NOT UNIX OR APPLE)
+    message(FATAL_ERROR
+      "DB_TARGET_LINUX_32BIT is only supported for non-Apple UNIX builds."
+    )
+  endif()
+  list(APPEND DB_CROSS_COMPILE_FLAGS -m32)
+  list(APPEND DB_CROSS_LINK_FLAGS -m32)
+  # Enforce conservative x86 SSE2-only baseline for 32-bit targets.
+  list(APPEND DB_CROSS_COMPILE_FLAGS
+    -march=pentium4
+    -mtune=generic
+    -msse2
+    -mfpmath=sse
+    -mno-sse3
+    -mno-ssse3
+    -mno-sse4.1
+    -mno-sse4.2
+    -mno-avx
+    -mno-avx2
+  )
+endif()
+
+if(DB_TARGET_LINUX_MUSL AND DB_TARGET_LINUX_32BIT AND
+   DB_TARGET_LINUX_MUSL_TRIPLE MATCHES "^x86_64-")
+  message(WARNING
+    "DB_TARGET_LINUX_32BIT is ON while DB_TARGET_LINUX_MUSL_TRIPLE is "
+    "'${DB_TARGET_LINUX_MUSL_TRIPLE}'. For 32-bit musl target consider "
+    "setting DB_TARGET_LINUX_MUSL_TRIPLE=i686-linux-musl."
+  )
+endif()
+
+if(DB_TARGET_LINUX_MUSL AND DB_TARGET_LINUX_32BIT)
+  if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND
+     DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
+    message(FATAL_ERROR
+      "32-bit musl target requires a musl i686 sysroot when using clang. "
+      "Set DB_TARGET_LINUX_MUSL_SYSROOT to your i686 musl sysroot path, "
+      "or use an i686 musl GCC cross compiler (e.g. i686-linux-musl-gcc)."
+    )
+  endif()
+endif()
+
 function(db_apply_perf_options target_name)
   if(NOT TARGET ${target_name})
     return()
+  endif()
+
+  if(DB_CROSS_COMPILE_FLAGS)
+    target_compile_options(${target_name} PRIVATE ${DB_CROSS_COMPILE_FLAGS})
+  endif()
+  if(DB_CROSS_LINK_FLAGS AND COMMAND target_link_options)
+    target_link_options(${target_name} PRIVATE ${DB_CROSS_LINK_FLAGS})
   endif()
 
   if(UNIX AND NOT APPLE)
@@ -161,12 +322,100 @@ function(db_apply_perf_options target_name)
 endfunction()
 
 set(DB_GLFW_TARGET "")
+set(DB_GLFW_LINK_LIB "")
+set(DB_GLFW_EXTRA_INCLUDE_DIRS "")
 if(DB_BUILD_GLFW_WINDOW_DISPLAY)
   find_package(glfw3 QUIET)
   if(TARGET glfw)
     set(DB_GLFW_TARGET glfw)
+    set(DB_GLFW_LINK_LIB glfw)
   elseif(TARGET glfw3::glfw)
     set(DB_GLFW_TARGET glfw3::glfw)
+    set(DB_GLFW_LINK_LIB glfw3::glfw)
+  endif()
+  if((DB_GLFW_LINK_LIB STREQUAL "") AND (NOT DB_TARGET_LINUX_MUSL))
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+      pkg_check_modules(GLFW3 QUIET glfw3)
+      if(GLFW3_FOUND)
+        if(GLFW3_INCLUDE_DIRS)
+          list(APPEND DB_GLFW_EXTRA_INCLUDE_DIRS ${GLFW3_INCLUDE_DIRS})
+        endif()
+        find_library(DB_GLFW_PKG_LIB
+          NAMES glfw glfw3
+          PATHS ${GLFW3_LIBRARY_DIRS}
+          NO_DEFAULT_PATH
+        )
+        if(DB_GLFW_PKG_LIB)
+          set(DB_GLFW_LINK_LIB "${DB_GLFW_PKG_LIB}")
+        else()
+          pkg_check_modules(GLFW3_IMPORTED QUIET IMPORTED_TARGET glfw3)
+          if(TARGET PkgConfig::GLFW3_IMPORTED)
+            set(DB_GLFW_LINK_LIB PkgConfig::GLFW3_IMPORTED)
+          endif()
+        endif()
+      endif()
+    endif()
+  endif()
+  if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL))
+    find_library(DB_GLFW_32BIT_LIB
+      NAMES glfw glfw3
+      PATHS
+        /usr/lib32
+        /usr/i686-pc-linux-gnu/usr/lib
+      NO_DEFAULT_PATH
+    )
+    if(DB_GLFW_32BIT_LIB)
+      set(DB_GLFW_LINK_LIB "${DB_GLFW_32BIT_LIB}")
+    endif()
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+      pkg_check_modules(GLFW3_32 QUIET glfw3)
+      if(GLFW3_32_FOUND AND GLFW3_32_INCLUDE_DIRS)
+        list(APPEND DB_GLFW_EXTRA_INCLUDE_DIRS ${GLFW3_32_INCLUDE_DIRS})
+      endif()
+    endif()
+  endif()
+  if(DB_TARGET_LINUX_MUSL AND DB_GLFW_LINK_LIB)
+    set(DB_GLFW_LOCATION "")
+    get_target_property(DB_GLFW_IMPORTED_LOCATION ${DB_GLFW_TARGET} IMPORTED_LOCATION)
+    if(DB_GLFW_IMPORTED_LOCATION)
+      set(DB_GLFW_LOCATION "${DB_GLFW_IMPORTED_LOCATION}")
+    else()
+      get_target_property(DB_GLFW_IMPORTED_CONFIGS ${DB_GLFW_TARGET} IMPORTED_CONFIGURATIONS)
+      foreach(DB_GLFW_CFG IN LISTS DB_GLFW_IMPORTED_CONFIGS)
+        string(TOUPPER "${DB_GLFW_CFG}" DB_GLFW_CFG_UPPER)
+        get_target_property(DB_GLFW_IMPORTED_LOCATION_CFG
+          ${DB_GLFW_TARGET}
+          IMPORTED_LOCATION_${DB_GLFW_CFG_UPPER}
+        )
+        if(DB_GLFW_IMPORTED_LOCATION_CFG)
+          set(DB_GLFW_LOCATION "${DB_GLFW_IMPORTED_LOCATION_CFG}")
+          break()
+        endif()
+      endforeach()
+    endif()
+    if(DB_GLFW_LOCATION MATCHES "\\.so(\\.|$)")
+      set(DB_SAVED_FIND_LIBRARY_SUFFIXES "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+      set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+      find_library(DB_GLFW_STATIC_LIB NAMES glfw glfw3)
+      set(CMAKE_FIND_LIBRARY_SUFFIXES "${DB_SAVED_FIND_LIBRARY_SUFFIXES}")
+      if(DB_GLFW_STATIC_LIB)
+        set(DB_GLFW_LINK_LIB "${DB_GLFW_STATIC_LIB}")
+        message(STATUS
+          "DB_TARGET_LINUX_MUSL=ON: using static GLFW archive "
+          "'${DB_GLFW_STATIC_LIB}'"
+        )
+      else()
+        message(WARNING
+          "DB_TARGET_LINUX_MUSL=ON with static link: GLFW target resolves to "
+          "shared library '${DB_GLFW_LOCATION}' and no static libglfw archive "
+          "was found. Disabling GLFW display backend for this build."
+        )
+        set(DB_GLFW_TARGET "")
+        set(DB_GLFW_LINK_LIB "")
+      endif()
+    endif()
   endif()
 endif()
 
@@ -181,12 +430,35 @@ set(DB_DRIVERBENCH_SOURCES
 set(DB_DRIVERBENCH_LIBS m)
 set(DB_DRIVERBENCH_DEFS "")
 
-if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET)
+if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_LINK_LIB)
+  set(DB_GLFW_EFFECTIVE_LIB "${DB_GLFW_LINK_LIB}")
+  if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL))
+    if(EXISTS "/usr/lib32/libglfw.so")
+      set(DB_GLFW_EFFECTIVE_LIB "/usr/lib32/libglfw.so")
+    endif()
+  endif()
   list(APPEND DB_DRIVERBENCH_SOURCES
     src/displays/glfw_window/display_glfw_window.c
     src/displays/glfw_window/display_glfw_window_common.c
   )
-  list(APPEND DB_DRIVERBENCH_LIBS ${DB_GLFW_TARGET})
+  if(DB_GLFW_EXTRA_INCLUDE_DIRS)
+    set_source_files_properties(
+      src/displays/glfw_window/display_glfw_window.c
+      src/displays/glfw_window/display_glfw_window_common.c
+      PROPERTIES
+      INCLUDE_DIRECTORIES "${DB_GLFW_EXTRA_INCLUDE_DIRS}"
+    )
+  endif()
+  if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL) AND
+     (CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$"))
+    set_source_files_properties(
+      src/displays/glfw_window/display_glfw_window.c
+      src/displays/glfw_window/display_glfw_window_common.c
+      PROPERTIES
+      COMPILE_OPTIONS "-Wno-macro-redefined"
+    )
+  endif()
+  list(APPEND DB_DRIVERBENCH_LIBS ${DB_GLFW_EFFECTIVE_LIB})
   list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_GLFW=1)
 endif()
 
@@ -212,16 +484,107 @@ if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND UNIX AND NOT APPLE)
     pkg_check_modules(EGL QUIET egl)
     pkg_check_modules(DRM QUIET libdrm)
     if(GBM_FOUND AND EGL_FOUND AND DRM_FOUND)
-      list(APPEND DB_DRIVERBENCH_SOURCES
-        src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
-        src/displays/linux_kms_atomic/display_linux_kms_atomic.c
-      )
-      list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_LINUX_KMS_ATOMIC=1)
-      list(APPEND DB_DRIVERBENCH_LIBS
+      set(DB_ENABLE_KMS_BACKEND 1)
+      set(DB_KMS_LINK_LIBS
         ${GBM_LIBRARIES}
         ${EGL_LIBRARIES}
         ${DRM_LIBRARIES}
       )
+      set(DB_KMS_EXTRA_INCLUDE_DIRS
+        ${GBM_INCLUDE_DIRS}
+        ${EGL_INCLUDE_DIRS}
+        ${DRM_INCLUDE_DIRS}
+      )
+      if(DB_TARGET_LINUX_MUSL)
+        set(DB_SAVED_FIND_LIBRARY_SUFFIXES "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+        set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+        find_library(DB_GBM_STATIC_LIB gbm)
+        find_library(DB_EGL_STATIC_LIB EGL)
+        find_library(DB_DRM_STATIC_LIB drm)
+        set(CMAKE_FIND_LIBRARY_SUFFIXES "${DB_SAVED_FIND_LIBRARY_SUFFIXES}")
+        if(DB_GBM_STATIC_LIB AND DB_EGL_STATIC_LIB AND DB_DRM_STATIC_LIB)
+          set(DB_KMS_LINK_LIBS
+            ${DB_GBM_STATIC_LIB}
+            ${DB_EGL_STATIC_LIB}
+            ${DB_DRM_STATIC_LIB}
+          )
+        else()
+          message(WARNING
+            "DB_TARGET_LINUX_MUSL=ON with static link: missing static gbm/EGL/drm "
+            "archives in musl root; disabling Linux KMS atomic backend for this build."
+          )
+          set(DB_ENABLE_KMS_BACKEND 0)
+        endif()
+      elseif(DB_TARGET_LINUX_32BIT)
+        find_library(DB_GBM_32BIT_LIB
+          NAMES gbm
+          PATHS
+            /usr/lib32
+            /usr/i686-pc-linux-gnu/usr/lib
+          NO_DEFAULT_PATH
+          NO_CMAKE_FIND_ROOT_PATH
+        )
+        find_library(DB_EGL_32BIT_LIB
+          NAMES EGL
+          PATHS
+            /usr/lib32
+            /usr/i686-pc-linux-gnu/usr/lib
+          NO_DEFAULT_PATH
+          NO_CMAKE_FIND_ROOT_PATH
+        )
+        find_library(DB_DRM_32BIT_LIB
+          NAMES drm
+          PATHS
+            /usr/lib32
+            /usr/i686-pc-linux-gnu/usr/lib
+          NO_DEFAULT_PATH
+          NO_CMAKE_FIND_ROOT_PATH
+        )
+        if(DB_GBM_32BIT_LIB AND DB_EGL_32BIT_LIB AND DB_DRM_32BIT_LIB)
+          set(DB_KMS_LINK_LIBS
+            ${DB_GBM_32BIT_LIB}
+            ${DB_EGL_32BIT_LIB}
+            ${DB_DRM_32BIT_LIB}
+          )
+          if(EXISTS "/usr/include")
+            list(APPEND DB_KMS_EXTRA_INCLUDE_DIRS "/usr/include")
+          endif()
+          if(EXISTS "/usr/include/libdrm")
+            list(APPEND DB_KMS_EXTRA_INCLUDE_DIRS "/usr/include/libdrm")
+          endif()
+        else()
+          message(WARNING
+            "DB_TARGET_LINUX_32BIT=ON: missing 32-bit gbm/EGL/drm link "
+            "libraries; disabling Linux KMS atomic backend for this build."
+          )
+          set(DB_ENABLE_KMS_BACKEND 0)
+        endif()
+      endif()
+      if(DB_ENABLE_KMS_BACKEND)
+        list(APPEND DB_DRIVERBENCH_SOURCES
+          src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
+          src/displays/linux_kms_atomic/display_linux_kms_atomic.c
+        )
+        if(DB_KMS_EXTRA_INCLUDE_DIRS)
+          set_source_files_properties(
+            src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
+            src/displays/linux_kms_atomic/display_linux_kms_atomic.c
+            PROPERTIES
+            INCLUDE_DIRECTORIES "${DB_KMS_EXTRA_INCLUDE_DIRS}"
+          )
+        endif()
+        if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL) AND
+           (CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$"))
+          set_source_files_properties(
+            src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
+            src/displays/linux_kms_atomic/display_linux_kms_atomic.c
+            PROPERTIES
+            COMPILE_OPTIONS "-Wno-macro-redefined"
+          )
+        endif()
+        list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_LINUX_KMS_ATOMIC=1)
+        list(APPEND DB_DRIVERBENCH_LIBS ${DB_KMS_LINK_LIBS})
+      endif()
     endif()
   endif()
 endif()
@@ -237,7 +600,45 @@ if(DB_BUILD_VULKAN)
     set(DB_VULKAN_LIB "${Vulkan_LIBRARY}")
   endif()
 
-  if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_TARGET AND Vulkan_FOUND AND
+  if(DB_TARGET_LINUX_MUSL AND DB_VULKAN_LIB)
+    set(DB_VULKAN_LOCATION "")
+    if(TARGET Vulkan::Vulkan)
+      get_target_property(DB_VULKAN_IMPORTED_LOCATION
+        Vulkan::Vulkan IMPORTED_LOCATION
+      )
+      if(DB_VULKAN_IMPORTED_LOCATION)
+        set(DB_VULKAN_LOCATION "${DB_VULKAN_IMPORTED_LOCATION}")
+      else()
+        get_target_property(DB_VULKAN_IMPORTED_CONFIGS
+          Vulkan::Vulkan IMPORTED_CONFIGURATIONS
+        )
+        foreach(DB_VK_CFG IN LISTS DB_VULKAN_IMPORTED_CONFIGS)
+          string(TOUPPER "${DB_VK_CFG}" DB_VK_CFG_UPPER)
+          get_target_property(DB_VULKAN_IMPORTED_LOCATION_CFG
+            Vulkan::Vulkan
+            IMPORTED_LOCATION_${DB_VK_CFG_UPPER}
+          )
+          if(DB_VULKAN_IMPORTED_LOCATION_CFG)
+            set(DB_VULKAN_LOCATION "${DB_VULKAN_IMPORTED_LOCATION_CFG}")
+            break()
+          endif()
+        endforeach()
+      endif()
+    else()
+      set(DB_VULKAN_LOCATION "${DB_VULKAN_LIB}")
+    endif()
+
+    if(DB_VULKAN_LOCATION MATCHES "\\.so(\\.|$)")
+      message(WARNING
+        "DB_TARGET_LINUX_MUSL=ON with static link: Vulkan library resolves to "
+        "shared library '${DB_VULKAN_LOCATION}'. Disabling Vulkan renderer "
+        "for this build."
+      )
+      set(DB_VULKAN_LIB "")
+    endif()
+  endif()
+
+  if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_LINK_LIB AND Vulkan_FOUND AND
      DB_VULKAN_LIB AND GLSLC)
     list(APPEND DB_DRIVERBENCH_SOURCES
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.c
@@ -285,13 +686,6 @@ add_executable(${DB_UNIFIED_TARGET}
 )
 db_apply_perf_options(${DB_UNIFIED_TARGET})
 target_compile_definitions(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_DEFS})
-if(GBM_FOUND OR EGL_FOUND OR DRM_FOUND)
-  target_include_directories(${DB_UNIFIED_TARGET} PRIVATE
-    ${GBM_INCLUDE_DIRS}
-    ${EGL_INCLUDE_DIRS}
-    ${DRM_INCLUDE_DIRS}
-  )
-endif()
 target_link_libraries(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_LIBS})
 if(TARGET driverbench_vulkan_shaders)
   add_dependencies(${DB_UNIFIED_TARGET} driverbench_vulkan_shaders)

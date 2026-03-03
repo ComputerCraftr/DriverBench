@@ -7,7 +7,7 @@
     },
     "configurePresets": [
         {
-            "name": "ninja",
+            "name": "ninja-linux-native-clang-release",
             "displayName": "Ninja (Release)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build",
@@ -17,7 +17,7 @@
             }
         },
         {
-            "name": "ninja-debug",
+            "name": "ninja-linux-native-clang-debug",
             "displayName": "Ninja (Debug + ASan/UBSan)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/debug",
@@ -28,7 +28,7 @@
             }
         },
         {
-            "name": "ninja-relwithdebinfo",
+            "name": "ninja-linux-native-clang-relwithdebinfo",
             "displayName": "Ninja (RelWithDebInfo)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build/relwithdebinfo",
@@ -37,22 +37,88 @@
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "DB_ENABLE_SANITIZERS": "OFF"
             }
+        },
+        {
+            "name": "ninja-linux-gnu-i686-clang-release",
+            "displayName": "Ninja (Release, Linux 32-bit SSE2 baseline, Clang cross)",
+            "inherits": "ninja-linux-native-clang-release",
+            "binaryDir": "${sourceDir}/build/linux32",
+            "environment": {
+                "PKG_CONFIG_DIR": "",
+                "PKG_CONFIG_PATH": "",
+                "PKG_CONFIG_LIBDIR": "/usr/lib32/pkgconfig:/usr/share/pkgconfig"
+            },
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "/usr/bin/clang",
+                "CMAKE_C_COMPILER_TARGET": "i686-pc-linux-gnu",
+                "CMAKE_SYSROOT": "/usr/i686-pc-linux-gnu",
+                "CMAKE_C_FLAGS": "--gcc-toolchain=/usr",
+                "CMAKE_EXE_LINKER_FLAGS": "--gcc-toolchain=/usr",
+                "CMAKE_FIND_ROOT_PATH": "/usr/i686-pc-linux-gnu",
+                "CMAKE_FIND_ROOT_PATH_MODE_PROGRAM": "NEVER",
+                "CMAKE_FIND_ROOT_PATH_MODE_LIBRARY": "ONLY",
+                "CMAKE_FIND_ROOT_PATH_MODE_INCLUDE": "ONLY",
+                "CMAKE_FIND_ROOT_PATH_MODE_PACKAGE": "ONLY",
+                "DB_TARGET_LINUX_32BIT": "ON"
+            }
+        },
+        {
+            "name": "ninja-linux-musl-x86_64-gcc-static-release",
+            "displayName": "Ninja (Release, Linux musl static)",
+            "inherits": "ninja-linux-native-clang-release",
+            "binaryDir": "${sourceDir}/build/musl-static",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "/usr/bin/x86_64-linux-musl-gcc",
+                "DB_TARGET_LINUX_MUSL": "ON",
+                "DB_TARGET_LINUX_MUSL_TRIPLE": "x86_64-linux-musl",
+                "DB_TARGET_LINUX_MUSL_SYSROOT": "/usr/x86_64-linux-musl"
+            }
+        },
+        {
+            "name": "ninja-linux-musl-i686-gcc-static-release",
+            "displayName": "Ninja (Release, Linux musl static + 32-bit)",
+            "inherits": "ninja-linux-native-clang-release",
+            "binaryDir": "${sourceDir}/build/musl-static-linux32",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "/usr/bin/i686-linux-musl-gcc",
+                "DB_TARGET_LINUX_MUSL": "ON",
+                "DB_TARGET_LINUX_32BIT": "ON",
+                "DB_TARGET_LINUX_MUSL_TRIPLE": "i686-linux-musl",
+                "DB_BUILD_GLFW_WINDOW_DISPLAY": "OFF",
+                "DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY": "OFF",
+                "DB_BUILD_VULKAN": "OFF"
+            }
         }
     ],
     "buildPresets": [
         {
-            "name": "ninja",
-            "configurePreset": "ninja",
+            "name": "ninja-linux-native-clang-release",
+            "configurePreset": "ninja-linux-native-clang-release",
             "jobs": 8
         },
         {
-            "name": "ninja-debug",
-            "configurePreset": "ninja-debug",
+            "name": "ninja-linux-native-clang-debug",
+            "configurePreset": "ninja-linux-native-clang-debug",
             "jobs": 8
         },
         {
-            "name": "ninja-relwithdebinfo",
-            "configurePreset": "ninja-relwithdebinfo",
+            "name": "ninja-linux-native-clang-relwithdebinfo",
+            "configurePreset": "ninja-linux-native-clang-relwithdebinfo",
+            "jobs": 8
+        },
+        {
+            "name": "ninja-linux-gnu-i686-clang-release",
+            "configurePreset": "ninja-linux-gnu-i686-clang-release",
+            "jobs": 8
+        },
+        {
+            "name": "ninja-linux-musl-x86_64-gcc-static-release",
+            "configurePreset": "ninja-linux-musl-x86_64-gcc-static-release",
+            "jobs": 8
+        },
+        {
+            "name": "ninja-linux-musl-i686-gcc-static-release",
+            "configurePreset": "ninja-linux-musl-i686-gcc-static-release",
             "jobs": 8
         }
     ]

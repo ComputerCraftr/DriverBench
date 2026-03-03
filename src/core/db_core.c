@@ -8,9 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#ifndef _WIN32
-#include <sys/signal.h>
-#endif
 
 #define DB_MAX_TEXT_FILE_BYTES (16U * 1024U * 1024U)
 #define DB_RUNTIME_OPTION_CAPACITY 32U
@@ -220,13 +217,16 @@ void db_validate_runtime_environment(const char *backend,
 }
 
 void db_install_signal_handlers(void) {
+    // NOLINTNEXTLINE(misc-include-cleaner)
     struct sigaction sa = {0};
+    // NOLINTNEXTLINE(misc-include-cleaner)
     sa.sa_handler = db_signal_handler;
     (void)sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
 
     (void)sigaction(SIGINT, &sa, NULL);
     (void)sigaction(SIGTERM, &sa, NULL);
+    // NOLINTNEXTLINE(misc-include-cleaner)
     (void)sigaction(SIGHUP, &sa, NULL);
 }
 

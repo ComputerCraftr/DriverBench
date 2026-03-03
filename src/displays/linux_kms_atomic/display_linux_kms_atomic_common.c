@@ -5,8 +5,20 @@
 #include <EGL/egl.h>
 #include <EGL/eglplatform.h>
 
+#ifdef __has_include
+#if __has_include(<drm/drm.h>) && __has_include(<drm/drm_mode.h>)
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
+#elif __has_include(<libdrm/drm.h>) && __has_include(<libdrm/drm_mode.h>)
+#include <libdrm/drm.h>
+#include <libdrm/drm_mode.h>
+#else
+#error "Missing libdrm headers (drm.h/drm_mode.h)"
+#endif
+#else
+#include <drm/drm.h>
+#include <drm/drm_mode.h>
+#endif
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
