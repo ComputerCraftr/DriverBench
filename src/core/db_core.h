@@ -16,6 +16,7 @@
 #define DB_NS_PER_MS_D 1000000.0
 #define DB_NS_PER_SECOND_D 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
+#define DB_CACHELINE_ALIGNMENT_BYTES 64U
 #define DB_U24_MAX_F 16777215.0F
 #define DB_U8_MAX_F 255.0F
 #define DB_ROUND_HALF_UP_F 0.5F
@@ -140,6 +141,42 @@ static inline void *db_alloc_array_or_fail(const char *backend,
     if (memory == NULL) {
         db_failf(backend, "failed to allocate %s (%zu * %zu)", field_name,
                  element_count, element_size);
+    }
+    return memory;
+}
+
+static inline void *db_alloc_aligned_array_or_fail(const char *backend,
+                                                   const char *field_name,
+                                                   size_t element_count,
+                                                   size_t element_size,
+                                                   size_t alignment) {
+    if (element_size == 0U) {
+        db_failf(backend, "%s element_size is zero", field_name);
+    }
+    if ((alignment == 0U) || ((alignment & (alignment - 1U)) != 0U) ||
+        (alignment < sizeof(void *))) {
+        db_failf(backend, "%s invalid alignment: %zu", field_name, alignment);
+    }
+    if (element_count > (SIZE_MAX / element_size)) {
+        db_failf(backend, "%s allocation overflow (%zu * %zu)", field_name,
+                 element_count, element_size);
+    }
+    const size_t payload_bytes = element_count * element_size;
+    size_t aligned_bytes = payload_bytes;
+    const size_t remainder = aligned_bytes % alignment;
+    if (remainder != 0U) {
+        const size_t add_bytes = alignment - remainder;
+        if (aligned_bytes > (SIZE_MAX - add_bytes)) {
+            db_failf(backend, "%s aligned allocation size overflow",
+                     field_name);
+        }
+        aligned_bytes += add_bytes;
+    }
+    void *const memory = aligned_alloc(alignment, aligned_bytes);
+    if (memory == NULL) {
+        db_failf(backend,
+                 "failed to aligned-allocate %s (%zu bytes, align=%zu)",
+                 field_name, aligned_bytes, alignment);
     }
     return memory;
 }

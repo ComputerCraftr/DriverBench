@@ -371,13 +371,14 @@ void db_renderer_cpu_renderer_init(void) {
         .is_hdr_float_bo = db_cpu_hdr_enabled_from_runtime(),
     };
     if (bo.is_hdr_float_bo != 0) {
-        bo.pixels_rgba32f = (float *)db_alloc_array_or_fail(
+        bo.pixels_rgba32f = (float *)db_alloc_aligned_array_or_fail(
             BACKEND_NAME, "pixels_rgba32f",
-            (size_t)pixel_count * DB_FLOAT_CHANNELS_PER_PIXEL, sizeof(float));
+            (size_t)pixel_count * DB_FLOAT_CHANNELS_PER_PIXEL, sizeof(float),
+            DB_CACHELINE_ALIGNMENT_BYTES);
     } else {
-        bo.pixels_rgba8 = (uint32_t *)db_alloc_array_or_fail(
-            BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count,
-            sizeof(uint32_t));
+        bo.pixels_rgba8 = (uint32_t *)db_alloc_aligned_array_or_fail(
+            BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count, sizeof(uint32_t),
+            DB_CACHELINE_ALIGNMENT_BYTES);
     }
     db_cpu_bo_fill_solid_rgb(&bo, BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
                              BENCH_GRID_PHASE0_B);
@@ -510,9 +511,10 @@ const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
     const uint64_t pixel_count =
         (uint64_t)g_state.bo.width * (uint64_t)g_state.bo.height;
     if (g_state.pixels_rgba8_staging == NULL) {
-        g_state.pixels_rgba8_staging = (uint32_t *)db_alloc_array_or_fail(
-            BACKEND_NAME, "pixels_rgba8_staging", (size_t)pixel_count,
-            sizeof(uint32_t));
+        g_state.pixels_rgba8_staging =
+            (uint32_t *)db_alloc_aligned_array_or_fail(
+                BACKEND_NAME, "pixels_rgba8_staging", (size_t)pixel_count,
+                sizeof(uint32_t), DB_CACHELINE_ALIGNMENT_BYTES);
     }
     db_cpu_convert_rgba32f_to_rgba8(&g_state.bo, g_state.pixels_rgba8_staging);
     return g_state.pixels_rgba8_staging;

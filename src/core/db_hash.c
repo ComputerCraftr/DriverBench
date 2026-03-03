@@ -2,6 +2,10 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+
+#include "db_buffer_convert.h"
+#include "db_core.h"
 
 uint32_t db_fold_u64_to_u32(uint64_t value) {
     return (uint32_t)(value ^ (value >> 32U));
@@ -44,14 +48,27 @@ uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
         return 0U;
     }
 
-    const unsigned char *bytes = (const unsigned char *)pixels;
-    uint64_t hash = DB_FNV1A64_OFFSET;
+    const size_t packed_bytes = row_bytes * (size_t)height;
+    if ((rows_bottom_to_top == 0) && (stride_bytes == row_bytes)) {
+        return db_fnv_blockhash_u64(pixels, packed_bytes, DB_U32_SALT_PALETTE,
+                                    DB_FNV1A64_OFFSET);
+    }
+
+    const uint8_t *src_bytes = (const uint8_t *)pixels;
+    uint8_t *const canonical_bytes = (uint8_t *)db_alloc_aligned_array_or_fail(
+        "db_hash", "rgba8_canonical_bytes", packed_bytes, sizeof(uint8_t),
+        DB_CACHELINE_ALIGNMENT_BYTES);
     for (uint32_t row = 0U; row < height; row++) {
         const uint32_t src_row =
-            (rows_bottom_to_top != 0) ? (height - 1U - row) : row;
+            (rows_bottom_to_top != 0U) ? (height - 1U - row) : row;
         const size_t src_offset = (size_t)src_row * stride_bytes;
-        hash = db_fnv1a64_extend(hash, bytes + src_offset, row_bytes);
+        const size_t dst_offset = (size_t)row * row_bytes;
+        db_copy_bytes(canonical_bytes + dst_offset, src_bytes + src_offset,
+                      row_bytes);
     }
+    const uint64_t hash = db_fnv_blockhash_u64(
+        canonical_bytes, packed_bytes, DB_U32_SALT_PALETTE, DB_FNV1A64_OFFSET);
+    free(canonical_bytes);
     return hash;
 }
 
@@ -66,13 +83,27 @@ uint64_t db_hash_rgba32f_pixels_canonical(const float *pixels, uint32_t width,
         return 0U;
     }
 
-    const unsigned char *bytes = (const unsigned char *)pixels;
-    uint64_t hash = DB_FNV1A64_OFFSET;
+    const size_t packed_bytes = row_bytes * (size_t)height;
+    if ((rows_bottom_to_top == 0) && (stride_bytes == row_bytes)) {
+        return db_fnv_blockhash_u64((const void *)pixels, packed_bytes,
+                                    DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
+    }
+
+    const uint8_t *src_bytes = (const uint8_t *)pixels;
+    uint8_t *const canonical_bytes = (uint8_t *)db_alloc_aligned_array_or_fail(
+        "db_hash", "rgba32f_canonical_bytes", packed_bytes, sizeof(uint8_t),
+        DB_CACHELINE_ALIGNMENT_BYTES);
     for (uint32_t row = 0U; row < height; row++) {
         const uint32_t src_row =
-            (rows_bottom_to_top != 0) ? (height - 1U - row) : row;
+            (rows_bottom_to_top != 0U) ? (height - 1U - row) : row;
         const size_t src_offset = (size_t)src_row * stride_bytes;
-        hash = db_fnv1a64_extend(hash, bytes + src_offset, row_bytes);
+        const size_t dst_offset = (size_t)row * row_bytes;
+        db_copy_bytes(canonical_bytes + dst_offset, src_bytes + src_offset,
+                      row_bytes);
     }
+    const uint64_t hash =
+        db_fnv_blockhash_u64((const void *)canonical_bytes, packed_bytes,
+                             DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
+    free(canonical_bytes);
     return hash;
 }
