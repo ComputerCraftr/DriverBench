@@ -196,6 +196,14 @@ typedef struct {
 static db_gl_upload_proc_table_t g_upload_proc_table = {0};
 static db_gl_proc_resolver_fn_t g_proc_resolver = NULL;
 
+// Section map:
+// 1) Version/extension parsing and capability advertisement.
+// 2) Proc resolver and proc table loading.
+// 3) Wrapper APIs (buffer/texture/state/shader/program/pbo).
+// 4) Context capability and active probe checks.
+// 5) Upload path helpers and range upload execution.
+
+// 1) Version/extension parsing and capability advertisement.
 int db_has_gl_extension_token(const char *exts, const char *needle) {
     if ((exts == NULL) || (needle == NULL)) {
         return 0;
@@ -262,6 +270,7 @@ int db_gl_is_es_context(const char *version_text) {
            (strstr(version_text, "OpenGL ES") != NULL);
 }
 
+// 1) Capability utility helpers (error clear/probe pattern/capability strings).
 void db_gl_clear_errors(db_gl_get_error_fn_t get_error) {
     if (get_error == NULL) {
         return;
@@ -270,12 +279,12 @@ void db_gl_clear_errors(db_gl_get_error_fn_t get_error) {
     }
 }
 
-size_t db_gl_probe_size(size_t bytes) {
+size_t db_gl_upload_probe_size_bytes(size_t bytes) {
     return (bytes < DB_GL_PROBE_PREFIX_BYTES) ? bytes
                                               : DB_GL_PROBE_PREFIX_BYTES;
 }
 
-void db_gl_fill_probe_pattern(uint8_t *pattern, size_t count) {
+void db_gl_upload_probe_fill_pattern(uint8_t *pattern, size_t count) {
     if (pattern == NULL) {
         return;
     }
@@ -284,9 +293,8 @@ void db_gl_fill_probe_pattern(uint8_t *pattern, size_t count) {
     }
 }
 
-const char *
-db_gl_cap_upload_mode_from_probe(int has_vbo,
-                                 const db_gl_upload_probe_result_t *upload) {
+const char *db_gl_capability_mode_upload_from_probe(
+    int has_vbo, const db_gl_upload_probe_result_t *upload) {
     if (has_vbo == 0) {
         return DB_GL_CAP_UPLOAD_CLIENT_ARRAY;
     }
@@ -302,8 +310,9 @@ db_gl_cap_upload_mode_from_probe(int has_vbo,
     return DB_GL_CAP_UPLOAD_VBO;
 }
 
-const char *db_gl_cap_mode_gl3_shader(const db_gl_upload_probe_result_t *upload,
-                                      int uses_history_texture) {
+const char *
+db_gl_capability_mode_gl3_shader(const db_gl_upload_probe_result_t *upload,
+                                 int uses_history_texture) {
     if (uses_history_texture != 0) {
         return DB_GL_CAP_MODE_OPENGL_SHADER_HISTORY_DIRTY_DRAW;
     }
@@ -317,6 +326,29 @@ const char *db_gl_cap_mode_gl3_shader(const db_gl_upload_probe_result_t *upload,
         return DB_GL_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER;
     }
     return DB_GL_CAP_MODE_OPENGL_SHADER_VBO;
+}
+
+const char *
+db_gl_capability_mode_draw_select(int uses_ff_rect_draw_mode,
+                                  int uses_history_draw,
+                                  int use_shader_history_draw_name) {
+    if (uses_ff_rect_draw_mode != 0) {
+        return DB_GL_CAP_DRAW_FF_RECT_FILL;
+    }
+    if (uses_history_draw != 0) {
+        return (use_shader_history_draw_name != 0)
+                   ? DB_GL_CAP_MODE_OPENGL_SHADER_HISTORY_DIRTY_DRAW
+                   : DB_GL_CAP_DRAW_HISTORY_DIRTY;
+    }
+    return DB_GL_CAP_DRAW_TILES_FULL;
+}
+
+const char *db_gl_capability_mode_upload_select(int suppress_upload,
+                                                const char *upload_mode) {
+    if (suppress_upload != 0) {
+        return DB_GL_CAP_UPLOAD_NONE;
+    }
+    return (upload_mode != NULL) ? upload_mode : DB_GL_CAP_UPLOAD_NONE;
 }
 
 void db_gl_capability_mode_compose(char *output, size_t output_size,
@@ -334,8 +366,8 @@ void db_gl_capability_mode_compose(char *output, size_t output_size,
                       upload, (backbuffer_replay != 0) ? "yes" : "no");
 }
 
-int db_gl_runtime_supports_buffer_storage(const char *version_text,
-                                          const char *exts) {
+int db_gl_extensions_advertise_buffer_storage(const char *version_text,
+                                              const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_has_gl_extension_token(exts, "GL_EXT_buffer_storage");
     }
@@ -344,8 +376,8 @@ int db_gl_runtime_supports_buffer_storage(const char *version_text,
            db_gl_version_text_at_least(version_text, 4, 4);
 }
 
-int db_gl_runtime_supports_map_buffer(const char *version_text,
-                                      const char *exts) {
+int db_gl_extensions_advertise_map_buffer(const char *version_text,
+                                          const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_has_gl_extension_token(exts, "GL_OES_mapbuffer");
     }
@@ -354,8 +386,8 @@ int db_gl_runtime_supports_map_buffer(const char *version_text,
            db_gl_version_text_at_least(version_text, 1, 5);
 }
 
-int db_gl_runtime_supports_map_buffer_range(const char *version_text,
-                                            const char *exts) {
+int db_gl_extensions_advertise_map_buffer_range(const char *version_text,
+                                                const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_has_gl_extension_token(exts, "GL_EXT_map_buffer_range") ||
                db_gl_version_text_at_least(version_text, 3, 0);
@@ -366,7 +398,7 @@ int db_gl_runtime_supports_map_buffer_range(const char *version_text,
            db_gl_version_text_at_least(version_text, 3, 0);
 }
 
-int db_gl_runtime_supports_pbo(const char *version_text, const char *exts) {
+int db_gl_extensions_advertise_pbo(const char *version_text, const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_gl_version_text_at_least(version_text, 3, 0) ||
                db_has_gl_extension_token(exts, "GL_EXT_pixel_buffer_object");
@@ -376,8 +408,8 @@ int db_gl_runtime_supports_pbo(const char *version_text, const char *exts) {
            db_has_gl_extension_token(exts, "GL_ARB_pixel_buffer_object");
 }
 
-int db_gl_runtime_supports_texture_float(const char *version_text,
-                                         const char *exts) {
+int db_gl_extensions_advertise_texture_float(const char *version_text,
+                                             const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_gl_version_text_at_least(version_text, 3, 0) ||
                db_has_gl_extension_token(exts, "GL_OES_texture_float");
@@ -386,7 +418,7 @@ int db_gl_runtime_supports_texture_float(const char *version_text,
            db_has_gl_extension_token(exts, "GL_ARB_texture_float");
 }
 
-int db_gl_runtime_supports_vbo(const char *version_text, const char *exts) {
+int db_gl_extensions_advertise_vbo(const char *version_text, const char *exts) {
     if (db_gl_is_es_context(version_text) != 0) {
         return db_gl_version_text_at_least(version_text, 1, 1);
     }
@@ -395,6 +427,7 @@ int db_gl_runtime_supports_vbo(const char *version_text, const char *exts) {
            db_gl_version_text_at_least(version_text, 1, 5);
 }
 
+// 2) Proc resolver and proc table loading.
 static void db_gl_require_upload_proc_table_loaded(const char *func_name) {
     if (g_upload_proc_table.loaded == 0) {
         db_failf("renderer_gl_common",
@@ -671,6 +704,7 @@ static void db_gl_load_upload_proc_table(void) {
     g_upload_proc_table.loaded = 1;
 }
 
+// 3) Wrapper APIs: buffer and VBO/VAO operations.
 int db_gl_vbo_bind(unsigned int buffer) {
     db_gl_require_upload_proc_table_loaded("db_gl_vbo_bind");
     if (g_upload_proc_table.bind_buffer == NULL) {
@@ -735,8 +769,10 @@ int db_gl_vbo_init_static_data(size_t bytes, const void *data) {
     return db_gl_vbo_init_data(bytes, data, GL_STATIC_DRAW);
 }
 
-int db_gl_context_supports_pbo_upload(void) {
-    db_gl_require_upload_proc_table_loaded("db_gl_context_supports_pbo_upload");
+// Context capability checks (metadata/procs).
+int db_gl_context_has_pbo_upload_procs(void) {
+    db_gl_require_upload_proc_table_loaded(
+        "db_gl_context_has_pbo_upload_procs");
     return (g_upload_proc_table.bind_buffer != NULL) &&
            (g_upload_proc_table.buffer_data != NULL) &&
            (g_upload_proc_table.buffer_sub_data != NULL) &&
@@ -744,7 +780,7 @@ int db_gl_context_supports_pbo_upload(void) {
            (g_upload_proc_table.delete_buffers != NULL);
 }
 
-int db_gl_context_supports_vbo(void) {
+int db_gl_context_advertises_vbo(void) {
     db_gl_load_upload_proc_table();
     if (g_upload_proc_table.get_string == NULL) {
         return 0;
@@ -753,9 +789,10 @@ int db_gl_context_supports_vbo(void) {
         (const char *)g_upload_proc_table.get_string(GL_VERSION);
     const char *exts =
         (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
-    return db_gl_runtime_supports_vbo(version, exts);
+    return db_gl_extensions_advertise_vbo(version, exts);
 }
 
+// 3) Wrapper APIs: geometry utilities and texture operations.
 void db_gl_quad_init(float *verts) {
     verts[DB_GL_QUAD_V0_X] = -1.0F;
     verts[DB_GL_QUAD_V0_Y] = -1.0F;
@@ -938,6 +975,7 @@ void db_gl_texture_sub_image_2d_rgba16f(int x_px, int y_px, int width,
     }
 }
 
+// 3) Wrapper APIs: fixed-function state, client arrays, and readback.
 void db_gl_clear_color_rgba(float red, float green, float blue, float alpha) {
     db_gl_load_upload_proc_table();
     if (g_upload_proc_table.clear_color != NULL) {
@@ -1024,6 +1062,19 @@ void db_gl_read_pixels_rgba8(int x_px, int y_px, int width, int height,
     }
 }
 
+void db_gl_read_pixels_rgba16f(int x_px, int y_px, int width, int height,
+                               void *pixels) {
+    if ((width <= 0) || (height <= 0) || (pixels == NULL)) {
+        return;
+    }
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.read_pixels != NULL) {
+        g_upload_proc_table.read_pixels(x_px, y_px, (GLsizei)width,
+                                        (GLsizei)height, GL_RGBA, GL_HALF_FLOAT,
+                                        pixels);
+    }
+}
+
 void db_gl_set_texture_2d_enabled(int enabled) {
     db_gl_load_upload_proc_table();
     if ((enabled != 0) && (g_upload_proc_table.enable != NULL)) {
@@ -1104,6 +1155,7 @@ void db_gl_draw_arrays_triangle_strip(int first, int count) {
     }
 }
 
+// 3) Wrapper APIs: shader/program and modern pipeline operations.
 void db_gl_active_texture(unsigned int texture_unit) {
     db_gl_load_upload_proc_table();
     if (g_upload_proc_table.active_texture != NULL) {
@@ -1390,6 +1442,7 @@ const char *db_gl_get_extensions_string(void) {
     return (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
 }
 
+// 3) Wrapper APIs: query strings, PBO utilities, and proc preload.
 unsigned int db_gl_pbo_create_or_zero(void) {
     db_gl_require_upload_proc_table_loaded("db_gl_pbo_create_or_zero");
     if (g_upload_proc_table.gen_buffers == NULL) {
@@ -1419,6 +1472,7 @@ void db_gl_pbo_unbind_unpack(void) {
 
 void db_gl_preload_upload_proc_table(void) { db_gl_load_upload_proc_table(); }
 
+// Context probe checks (active runtime verification).
 static int db_gl_verify_buffer_prefix(const uint8_t *expected,
                                       size_t expected_size) {
     if (expected_size == 0U) {
@@ -1442,15 +1496,55 @@ static int db_gl_verify_buffer_prefix(const uint8_t *expected,
     return memcmp(expected, actual, expected_size) == 0;
 }
 
-static int db_gl_try_init_persistent_upload(size_t bytes,
-                                            const float *initial_vertices,
-                                            void **mapped_out) {
+int db_gl_context_probe_texture_float_support(void) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.get_string == NULL) {
+        return 0;
+    }
+    const char *version =
+        (const char *)g_upload_proc_table.get_string(GL_VERSION);
+    const char *exts =
+        (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
+    if (db_gl_extensions_advertise_texture_float(version, exts) == 0) {
+        return 0;
+    }
+
+    // Probe: create/upload/delete a tiny RGBA16F texture and require clean
+    // error state throughout.
+    while (db_gl_get_error_code() != GL_NO_ERROR) {
+    }
+
+    unsigned int probe_texture = 0U;
+    if (db_gl_texture_create_rgba16f(&probe_texture, 2, 2, NULL) == 0) {
+        while (db_gl_get_error_code() != GL_NO_ERROR) {
+        }
+        return 0;
+    }
+
+    static const uint16_t k_probe_rgba16f[4U * 4U] = {
+        0x3C00U, 0x0000U, 0x0000U, 0x3C00U, 0x0000U, 0x3C00U, 0x0000U, 0x3C00U,
+        0x0000U, 0x0000U, 0x3C00U, 0x3C00U, 0x3C00U, 0x3C00U, 0x3C00U, 0x3C00U,
+    };
+    db_gl_texture_bind_2d(probe_texture);
+    db_gl_texture_sub_image_2d_rgba16f(0, 0, 2, 2, k_probe_rgba16f);
+    const unsigned int error_after_upload = db_gl_get_error_code();
+
+    db_gl_texture_delete_if_valid(&probe_texture);
+    db_gl_texture_bind_2d(0U);
+    while (db_gl_get_error_code() != GL_NO_ERROR) {
+    }
+    return (error_after_upload == GL_NO_ERROR) ? 1 : 0;
+}
+
+static int db_gl_context_probe_persistent_upload(size_t bytes,
+                                                 const float *initial_vertices,
+                                                 void **mapped_out) {
     if ((g_upload_proc_table.buffer_storage == NULL) ||
         (g_upload_proc_table.map_buffer_range == NULL) ||
         (g_upload_proc_table.unmap_buffer == NULL)) {
         return 0;
     }
-    const size_t probe_size = db_gl_probe_size(bytes);
+    const size_t probe_size = db_gl_upload_probe_size_bytes(bytes);
     const GLbitfield storage_flags =
         GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 
@@ -1481,21 +1575,21 @@ static int db_gl_try_init_persistent_upload(size_t bytes,
     return 1;
 }
 
-static int db_gl_probe_map_range_upload(size_t bytes,
-                                        const float *initial_vertices) {
+static int db_gl_context_probe_map_range_upload(size_t bytes,
+                                                const float *initial_vertices) {
     if ((g_upload_proc_table.map_buffer_range == NULL) ||
         (g_upload_proc_table.unmap_buffer == NULL) ||
         (g_upload_proc_table.buffer_sub_data == NULL)) {
         return 0;
     }
 
-    const size_t probe_size = db_gl_probe_size(bytes);
+    const size_t probe_size = db_gl_upload_probe_size_bytes(bytes);
     if (probe_size == 0U) {
         return 0;
     }
 
     uint8_t pattern[DB_GL_PROBE_PREFIX_BYTES] = {0};
-    db_gl_fill_probe_pattern(pattern, probe_size);
+    db_gl_upload_probe_fill_pattern(pattern, probe_size);
 
     db_gl_clear_errors((db_gl_get_error_fn_t)g_upload_proc_table.get_error);
     void *dst = g_upload_proc_table.map_buffer_range(
@@ -1521,21 +1615,22 @@ static int db_gl_probe_map_range_upload(size_t bytes,
     return db_gl_get_error_value() == GL_NO_ERROR;
 }
 
-static int db_gl_probe_map_buffer_upload(size_t bytes,
-                                         const float *initial_vertices) {
+static int
+db_gl_context_probe_map_buffer_upload(size_t bytes,
+                                      const float *initial_vertices) {
     if ((g_upload_proc_table.map_buffer == NULL) ||
         (g_upload_proc_table.unmap_buffer == NULL) ||
         (g_upload_proc_table.buffer_sub_data == NULL)) {
         return 0;
     }
 
-    const size_t probe_size = db_gl_probe_size(bytes);
+    const size_t probe_size = db_gl_upload_probe_size_bytes(bytes);
     if (probe_size == 0U) {
         return 0;
     }
 
     uint8_t pattern[DB_GL_PROBE_PREFIX_BYTES] = {0};
-    db_gl_fill_probe_pattern(pattern, probe_size);
+    db_gl_upload_probe_fill_pattern(pattern, probe_size);
 
     db_gl_clear_errors((db_gl_get_error_fn_t)g_upload_proc_table.get_error);
     void *dst = g_upload_proc_table.map_buffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
@@ -1558,28 +1653,29 @@ static int db_gl_probe_map_buffer_upload(size_t bytes,
     return db_gl_get_error_value() == GL_NO_ERROR;
 }
 
-void db_gl_probe_upload_capabilities(size_t bytes,
-                                     const float *initial_vertices,
-                                     db_gl_upload_probe_result_t *out) {
+void db_gl_context_probe_upload_capabilities(size_t bytes,
+                                             const float *initial_vertices,
+                                             db_gl_upload_probe_result_t *out) {
     if (out == NULL) {
         db_failf("renderer_gl_common",
-                 "db_gl_probe_upload_capabilities: output is null");
+                 "db_gl_context_probe_upload_capabilities: output is null");
     }
 
     *out = (db_gl_upload_probe_result_t){0};
-    if (db_gl_context_supports_vbo() == 0) {
+    if (db_gl_context_advertises_vbo() == 0) {
         return;
     }
 
-    db_gl_require_upload_proc_table_loaded("db_gl_probe_upload_capabilities");
+    db_gl_require_upload_proc_table_loaded(
+        "db_gl_context_probe_upload_capabilities");
 
     const char *version = db_gl_get_string_value(GL_VERSION);
     const char *exts = db_gl_get_string_value(GL_EXTENSIONS);
 
-    if (db_gl_runtime_supports_buffer_storage(version, exts) &&
-        db_gl_runtime_supports_map_buffer_range(version, exts) &&
-        db_gl_try_init_persistent_upload(bytes, initial_vertices,
-                                         &out->persistent_mapped_ptr)) {
+    if (db_gl_extensions_advertise_buffer_storage(version, exts) &&
+        db_gl_extensions_advertise_map_buffer_range(version, exts) &&
+        db_gl_context_probe_persistent_upload(bytes, initial_vertices,
+                                              &out->persistent_mapped_ptr)) {
         out->use_persistent_upload = 1;
         return;
     }
@@ -1593,21 +1689,23 @@ void db_gl_probe_upload_capabilities(size_t bytes,
         return;
     }
 
-    if (db_gl_runtime_supports_map_buffer_range(version, exts) &&
-        db_gl_probe_map_range_upload(bytes, initial_vertices)) {
+    if (db_gl_extensions_advertise_map_buffer_range(version, exts) &&
+        db_gl_context_probe_map_range_upload(bytes, initial_vertices)) {
         out->use_map_range_upload = 1;
         return;
     }
 
-    if (db_gl_runtime_supports_map_buffer(version, exts) &&
-        db_gl_probe_map_buffer_upload(bytes, initial_vertices)) {
+    if (db_gl_extensions_advertise_map_buffer(version, exts) &&
+        db_gl_context_probe_map_buffer_upload(bytes, initial_vertices)) {
         out->use_map_buffer_upload = 1;
     }
 }
 
-static void *db_gl_try_map_upload_buffer_target(GLenum target, size_t bytes,
-                                                int try_map_range,
-                                                int try_map_buffer) {
+// 5) Upload path helpers and range upload execution.
+static void *db_gl_upload_map_target_buffer_if_supported(GLenum target,
+                                                         size_t bytes,
+                                                         int try_map_range,
+                                                         int try_map_buffer) {
     if ((try_map_range != 0) &&
         (g_upload_proc_table.map_buffer_range != NULL)) {
         return g_upload_proc_table.map_buffer_range(
@@ -1682,7 +1780,7 @@ void db_gl_upload_ranges_target(
                                         NULL, GL_STREAM_DRAW);
     }
 
-    void *mapped_ptr = db_gl_try_map_upload_buffer_target(
+    void *mapped_ptr = db_gl_upload_map_target_buffer_if_supported(
         gl_target, total_bytes, use_map_range_upload, use_map_buffer_upload);
     if ((mapped_ptr != NULL) && (g_upload_proc_table.unmap_buffer != NULL)) {
         uint8_t *dst_base = (uint8_t *)mapped_ptr;

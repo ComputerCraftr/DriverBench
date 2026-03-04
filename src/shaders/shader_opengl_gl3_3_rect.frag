@@ -11,12 +11,13 @@ uniform uint u_grid_cols;
 uniform uint u_grid_rows;
 uniform vec3 u_grid_target_color;
 uniform sampler2D u_history_tex;
-uniform int u_mode_phase_flag;
+uniform int u_direction_flag;
 uniform uint u_palette_cycle;
 uniform uint u_pattern_seed;
 uniform uint u_render_mode;
 uniform uint u_snake_batch_size;
 uniform uint u_snake_cursor;
+uniform int u_snake_phase_completed;
 uniform uint u_snake_shape_index;
 uniform uint u_frame_index;
 
@@ -423,7 +424,8 @@ vec4 db_snake_color(
     vec3 prior_color,
     vec3 target_color,
     uint cursor,
-    uint batch_size
+    uint batch_size,
+    int phase_completed
 ) {
     if(batch_size == 0u) {
         return db_rgba(prior_color);
@@ -436,6 +438,9 @@ vec4 db_snake_color(
         return db_rgba(prior_color);
     }
     uint step = db_snake_region_step(shape_desc.region, row_u, col_u);
+    if(phase_completed != 0) {
+        return db_rgba(target_color);
+    }
     if(step < cursor) {
         return db_rgba(target_color);
     }
@@ -470,7 +475,7 @@ void main() {
     if((u_render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
         (u_render_mode == RENDER_MODE_GRADIENT_FILL)) {
         bool is_sweep = (u_render_mode == RENDER_MODE_GRADIENT_SWEEP);
-        bool direction_down = is_sweep ? (u_mode_phase_flag != 0) : true;
+        bool direction_down = is_sweep ? (u_direction_flag != 0) : true;
         out_color = db_gradient_color(row, u_gradient_head_row, u_palette_cycle, direction_down);
         return;
     }
@@ -491,14 +496,14 @@ void main() {
         (u_render_mode == RENDER_MODE_SNAKE_SHAPES)) {
         uint shape_kind = db_snake_shapes_kind(u_pattern_seed, u_snake_shape_index);
         db_snake_shape_desc_t shape_desc = db_snake_shape_desc(u_pattern_seed, u_snake_shape_index, rows_u, cols_u, shape_kind);
-        out_color = db_snake_color(shape_desc, (u_render_mode == RENDER_MODE_SNAKE_SHAPES), row_u, col_u, prior_color, shape_desc.region.color, u_snake_cursor, batch_size_u);
+        out_color = db_snake_color(shape_desc, (u_render_mode == RENDER_MODE_SNAKE_SHAPES), row_u, col_u, prior_color, shape_desc.region.color, u_snake_cursor, batch_size_u, 0);
     } else {
         db_snake_shape_desc_t shape_desc;
         shape_desc.region = db_full_grid_region(rows_u, cols_u);
         shape_desc.profile = db_snake_shape_profile_from_index(u_pattern_seed, 0u, SHAPE_KIND_RECT);
         shape_desc.kind = SHAPE_KIND_RECT;
-        bool clearing = (u_mode_phase_flag != 0);
+        bool clearing = (u_direction_flag != 0);
         vec3 target_color = db_target_color_for_phase(clearing);
-        out_color = db_snake_color(shape_desc, false, row_u, col_u, prior_color, target_color, u_snake_cursor, batch_size_u);
+        out_color = db_snake_color(shape_desc, false, row_u, col_u, prior_color, target_color, u_snake_cursor, batch_size_u, u_snake_phase_completed);
     }
 }

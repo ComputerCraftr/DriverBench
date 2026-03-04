@@ -10,6 +10,7 @@
 
 #include "../../config/benchmark_config.h"
 #include "../renderer_benchmark_common.h"
+#include "../renderer_history_common.h"
 #include "../renderer_snake_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 
@@ -28,9 +29,9 @@
 
 static inline const char *
 db_vk_capability_draw_mode_name(db_pattern_t pattern) {
-    const int uses_history = (db_pattern_uses_history_texture(pattern) != 0) ||
-                             (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-                             (pattern == DB_PATTERN_GRADIENT_FILL);
+    const db_history_pattern_mode_flags_t pattern_flags =
+        db_history_pattern_mode_flags(pattern);
+    const int uses_history = pattern_flags.uses_history_pipeline;
     return (uses_history != 0) ? DB_CAP_MODE_VK_DRAW_HISTORY_DIRTY
                                : DB_CAP_MODE_VK_DRAW_TILES_FULL;
 }
@@ -38,6 +39,13 @@ db_vk_capability_draw_mode_name(db_pattern_t pattern) {
 static inline const char *db_vk_scheduler_mode_name(int have_group) {
     return (have_group != 0) ? DB_CAP_MODE_VK_SCHED_DEVICE_GROUP
                              : DB_CAP_MODE_VK_SCHED_SINGLE_GPU;
+}
+
+static inline uint32_t db_vk_normalize_gpu_count(uint32_t gpu_count) {
+    if (gpu_count == 0U) {
+        return 1U;
+    }
+    return (gpu_count > MAX_GPU_COUNT) ? MAX_GPU_COUNT : gpu_count;
 }
 
 typedef struct {
@@ -50,7 +58,7 @@ typedef struct {
     uint32_t gradient_window_rows;
     uint32_t grid_cols;
     uint32_t grid_rows;
-    int32_t mode_phase_flag;
+    int32_t direction_flag;
     uint32_t palette_cycle;
     uint32_t pattern_seed;
     uint32_t render_mode;
@@ -66,7 +74,7 @@ typedef struct {
 
 typedef struct {
     VkPhysicalDeviceGroupProperties grp;
-    uint32_t presentableMask;
+    uint32_t presentable_mask;
 } DeviceGroupInfo;
 
 typedef struct {
@@ -139,9 +147,7 @@ typedef struct {
 
 typedef struct {
     uint64_t bench_frames;
-    uint64_t dirty_draw_frames;
-    uint64_t full_draw_frames;
-    uint64_t state_hash;
+    db_renderer_frame_stats_t frame;
     uint64_t bench_start_ns;
     const char *capability_mode;
     VkCommandBuffer command_buffer;
@@ -152,20 +158,14 @@ typedef struct {
     VkDevice device;
     uint32_t device_group_mask;
     double ema_ms_per_work_unit[MAX_GPU_COUNT];
-    uint32_t frame_index;
     uint32_t gpu_count;
     int gpu_timing_enabled;
     uint32_t gradient_window_rows;
-    db_dirty_row_range_t gradient_prev_draw_rows[2];
-    size_t gradient_prev_draw_count;
-    uint32_t gradient_prev_head_row;
-    int gradient_prev_direction_down;
-    uint32_t gradient_prev_cycle_index;
-    int gradient_history_valid;
+    db_gradient_backbuffer_replay_state_t gradient_prev_frame;
+    db_history_pair_state_t history_pair;
     int have_group;
     int have_prev_timing_frame;
     int history_descriptor_index;
-    int history_read_index;
     VkRenderPass history_render_pass;
     VkSampler history_sampler;
     HistoryTargetState history_targets[2];
@@ -186,10 +186,7 @@ typedef struct {
     VkSemaphore render_done;
     VkRenderPass render_pass;
     DeviceSelectionState selection;
-    db_snake_col_span_t *snake_spans;
-    db_snake_shape_row_bounds_t *snake_row_bounds;
-    size_t snake_row_bounds_capacity;
-    size_t snake_span_capacity;
+    db_history_snake_scratch_t snake_scratch;
     VkSurfaceKHR surface;
     VkSurfaceFormatKHR surface_format;
     SwapchainState swapchain_state;
@@ -202,14 +199,10 @@ typedef struct {
 } renderer_state_t;
 
 typedef struct {
-    uint32_t candidate_owner;
-    uint32_t span_units;
-    uint32_t row_start;
-    uint32_t row_end;
     const float *color;
     uint32_t render_mode;
     uint32_t gradient_head_row;
-    int mode_phase_flag;
+    int direction_flag;
     uint32_t snake_cursor;
     uint32_t snake_batch_size;
     uint32_t snake_shape_index;
@@ -217,6 +210,14 @@ typedef struct {
     uint32_t palette_cycle;
     uint32_t frame_index;
     uint32_t band_count;
+} db_vk_draw_payload_t;
+
+typedef struct {
+    uint32_t candidate_owner;
+    uint32_t span_units;
+    uint32_t row_start;
+    uint32_t row_end;
+    db_vk_draw_payload_t payload;
 } db_vk_grid_row_block_draw_req_t;
 
 typedef struct {
@@ -224,17 +225,7 @@ typedef struct {
     float ndc_y0;
     float ndc_x1;
     float ndc_y1;
-    const float *color;
-    uint32_t render_mode;
-    uint32_t gradient_head_row;
-    int mode_phase_flag;
-    uint32_t snake_cursor;
-    uint32_t snake_batch_size;
-    uint32_t snake_shape_index;
-    int snake_phase_completed;
-    uint32_t palette_cycle;
-    uint32_t frame_index;
-    uint32_t band_count;
+    db_vk_draw_payload_t payload;
 } db_vk_draw_dynamic_req_t;
 
 typedef struct {
@@ -393,7 +384,7 @@ int db_vk_recreate_history_targets_preserve(
     VkPhysicalDevice phys, VkDevice device, VkFormat format, VkExtent2D extent,
     VkRenderPass render_pass, uint32_t device_group_mask,
     VkCommandPool command_pool, VkQueue queue, VkExtent2D old_extent,
-    HistoryTargetState history_targets[2], int *history_read_index);
+    HistoryTargetState history_targets[2], int *history_pair_read_index);
 void db_vk_draw_owner_grid_row_block(
     const db_vk_owner_draw_ctx_t *ctx,
     const db_vk_grid_row_block_draw_req_t *req);
@@ -422,14 +413,6 @@ void db_vk_update_ema_fallback(uint32_t gpu_count,
                                double frame_ms, double *ema_ms_per_work_unit);
 void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx);
 void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx);
-void db_vk_init_impl(const db_vk_wsi_config_t *wsi_config, int vsync_enabled);
-db_vk_frame_result_t db_vk_render_frame_impl(void);
-void db_vk_shutdown_impl(void);
-const char *db_vk_capability_mode_impl(void);
-uint32_t db_vk_work_unit_count_impl(void);
-uint64_t db_vk_state_hash_impl(void);
-void db_vk_draw_stats_impl(uint64_t *full_draw_frames,
-                           uint64_t *dirty_draw_frames);
 
 // NOLINTEND(misc-include-cleaner)
 

@@ -33,9 +33,6 @@ option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_GLFW_WINDOW_DISPLAY "Build GLFW window display backend" ON)
 option(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY
   "Build Linux KMS atomic display backend" ON)
-option(DB_ENABLE_GLFW_OFFSCREEN_TESTS
-  "Enable deterministic offscreen GLFW hash tests (requires working GLFW display stack)"
-  OFF)
 option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
@@ -424,6 +421,7 @@ set(DB_DRIVERBENCH_SOURCES
   src/driverbench_cli.c
   src/driverbench_main.c
   src/displays/display_dispatch.c
+  src/displays/display_gl_runtime_common.c
   src/displays/offscreen/display_offscreen.c
   src/renderers/cpu_renderer/renderer_cpu_renderer.c
   ${DB_CORE_SOURCES}
@@ -756,27 +754,27 @@ if(BUILD_TESTING)
   db_add_determinism_test(
     determinism_cpu_renderer_snake_grid
     "--api cpu --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_aggregate=0xcdf7184b37950de0,bo_hash_aggregate=0xe1fe034c7026e9e6"
+    "state_hash_aggregate=0xfc82147610b2d77d,bo_hash_aggregate=0xe1fe034c7026e9e6"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_fill
     "--api cpu --display offscreen --benchmark-mode gradient_fill ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_aggregate=0x20375b282051a16e,bo_hash_aggregate=0x3752a70a8248d9d8"
+    "state_hash_aggregate=0x7030c60667edce10,bo_hash_aggregate=0x3752a70a8248d9d8"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_snake_shapes
     "--api cpu --display offscreen --benchmark-mode snake_shapes ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_aggregate=0x25172b2445b338ea,bo_hash_aggregate=0x578b2b0383d6d64e"
+    "state_hash_aggregate=0x7c313673731e3115,bo_hash_aggregate=0x578b2b0383d6d64e"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_gradient_sweep
     "--api cpu --display offscreen --benchmark-mode gradient_sweep ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_aggregate=0x1cdabd985451b05d,bo_hash_aggregate=0x3752a70a8248d9d8"
+    "state_hash_aggregate=0xe1ee86e14bbdd056,bo_hash_aggregate=0x3752a70a8248d9d8"
   )
   db_add_determinism_test(
     determinism_cpu_renderer_bands
     "--api cpu --display offscreen --benchmark-mode bands ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_FRAME_LIMIT}"
-    "state_hash_aggregate=0xbb4fa2e7fcf76cd2,bo_hash_aggregate=0x5f2154063ac1c3bd"
+    "state_hash_aggregate=0x82f713d077426d22,bo_hash_aggregate=0x5f2154063ac1c3bd"
   )
 
   db_add_hash_equivalence_triplet_test(
@@ -794,16 +792,38 @@ if(BUILD_TESTING)
     "bo_hash_final=0x00a1e8f01b888a89"
   )
 
-  if(DB_ENABLE_GLFW_OFFSCREEN_TESTS)
-    db_add_determinism_test(
-      determinism_glfw_gl1_5_offscreen
-      "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_GLFW_FRAMES}"
-      "state_hash_final,framebuffer_hash_final"
+  if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_LINK_LIB)
+    db_add_hash_equivalence_triplet_test(
+      determinism_cross_renderer_snake_grid_state_triplet
+      "--api cpu --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600"
+      "--api opengl --renderer gl1_5_gles1_1 --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600 --vsync 0"
+      "--api opengl --renderer gl3_3 --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600 --vsync 0"
+      "state_hash_aggregate=0xfc82147610b2d77d"
+    )
+    db_add_hash_equivalence_triplet_test(
+      determinism_cross_renderer_snake_rect_state_triplet
+      "--api cpu --display offscreen --benchmark-mode snake_rect ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600"
+      "--api opengl --renderer gl1_5_gles1_1 --display offscreen --benchmark-mode snake_rect ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600 --vsync 0"
+      "--api opengl --renderer gl3_3 --display offscreen --benchmark-mode snake_rect ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600 --vsync 0"
+      "state_hash_aggregate=0xe21d53ba9542106f"
+    )
+    db_add_hash_equivalence_triplet_test(
+      determinism_cross_renderer_snake_shapes_state_triplet
+      "--api cpu --display offscreen --benchmark-mode snake_shapes ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600"
+      "--api opengl --renderer gl1_5_gles1_1 --display offscreen --benchmark-mode snake_shapes ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600 --vsync 0"
+      "--api opengl --renderer gl3_3 --display offscreen --benchmark-mode snake_shapes ${DB_DETERMINISM_COMMON_ARGS} --hash state --hash-report aggregate --frame-limit 600 --vsync 0"
+      "state_hash_aggregate=0x7c313673731e3115"
     )
     db_add_determinism_test(
-      determinism_glfw_gl3_3_offscreen
-      "--api opengl --renderer gl3_3 --display glfw_window --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_GLFW_FRAMES}"
-      "state_hash_final,framebuffer_hash_final"
+      determinism_offscreen_gl1_5
+      "--api opengl --renderer gl1_5_gles1_1 --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} --frame-limit 600 --vsync 0"
+      "state_hash_aggregate=0xfc82147610b2d77d,framebuffer_hash_aggregate=0xf64e798a754768f9"
+    )
+    db_add_determinism_test(
+      determinism_offscreen_gl3_3_fbo
+      "--api opengl --renderer gl3_3 --display offscreen --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} --frame-limit 600 --vsync 0"
+      "state_hash_aggregate=0xfc82147610b2d77d,fbo_hash16f_aggregate=0x9816080b5767d0a5"
     )
   endif()
+
 endif()

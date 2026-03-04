@@ -28,6 +28,7 @@ static void db_usage(void) {
     fputs(renderer_usage, stderr);
     fputs(">\n"
           "  --display <offscreen|glfw_window|linux_kms_atomic>  (required)\n"
+          "  --renderer requires --api opengl when explicitly set\n"
           "  --kms-card <path>\n"
           "\nRuntime options:\n"
           "  --allow-remote-display <0|1>\n"

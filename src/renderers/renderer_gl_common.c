@@ -160,6 +160,14 @@ int db_gl_row_range_to_scissor_rect(uint32_t row_start, uint32_t row_count,
     return 1;
 }
 
+db_gl_upload_range_t db_gl_upload_full_range(size_t total_bytes) {
+    return (db_gl_upload_range_t){
+        .dst_offset_bytes = 0U,
+        .src_offset_bytes = 0U,
+        .size_bytes = total_bytes,
+    };
+}
+
 int db_gl_span_to_scissor_rect(const db_snake_col_span_t *span,
                                uint32_t total_cols, uint32_t total_rows,
                                int viewport_width, int viewport_height,
@@ -201,6 +209,60 @@ int db_gl_span_to_scissor_rect(const db_snake_col_span_t *span,
     *width_out = x1 - x0;
     *height_out = row_h;
     return (*width_out > 0) && (*height_out > 0);
+}
+
+size_t db_gl_for_each_span_scissor_rect_merged(
+    const db_snake_col_span_t *spans, size_t span_count, uint32_t total_cols,
+    uint32_t total_rows, int viewport_width, int viewport_height,
+    db_gl_scissor_rect_apply_fn_t apply, void *user_data) {
+    if ((spans == NULL) || (span_count == 0U) || (total_cols == 0U) ||
+        (total_rows == 0U) || (viewport_width <= 0) || (viewport_height <= 0) ||
+        (apply == NULL)) {
+        return 0U;
+    }
+    size_t applied_count = 0U;
+    db_gl_scissor_rect_t pending = {0, 0, 0, 0};
+    int has_pending = 0;
+    for (size_t i = 0U; i < span_count; i++) {
+        db_gl_scissor_rect_t candidate = {0, 0, 0, 0};
+        if (db_gl_span_to_scissor_rect(
+                &spans[i], total_cols, total_rows, viewport_width,
+                viewport_height, &candidate.x_px, &candidate.y_px,
+                &candidate.width_px, &candidate.height_px) == 0) {
+            continue;
+        }
+        if (has_pending == 0) {
+            pending = candidate;
+            has_pending = 1;
+            continue;
+        }
+        const int same_row_band = (pending.y_px == candidate.y_px) &&
+                                  (pending.height_px == candidate.height_px);
+        const int overlaps_or_adjacent =
+            (candidate.x_px <= (pending.x_px + pending.width_px)) &&
+            (pending.x_px <= (candidate.x_px + candidate.width_px));
+        if ((same_row_band != 0) && (overlaps_or_adjacent != 0)) {
+            const int start_x =
+                (pending.x_px < candidate.x_px) ? pending.x_px : candidate.x_px;
+            const int pending_end_x = pending.x_px + pending.width_px;
+            const int candidate_end_x = candidate.x_px + candidate.width_px;
+            const int end_x = (pending_end_x > candidate_end_x)
+                                  ? pending_end_x
+                                  : candidate_end_x;
+            pending.x_px = start_x;
+            pending.width_px = end_x - start_x;
+            continue;
+        }
+        apply(&pending, user_data);
+        applied_count++;
+        pending = candidate;
+        has_pending = 1;
+    }
+    if (has_pending != 0) {
+        apply(&pending, user_data);
+        applied_count++;
+    }
+    return applied_count;
 }
 
 size_t db_gl_collect_row_upload_ranges(
@@ -354,11 +416,7 @@ db_gl_collect_damage_upload_ranges(const db_gl_damage_upload_plan_t *plan,
         if (plan->total_bytes == 0U) {
             return 0U;
         }
-        out_ranges[0] = (db_gl_upload_range_t){
-            .dst_offset_bytes = 0U,
-            .src_offset_bytes = 0U,
-            .size_bytes = plan->total_bytes,
-        };
+        out_ranges[0] = db_gl_upload_full_range(plan->total_bytes);
         return 1U;
     }
     if ((plan->spans != NULL) && (plan->span_count > 0U)) {
@@ -430,38 +488,40 @@ db_gl_collect_pattern_upload_ranges(const db_gl_pattern_upload_collect_t *ctx,
                 : db_snake_region_from_index(ctx->pattern_seed,
                                              plan->active_shape_index);
         if ((region.width == 0U) || (region.height == 0U) ||
-            (ctx->snake_spans == NULL)) {
+            (ctx->snake_scratch == NULL) ||
+            (ctx->snake_scratch->spans == NULL)) {
             return 0U;
         }
         const uint32_t settled_count =
             (is_grid != 0) ? plan->prev_count : ctx->snake_prev_count;
         const size_t max_ranges =
             (size_t)settled_count + (size_t)plan->batch_size;
-        if ((max_ranges == 0U) || (max_ranges > ctx->snake_scratch_capacity)) {
+        if ((max_ranges == 0U) ||
+            (max_ranges > ctx->snake_scratch->span_capacity)) {
             return 0U;
         }
         db_snake_shape_cache_t shape_cache = {0};
         const db_snake_shape_cache_t *shape_cache_ptr = NULL;
         if ((ctx->pattern == DB_PATTERN_SNAKE_SHAPES) &&
-            (ctx->snake_row_bounds != NULL)) {
+            (ctx->snake_scratch->row_bounds != NULL)) {
             const db_snake_shape_kind_t shape_kind =
                 db_snake_shapes_kind_from_index(ctx->pattern_seed,
                                                 plan->active_shape_index,
                                                 DB_U32_SALT_PALETTE);
             if (db_snake_shape_cache_init_from_index(
-                    &shape_cache, ctx->snake_row_bounds,
-                    ctx->snake_row_bounds_capacity, ctx->pattern_seed,
+                    &shape_cache, ctx->snake_scratch->row_bounds,
+                    ctx->snake_scratch->row_bounds_capacity, ctx->pattern_seed,
                     plan->active_shape_index, DB_U32_SALT_PALETTE, &region,
                     shape_kind) != 0) {
                 shape_cache_ptr = &shape_cache;
             }
         }
         const size_t span_count = db_snake_collect_damage_spans(
-            ctx->snake_spans, max_ranges, &region,
+            ctx->snake_scratch->spans, max_ranges, &region,
             (is_grid != 0) ? plan->prev_start : ctx->snake_prev_start,
             settled_count, plan->active_cursor, plan->batch_size,
             shape_cache_ptr);
-        upload_plan.spans = ctx->snake_spans;
+        upload_plan.spans = ctx->snake_scratch->spans;
         upload_plan.span_count = span_count;
         return db_gl_collect_damage_upload_ranges(
             &upload_plan, out_ranges,

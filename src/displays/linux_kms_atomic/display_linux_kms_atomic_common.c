@@ -37,12 +37,13 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
-#include "../../core/db_numeric.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../display_dispatch.h"
+#include "../display_frame_loop_common.h"
 #include "../display_gl_runtime_common.h"
+#include "../display_runtime_config_common.h"
 #include "../display_types.h"
 
 #define DRM_SRC_FP_SHIFT 16U
@@ -133,6 +134,18 @@ typedef struct {
     uint32_t height;
     const char *backend;
 } db_kms_atomic_cpu_frame_producer_t;
+
+typedef struct {
+    uint64_t frames;
+    double elapsed_ms;
+} db_kms_atomic_loop_run_result_t;
+
+typedef struct {
+    const db_kms_atomic_frame_loop_t *loop;
+    void *producer_ctx;
+    db_kms_atomic_next_fb_fn_t next_fb_fn;
+    double *next_progress_log_due_ms;
+} db_kms_atomic_shared_loop_ctx_t;
 
 static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
                             const char *name) {
@@ -471,47 +484,134 @@ static void db_kms_atomic_flip_to_fb(const struct kms_atomic *kms,
     }
 }
 
+static void db_kms_atomic_init_core(const char *card, struct kms_atomic *kms,
+                                    struct gbm_device **out_gbm,
+                                    uint32_t *out_width, uint32_t *out_height) {
+    if ((card == NULL) || (kms == NULL) || (out_gbm == NULL) ||
+        (out_width == NULL) || (out_height == NULL)) {
+        diex("invalid kms core init args");
+    }
+    kms_atomic_init(kms, card);
+    *out_width = kms->mode.hdisplay;
+    *out_height = kms->mode.vdisplay;
+    struct gbm_device *gbm = gbm_create_device(kms->fd);
+    if (gbm == NULL) {
+        die("gbm_create_device");
+    }
+    *out_gbm = gbm;
+}
+
+static void db_kms_atomic_shutdown_core(struct kms_atomic *kms,
+                                        struct gbm_device *gbm) {
+    if (kms == NULL) {
+        return;
+    }
+    if (kms->mode_blob_id != 0U) {
+        drmModeDestroyPropertyBlob(kms->fd, kms->mode_blob_id);
+    }
+    if (gbm != NULL) {
+        gbm_device_destroy(gbm);
+    }
+    if (kms->conn != NULL) {
+        drmModeFreeConnector(kms->conn);
+    }
+    if (kms->pres != NULL) {
+        drmModeFreePlaneResources(kms->pres);
+    }
+    if (kms->res != NULL) {
+        drmModeFreeResources(kms->res);
+    }
+    if (kms->fd >= 0) {
+        close(kms->fd);
+        kms->fd = -1;
+    }
+}
+
+static struct fb *db_kms_atomic_prime_first_frame_and_modeset(
+    const struct kms_atomic *kms, uint32_t width, uint32_t height,
+    void *producer_ctx, db_kms_atomic_next_fb_fn_t next_fb_fn) {
+    if ((kms == NULL) || (next_fb_fn == NULL)) {
+        diex("invalid kms prime args");
+    }
+    struct fb *cur = next_fb_fn(producer_ctx, 0U);
+    if (cur == NULL) {
+        diex("failed to create first scanout framebuffer");
+    }
+    db_kms_atomic_commit_modeset(kms, width, height, cur->fb_id);
+    return cur;
+}
+
+static db_display_frame_loop_result_t
+db_kms_atomic_shared_frame_step(void *user_data, uint32_t frame_index,
+                                double elapsed_ms) {
+    db_kms_atomic_shared_loop_ctx_t *loop_ctx =
+        (db_kms_atomic_shared_loop_ctx_t *)user_data;
+    if ((loop_ctx == NULL) || (loop_ctx->loop == NULL) ||
+        (loop_ctx->next_fb_fn == NULL) ||
+        (loop_ctx->next_progress_log_due_ms == NULL)) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
+    const db_kms_atomic_frame_loop_t *loop_cfg = loop_ctx->loop;
+    struct fb *next = loop_ctx->next_fb_fn(loop_ctx->producer_ctx, frame_index);
+    db_kms_atomic_flip_to_fb(loop_cfg->kms, next->fb_id,
+                             loop_cfg->event_context);
+    fb_release(loop_cfg->kms->fd, loop_cfg->release_surface, *loop_cfg->cur_fb);
+    *loop_cfg->cur_fb = next;
+    db_benchmark_log_periodic(
+        db_dispatch_api_name(loop_cfg->api), loop_cfg->renderer_name,
+        loop_cfg->backend, (uint64_t)frame_index + 1U,
+        loop_cfg->work_unit_count, elapsed_ms, loop_cfg->capability_mode,
+        loop_ctx->next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS);
+    return DB_DISPLAY_FRAME_LOOP_CONTINUE;
+}
+
 static uint64_t
 db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
                              void *producer_ctx,
                              db_kms_atomic_next_fb_fn_t next_fb_fn) {
-    const uint64_t bench_start = db_now_ns_monotonic();
-    uint64_t bench_frames = 0U;
     double next_progress_log_due_ms = 0.0;
-    while (!db_should_stop()) {
-        if ((loop->frame_limit > 0U) && (bench_frames >= loop->frame_limit)) {
-            break;
-        }
-        const uint64_t frame_start_ns = db_now_ns_monotonic();
-        struct fb *next = next_fb_fn(producer_ctx, bench_frames);
-        db_kms_atomic_flip_to_fb(loop->kms, next->fb_id, loop->event_context);
-        fb_release(loop->kms->fd, loop->release_surface, *loop->cur_fb);
-        *loop->cur_fb = next;
-        bench_frames++;
-
-        const double bench_ms =
-            (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
-        db_benchmark_log_periodic(
-            db_dispatch_api_name(loop->api), loop->renderer_name, loop->backend,
-            bench_frames, loop->work_unit_count, bench_ms,
-            loop->capability_mode, &next_progress_log_due_ms,
-            BENCH_LOG_INTERVAL_MS);
-        db_sleep_to_fps_cap(loop->backend, frame_start_ns, loop->fps_cap);
+    if ((loop == NULL) || (next_fb_fn == NULL)) {
+        return 0U;
     }
-    return bench_frames;
+    db_kms_atomic_shared_loop_ctx_t ctx = {
+        .loop = loop,
+        .producer_ctx = producer_ctx,
+        .next_fb_fn = next_fb_fn,
+        .next_progress_log_due_ms = &next_progress_log_due_ms,
+    };
+    db_display_frame_loop_t shared_loop = {
+        .backend = loop->backend,
+        .fps_cap = loop->fps_cap,
+        .frame_limit = loop->frame_limit,
+        .user_data = &ctx,
+        .should_continue_fn = NULL,
+        .pre_frame_fn = NULL,
+        .frame_fn = db_kms_atomic_shared_frame_step,
+    };
+    return db_display_run_frame_loop(&shared_loop).frames;
+}
+
+static db_kms_atomic_loop_run_result_t
+db_kms_atomic_run_frame_loop_timed(const db_kms_atomic_frame_loop_t *loop,
+                                   void *producer_ctx,
+                                   db_kms_atomic_next_fb_fn_t next_fb_fn) {
+    const uint64_t bench_start = db_now_ns_monotonic();
+    const uint64_t bench_frames =
+        db_kms_atomic_run_frame_loop(loop, producer_ctx, next_fb_fn);
+    const double bench_ms =
+        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
+    return (db_kms_atomic_loop_run_result_t){
+        .frames = bench_frames,
+        .elapsed_ms = bench_ms,
+    };
 }
 
 static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
                                            uint32_t frame_index) {
     db_kms_atomic_gl_frame_producer_t *producer =
         (db_kms_atomic_gl_frame_producer_t *)user_ctx;
-    if (producer->debug_clear_default_framebuffer != 0) {
-        db_gl_clear_color_rgba(db_double_to_f32(BENCH_CLEAR_COLOR_R),
-                               db_double_to_f32(BENCH_CLEAR_COLOR_G),
-                               db_double_to_f32(BENCH_CLEAR_COLOR_B),
-                               db_double_to_f32(BENCH_CLEAR_COLOR_A));
-        db_gl_clear_color_buffer();
-    }
+    db_display_gl_debug_clear_default_framebuffer_if_enabled(
+        producer->debug_clear_default_framebuffer);
     producer->renderer->render_frame(frame_index);
     eglSwapBuffers(producer->dpy, producer->surf);
 
@@ -564,10 +664,11 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
                     dpy, cfg, (EGLNativeWindowType)gbm_surf, NULL);
                 if ((surf != EGL_NO_SURFACE) &&
                     eglMakeCurrent(dpy, surf, surf, ctx)) {
-                    db_gl_set_proc_resolver(
-                        (db_gl_proc_resolver_fn_t)eglGetProcAddress);
-                    db_gl_preload_upload_proc_table();
-                    const char *ver = db_gl_get_version_string();
+                    const char *ver = NULL;
+                    (void)db_display_prepare_gl_runtime(
+                        (db_gl_proc_resolver_fn_t)eglGetProcAddress,
+                        BACKEND_NAME, DB_DISPLAY_GL_RUNTIME_LOG_DISABLED, &ver,
+                        NULL);
                     if (db_gl_version_text_at_least(ver, req_gl_major,
                                                     req_gl_minor)) {
                         *out_cfg = cfg;
@@ -633,10 +734,9 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
 }
 
 int db_kms_atomic_run(const char *backend, const char *renderer_name,
-                      const char *card,
+                      const char *card, db_gl_renderer_t gl_renderer,
                       db_kms_atomic_context_profile_t context_profile,
                       const db_kms_atomic_renderer_vtable_t *renderer,
-                      db_kms_atomic_runtime_check_fn_t runtime_check,
                       const db_cli_config_t *cfg) {
     if ((backend == NULL) || (renderer_name == NULL) || (card == NULL) ||
         (renderer == NULL) || (renderer->init == NULL) ||
@@ -651,15 +751,10 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     db_install_signal_handlers();
 
     struct kms_atomic kms;
-    kms_atomic_init(&kms, card);
-
-    const uint32_t width = kms.mode.hdisplay;
-    const uint32_t height = kms.mode.vdisplay;
-
-    struct gbm_device *gbm = gbm_create_device(kms.fd);
-    if (gbm == NULL) {
-        die("gbm_create_device");
-    }
+    struct gbm_device *gbm = NULL;
+    uint32_t width = 0U;
+    uint32_t height = 0U;
+    db_kms_atomic_init_core(card, &kms, &gbm, &width, &height);
 
     struct gbm_surface *gbm_surf =
         gbm_surface_create(gbm, width, height, GBM_FORMAT_XRGB8888,
@@ -682,15 +777,9 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
         allow_gles1_1_fallback);
 
-    db_gl_set_proc_resolver((db_gl_proc_resolver_fn_t)eglGetProcAddress);
-    db_gl_preload_upload_proc_table();
-    const char *runtime_version = db_gl_get_version_string();
-    const char *runtime_renderer = db_gl_get_renderer_string();
-    const int runtime_is_gles = db_display_log_gl_runtime_api(
-        backend, runtime_version, runtime_renderer);
-    if (runtime_check != NULL) {
-        runtime_check(backend, runtime_version, runtime_is_gles);
-    }
+    (void)db_display_prepare_and_validate_gl_runtime(
+        (db_gl_proc_resolver_fn_t)eglGetProcAddress, gl_renderer, backend,
+        DB_DISPLAY_GL_RUNTIME_LOG_ENABLED, -1, NULL, NULL);
 
     const int viewport_width =
         db_checked_u32_to_i32(backend, "viewport_width", width);
@@ -700,8 +789,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
     renderer->init();
     const char *capability_mode = renderer->capability_mode();
-    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP;
-    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
+    const db_display_runtime_config_t runtime_cfg =
+        db_display_runtime_hash_config_from_cli(cfg, 0, 0).runtime;
     const uint32_t work_unit_count = renderer->work_unit_count();
 
     drmEventContext ev = {0};
@@ -711,32 +800,14 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     struct fb *cur = NULL;
 
     const int debug_clear_default_framebuffer =
-        (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0;
-    if (debug_clear_default_framebuffer != 0) {
-        db_gl_clear_color_rgba(db_double_to_f32(BENCH_CLEAR_COLOR_R),
-                               db_double_to_f32(BENCH_CLEAR_COLOR_G),
-                               db_double_to_f32(BENCH_CLEAR_COLOR_B),
-                               db_double_to_f32(BENCH_CLEAR_COLOR_A));
-        db_gl_clear_color_buffer();
-    }
-    renderer->render_frame(0);
-    eglSwapBuffers(dpy, surf);
-
-    struct gbm_bo *bo = gbm_surface_lock_front_buffer(gbm_surf);
-    if (bo == NULL) {
-        diex("gbm_surface_lock_front_buffer failed");
-    }
-    cur = fb_from_bo(kms.fd, bo, 1);
-
-    db_kms_atomic_commit_modeset(&kms, width, height, cur->fb_id);
-
+        runtime_cfg.debug_clear_default_framebuffer;
     const db_kms_atomic_frame_loop_t loop = {
         .api = DB_API_OPENGL,
         .backend = backend,
         .renderer_name = renderer_name,
         .capability_mode = capability_mode,
-        .fps_cap = fps_cap,
-        .frame_limit = frame_limit,
+        .fps_cap = runtime_cfg.fps_cap,
+        .frame_limit = runtime_cfg.frame_limit,
         .work_unit_count = work_unit_count,
         .kms = &kms,
         .release_surface = gbm_surf,
@@ -751,29 +822,19 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         .gbm_surf = gbm_surf,
         .renderer = renderer,
     };
-    const uint64_t bench_start = db_now_ns_monotonic();
-    const uint64_t bench_frames = db_kms_atomic_run_frame_loop(
-        &loop, &producer, db_kms_atomic_next_gl_fb);
-    const double bench_ms =
-        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
-    if (renderer->draw_stats != NULL) {
-        uint64_t full_draw_frames = 0U;
-        uint64_t dirty_draw_frames = 0U;
-        renderer->draw_stats(&full_draw_frames, &dirty_draw_frames);
-        db_infof(backend,
-                 "draw stats: full_draw_frames=%llu dirty_draw_frames=%llu",
-                 (unsigned long long)full_draw_frames,
-                 (unsigned long long)dirty_draw_frames);
-    }
+    cur = db_kms_atomic_prime_first_frame_and_modeset(
+        &kms, width, height, &producer, db_kms_atomic_next_gl_fb);
+    const db_kms_atomic_loop_run_result_t loop_result =
+        db_kms_atomic_run_frame_loop_timed(&loop, &producer,
+                                           db_kms_atomic_next_gl_fb);
+    db_display_log_draw_stats_with_fn(backend, renderer->draw_stats);
     db_benchmark_log_final(db_dispatch_api_name(DB_API_OPENGL), renderer_name,
-                           backend, bench_frames, work_unit_count, bench_ms,
-                           capability_mode);
+                           backend, loop_result.frames, work_unit_count,
+                           loop_result.elapsed_ms, capability_mode);
 
     renderer->shutdown();
 
     fb_release(kms.fd, gbm_surf, cur);
-
-    drmModeDestroyPropertyBlob(kms.fd, kms.mode_blob_id);
 
     eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     eglDestroySurface(dpy, surf);
@@ -781,12 +842,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     eglTerminate(dpy);
 
     gbm_surface_destroy(gbm_surf);
-    gbm_device_destroy(gbm);
-
-    drmModeFreeConnector(kms.conn);
-    drmModeFreePlaneResources(kms.pres);
-    drmModeFreeResources(kms.res);
-    close(kms.fd);
+    db_kms_atomic_shutdown_core(&kms, gbm);
 
     return 0;
 }
@@ -881,41 +937,18 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
     db_install_signal_handlers();
 
     struct kms_atomic kms;
-    kms_atomic_init(&kms, card);
-    const uint32_t width = kms.mode.hdisplay;
-    const uint32_t height = kms.mode.vdisplay;
-
-    struct gbm_device *gbm = gbm_create_device(kms.fd);
-    if (gbm == NULL) {
-        die("gbm_create_device");
-    }
+    struct gbm_device *gbm = NULL;
+    uint32_t width = 0U;
+    uint32_t height = 0U;
+    db_kms_atomic_init_core(card, &kms, &gbm, &width, &height);
 
     db_renderer_cpu_renderer_init();
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
-    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP;
-    const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
+    const db_display_runtime_config_t runtime_cfg =
+        db_display_runtime_hash_config_from_cli(cfg, 0, 0).runtime;
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
 
-    db_renderer_cpu_renderer_render_frame(0);
-    const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
-    const uint32_t *initial_pixels_rgba8 = NULL;
-    const uint16_t *initial_pixels_rgba16f = NULL;
-    if (use_hdr_float_bo != 0) {
-        initial_pixels_rgba16f =
-            db_renderer_cpu_renderer_pixels_rgba16f(NULL, NULL);
-    } else {
-        initial_pixels_rgba8 =
-            db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
-    }
-    if (((use_hdr_float_bo != 0) && (initial_pixels_rgba16f == NULL)) ||
-        ((use_hdr_float_bo == 0) && (initial_pixels_rgba8 == NULL))) {
-        db_failf(backend, "cpu renderer returned NULL framebuffer");
-    }
-    struct fb *cur = db_cpu_create_fb_from_framebuffer(
-        gbm, kms.fd, initial_pixels_rgba8, initial_pixels_rgba16f,
-        use_hdr_float_bo, width, height);
-
-    db_kms_atomic_commit_modeset(&kms, width, height, cur->fb_id);
+    struct fb *cur = NULL;
 
     drmEventContext ev = {0};
     ev.version = DRM_EVENT_CONTEXT_VERSION;
@@ -926,8 +959,8 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
         .backend = backend,
         .renderer_name = renderer_name,
         .capability_mode = capability_mode,
-        .fps_cap = fps_cap,
-        .frame_limit = frame_limit,
+        .fps_cap = runtime_cfg.fps_cap,
+        .frame_limit = runtime_cfg.frame_limit,
         .work_unit_count = work_unit_count,
         .kms = &kms,
         .release_surface = NULL,
@@ -941,23 +974,17 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
         .height = height,
         .backend = backend,
     };
-    const uint64_t bench_start = db_now_ns_monotonic();
-    const uint64_t bench_frames = db_kms_atomic_run_frame_loop(
-        &loop, &producer, db_kms_atomic_next_cpu_fb);
-    const double bench_ms =
-        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
+    cur = db_kms_atomic_prime_first_frame_and_modeset(
+        &kms, width, height, &producer, db_kms_atomic_next_cpu_fb);
+    const db_kms_atomic_loop_run_result_t loop_result =
+        db_kms_atomic_run_frame_loop_timed(&loop, &producer,
+                                           db_kms_atomic_next_cpu_fb);
     db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU), renderer_name,
-                           backend, bench_frames, work_unit_count, bench_ms,
-                           capability_mode);
+                           backend, loop_result.frames, work_unit_count,
+                           loop_result.elapsed_ms, capability_mode);
 
     db_renderer_cpu_renderer_shutdown();
     fb_release(kms.fd, NULL, cur);
-
-    drmModeDestroyPropertyBlob(kms.fd, kms.mode_blob_id);
-    gbm_device_destroy(gbm);
-    drmModeFreeConnector(kms.conn);
-    drmModeFreePlaneResources(kms.pres);
-    drmModeFreeResources(kms.res);
-    close(kms.fd);
+    db_kms_atomic_shutdown_core(&kms, gbm);
     return 0;
 }

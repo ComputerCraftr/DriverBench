@@ -7,7 +7,6 @@
 #include "../../core/db_numeric.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
-#include "../renderer_snake_common.h"
 
 typedef struct {
     uint32_t total_rows;

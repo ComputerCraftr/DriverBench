@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "../../driverbench_config.h"
+#include "../display_types.h"
 
 typedef enum {
     DB_KMS_ATOMIC_CONTEXT_GL1_5_OR_GLES1_1 = 0,
@@ -19,15 +20,10 @@ typedef struct {
     uint32_t (*work_unit_count)(void);
 } db_kms_atomic_renderer_vtable_t;
 
-typedef void (*db_kms_atomic_runtime_check_fn_t)(const char *backend,
-                                                 const char *runtime_version,
-                                                 int runtime_is_gles);
-
 int db_kms_atomic_run(const char *backend, const char *renderer_name,
-                      const char *card,
+                      const char *card, db_gl_renderer_t gl_renderer,
                       db_kms_atomic_context_profile_t context_profile,
                       const db_kms_atomic_renderer_vtable_t *renderer,
-                      db_kms_atomic_runtime_check_fn_t runtime_check,
                       const db_cli_config_t *cfg);
 int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
                           const char *card, db_api_t api,

@@ -227,11 +227,6 @@ db_snake_shape_profile_from_index(uint32_t pattern_seed, uint32_t shape_index,
         extent_x *= scale;
         extent_y *= scale;
     }
-    const double scaled_bound_x = (abs_cos * base_half_width * extent_x) +
-                                  (abs_sin * base_half_height * extent_y);
-    const double scaled_bound_y = (abs_sin * base_half_width * extent_x) +
-                                  (abs_cos * base_half_height * extent_y);
-    const double scaled_max_bound = fmax(scaled_bound_x, scaled_bound_y);
     profile.extent_x = extent_x;
     profile.extent_y = extent_y;
     return profile;

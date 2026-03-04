@@ -32,8 +32,8 @@
 #define DB_BENCHMARK_MODE_SNAKE_RECT "snake_rect"
 #define DB_BENCHMARK_MODE_SNAKE_SHAPES "snake_shapes"
 #define DB_BENCH_SPEED_STEP_MAX 1024U
-#define DB_COLOR_CHANNEL_BIAS 0.20F
-#define DB_COLOR_CHANNEL_SCALE 0.75F
+#define DB_COLOR_CHANNEL_BIAS 0.20
+#define DB_COLOR_CHANNEL_SCALE 0.75
 #define DB_GRADIENT_WINDOW_ROWS 32U
 #define DB_GRADIENT_DRAW_RANGE_WORK_CAP 8U
 #define DB_PALETTE_SALT_BASE_STEP DB_U32_GOLDEN_RATIO
@@ -87,7 +87,6 @@ typedef struct {
     uint32_t work_unit_count;
     uint32_t draw_vertex_count;
     db_snake_state_t snake;
-    int mode_phase_flag;
     db_gradient_state_t gradient;
     uint32_t bench_speed_step;
     uint32_t pattern_seed;
@@ -98,10 +97,9 @@ typedef void (*db_gradient_row_color_apply_fn_t)(uint32_t row, double row_r,
                                                  double row_g, double row_b,
                                                  void *user_data);
 
-static inline uint64_t
-db_benchmark_runtime_state_hash(const db_benchmark_runtime_init_t *runtime,
-                                uint32_t frame_index, uint32_t render_width,
-                                uint32_t render_height) {
+static inline uint64_t db_benchmark_runtime_state_hash_cross_renderer(
+    const db_benchmark_runtime_init_t *runtime, uint32_t frame_index,
+    uint32_t render_width, uint32_t render_height) {
     if (runtime == NULL) {
         return 0U;
     }
@@ -109,20 +107,29 @@ db_benchmark_runtime_state_hash(const db_benchmark_runtime_init_t *runtime,
     hash = db_fnv1a64_mix_u64(hash, frame_index);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->pattern);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->work_unit_count);
-    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->draw_vertex_count);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.shape_index);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.cursor);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.prev_start);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.prev_count);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.batch_size);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.phase_completed);
-    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->mode_phase_flag);
+    // Shared direction bit for gradient sweep direction and snake phase
+    // direction (replaces legacy standalone mode-phase runtime field).
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient.direction_down);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient.head_row);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient.cycle_index);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->pattern_seed);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)render_width);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)render_height);
     return hash;
+}
+
+static inline uint64_t
+db_benchmark_runtime_state_hash(const db_benchmark_runtime_init_t *runtime,
+                                uint32_t frame_index, uint32_t render_width,
+                                uint32_t render_height) {
+    return db_benchmark_runtime_state_hash_cross_renderer(
+        runtime, frame_index, render_width, render_height);
 }
 
 static inline uint32_t db_grid_rows_effective(void) {
@@ -191,6 +198,34 @@ static inline uint32_t db_gradient_window_rows_effective(void) {
         return 1U;
     }
     return rows;
+}
+
+static inline void db_benchmark_seed_background_color_rgb(
+    const db_benchmark_runtime_init_t *runtime, double *out_r, double *out_g,
+    double *out_b) {
+    if ((out_r == NULL) || (out_g == NULL) || (out_b == NULL)) {
+        return;
+    }
+
+    if ((runtime != NULL) && (runtime->pattern == DB_PATTERN_SNAKE_GRID)) {
+        // Snake grid alternates between two stable full-grid phases. Seed to
+        // the current base phase so the first dirty update composes correctly.
+        if (runtime->gradient.direction_down == 0) {
+            *out_r = BENCH_GRID_PHASE0_R;
+            *out_g = BENCH_GRID_PHASE0_G;
+            *out_b = BENCH_GRID_PHASE0_B;
+        } else {
+            *out_r = BENCH_GRID_PHASE1_R;
+            *out_g = BENCH_GRID_PHASE1_G;
+            *out_b = BENCH_GRID_PHASE1_B;
+        }
+        return;
+    }
+
+    // Keep non-snake seed behavior stable.
+    *out_r = BENCH_GRID_PHASE0_R;
+    *out_g = BENCH_GRID_PHASE0_G;
+    *out_b = BENCH_GRID_PHASE0_B;
 }
 
 static inline uint32_t db_pattern_seed_from_time(void) {
@@ -289,12 +324,6 @@ static inline void db_log_benchmark_mode(const char *backend_name,
              db_pattern_mode_name(pattern), BENCH_BANDS, bench_speed_step);
 }
 
-static inline int db_pattern_uses_history_texture(db_pattern_t pattern) {
-    return (pattern == DB_PATTERN_SNAKE_GRID) ||
-           (pattern == DB_PATTERN_SNAKE_RECT) ||
-           (pattern == DB_PATTERN_SNAKE_SHAPES);
-}
-
 static inline uint32_t db_pattern_work_unit_count(db_pattern_t pattern) {
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t cols = db_grid_cols_effective();
@@ -363,13 +392,11 @@ db_init_benchmark_runtime_common(const char *backend_name,
         out_state->gradient.cycle_index = db_benchmark_cycle_from_seed(
             out_state->pattern_seed, DB_U32_SALT_PALETTE);
         out_state->gradient.head_row = 0U;
-        out_state->mode_phase_flag = 0;
         out_state->gradient.direction_down = 0;
         if (requested == DB_PATTERN_GRADIENT_SWEEP) {
             // Start sweep at top-offscreen hold: head=0 while moving up. The
             // first planner step keeps render at head=0 and flips to down.
             out_state->gradient.head_row = 0U;
-            out_state->mode_phase_flag = 0;
             out_state->gradient.direction_down = 0;
             // Delay first visible palette swap by one step so top-offscreen
             // start does not advance past the seed phase immediately.
@@ -381,7 +408,6 @@ db_init_benchmark_runtime_common(const char *backend_name,
             out_state->gradient.head_row = db_checked_add_u32(
                 DB_BENCH_COMMON_BACKEND, "gradient_init_head_max",
                 db_grid_rows_effective(), db_gradient_window_rows_effective());
-            out_state->mode_phase_flag = 1;
             out_state->gradient.direction_down = 1;
             // Delay first visible palette swap by one step so top-offscreen
             // start does not advance past the seed phase immediately.
@@ -528,8 +554,7 @@ static inline void db_band_color_rgb(uint32_t band_index, uint32_t band_count,
 
 static inline double db_color_channel(uint32_t seed) {
     const double normalized = (double)(seed & 255U) / 255.0;
-    return (double)DB_COLOR_CHANNEL_BIAS +
-           (normalized * (double)DB_COLOR_CHANNEL_SCALE);
+    return DB_COLOR_CHANNEL_BIAS + (normalized * DB_COLOR_CHANNEL_SCALE);
 }
 
 static inline void db_palette_cycle_color_rgb(uint32_t cycle_index,
@@ -751,10 +776,10 @@ db_gradient_plan_next_frame(uint32_t head_row, int direction_down,
 
 static inline db_gradient_damage_plan_t
 db_gradient_step_from_runtime(db_pattern_t pattern, uint32_t head_row,
-                              int mode_phase_flag, uint32_t cycle_index,
+                              int direction_down, uint32_t cycle_index,
                               uint32_t head_step) {
     const int is_sweep = (pattern == DB_PATTERN_GRADIENT_SWEEP);
-    return db_gradient_plan_next_frame(head_row, is_sweep ? mode_phase_flag : 1,
+    return db_gradient_plan_next_frame(head_row, is_sweep ? direction_down : 1,
                                        cycle_index, is_sweep ? 0 : 1,
                                        head_step);
 }
@@ -1072,7 +1097,6 @@ db_gradient_apply_step_to_runtime(db_benchmark_runtime_init_t *runtime,
         return;
     }
     runtime->gradient.head_row = plan->next_state.head_row;
-    runtime->mode_phase_flag = plan->next_state.direction_down;
     runtime->gradient.cycle_index = plan->next_state.cycle_index;
     runtime->gradient.direction_down = plan->next_state.direction_down;
 }

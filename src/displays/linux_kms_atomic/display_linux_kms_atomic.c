@@ -1,51 +1,21 @@
 #include "display_linux_kms_atomic_common.h"
 
-#include <stdint.h>
-
 #include "../../core/db_core.h"
 #include "../../driverbench_config.h"
-#include "../../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
-#include "../../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
-#include "../../renderers/renderer_gl_common.h"
 #include "../../renderers/renderer_identity.h"
 #include "../display_dispatch.h"
+#include "../display_gl_renderer_select_common.h"
 #include "../display_gl_runtime_common.h"
 #include "../display_types.h"
 
 #define BACKEND_NAME_GL "display_linux_kms_atomic_opengl"
 #define BACKEND_NAME_CPU "display_linux_kms_atomic_cpu"
 
-static void db_kms_gl1_render_frame_adapter(uint32_t frame_index) {
-    db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_index, 0, 0, 1);
-}
-
-static void db_kms_gl3_render_frame_adapter(uint32_t frame_index) {
-    db_renderer_opengl_gl3_3_render_frame(frame_index, 0, 0);
-}
-
-static void db_runtime_check_gl1(const char *backend,
-                                 const char *runtime_version,
-                                 int runtime_is_gles) {
-    if (runtime_is_gles != 0) {
-        db_display_validate_gles_1x_runtime_or_fail(backend, runtime_version);
-    }
-}
-
-static void db_runtime_check_gl3(const char *backend,
-                                 const char *runtime_version,
-                                 int runtime_is_gles) {
-    if (runtime_is_gles != 0) {
-        db_failf(backend,
-                 "OpenGL ES context is unsupported for this renderer; requires "
-                 "desktop OpenGL 3.3+");
-    }
-    if (!db_gl_version_text_at_least(runtime_version, 3, 3)) {
-        db_failf(backend,
-                 "Desktop OpenGL %s is unsupported for this renderer; "
-                 "requires OpenGL 3.3+",
-                 (runtime_version != NULL) ? runtime_version : "(null)");
-    }
-}
+typedef struct {
+    db_kms_atomic_context_profile_t context_mode;
+    db_kms_atomic_renderer_vtable_t vtable;
+    const db_display_gl_renderer_ops_t renderer_ops;
+} db_kms_gl_renderer_config_t;
 
 int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
                             const char *card_path, const db_cli_config_t *cfg) {
@@ -63,40 +33,26 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
                  (int)api);
     }
 
-    const db_kms_atomic_renderer_vtable_t vtable = {
-        .init = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                    ? db_renderer_opengl_gl1_5_gles1_1_init
-                    : db_renderer_opengl_gl3_3_init,
-        .render_frame = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                            ? db_kms_gl1_render_frame_adapter
-                            : db_kms_gl3_render_frame_adapter,
-        .shutdown = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                        ? db_renderer_opengl_gl1_5_gles1_1_shutdown
-                        : db_renderer_opengl_gl3_3_shutdown,
-        .capability_mode =
-            (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                ? db_renderer_opengl_gl1_5_gles1_1_capability_mode
-                : db_renderer_opengl_gl3_3_capability_mode,
-        .draw_stats = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                          ? db_renderer_opengl_gl1_5_gles1_1_draw_stats
-                          : db_renderer_opengl_gl3_3_draw_stats,
-        .work_unit_count =
-            (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                ? db_renderer_opengl_gl1_5_gles1_1_work_unit_count
-                : db_renderer_opengl_gl3_3_work_unit_count,
+    const db_display_gl_renderer_ops_t renderer_ops =
+        db_display_gl_select_renderer_ops(renderer);
+    const db_display_gl_context_policy_t context_policy =
+        db_display_gl_context_policy_for_renderer(renderer);
+    const db_kms_gl_renderer_config_t gl_cfg = {
+        .context_mode = (context_policy.allow_gles1_1_fallback != 0)
+                            ? DB_KMS_ATOMIC_CONTEXT_GL1_5_OR_GLES1_1
+                            : DB_KMS_ATOMIC_CONTEXT_GL3_3,
+        .vtable =
+            (db_kms_atomic_renderer_vtable_t){
+                .capability_mode = renderer_ops.runtime_capability_mode,
+                .draw_stats = renderer_ops.draw_stats,
+                .init = renderer_ops.init,
+                .render_frame = renderer_ops.render_frame_kms,
+                .shutdown = renderer_ops.shutdown,
+                .work_unit_count = renderer_ops.work_unit_count,
+            },
+        .renderer_ops = renderer_ops,
     };
-
-    const db_kms_atomic_runtime_check_fn_t runtime_check =
-        (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) ? db_runtime_check_gl1
-                                                   : db_runtime_check_gl3;
-    const db_kms_atomic_context_profile_t context_mode =
-        (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-            ? DB_KMS_ATOMIC_CONTEXT_GL1_5_OR_GLES1_1
-            : DB_KMS_ATOMIC_CONTEXT_GL3_3;
-
-    const char *renderer_name = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-                                    ? db_renderer_name_opengl_gl1_5_gles1_1()
-                                    : db_renderer_name_opengl_gl3_3();
-    return db_kms_atomic_run(BACKEND_NAME_GL, renderer_name, card, context_mode,
-                             &vtable, runtime_check, cfg);
+    return db_kms_atomic_run(BACKEND_NAME_GL, gl_cfg.renderer_ops.renderer_name,
+                             card, renderer, gl_cfg.context_mode,
+                             &gl_cfg.vtable, cfg);
 }

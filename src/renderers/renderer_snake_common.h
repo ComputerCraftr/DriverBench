@@ -7,6 +7,7 @@
 #include "../config/benchmark_config.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
+#include "renderer_benchmark_common.h"
 #include "renderer_snake_shape_common.h"
 
 #define DB_SNAKE_COMMON_BACKEND "renderer_snake_common"
@@ -82,6 +83,19 @@ db_snake_plan_request_make(int full_grid_target_mode, uint32_t seed,
     return request;
 }
 
+static inline size_t db_snake_span_capacity_needed(uint32_t settled_count,
+                                                   uint32_t active_count) {
+    return (size_t)settled_count + (size_t)active_count;
+}
+
+static inline size_t
+db_snake_plan_span_capacity_needed(const db_snake_plan_t *plan) {
+    if (plan == NULL) {
+        return 0U;
+    }
+    return db_snake_span_capacity_needed(plan->prev_count, plan->batch_size);
+}
+
 typedef struct {
     uint32_t row;
     uint32_t col_start;
@@ -140,12 +154,20 @@ typedef struct {
     double target_g;
     double target_b;
     int full_fill_on_phase_completed;
-    int has_next_mode_phase_flag;
-    int next_mode_phase_flag;
+    int has_next_direction_flag;
+    int next_direction_flag;
     int has_next_shape_index;
     uint32_t next_shape_index;
     db_snake_shape_kind_t shape_kind;
 } db_snake_step_target_t;
+
+typedef struct {
+    db_snake_plan_t plan;
+    db_snake_step_target_t target;
+    db_snake_shape_kind_t shape_kind;
+    int is_grid_mode;
+    int is_shapes_mode;
+} db_snake_step_eval_t;
 
 typedef struct {
     uint32_t tile_index;
@@ -331,6 +353,18 @@ db_snake_collect_damage_spans(db_snake_col_span_t *spans, size_t max_spans,
                                                            shape_cache);
     }
     return span_count;
+}
+
+static inline size_t db_snake_collect_damage_spans_for_plan(
+    db_snake_col_span_t *spans, size_t max_spans,
+    const db_snake_region_t *region, const db_snake_plan_t *plan,
+    const db_snake_shape_cache_t *shape_cache) {
+    if (plan == NULL) {
+        return 0U;
+    }
+    return db_snake_collect_damage_spans(
+        spans, max_spans, region, plan->prev_start, plan->prev_count,
+        plan->active_cursor, plan->batch_size, shape_cache);
 }
 
 static inline int db_snake_span_row_bounds(const db_snake_col_span_t *spans,
@@ -530,8 +564,8 @@ db_snake_step_target_from_plan(int full_grid_target_mode, uint32_t pattern_seed,
         db_grid_target_color_rgb(plan->clearing_phase, &result.target_r,
                                  &result.target_g, &result.target_b);
         result.full_fill_on_phase_completed = 1;
-        result.has_next_mode_phase_flag = 1;
-        result.next_mode_phase_flag = plan->next_clearing_phase;
+        result.has_next_direction_flag = 1;
+        result.next_direction_flag = plan->next_clearing_phase;
         return result;
     }
 
@@ -544,6 +578,25 @@ db_snake_step_target_from_plan(int full_grid_target_mode, uint32_t pattern_seed,
         pattern_seed, plan->active_shape_index, DB_U32_SALT_PALETTE);
     result.has_next_shape_index = 1;
     result.next_shape_index = plan->next_shape_index;
+    return result;
+}
+
+static inline db_snake_step_eval_t
+db_snake_step_eval_from_runtime(db_pattern_t pattern, uint32_t pattern_seed,
+                                uint32_t shape_index, uint32_t cursor,
+                                uint32_t prev_start, uint32_t prev_count,
+                                int direction_flag, uint32_t bench_speed_step) {
+    db_snake_step_eval_t result = {0};
+    result.is_grid_mode = (pattern == DB_PATTERN_SNAKE_GRID);
+    result.is_shapes_mode = (pattern == DB_PATTERN_SNAKE_SHAPES);
+    const db_snake_plan_request_t request = db_snake_plan_request_make(
+        result.is_grid_mode, pattern_seed, shape_index, cursor, prev_start,
+        prev_count, direction_flag, bench_speed_step);
+    result.plan = db_snake_plan_next_step(&request);
+    result.target = db_snake_step_target_from_plan(result.is_grid_mode,
+                                                   pattern_seed, &result.plan);
+    result.shape_kind = (result.is_shapes_mode != 0) ? result.target.shape_kind
+                                                     : DB_SNAKE_SHAPE_RECT;
     return result;
 }
 

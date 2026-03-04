@@ -12,7 +12,7 @@ layout(push_constant) uniform PC {
     uint gradient_window_rows;
     uint grid_cols;
     uint grid_rows;
-    int mode_phase_flag;
+    int direction_flag;
     uint palette_cycle;
     uint pattern_seed;
     uint render_mode;
@@ -38,7 +38,7 @@ layout(std140, binding = 0) uniform PC {
     uint gradient_window_rows;
     uint grid_cols;
     uint grid_rows;
-    int mode_phase_flag;
+    int direction_flag;
     uint palette_cycle;
     uint pattern_seed;
     uint render_mode;

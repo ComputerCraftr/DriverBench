@@ -10,6 +10,7 @@
 #include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
 #include "../renderer_benchmark_common.h"
+#include "../renderer_history_common.h"
 #include "../renderer_snake_common.h"
 #include "../renderer_snake_shape_common.h"
 
@@ -33,10 +34,8 @@ typedef struct {
     db_dirty_row_range_t damage_rows[2];
     size_t damage_row_count;
     uint32_t *pixels_rgba8_staging;
-    db_snake_shape_row_bounds_t *snake_row_bounds;
-    size_t snake_row_bounds_capacity;
-    uint64_t state_hash;
-    uint32_t frame_index;
+    db_history_snake_scratch_t snake_scratch;
+    db_renderer_frame_stats_t frame;
     int initialized;
     db_benchmark_runtime_init_t runtime;
 } db_cpu_renderer_state_t;
@@ -410,11 +409,17 @@ void db_renderer_cpu_renderer_init(void) {
             BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count, sizeof(uint32_t),
             DB_CACHELINE_ALIGNMENT_BYTES);
     }
-    db_cpu_bo_fill_solid_rgb(&bo, BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
-                             BENCH_GRID_PHASE0_B);
+    double seed_r = 0.0;
+    double seed_g = 0.0;
+    double seed_b = 0.0;
+    db_benchmark_seed_background_color_rgb(&init_state, &seed_r, &seed_g,
+                                           &seed_b);
+    db_cpu_bo_fill_solid_rgb(&bo, seed_r, seed_g, seed_b);
     db_snake_shape_row_bounds_t *snake_row_bounds = NULL;
     size_t snake_row_bounds_capacity = 0U;
-    if (init_state.pattern == DB_PATTERN_SNAKE_SHAPES) {
+    const db_history_pattern_mode_flags_t pattern_flags =
+        db_history_pattern_mode_flags(init_state.pattern);
+    if (pattern_flags.is_snake_shapes != 0) {
         snake_row_bounds =
             (db_snake_shape_row_bounds_t *)db_alloc_array_or_fail(
                 BACKEND_NAME, "snake_row_bounds", (size_t)grid_rows,
@@ -427,8 +432,8 @@ void db_renderer_cpu_renderer_init(void) {
     g_state.runtime = init_state;
     g_state.bo = bo;
     g_state.runtime.snake.shape_index = 0U;
-    g_state.snake_row_bounds = snake_row_bounds;
-    g_state.snake_row_bounds_capacity = snake_row_bounds_capacity;
+    g_state.snake_scratch.row_bounds = snake_row_bounds;
+    g_state.snake_scratch.row_bounds_capacity = snake_row_bounds_capacity;
 }
 
 void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
@@ -437,45 +442,31 @@ void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
     }
 
     db_cpu_bo_t *write_bo = &g_state.bo;
+    const db_history_runtime_mode_flags_t mode_flags =
+        db_history_runtime_mode_flags(&g_state.runtime);
 
     g_state.damage_row_count = 0U;
-    if (g_state.runtime.pattern == DB_PATTERN_BANDS) {
+    if (mode_flags.is_bands != 0) {
         db_render_bands(write_bo, frame_index);
         db_cpu_set_full_damage(write_bo);
-    } else if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
-               (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
-               (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
-        const int is_grid = (g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID);
-        const int is_shapes =
-            (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES);
-        const db_snake_plan_request_t request = db_snake_plan_request_make(
-            is_grid, g_state.runtime.pattern_seed,
-            g_state.runtime.snake.shape_index, g_state.runtime.snake.cursor,
-            g_state.runtime.snake.prev_start, g_state.runtime.snake.prev_count,
-            g_state.runtime.mode_phase_flag, g_state.runtime.bench_speed_step);
-        const db_snake_plan_t plan = db_snake_plan_next_step(&request);
-        const db_snake_step_target_t target = db_snake_step_target_from_plan(
-            is_grid, g_state.runtime.pattern_seed, &plan);
-        const db_snake_shape_kind_t shape_kind =
-            (is_shapes != 0) ? target.shape_kind : DB_SNAKE_SHAPE_RECT;
+    } else if (mode_flags.is_snake_history_texture != 0) {
+        const db_history_snake_step_eval_t eval =
+            db_history_eval_snake_step_from_runtime(&g_state.runtime);
+        const db_snake_plan_t plan = eval.plan;
+        const db_snake_step_target_t target = eval.target;
+        const db_snake_shape_kind_t shape_kind = eval.shape_kind;
         db_snake_shape_cache_t shape_cache = {0};
         const db_snake_shape_cache_t *shape_cache_ptr = NULL;
-        if (is_shapes != 0) {
-            if ((g_state.snake_row_bounds != NULL) &&
-                (g_state.snake_row_bounds_capacity > 0U) &&
+        if (eval.is_shapes_mode != 0) {
+            if ((g_state.snake_scratch.row_bounds != NULL) &&
+                (g_state.snake_scratch.row_bounds_capacity > 0U) &&
                 (db_snake_shape_cache_init_from_index(
-                     &shape_cache, g_state.snake_row_bounds,
-                     g_state.snake_row_bounds_capacity,
+                     &shape_cache, g_state.snake_scratch.row_bounds,
+                     g_state.snake_scratch.row_bounds_capacity,
                      g_state.runtime.pattern_seed, plan.active_shape_index,
                      DB_U32_SALT_PALETTE, &target.region, shape_kind) != 0)) {
                 shape_cache_ptr = &shape_cache;
             }
-        }
-        if (target.has_next_mode_phase_flag != 0) {
-            g_state.runtime.mode_phase_flag = target.next_mode_phase_flag;
-        }
-        if (target.has_next_shape_index != 0) {
-            g_state.runtime.snake.shape_index = target.next_shape_index;
         }
         db_render_snake_step(write_bo, &plan, &target.region, shape_cache_ptr,
                              target.target_r, target.target_g, target.target_b,
@@ -484,14 +475,13 @@ void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
             (plan.phase_completed != 0)) {
             db_cpu_set_full_damage(write_bo);
         } else {
-            const size_t max_spans =
-                (size_t)plan.prev_count + (size_t)plan.batch_size;
+            const size_t max_spans = db_snake_plan_span_capacity_needed(&plan);
             db_snake_col_span_t spans[BENCH_SNAKE_PHASE_WINDOW_TILES * 2U];
             if (max_spans <= ((size_t)BENCH_SNAKE_PHASE_WINDOW_TILES * 2U)) {
-                const size_t span_count = db_snake_collect_damage_spans(
-                    spans, max_spans, &target.region, plan.prev_start,
-                    plan.prev_count, plan.active_cursor, plan.batch_size,
-                    shape_cache_ptr);
+                const size_t span_count =
+                    db_snake_collect_damage_spans_for_plan(
+                        spans, max_spans, &target.region, &plan,
+                        shape_cache_ptr);
                 db_cpu_set_damage_from_spans(spans, span_count,
                                              write_bo->height);
             } else {
@@ -501,14 +491,11 @@ void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
                 db_cpu_set_full_damage(write_bo);
             }
         }
-        g_state.runtime.snake.cursor = plan.next_cursor;
-        g_state.runtime.snake.prev_start = plan.next_prev_start;
-        g_state.runtime.snake.prev_count = plan.next_prev_count;
-    } else if ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-               (g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL)) {
+        db_history_apply_snake_step_to_runtime(&g_state.runtime, &eval);
+    } else if (mode_flags.is_gradient != 0) {
         const db_gradient_damage_plan_t plan = db_gradient_step_from_runtime(
             g_state.runtime.pattern, g_state.runtime.gradient.head_row,
-            g_state.runtime.mode_phase_flag,
+            g_state.runtime.gradient.direction_down,
             g_state.runtime.gradient.cycle_index,
             g_state.runtime.bench_speed_step);
         db_cpu_gradient_row_apply_ctx_t apply_ctx = {
@@ -523,10 +510,10 @@ void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
         db_gradient_apply_step_to_runtime(&g_state.runtime, &plan);
     }
 
-    g_state.state_hash =
-        db_benchmark_runtime_state_hash(&g_state.runtime, g_state.frame_index,
-                                        write_bo->width, write_bo->height);
-    g_state.frame_index++;
+    g_state.frame.state_hash = db_benchmark_runtime_state_hash_cross_renderer(
+        &g_state.runtime, g_state.frame.frame_index, write_bo->width,
+        write_bo->height);
+    g_state.frame.frame_index++;
 }
 
 const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
@@ -592,7 +579,7 @@ const uint16_t *db_renderer_cpu_renderer_pixels_rgba16f(uint32_t *out_width,
 }
 
 uint64_t db_renderer_cpu_renderer_state_hash(void) {
-    return g_state.state_hash;
+    return g_state.frame.state_hash;
 }
 
 const db_dirty_row_range_t *
@@ -615,7 +602,7 @@ void db_renderer_cpu_renderer_shutdown(void) {
         return;
     }
     free(g_state.pixels_rgba8_staging);
-    free(g_state.snake_row_bounds);
+    free(g_state.snake_scratch.row_bounds);
     free(g_state.bo.pixels_rgba8);
     free(g_state.bo.pixels_rgba16f);
     g_state = (db_cpu_renderer_state_t){0};

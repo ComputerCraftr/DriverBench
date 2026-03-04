@@ -5,8 +5,8 @@
 
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
-#include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
+#include "../renderer_history_common.h"
 
 size_t
 db_gl1_collect_pattern_damage_ranges(const db_gl1_damage_collect_ctx_t *ctx,
@@ -30,20 +30,20 @@ db_gl1_collect_pattern_damage_ranges(const db_gl1_damage_collect_ctx_t *ctx,
         .snake_prev_count =
             (ctx->snake_plan != NULL) ? ctx->snake_plan->prev_count : 0U,
         .pattern_seed = ctx->pattern_seed,
-        .snake_spans = ctx->snake_spans,
-        .snake_scratch_capacity = ctx->snake_scratch_capacity,
-        .snake_row_bounds = ctx->snake_row_bounds,
-        .snake_row_bounds_capacity = ctx->snake_row_bounds_capacity,
+        .snake_scratch = ctx->snake_scratch,
         .damage_row_ranges = ctx->damage_row_ranges,
         .damage_row_count = ctx->damage_row_count,
     };
     db_gl_upload_range_t *local_range_storage = upload_ranges;
     size_t local_range_capacity = BENCH_SNAKE_PHASE_WINDOW_TILES;
-    if (db_pattern_uses_history_texture(ctx->pattern) != 0) {
+    const db_history_pattern_mode_flags_t pattern_flags =
+        db_history_pattern_mode_flags(ctx->pattern);
+    if (pattern_flags.is_snake_history_texture != 0) {
         local_range_storage = ctx->default_history_range_storage;
-        local_range_capacity = ctx->snake_scratch_capacity;
-    } else if ((ctx->pattern == DB_PATTERN_GRADIENT_SWEEP) ||
-               (ctx->pattern == DB_PATTERN_GRADIENT_FILL)) {
+        local_range_capacity = (ctx->snake_scratch != NULL)
+                                   ? ctx->snake_scratch->span_capacity
+                                   : 0U;
+    } else if (pattern_flags.is_gradient != 0) {
         local_range_capacity = ctx->gradient_dirty_range_cap;
     } else {
         local_range_capacity = 1U;

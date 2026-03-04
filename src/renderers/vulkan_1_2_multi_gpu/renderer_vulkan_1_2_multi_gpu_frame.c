@@ -34,7 +34,7 @@ typedef struct {
     const float *color;
     uint32_t render_mode;
     uint32_t gradient_head_row;
-    int mode_phase_flag;
+    int direction_flag;
     uint32_t snake_cursor;
     uint32_t snake_batch_size;
     uint32_t snake_shape_index;
@@ -65,7 +65,7 @@ typedef struct {
     db_vk_draw_dynamic_req_t dynamic;
 } db_vk_grid_row_block_draw_cmd_t;
 
-static const VkShaderStageFlags DB_PC_STAGES =
+static const VkShaderStageFlags db_pc_stages =
     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
 void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
@@ -81,27 +81,27 @@ void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
                                    db_double_to_f32(BENCH_GRID_PHASE1_B),
                                    db_double_to_f32(1.0)};
 
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, gradient_window_rows),
                        sizeof(g_state.gradient_window_rows),
                        &g_state.gradient_window_rows);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, viewport_height),
                        sizeof(extent.height), &extent.height);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, grid_cols),
                        sizeof(grid_cols), &grid_cols);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, base_color),
                        sizeof(base_color), base_color);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, target_color),
                        sizeof(target_color), target_color);
 
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, grid_rows),
                        sizeof(grid_rows), &grid_rows);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, viewport_width),
                        sizeof(extent.width), &extent.width);
 }
@@ -117,58 +117,58 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
     pc.offset_ndc[1] = req->ndc_y0;
     pc.scale_ndc[0] = (req->ndc_x1 - req->ndc_x0);
     pc.scale_ndc[1] = (req->ndc_y1 - req->ndc_y0);
-    pc.color[0] = req->color[0];
-    pc.color[1] = req->color[1];
-    pc.color[2] = req->color[2];
+    pc.color[0] = req->payload.color[0];
+    pc.color[1] = req->payload.color[1];
+    pc.color[2] = req->payload.color[2];
     pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    pc.render_mode = req->render_mode;
-    pc.gradient_head_row = req->gradient_head_row;
-    pc.snake_shape_index = req->snake_shape_index;
-    pc.mode_phase_flag = (int32_t)req->mode_phase_flag;
-    pc.snake_cursor = req->snake_cursor;
-    pc.snake_batch_size = req->snake_batch_size;
-    pc.snake_phase_completed = (int32_t)req->snake_phase_completed;
-    pc.palette_cycle = req->palette_cycle;
-    pc.frame_index = req->frame_index;
-    pc.band_count = req->band_count;
-    pc.pattern_seed = ((req->render_mode == DB_PATTERN_SNAKE_RECT) ||
-                       (req->render_mode == DB_PATTERN_SNAKE_SHAPES))
-                          ? g_state.runtime.pattern_seed
-                          : 0U;
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES, 0U,
+    pc.render_mode = req->payload.render_mode;
+    pc.gradient_head_row = req->payload.gradient_head_row;
+    pc.snake_shape_index = req->payload.snake_shape_index;
+    pc.direction_flag = (int32_t)req->payload.direction_flag;
+    pc.snake_cursor = req->payload.snake_cursor;
+    pc.snake_batch_size = req->payload.snake_batch_size;
+    pc.snake_phase_completed = (int32_t)req->payload.snake_phase_completed;
+    pc.palette_cycle = req->payload.palette_cycle;
+    pc.frame_index = req->payload.frame_index;
+    pc.band_count = req->payload.band_count;
+    const db_history_pattern_mode_flags_t mode_flags =
+        db_history_pattern_mode_flags((db_pattern_t)req->payload.render_mode);
+    pc.pattern_seed =
+        (mode_flags.is_shape_snake != 0) ? g_state.runtime.pattern_seed : 0U;
+    vkCmdPushConstants(cmd, layout, db_pc_stages, 0U,
                        (uint32_t)offsetof(PushConstants, base_color), &pc);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, render_mode),
                        sizeof(pc.render_mode), &pc.render_mode);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, gradient_head_row),
                        sizeof(pc.gradient_head_row), &pc.gradient_head_row);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, snake_shape_index),
                        sizeof(pc.snake_shape_index), &pc.snake_shape_index);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
-                       (uint32_t)offsetof(PushConstants, mode_phase_flag),
-                       sizeof(pc.mode_phase_flag), &pc.mode_phase_flag);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
+                       (uint32_t)offsetof(PushConstants, direction_flag),
+                       sizeof(pc.direction_flag), &pc.direction_flag);
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, snake_cursor),
                        sizeof(pc.snake_cursor), &pc.snake_cursor);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, snake_batch_size),
                        sizeof(pc.snake_batch_size), &pc.snake_batch_size);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, snake_phase_completed),
                        sizeof(pc.snake_phase_completed),
                        &pc.snake_phase_completed);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, palette_cycle),
                        sizeof(pc.palette_cycle), &pc.palette_cycle);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, pattern_seed),
                        sizeof(pc.pattern_seed), &pc.pattern_seed);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, frame_index),
                        sizeof(pc.frame_index), &pc.frame_index);
-    vkCmdPushConstants(cmd, layout, DB_PC_STAGES,
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, band_count),
                        sizeof(pc.band_count), &pc.band_count);
 }
@@ -335,14 +335,14 @@ int db_vk_recreate_history_targets_preserve(
     VkPhysicalDevice phys, VkDevice device, VkFormat format, VkExtent2D extent,
     VkRenderPass render_pass, uint32_t device_group_mask,
     VkCommandPool command_pool, VkQueue queue, VkExtent2D old_extent,
-    HistoryTargetState *targets, int *read_index) {
-    if ((targets == NULL) || (read_index == NULL)) {
+    HistoryTargetState *targets, int *history_pair_read_index) {
+    if ((targets == NULL) || (history_pair_read_index == NULL)) {
         return 0;
     }
 
     DB_VK_CHECK(BACKEND_NAME, vkDeviceWaitIdle(device));
     HistoryTargetState old_targets[2] = {targets[0], targets[1]};
-    const int old_read = *read_index;
+    const int old_read = *history_pair_read_index;
     targets[0] = (HistoryTargetState){0};
     targets[1] = (HistoryTargetState){0};
     db_vk_create_history_target(phys, device, format, extent, render_pass,
@@ -363,7 +363,7 @@ int db_vk_recreate_history_targets_preserve(
     }
     targets[0].layout_initialized = copied;
     targets[1].layout_initialized = copied;
-    *read_index = 0;
+    *history_pair_read_index = 0;
 
     db_vk_destroy_history_target(device, &old_targets[0]);
     db_vk_destroy_history_target(device, &old_targets[1]);
@@ -527,17 +527,20 @@ static void db_vk_draw_owner_grid_span(const db_vk_owner_draw_ctx_t *ctx,
                 .ndc_y0 = 0.0F,
                 .ndc_x1 = 0.0F,
                 .ndc_y1 = 0.0F,
-                .color = req->color,
-                .render_mode = req->render_mode,
-                .gradient_head_row = req->gradient_head_row,
-                .snake_shape_index = req->snake_shape_index,
-                .mode_phase_flag = req->mode_phase_flag,
-                .snake_cursor = req->snake_cursor,
-                .snake_batch_size = req->snake_batch_size,
-                .snake_phase_completed = req->snake_phase_completed,
-                .palette_cycle = req->palette_cycle,
-                .frame_index = 0,
-                .band_count = 0U,
+                .payload =
+                    {
+                        .color = req->color,
+                        .render_mode = req->render_mode,
+                        .gradient_head_row = req->gradient_head_row,
+                        .snake_shape_index = req->snake_shape_index,
+                        .direction_flag = req->direction_flag,
+                        .snake_cursor = req->snake_cursor,
+                        .snake_batch_size = req->snake_batch_size,
+                        .snake_phase_completed = req->snake_phase_completed,
+                        .palette_cycle = req->palette_cycle,
+                        .frame_index = 0U,
+                        .band_count = 0U,
+                    },
             },
     };
     db_vk_draw_grid_span(&draw_ctx, &draw_req);
@@ -584,17 +587,7 @@ void db_vk_draw_owner_grid_row_block(
                 .ndc_y0 = 0.0F,
                 .ndc_x1 = 0.0F,
                 .ndc_y1 = 0.0F,
-                .color = req->color,
-                .render_mode = req->render_mode,
-                .gradient_head_row = req->gradient_head_row,
-                .snake_shape_index = req->snake_shape_index,
-                .mode_phase_flag = req->mode_phase_flag,
-                .snake_cursor = req->snake_cursor,
-                .snake_batch_size = req->snake_batch_size,
-                .snake_phase_completed = req->snake_phase_completed,
-                .palette_cycle = req->palette_cycle,
-                .frame_index = req->frame_index,
-                .band_count = req->band_count,
+                .payload = req->payload,
             },
     };
     db_vk_draw_grid_row_block(&draw_ctx, &draw_req);
@@ -608,7 +601,7 @@ static void db_vk_draw_owner_grid_span_mode(
     const db_vk_owner_draw_ctx_t *ctx, uint32_t candidate_owner,
     uint32_t span_units, uint32_t row, uint32_t col_start, uint32_t col_end,
     const float color[3], uint32_t render_mode, uint32_t shape_index,
-    uint32_t active_cursor, int mode_phase_flag, uint32_t batch_size,
+    uint32_t active_cursor, int direction_flag, uint32_t batch_size,
     int phase_completed) {
     const db_vk_grid_span_draw_req_t req = {
         .candidate_owner = candidate_owner,
@@ -620,12 +613,12 @@ static void db_vk_draw_owner_grid_span_mode(
         .render_mode = render_mode,
         .gradient_head_row = 0U,
         .snake_shape_index = shape_index,
-        .mode_phase_flag = mode_phase_flag,
+        .direction_flag = direction_flag,
         .snake_cursor = active_cursor,
         .snake_batch_size = batch_size,
         .snake_phase_completed = phase_completed,
         .palette_cycle = 0U,
-        .frame_index = 0,
+        .frame_index = 0U,
         .band_count = 0U,
     };
     db_vk_draw_owner_grid_span(ctx, &req);
@@ -646,19 +639,17 @@ void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
         .color_g = 0.0,
         .color_b = 0.0,
     };
-    const size_t max_spans =
-        (size_t)plan->prev_count + (size_t)plan->batch_size;
+    const size_t max_spans = db_snake_plan_span_capacity_needed(plan);
     if (max_spans == 0U) {
         return;
     }
-    if (max_spans > g_state.snake_span_capacity) {
+    if (max_spans > g_state.snake_scratch.span_capacity) {
         failf("Vulkan snake grid scratch overflow (required=%zu capacity=%zu)",
-              max_spans, g_state.snake_span_capacity);
+              max_spans, g_state.snake_scratch.span_capacity);
     }
-    db_snake_col_span_t *spans = g_state.snake_spans;
-    const size_t span_count = db_snake_collect_damage_spans(
-        spans, max_spans, &grid_region, plan->prev_start, plan->prev_count,
-        plan->active_cursor, plan->batch_size, NULL);
+    db_snake_col_span_t *spans = g_state.snake_scratch.spans;
+    const size_t span_count = db_snake_collect_damage_spans_for_plan(
+        spans, max_spans, &grid_region, plan, NULL);
     for (size_t span_index = 0U; span_index < span_count; span_index++) {
         const db_snake_col_span_t span = spans[span_index];
         const uint32_t span_units = span.col_end - span.col_start;
@@ -684,26 +675,26 @@ void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
         db_snake_region_from_index(pattern_seed, plan->active_shape_index);
 
     const size_t max_spans =
-        (size_t)snake_prev_count + (size_t)plan->batch_size;
+        db_snake_span_capacity_needed(snake_prev_count, plan->batch_size);
     if (max_spans == 0U) {
         return;
     }
-    if (max_spans > g_state.snake_span_capacity) {
+    if (max_spans > g_state.snake_scratch.span_capacity) {
         failf("Vulkan snake scratch overflow (required=%zu capacity=%zu)",
-              max_spans, g_state.snake_span_capacity);
+              max_spans, g_state.snake_scratch.span_capacity);
     }
-    db_snake_col_span_t *spans = g_state.snake_spans;
+    db_snake_col_span_t *spans = g_state.snake_scratch.spans;
     db_snake_shape_cache_t shape_cache = {0};
     const db_snake_shape_cache_t *shape_cache_ptr = NULL;
     if (render_mode == DB_PATTERN_SNAKE_SHAPES) {
-        if (g_state.snake_row_bounds != NULL) {
+        if (g_state.snake_scratch.row_bounds != NULL) {
             const db_snake_shape_kind_t shape_kind =
                 db_snake_shapes_kind_from_index(pattern_seed,
                                                 plan->active_shape_index,
                                                 DB_U32_SALT_PALETTE);
             if (db_snake_shape_cache_init_from_index(
-                    &shape_cache, g_state.snake_row_bounds,
-                    g_state.snake_row_bounds_capacity, pattern_seed,
+                    &shape_cache, g_state.snake_scratch.row_bounds,
+                    g_state.snake_scratch.row_bounds_capacity, pattern_seed,
                     plan->active_shape_index, DB_U32_SALT_PALETTE, &region,
                     shape_kind) != 0) {
                 shape_cache_ptr = &shape_cache;

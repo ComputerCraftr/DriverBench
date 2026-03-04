@@ -2,16 +2,10 @@
 #include "display_glfw_window_common.h"
 #include <GLFW/glfw3.h>
 
-#include <errno.h>
 #include <stdint.h>
-#ifndef __APPLE__
-#include <sys/errno.h>
-#endif
-#include <time.h>
 
 #include "../../core/db_core.h"
-
-#define MAX_SLEEP_NS 100000000.0
+#include "../display_frame_loop_common.h"
 
 static void db_glfw_init_or_fail(const char *backend) {
     if (!glfwInit()) {
@@ -127,33 +121,40 @@ void db_glfw_destroy_window(GLFWwindow *window) {
 
 void db_glfw_poll_events(void) { glfwPollEvents(); }
 
-double db_glfw_time_seconds(void) { return glfwGetTime(); }
+static int db_glfw_loop_should_continue(void *user_data) {
+    const db_glfw_loop_t *loop = (const db_glfw_loop_t *)user_data;
+    return ((loop != NULL) && (glfwWindowShouldClose(loop->window) == 0)) ? 1
+                                                                          : 0;
+}
 
-void db_glfw_sleep_to_fps_cap(const char *backend, double frame_start_s,
-                              double fps_cap) {
-    if (fps_cap <= 0.0) {
-        return;
+static void db_glfw_loop_pre_frame(void *user_data, uint32_t frame_index) {
+    (void)user_data;
+    (void)frame_index;
+    db_glfw_poll_events();
+}
+
+static db_display_frame_loop_result_t
+db_glfw_loop_frame_adapter(void *user_data, uint32_t frame_index,
+                           double elapsed_ms) {
+    const db_glfw_loop_t *loop = (const db_glfw_loop_t *)user_data;
+    if ((loop == NULL) || (loop->frame_fn == NULL)) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
     }
+    return loop->frame_fn(loop->user_data, frame_index, elapsed_ms);
+}
 
-    const double frame_budget_s = 1.0 / fps_cap;
-    double remaining_s =
-        frame_budget_s - (db_glfw_time_seconds() - frame_start_s);
-    while (remaining_s > 0.0) {
-        const double remaining_ns = remaining_s * DB_NS_PER_SECOND;
-        const double sleep_ns =
-            (remaining_ns > MAX_SLEEP_NS) ? MAX_SLEEP_NS : remaining_ns;
-        const long sleep_ns_long =
-            db_checked_double_to_long(backend, "sleep_ns", sleep_ns);
-        if (sleep_ns_long <= 0L) {
-            break;
-        }
-
-        struct timespec request = {0};
-        request.tv_nsec = sleep_ns_long;
-        // NOLINTNEXTLINE(misc-include-cleaner)
-        if ((nanosleep(&request, NULL) != 0) && (errno != EINTR)) {
-            break;
-        }
-        remaining_s = frame_budget_s - (db_glfw_time_seconds() - frame_start_s);
+uint64_t db_glfw_run_loop(const db_glfw_loop_t *loop) {
+    if ((loop == NULL) || (loop->frame_fn == NULL) || (loop->window == NULL)) {
+        return 0U;
     }
+    const db_display_frame_loop_t shared_loop = {
+        .backend = loop->backend,
+        .fps_cap = loop->fps_cap,
+        .frame_limit = loop->frame_limit,
+        .user_data = (void *)loop,
+        .should_continue_fn = db_glfw_loop_should_continue,
+        .pre_frame_fn = db_glfw_loop_pre_frame,
+        .frame_fn = db_glfw_loop_frame_adapter,
+    };
+    return db_display_run_frame_loop(&shared_loop).frames;
 }

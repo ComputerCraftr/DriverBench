@@ -2,6 +2,8 @@
 
 #include "../../core/db_core.h"
 #include "../renderer_benchmark_common.h"
+#include "../renderer_history_common.h"
+#include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 
 // NOLINTBEGIN(misc-include-cleaner)
@@ -24,7 +26,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.surface = ctx->surface;
     g_state.selection = ctx->selection;
     g_state.have_group = ctx->have_group;
-    g_state.gpu_count = ctx->gpu_count;
+    g_state.gpu_count = db_vk_normalize_gpu_count(ctx->gpu_count);
     g_state.present_phys = ctx->present_phys;
     g_state.device = ctx->device;
     g_state.queue = ctx->queue;
@@ -35,7 +37,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.swapchain_state = ctx->swapchain_state;
     g_state.history_targets[0] = ctx->history_targets[0];
     g_state.history_targets[1] = ctx->history_targets[1];
-    g_state.history_read_index = 0;
+    db_history_pair_state_seeded(&g_state.history_pair);
     g_state.history_descriptor_index = 0;
     g_state.device_group_mask = ctx->device_group_mask;
     g_state.vertex_buffer = ctx->vertex_buffer;
@@ -67,14 +69,14 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.timestamp_period_ns = ctx->timestamp_period_ns;
     g_state.bench_start_ns = db_now_ns_monotonic();
     g_state.bench_frames = 0U;
-    g_state.full_draw_frames = 0U;
-    g_state.dirty_draw_frames = 0U;
-    g_state.state_hash = DB_FNV1A64_OFFSET;
+    g_state.frame.full_draw_frames = 0U;
+    g_state.frame.dirty_draw_frames = 0U;
+    g_state.frame.state_hash = DB_FNV1A64_OFFSET;
     g_state.next_progress_log_due_ms = 0.0;
-    g_state.frame_index = 0U;
-    if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
-        (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
-        (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
+    g_state.frame.frame_index = 0U;
+    const db_history_pattern_mode_flags_t mode_flags =
+        db_history_pattern_mode_flags(g_state.runtime.pattern);
+    if (mode_flags.is_snake_history_texture != 0) {
         g_state.runtime.snake.cursor = DB_SNAKE_CURSOR_PRE_ENTRY;
     } else {
         g_state.runtime.snake.cursor = 0U;
@@ -82,62 +84,29 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.runtime.snake.shape_index = 0U;
     g_state.runtime.snake.prev_start = 0U;
     g_state.runtime.snake.prev_count = 0U;
-    g_state.snake_spans = NULL;
-    g_state.snake_row_bounds = NULL;
-    g_state.snake_row_bounds_capacity = 0U;
-    g_state.snake_span_capacity = 0U;
-    if ((g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID) ||
-        (g_state.runtime.pattern == DB_PATTERN_SNAKE_RECT) ||
-        (g_state.runtime.pattern == DB_PATTERN_SNAKE_SHAPES)) {
+    g_state.snake_scratch.spans = NULL;
+    g_state.snake_scratch.row_bounds = NULL;
+    g_state.snake_scratch.row_bounds_capacity = 0U;
+    g_state.snake_scratch.span_capacity = 0U;
+    if (mode_flags.is_snake_history_texture != 0) {
         const size_t scratch_capacity =
             db_snake_scratch_capacity_from_work_units(
                 g_state.runtime.work_unit_count);
-        g_state.snake_spans = (db_snake_col_span_t *)db_alloc_array_or_fail(
-            BACKEND_NAME, "snake_spans", scratch_capacity,
-            sizeof(*g_state.snake_spans));
-        g_state.snake_row_bounds =
+        g_state.snake_scratch.spans =
+            (db_snake_col_span_t *)db_alloc_array_or_fail(
+                BACKEND_NAME, "snake_spans", scratch_capacity,
+                sizeof(*g_state.snake_scratch.spans));
+        g_state.snake_scratch.row_bounds =
             (db_snake_shape_row_bounds_t *)db_alloc_array_or_fail(
                 BACKEND_NAME, "snake_row_bounds", db_grid_rows_effective(),
-                sizeof(*g_state.snake_row_bounds));
-        g_state.snake_row_bounds_capacity = (size_t)db_grid_rows_effective();
-        g_state.snake_span_capacity = scratch_capacity;
+                sizeof(*g_state.snake_scratch.row_bounds));
+        g_state.snake_scratch.row_bounds_capacity =
+            (size_t)db_grid_rows_effective();
+        g_state.snake_scratch.span_capacity = scratch_capacity;
     }
     g_state.gradient_window_rows = db_gradient_window_rows_effective();
-    g_state.gradient_prev_draw_rows[0] = (db_dirty_row_range_t){0U, 0U};
-    g_state.gradient_prev_draw_rows[1] = (db_dirty_row_range_t){0U, 0U};
-    g_state.gradient_prev_draw_count = 0U;
-    g_state.gradient_prev_head_row = 0U;
-    g_state.gradient_prev_direction_down = 1;
-    g_state.gradient_prev_cycle_index = 0U;
-    g_state.gradient_history_valid = 0;
-}
-
-void db_renderer_vulkan_1_2_multi_gpu_init(const db_vk_wsi_config_t *wsi_config,
-                                           int vsync_enabled) {
-    db_vk_init_impl(wsi_config, vsync_enabled);
-}
-
-db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
-    return db_vk_render_frame_impl();
-}
-
-void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) { db_vk_shutdown_impl(); }
-
-const char *db_renderer_vulkan_1_2_multi_gpu_capability_mode(void) {
-    return db_vk_capability_mode_impl();
-}
-
-uint32_t db_renderer_vulkan_1_2_multi_gpu_work_unit_count(void) {
-    return db_vk_work_unit_count_impl();
-}
-
-uint64_t db_renderer_vulkan_1_2_multi_gpu_state_hash(void) {
-    return db_vk_state_hash_impl();
-}
-
-void db_renderer_vulkan_1_2_multi_gpu_draw_stats(uint64_t *full_draw_frames,
-                                                 uint64_t *dirty_draw_frames) {
-    db_vk_draw_stats_impl(full_draw_frames, dirty_draw_frames);
+    db_history_gradient_replay_state_reset(&g_state.gradient_prev_frame);
+    g_state.history_pair.is_valid = 0;
 }
 
 // NOLINTEND(misc-include-cleaner)

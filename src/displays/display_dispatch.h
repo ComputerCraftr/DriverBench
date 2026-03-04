@@ -65,7 +65,7 @@ static inline int db_dispatch_display_supports_api(db_display_t display,
     }
     if (display == DB_DISPLAY_OFFSCREEN) {
 #ifdef DB_HAS_GLFW
-        return 1;
+        return (api == DB_API_CPU) || (api == DB_API_OPENGL);
 #else
         return (api == DB_API_CPU);
 #endif

@@ -83,14 +83,8 @@ static inline uint32_t db_u32_range(uint32_t seed, uint32_t min_value,
     return min_value + (seed % (max_value - min_value + 1U));
 }
 
-// Narrowing policy group (determinism-sensitive):
-// - f64 -> f32: IEEE-754 round-to-nearest, ties-to-even (via cast + default FP
-//   environment).
-// - f64/f32 in [0, 1] -> u8: clamp + round-half-up.
-// - f64/f32 -> f16: explicit conversion with ties-to-even in mantissa rounding
-//   paths.
-static inline float db_double_to_f32(double value) { return (float)value; }
-
+// Deterministic scalar mapping helpers.
+// - u32 -> unit-f64/range-f64: stable mapping for benchmark/state generation.
 static inline double db_u32_to_unit_f64(uint32_t value) {
     const uint32_t value_24 = value >> 8U;
     return (double)value_24 / DB_U24_MAX;
@@ -103,6 +97,22 @@ static inline double db_u32_to_range_f64(uint32_t value, double min_value,
     }
     return min_value + (db_u32_to_unit_f64(value) * (max_value - min_value));
 }
+
+// Narrowing policy group (determinism-sensitive):
+// - f64 -> f32: IEEE-754 round-to-nearest, ties-to-even (via cast + default FP
+//   environment).
+// - f64 in [0, 1] -> u8: clamp + round-half-up.
+// - f64 -> f16: explicit conversion with ties-to-even in mantissa rounding
+//   paths.
+//
+// Canonicalization contract for f16 conversions:
+// - Zero is canonicalized to +0 in both directions.
+// - NaN is canonicalized to +qNaN in both directions.
+// - Sign is preserved only for finite non-zero values and infinities.
+//
+// Rationale: these rules remove representation-only variation (-0, signed NaN)
+// from deterministic state/pixel processing while preserving meaningful sign.
+static inline float db_double_to_f32(double value) { return (float)value; }
 
 static inline uint8_t db_double01_to_u8_clamped(double value01) {
     double clamped = value01;
@@ -118,6 +128,7 @@ static inline uint8_t db_double01_to_u8_clamped(double value01) {
     return (uint8_t)scaled;
 }
 
+// Deterministic pack/unpack helpers built on narrowing policy functions.
 static inline uint32_t db_pack_xrgb8888_from_rgb_u8(uint32_t red_u8,
                                                     uint32_t green_u8,
                                                     uint32_t blue_u8) {
@@ -188,19 +199,23 @@ static inline uint32_t db_round_positive_to_u32_ties_even(double value) {
     return rounded;
 }
 
+// f16 normalization policy:
+// - Canonicalize zeros to +0.
+// - Canonicalize NaN to +qNaN.
+// - Preserve sign for finite non-zero values and infinities.
 static inline uint16_t db_double_to_f16(double value) {
     const uint32_t sign =
         (signbit(value) != 0) ? (1U << DB_F16_SIGN_SHIFT) : 0U;
     const double abs_value = fabs(value);
     if (isnan(value) != 0) {
-        return (uint16_t)(sign | (DB_F16_EXP_MASK << DB_F16_EXP_SHIFT) |
+        return (uint16_t)((DB_F16_EXP_MASK << DB_F16_EXP_SHIFT) |
                           DB_F16_NAN_MANT_QBIT);
     }
     if (isinf(value) != 0) {
         return (uint16_t)(sign | (DB_F16_EXP_MASK << DB_F16_EXP_SHIFT));
     }
     if (abs_value == 0.0) {
-        return (uint16_t)sign;
+        return 0U;
     }
 
     int exp2 = 0;
@@ -245,28 +260,27 @@ static inline double db_f16_to_double(uint16_t value) {
     const uint32_t exp =
         ((uint32_t)value >> DB_F16_EXP_SHIFT) & DB_F16_EXP_MASK;
     const uint32_t mant = (uint32_t)value & DB_F16_MANT_MASK;
-    double out_value = 0.0;
-
     if (exp == DB_F16_EXP_MASK) {
         if (mant == 0U) {
-            out_value = INFINITY;
-        } else {
-            out_value = NAN;
+            return (sign != 0U) ? -INFINITY : INFINITY;
         }
-    } else if (exp == 0U) {
-        if (mant == 0U) {
-            out_value = 0.0;
-        } else {
-            out_value = ldexp((double)mant,
-                              DB_F16_SUBNORMAL_LDEXP); // mant / 2^10 * 2^-14
-        }
-    } else {
-        const int32_t exp_unbiased = (int32_t)exp - (int32_t)DB_F16_EXP_BIAS;
-        const double significand =
-            1.0 + ((double)mant / (double)(1U << DB_F16_MANT_BITS));
-        out_value = ldexp(significand, exp_unbiased);
+        return NAN;
     }
-    return (sign != 0U) ? -out_value : out_value;
+
+    if (exp == 0U) {
+        if (mant == 0U) {
+            return 0.0;
+        }
+        const double subnormal =
+            ldexp((double)mant, DB_F16_SUBNORMAL_LDEXP); // mant / 2^10 * 2^-14
+        return (sign != 0U) ? -subnormal : subnormal;
+    }
+
+    const int32_t exp_unbiased = (int32_t)exp - (int32_t)DB_F16_EXP_BIAS;
+    const double significand =
+        1.0 + ((double)mant / (double)(1U << DB_F16_MANT_BITS));
+    const double normal = ldexp(significand, exp_unbiased);
+    return (sign != 0U) ? -normal : normal;
 }
 
 static inline void db_blend_rgb(double prior_r, double prior_g, double prior_b,

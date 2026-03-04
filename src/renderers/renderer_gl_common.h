@@ -4,9 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../core/db_core.h"
 #include "renderer_benchmark_common.h"
+#include "renderer_history_common.h"
 #include "renderer_snake_common.h"
-#include "renderer_snake_shape_common.h"
 
 #define DB_GL_PROBE_PREFIX_BYTES 64U
 #define DB_GL_MAP_RANGE_PROBE_XOR_SEED 0xA5U
@@ -47,6 +48,15 @@ typedef struct {
 } db_gl_upload_range_t;
 
 typedef struct {
+    int height_px;
+    int width_px;
+    int x_px;
+    int y_px;
+} db_gl_scissor_rect_t;
+
+db_gl_upload_range_t db_gl_upload_full_range(size_t total_bytes);
+
+typedef struct {
     uint32_t row_unit_width;
     uint32_t row_count_total;
     size_t unit_stride_bytes;
@@ -69,10 +79,7 @@ typedef struct {
     uint32_t snake_prev_start;
     uint32_t snake_prev_count;
     uint32_t pattern_seed;
-    db_snake_col_span_t *snake_spans;
-    size_t snake_scratch_capacity;
-    db_snake_shape_row_bounds_t *snake_row_bounds;
-    size_t snake_row_bounds_capacity;
+    const db_history_snake_scratch_t *snake_scratch;
     const db_dirty_row_range_t *damage_row_ranges;
     size_t damage_row_count;
     int use_damage_row_ranges;
@@ -100,6 +107,17 @@ typedef struct {
     db_gl_upload_probe_result_t upload;
 } db_gl_vertex_init_t;
 
+typedef struct {
+    int last_viewport_w;
+    int last_viewport_h;
+} db_gl_viewport_cache_t;
+
+typedef struct {
+    unsigned int vbo;
+    unsigned int bound_array_buffer;
+    size_t vbo_bytes;
+} db_gl_buffer_cache_t;
+
 enum {
     DB_GL_QUAD_V0_X = 0,
     DB_GL_QUAD_V0_Y = 1,
@@ -118,25 +136,30 @@ int db_gl_version_text_at_least(const char *version_text, int req_major,
                                 int req_minor);
 int db_gl_is_es_context(const char *version_text);
 
-int db_gl_runtime_supports_buffer_storage(const char *version_text,
+int db_gl_extensions_advertise_buffer_storage(const char *version_text,
+                                              const char *exts);
+int db_gl_extensions_advertise_map_buffer(const char *version_text,
                                           const char *exts);
-int db_gl_runtime_supports_map_buffer(const char *version_text,
-                                      const char *exts);
-int db_gl_runtime_supports_map_buffer_range(const char *version_text,
-                                            const char *exts);
-int db_gl_runtime_supports_pbo(const char *version_text, const char *exts);
-int db_gl_runtime_supports_texture_float(const char *version_text,
-                                         const char *exts);
-int db_gl_runtime_supports_vbo(const char *version_text, const char *exts);
+int db_gl_extensions_advertise_map_buffer_range(const char *version_text,
+                                                const char *exts);
+int db_gl_extensions_advertise_pbo(const char *version_text, const char *exts);
+int db_gl_extensions_advertise_texture_float(const char *version_text,
+                                             const char *exts);
+int db_gl_extensions_advertise_vbo(const char *version_text, const char *exts);
 
 void db_gl_clear_errors(db_gl_get_error_fn_t get_error);
-size_t db_gl_probe_size(size_t bytes);
-void db_gl_fill_probe_pattern(uint8_t *pattern, size_t count);
+size_t db_gl_upload_probe_size_bytes(size_t bytes);
+void db_gl_upload_probe_fill_pattern(uint8_t *pattern, size_t count);
+const char *db_gl_capability_mode_upload_from_probe(
+    int has_vbo, const db_gl_upload_probe_result_t *upload);
 const char *
-db_gl_cap_upload_mode_from_probe(int has_vbo,
-                                 const db_gl_upload_probe_result_t *upload);
-const char *db_gl_cap_mode_gl3_shader(const db_gl_upload_probe_result_t *upload,
-                                      int uses_history_texture);
+db_gl_capability_mode_gl3_shader(const db_gl_upload_probe_result_t *upload,
+                                 int uses_history_texture);
+const char *db_gl_capability_mode_draw_select(int uses_ff_rect_draw_mode,
+                                              int uses_history_draw,
+                                              int use_shader_history_draw_name);
+const char *db_gl_capability_mode_upload_select(int suppress_upload,
+                                                const char *upload_mode);
 void db_gl_capability_mode_compose(char *output, size_t output_size,
                                    const char *draw_mode,
                                    const char *upload_mode,
@@ -149,8 +172,9 @@ int db_gl_vbo_create_or_zero(unsigned int *out_buffer);
 void db_gl_vbo_delete_if_valid(unsigned int buffer);
 int db_gl_vbo_init_data(size_t bytes, const void *data, unsigned int usage);
 int db_gl_vbo_init_static_data(size_t bytes, const void *data);
-int db_gl_context_supports_pbo_upload(void);
-int db_gl_context_supports_vbo(void);
+int db_gl_context_has_pbo_upload_procs(void);
+int db_gl_context_probe_texture_float_support(void);
+int db_gl_context_advertises_vbo(void);
 void db_gl_quad_init(float *verts);
 void db_gl_set_viewport_px(int width_px, int height_px);
 unsigned int db_gl_pbo_create_or_zero(void);
@@ -186,6 +210,8 @@ void db_gl_set_scissor_rect(int x_px, int y_px, int width, int height);
 void db_gl_set_pack_alignment_1(void);
 void db_gl_read_pixels_rgba8(int x_px, int y_px, int width, int height,
                              void *pixels);
+void db_gl_read_pixels_rgba16f(int x_px, int y_px, int width, int height,
+                               void *pixels);
 void db_gl_set_texture_2d_enabled(int enabled);
 void db_gl_set_client_state_vertex_array_enabled(int enabled);
 void db_gl_set_client_state_color_array_enabled(int enabled);
@@ -241,9 +267,9 @@ const char *db_gl_get_renderer_string(void);
 const char *db_gl_get_extensions_string(void);
 void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver);
 void db_gl_preload_upload_proc_table(void);
-void db_gl_probe_upload_capabilities(size_t bytes,
-                                     const float *initial_vertices,
-                                     db_gl_upload_probe_result_t *out);
+void db_gl_context_probe_upload_capabilities(size_t bytes,
+                                             const float *initial_vertices,
+                                             db_gl_upload_probe_result_t *out);
 void db_gl_upload_ranges_target(
     const void *source_base, size_t total_bytes,
     const db_gl_upload_range_t *ranges, size_t range_count,
@@ -264,6 +290,12 @@ int db_gl_span_to_scissor_rect(const db_snake_col_span_t *span,
                                int viewport_width, int viewport_height,
                                int *x_out, int *y_out, int *width_out,
                                int *height_out);
+typedef void (*db_gl_scissor_rect_apply_fn_t)(const db_gl_scissor_rect_t *rect,
+                                              void *user_data);
+size_t db_gl_for_each_span_scissor_rect_merged(
+    const db_snake_col_span_t *spans, size_t span_count, uint32_t total_cols,
+    uint32_t total_rows, int viewport_width, int viewport_height,
+    db_gl_scissor_rect_apply_fn_t apply, void *user_data);
 size_t db_gl_collect_row_upload_ranges(
     uint32_t row_unit_width, uint32_t row_count_total, size_t unit_stride_bytes,
     const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,

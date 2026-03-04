@@ -1,12 +1,10 @@
-#ifndef RENDERER_OPENGL_GL1_5_GLES1_1_PRIMITIVES_H
-#define RENDERER_OPENGL_GL1_5_GLES1_1_PRIMITIVES_H
+#ifndef DRIVERBENCH_RENDERER_OPENGL_GL1_5_GLES1_1_PRIMITIVES_H
+#define DRIVERBENCH_RENDERER_OPENGL_GL1_5_GLES1_1_PRIMITIVES_H
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "../renderer_benchmark_common.h"
-#include "../renderer_gl_common.h"
-#include "../renderer_snake_common.h"
 
 size_t db_rect_tile_bytes(size_t floats_per_vertex);
 

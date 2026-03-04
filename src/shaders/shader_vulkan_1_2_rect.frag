@@ -14,7 +14,7 @@ layout(push_constant) uniform PC {
     uint gradient_window_rows;
     uint grid_cols;
     uint grid_rows;
-    int mode_phase_flag;
+    int direction_flag;
     uint palette_cycle;
     uint pattern_seed;
     uint render_mode;
@@ -38,7 +38,7 @@ layout(std140, binding = 0) uniform PC {
     uint gradient_window_rows;
     uint grid_cols;
     uint grid_rows;
-    int mode_phase_flag;
+    int direction_flag;
     uint palette_cycle;
     uint pattern_seed;
     uint render_mode;
@@ -515,7 +515,7 @@ void main() {
     if((render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
         (render_mode == RENDER_MODE_GRADIENT_FILL)) {
         bool is_sweep = (render_mode == RENDER_MODE_GRADIENT_SWEEP);
-        bool direction_down = is_sweep ? (pc.mode_phase_flag != 0) : true;
+        bool direction_down = is_sweep ? (pc.direction_flag != 0) : true;
         out_color = db_gradient_color(row_i, pc.gradient_head_row, pc.palette_cycle, direction_down);
         return;
     }
@@ -539,7 +539,7 @@ void main() {
             shape_desc.region = db_full_grid_region(rows_u, cols_u);
             shape_desc.profile = db_snake_shape_profile_from_index(pc.pattern_seed, 0u, SHAPE_KIND_RECT);
             shape_desc.kind = SHAPE_KIND_RECT;
-            vec3 target_color = db_target_color_for_phase(pc.mode_phase_flag);
+            vec3 target_color = db_target_color_for_phase(pc.direction_flag);
             out_color = db_snake_color(shape_desc, false, row_u, col_u, prior_color, target_color, pc.snake_cursor, batch_size, pc.snake_phase_completed);
         }
         return;

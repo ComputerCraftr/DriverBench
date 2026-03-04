@@ -148,7 +148,7 @@ DeviceSelectionState db_vk_select_devices_and_group(VkInstance instance,
         }
 
         best.grp = *group_props;
-        best.presentableMask = mask;
+        best.presentable_mask = mask;
         selection.have_group = 1;
         break;
     }
@@ -169,7 +169,7 @@ DeviceSelectionState db_vk_select_devices_and_group(VkInstance instance,
             (selection.chosen_count >= 32U)
                 ? 0xFFFFFFFFU
                 : ((1U << selection.chosen_count) - 1U);
-        selection.present_mask = best.presentableMask & usable_mask;
+        selection.present_mask = best.presentable_mask & usable_mask;
         infof("Using device group with %u devices (presentMask=0x%x)",
               selection.chosen_count, selection.present_mask);
     } else {
@@ -209,12 +209,12 @@ static void db_vk_init_phase_instance_surface(
         failf("Windowing backend did not provide Vulkan instance extensions");
     }
 
-    const char *instExts[MAX_INSTANCE_EXTS];
-    uint32_t instExtN = 0;
+    const char *inst_exts[MAX_INSTANCE_EXTS];
+    uint32_t inst_ext_count = 0;
     for (uint32_t i = 0; i < required_ext_count; i++) {
-        instExts[instExtN++] = required_exts[i];
+        inst_exts[inst_ext_count++] = required_exts[i];
     }
-    instExts[instExtN++] =
+    inst_exts[inst_ext_count++] =
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
 
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -224,8 +224,8 @@ static void db_vk_init_phase_instance_surface(
     VkInstanceCreateInfo ici = {.sType =
                                     VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
-    ici.enabledExtensionCount = instExtN;
-    ici.ppEnabledExtensionNames = instExts;
+    ici.enabledExtensionCount = inst_ext_count;
+    ici.ppEnabledExtensionNames = inst_exts;
 
     out_phase->instance = VK_NULL_HANDLE;
     DB_VK_CHECK(BACKEND_NAME,
@@ -250,36 +250,37 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
     *out_phase = (db_vk_init_device_phase_t){0};
     out_phase->selection = db_vk_select_devices_and_group(instance, surface);
     out_phase->have_group = out_phase->selection.have_group;
-    out_phase->gpu_count =
-        out_phase->have_group ? out_phase->selection.chosen_count : 1U;
+    out_phase->gpu_count = db_vk_normalize_gpu_count(
+        out_phase->have_group ? out_phase->selection.chosen_count : 1U);
     out_phase->present_phys = out_phase->selection.present_phys;
     out_phase->device_group_mask =
         out_phase->have_group
             ? db_vk_build_device_group_mask(out_phase->selection.chosen_count)
             : 0U;
 
-    uint32_t qfN = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(out_phase->present_phys, &qfN,
+    uint32_t qf_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(out_phase->present_phys, &qf_count,
                                              NULL);
-    VkQueueFamilyProperties *qf =
-        (VkQueueFamilyProperties *)calloc(qfN, sizeof(VkQueueFamilyProperties));
-    vkGetPhysicalDeviceQueueFamilyProperties(out_phase->present_phys, &qfN, qf);
+    VkQueueFamilyProperties *qf = (VkQueueFamilyProperties *)calloc(
+        qf_count, sizeof(VkQueueFamilyProperties));
+    vkGetPhysicalDeviceQueueFamilyProperties(out_phase->present_phys, &qf_count,
+                                             qf);
 
-    uint32_t gfxQF = UINT32_MAX;
-    for (uint32_t i = 0; i < qfN; i++) {
+    uint32_t gfx_qf = UINT32_MAX;
+    for (uint32_t i = 0; i < qf_count; i++) {
         VkBool32 supp = 0;
         vkGetPhysicalDeviceSurfaceSupportKHR(out_phase->present_phys, i,
                                              surface, &supp);
         if (supp && (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-            gfxQF = i;
+            gfx_qf = i;
             break;
         }
     }
-    if (gfxQF == UINT32_MAX) {
+    if (gfx_qf == UINT32_MAX) {
         failf("No graphics+present queue family found");
     }
-    out_phase->queue_timestamp_valid_bits = qf[gfxQF].timestampValidBits;
-    out_phase->queue_family_index = gfxQF;
+    out_phase->queue_timestamp_valid_bits = qf[gfx_qf].timestampValidBits;
+    out_phase->queue_family_index = gfx_qf;
     free(qf);
 
     VkPhysicalDeviceProperties phys_props;
@@ -293,9 +294,9 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
     qci.queueCount = 1;
     qci.pQueuePriorities = &prio;
 
-    const char *devExts[MAX_GPU_COUNT];
-    uint32_t devExtN = 0;
-    devExts[devExtN++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    const char *dev_exts[MAX_GPU_COUNT];
+    uint32_t dev_ext_count = 0;
+    dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
     VkPhysicalDeviceFeatures feats = {0};
     VkDeviceGroupDeviceCreateInfo dgci = {
@@ -306,8 +307,8 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.pQueueCreateInfos = &qci;
     dci.queueCreateInfoCount = 1;
-    dci.ppEnabledExtensionNames = devExts;
-    dci.enabledExtensionCount = devExtN;
+    dci.ppEnabledExtensionNames = dev_exts;
+    dci.enabledExtensionCount = dev_ext_count;
     dci.pEnabledFeatures = &feats;
     if (out_phase->have_group) {
         dci.pNext = &dgci;
@@ -318,16 +319,16 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
     vkGetDeviceQueue(out_phase->device, out_phase->queue_family_index, 0,
                      &out_phase->queue);
 
-    uint32_t fmtN = 0;
+    uint32_t fmt_count = 0;
     DB_VK_CHECK(BACKEND_NAME,
-                vkGetPhysicalDeviceSurfaceFormatsKHR(out_phase->present_phys,
-                                                     surface, &fmtN, NULL));
+                vkGetPhysicalDeviceSurfaceFormatsKHR(
+                    out_phase->present_phys, surface, &fmt_count, NULL));
     VkSurfaceFormatKHR *fmts =
-        (VkSurfaceFormatKHR *)calloc(fmtN, sizeof(VkSurfaceFormatKHR));
+        (VkSurfaceFormatKHR *)calloc(fmt_count, sizeof(VkSurfaceFormatKHR));
     DB_VK_CHECK(BACKEND_NAME,
-                vkGetPhysicalDeviceSurfaceFormatsKHR(out_phase->present_phys,
-                                                     surface, &fmtN, fmts));
-    out_phase->surface_format = db_vk_choose_surface_format(fmts, fmtN);
+                vkGetPhysicalDeviceSurfaceFormatsKHR(
+                    out_phase->present_phys, surface, &fmt_count, fmts));
+    out_phase->surface_format = db_vk_choose_surface_format(fmts, fmt_count);
     free(fmts);
     out_phase->present_mode = db_vk_choose_present_mode(out_phase->present_phys,
                                                         surface, vsync_enabled);
@@ -342,20 +343,20 @@ static void db_vk_init_phase_pipeline_resources(
     }
     *out_phase = (db_vk_init_pipeline_resources_phase_t){0};
 
-    VkAttachmentDescription colorAtt = {0};
-    colorAtt.format = device_phase->surface_format.format;
-    colorAtt.samples = VK_SAMPLE_COUNT_1_BIT;
-    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAtt.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    colorAtt.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    VkAttachmentDescription color_att = {0};
+    color_att.format = device_phase->surface_format.format;
+    color_att.samples = VK_SAMPLE_COUNT_1_BIT;
+    color_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color_att.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color_att.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
-    VkAttachmentReference colorRef = {
+    VkAttachmentReference color_ref = {
         .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkSubpassDescription sub = {0};
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sub.colorAttachmentCount = 1;
-    sub.pColorAttachments = &colorRef;
+    sub.pColorAttachments = &color_ref;
 
     VkSubpassDependency dep = {0};
     dep.srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -367,7 +368,7 @@ static void db_vk_init_phase_pipeline_resources(
     VkRenderPassCreateInfo rpci = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
     rpci.attachmentCount = 1;
-    rpci.pAttachments = &colorAtt;
+    rpci.pAttachments = &color_att;
     rpci.subpassCount = 1;
     rpci.pSubpasses = &sub;
     rpci.dependencyCount = 1;
@@ -377,12 +378,12 @@ static void db_vk_init_phase_pipeline_resources(
                 vkCreateRenderPass(device_phase->device, &rpci, NULL,
                                    &out_phase->render_pass));
 
-    VkAttachmentDescription historyAtt = colorAtt;
-    historyAtt.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    historyAtt.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    historyAtt.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    VkAttachmentDescription history_att = color_att;
+    history_att.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    history_att.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    history_att.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     VkRenderPassCreateInfo history_rpci = rpci;
-    history_rpci.pAttachments = &historyAtt;
+    history_rpci.pAttachments = &history_att;
     DB_VK_CHECK(BACKEND_NAME,
                 vkCreateRenderPass(device_phase->device, &history_rpci, NULL,
                                    &out_phase->history_render_pass));
@@ -433,11 +434,11 @@ static void db_vk_init_phase_pipeline_resources(
     stages[1].module = fs;
     stages[1].pName = "main";
 
-    float quadVerts[QUAD_VERT_FLOAT_COUNT] = {0, 0, 1, 0, 1, 1,
-                                              0, 0, 1, 1, 0, 1};
+    float quad_verts[QUAD_VERT_FLOAT_COUNT] = {0, 0, 1, 0, 1, 1,
+                                               0, 0, 1, 1, 0, 1};
 
     VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    bci.size = sizeof(quadVerts);
+    bci.size = sizeof(quad_verts);
     bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     DB_VK_CHECK(BACKEND_NAME, vkCreateBuffer(device_phase->device, &bci, NULL,
                                              &out_phase->vertex_buffer));
@@ -448,7 +449,7 @@ static void db_vk_init_phase_pipeline_resources(
 
     VkPhysicalDeviceMemoryProperties mp;
     vkGetPhysicalDeviceMemoryProperties(device_phase->present_phys, &mp);
-    uint32_t memIndex = UINT32_MAX;
+    uint32_t mem_index = UINT32_MAX;
     for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
         if ((mr.memoryTypeBits & (MASK_GPU0 << i)) &&
             (mp.memoryTypes[i].propertyFlags &
@@ -456,18 +457,18 @@ static void db_vk_init_phase_pipeline_resources(
               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
                 (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            memIndex = i;
+            mem_index = i;
             break;
         }
     }
-    if (memIndex == UINT32_MAX) {
+    if (mem_index == UINT32_MAX) {
         failf("No host-visible + host-coherent memory type for vertex buffer");
     }
 
     VkMemoryAllocateInfo mai = {.sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     mai.allocationSize = mr.size;
-    mai.memoryTypeIndex = memIndex;
+    mai.memoryTypeIndex = mem_index;
     DB_VK_CHECK(BACKEND_NAME, vkAllocateMemory(device_phase->device, &mai, NULL,
                                                &out_phase->vertex_memory));
     DB_VK_CHECK(BACKEND_NAME, vkBindBufferMemory(device_phase->device,
@@ -477,11 +478,11 @@ static void db_vk_init_phase_pipeline_resources(
     void *mapped = NULL;
     DB_VK_CHECK(BACKEND_NAME,
                 vkMapMemory(device_phase->device, out_phase->vertex_memory, 0,
-                            sizeof(quadVerts), 0, &mapped));
+                            sizeof(quad_verts), 0, &mapped));
     {
         float *mapped_f32 = (float *)mapped;
         for (size_t i = 0; i < QUAD_VERT_FLOAT_COUNT; i++) {
-            mapped_f32[i] = quadVerts[i];
+            mapped_f32[i] = quad_verts[i];
         }
     }
     vkUnmapMemory(device_phase->device, out_phase->vertex_memory);
@@ -532,12 +533,12 @@ static void db_vk_init_phase_pipeline_resources(
     cb.attachmentCount = 1;
     cb.pAttachments = &cba;
 
-    VkDynamicState dynStates[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                  VK_DYNAMIC_STATE_SCISSOR};
+    VkDynamicState dyn_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                   VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo ds = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     ds.dynamicStateCount = 2;
-    ds.pDynamicStates = dynStates;
+    ds.pDynamicStates = dyn_states;
 
     VkPushConstantRange pcr = {0};
     pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -681,13 +682,15 @@ db_vk_init_phase_scheduler(const db_vk_init_device_phase_t *device_phase,
     }
 
     const db_pattern_t pattern = out_phase->runtime.pattern;
+    const db_history_pattern_mode_flags_t mode_flags =
+        db_history_pattern_mode_flags(pattern);
     const int multi_gpu =
         device_phase->have_group && (device_phase->gpu_count > 1U);
     out_phase->capability_mode = db_vk_compose_capability_mode(pattern);
     infof("using capability mode: %s", out_phase->capability_mode);
     infof("using scheduler mode: %s", db_vk_scheduler_mode_name(multi_gpu));
 
-    if (pattern == DB_PATTERN_BANDS) {
+    if (mode_flags.is_bands != 0) {
         for (uint32_t b = 0; b < BENCH_BANDS; b++) {
             out_phase->work_owner[b] = b % device_phase->gpu_count;
         }
@@ -697,7 +700,8 @@ db_vk_init_phase_scheduler(const db_vk_init_device_phase_t *device_phase,
     }
 }
 
-void db_vk_init_impl(const db_vk_wsi_config_t *wsi_config, int vsync_enabled) {
+void db_renderer_vulkan_1_2_multi_gpu_init(const db_vk_wsi_config_t *wsi_config,
+                                           int vsync_enabled) {
     db_vk_init_instance_surface_phase_t instance_surface_phase = {0};
     db_vk_init_device_phase_t device_phase = {0};
     db_vk_init_pipeline_resources_phase_t pipeline_phase = {0};

@@ -26,3 +26,15 @@ CheckOptions:
     value: "0;1;2;3;4;5;8;16;32;64;255"
   - key: readability-magic-numbers.IgnoredFloatingPointValues
     value: "0.0;1.0;2.0"
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
