@@ -12,6 +12,7 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
+#include "../../core/db_numeric.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
 #include "../renderer_snake_common.h"
@@ -76,9 +77,9 @@ typedef struct {
 typedef struct {
     db_snake_plan_t plan;
     db_snake_region_t target_region;
-    float target_r;
-    float target_g;
-    float target_b;
+    double target_r;
+    double target_g;
+    double target_b;
     db_gl_upload_range_t *preview_ranges;
     size_t preview_capacity;
     size_t preview_count;
@@ -190,8 +191,8 @@ static int db_init_vertices_for_mode(size_t vertex_stride) {
 static void db_render_snake_step(const db_snake_plan_t *plan,
                                  const db_snake_region_t *region,
                                  uint32_t shape_kind, uint32_t pattern_seed,
-                                 uint32_t shape_index, float target_r,
-                                 float target_g, float target_b,
+                                 uint32_t shape_index, double target_r,
+                                 double target_g, double target_b,
                                  int full_fill_on_phase_completed) {
     if ((plan == NULL) || (region == NULL)) {
         return;
@@ -207,7 +208,8 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         db_fill_grid_all_rgb_stride(
             g_state.vertex.vertices, g_state.runtime.work_unit_count,
             g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-            target_r, target_g, target_b);
+            db_double_to_f32(target_r), db_double_to_f32(target_g),
+            db_double_to_f32(target_b));
         return;
     }
     db_snake_shape_cache_t shape_cache = {0};
@@ -222,7 +224,12 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
             shape_cache_ptr = &shape_cache;
         }
     }
-    float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
+    const uint32_t cols = db_grid_cols_effective();
+    const uint32_t rows = db_grid_rows_effective();
+    const float target_r_f = db_double_to_f32(target_r);
+    const float target_g_f = db_double_to_f32(target_g);
+    const float target_b_f = db_double_to_f32(target_b);
+    double prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0};
     for (uint32_t update_index = 0U; update_index < plan->batch_size;
          update_index++) {
         const size_t prior_base = (size_t)update_index * 3U;
@@ -230,23 +237,21 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         if (step >= plan->target_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_snake_tile_index_from_step(region, step);
-        const uint32_t row = tile_index / db_grid_cols_effective();
-        const uint32_t col = tile_index % db_grid_cols_effective();
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
-            if (inside == 0) {
-                continue;
-            }
+        db_snake_step_tile_t tile = {0};
+        if (db_snake_step_resolve_tile(region, shape_cache_ptr, step, cols,
+                                       rows, &tile) == 0) {
+            continue;
         }
-        const size_t tile_float_offset = (size_t)tile_index *
+        const size_t tile_float_offset = (size_t)tile.tile_index *
                                          DB_RECT_VERTEX_COUNT *
                                          g_state.vertex.vertex_stride;
         float *unit = &g_state.vertex.vertices[tile_float_offset];
-        prior_rgb[prior_base] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
-        prior_rgb[prior_base + 1U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
-        prior_rgb[prior_base + 2U] = unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+        prior_rgb[prior_base] =
+            (double)unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
+        prior_rgb[prior_base + 1U] =
+            (double)unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
+        prior_rgb[prior_base + 2U] =
+            (double)unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
     }
 
     for (uint32_t update_index = 0U; update_index < plan->prev_count;
@@ -255,23 +260,18 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         if (step >= plan->target_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_snake_tile_index_from_step(region, step);
-        const uint32_t row = tile_index / db_grid_cols_effective();
-        const uint32_t col = tile_index % db_grid_cols_effective();
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
-            if (inside == 0) {
-                continue;
-            }
+        db_snake_step_tile_t tile = {0};
+        if (db_snake_step_resolve_tile(region, shape_cache_ptr, step, cols,
+                                       rows, &tile) == 0) {
+            continue;
         }
-        const size_t tile_float_offset = (size_t)tile_index *
+        const size_t tile_float_offset = (size_t)tile.tile_index *
                                          DB_RECT_VERTEX_COUNT *
                                          g_state.vertex.vertex_stride;
         float *unit = &g_state.vertex.vertices[tile_float_offset];
         db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, target_r, target_g,
-                             target_b);
+                             DB_VERTEX_POSITION_FLOAT_COUNT, target_r_f,
+                             target_g_f, target_b_f);
     }
 
     for (uint32_t update_index = 0U; update_index < plan->batch_size;
@@ -280,32 +280,30 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         if (step >= plan->target_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_snake_tile_index_from_step(region, step);
-        const uint32_t row = tile_index / db_grid_cols_effective();
-        const uint32_t col = tile_index % db_grid_cols_effective();
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
-            if (inside == 0) {
-                continue;
-            }
+        db_snake_step_tile_t tile = {0};
+        if (db_snake_step_resolve_tile(region, shape_cache_ptr, step, cols,
+                                       rows, &tile) == 0) {
+            continue;
         }
-        const float blend_factor =
-            db_window_blend_factor(update_index, plan->batch_size);
-
-        const size_t tile_float_offset = (size_t)tile_index *
+        const size_t tile_float_offset = (size_t)tile.tile_index *
                                          DB_RECT_VERTEX_COUNT *
                                          g_state.vertex.vertex_stride;
+        const double blend_factor =
+            db_window_blend_factor(update_index, plan->batch_size);
+
         float *unit = &g_state.vertex.vertices[tile_float_offset];
         const size_t prior_base = (size_t)update_index * 3U;
-        const float prior_r = prior_rgb[prior_base];
-        const float prior_g = prior_rgb[prior_base + 1U];
-        const float prior_b = prior_rgb[prior_base + 2U];
-        float out_r = 0.0F;
-        float out_g = 0.0F;
-        float out_b = 0.0F;
+        const double prior_r = prior_rgb[prior_base];
+        const double prior_g = prior_rgb[prior_base + 1U];
+        const double prior_b = prior_rgb[prior_base + 2U];
+        double out_r_value = 0.0;
+        double out_g_value = 0.0;
+        double out_b_value = 0.0;
         db_blend_rgb(prior_r, prior_g, prior_b, target_r, target_g, target_b,
-                     blend_factor, &out_r, &out_g, &out_b);
+                     blend_factor, &out_r_value, &out_g_value, &out_b_value);
+        const float out_r = db_double_to_f32(out_r_value);
+        const float out_g = db_double_to_f32(out_g_value);
+        const float out_b = db_double_to_f32(out_b_value);
         db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
                              DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
                              out_b);
@@ -313,25 +311,19 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
 }
 
 static void db_gl1_set_gradient_grid_row_rgb(uint32_t row, uint32_t cols,
-                                             float row_r, float row_g,
-                                             float row_b) {
+                                             double row_r, double row_g,
+                                             double row_b) {
     if (cols == 0U) {
         return;
     }
-    for (uint32_t col = 0U; col < cols; col++) {
-        const uint32_t tile_index = (row * cols) + col;
-        const size_t tile_float_offset = (size_t)tile_index *
-                                         DB_RECT_VERTEX_COUNT *
-                                         g_state.vertex.vertex_stride;
-        float *unit = &g_state.vertex.vertices[tile_float_offset];
-        db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, row_r, row_g,
-                             row_b);
-    }
+    db_set_rect_tile_range_rgb(
+        g_state.vertex.vertices, row * cols, cols, g_state.vertex.vertex_stride,
+        DB_VERTEX_POSITION_FLOAT_COUNT, db_double_to_f32(row_r),
+        db_double_to_f32(row_g), db_double_to_f32(row_b));
 }
 
-static void db_gl1_write_gradient_row_color_to_mesh(uint32_t row, float row_r,
-                                                    float row_g, float row_b,
+static void db_gl1_write_gradient_row_color_to_mesh(uint32_t row, double row_r,
+                                                    double row_g, double row_b,
                                                     void *user_data) {
     db_gl1_gradient_mesh_apply_ctx_t *ctx =
         (db_gl1_gradient_mesh_apply_ctx_t *)user_data;
@@ -724,7 +716,7 @@ static void db_gl1_render_snake_draw_pass(
             int rect_y = 0;
             int rect_w = 0;
             int rect_h = 0;
-            if (db_gl1_snake_span_to_scissor_rect(
+            if (db_gl_span_to_scissor_rect(
                     &g_state.snake_spans[span_index], db_grid_cols_effective(),
                     db_grid_rows_effective(), viewport_w, viewport_h, &rect_x,
                     &rect_y, &rect_w, &rect_h) == 0) {
@@ -732,8 +724,9 @@ static void db_gl1_render_snake_draw_pass(
             }
             db_gl1_draw_solid_rect_pixels(
                 rect_x, rect_y, rect_w, rect_h, viewport_w, viewport_h,
-                snake_frame->target_r, snake_frame->target_g,
-                snake_frame->target_b);
+                db_double_to_f32(snake_frame->target_r),
+                db_double_to_f32(snake_frame->target_g),
+                db_double_to_f32(snake_frame->target_b));
             scissor_applied = 1;
         }
         db_gl1_scissor_scope_close_if_opened(opened_scope);
@@ -908,13 +901,15 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
         const size_t needed_spans =
             (size_t)state->plan.prev_count + (size_t)state->plan.batch_size;
         if (needed_spans <= state->preview_capacity) {
-            float base_r = 0.0F;
-            float base_g = 0.0F;
-            float base_b = 0.0F;
+            double base_r = 0.0;
+            double base_g = 0.0;
+            double base_b = 0.0;
             const int base_phase = (state->plan.clearing_phase == 0) ? 1 : 0;
             db_grid_target_color_rgb(base_phase, &base_r, &base_g, &base_b);
             db_gl1_set_scissor_enabled_cached(0);
-            db_gl_clear_color_rgb(base_r, base_g, base_b);
+            db_gl_clear_color_rgb(db_double_to_f32(base_r),
+                                  db_double_to_f32(base_g),
+                                  db_double_to_f32(base_b));
             db_gl_clear_color_buffer();
             g_state.full_draw_frames++;
 
@@ -1243,9 +1238,9 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
     db_gl1_snake_frame_state_t snake_frame = {
         .plan = {0},
         .target_region = {0},
-        .target_r = 0.0F,
-        .target_g = 0.0F,
-        .target_b = 0.0F,
+        .target_r = 0.0,
+        .target_g = 0.0,
+        .target_b = 0.0,
         .preview_ranges = NULL,
         .preview_capacity = 0U,
         .preview_count = 0U,

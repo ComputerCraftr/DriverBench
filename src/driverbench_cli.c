@@ -483,14 +483,6 @@ db_cli_validate_renderer_selection_or_exit(const db_cli_config_t *cfg) {
     }
 }
 
-static int db_cli_hash_mode_requests_state(const char *hash_mode) {
-    return db_string_is(hash_mode, "state") || db_string_is(hash_mode, "both");
-}
-
-static int db_cli_hash_mode_requests_pixel(const char *hash_mode) {
-    return db_string_is(hash_mode, "pixel") || db_string_is(hash_mode, "both");
-}
-
 static void db_cli_validate_hash_mode_or_exit(const db_cli_config_t *cfg) {
     const char *hash_mode = cfg->hash_mode;
     if ((hash_mode == NULL) || (hash_mode[0] == '\0') ||
@@ -499,8 +491,10 @@ static void db_cli_validate_hash_mode_or_exit(const db_cli_config_t *cfg) {
     }
 
     const db_api_t api = db_cli_resolve_effective_api_or_exit(cfg);
-    const int needs_state = db_cli_hash_mode_requests_state(hash_mode);
-    const int needs_pixel = db_cli_hash_mode_requests_pixel(hash_mode);
+    const int needs_state =
+        db_string_is(hash_mode, "state") || db_string_is(hash_mode, "both");
+    const int needs_pixel =
+        db_string_is(hash_mode, "pixel") || db_string_is(hash_mode, "both");
 
     int supports_state = 0;
     int supports_pixel = 0;
@@ -544,7 +538,7 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
         .kms_card = "/dev/dri/card0",
         .hash_mode = "none",
         .hash_report = "both",
-        .fps_cap = BENCH_FPS_CAP_D,
+        .fps_cap = BENCH_FPS_CAP,
         .frame_limit = 0U,
         .backbuffer_draw_full = 0,
         .debug_clear_default_framebuffer = 0,

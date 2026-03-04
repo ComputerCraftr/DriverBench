@@ -27,8 +27,6 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
         return DB_VK_FRAME_STOP;
     }
 
-    const uint64_t budget_ns = FRAME_BUDGET_NS;
-    const uint64_t safety_ns = FRAME_SAFETY_NS;
     const uint32_t gpuCount = g_state.gpu_count;
     const uint32_t active_gpu_count = (gpuCount > 0U) ? gpuCount : 1U;
     const int haveGroup = g_state.have_group;
@@ -68,7 +66,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 }
                 const double elapsed_ms =
                     ((double)(end - start) * g_state.timestamp_period_ns) /
-                    DB_NS_PER_MS_D;
+                    DB_NS_PER_MS;
                 const double ms_per_unit =
                     elapsed_ms / (double)g_state.prev_frame_work_units[g];
                 g_state.ema_ms_per_work_unit[g] =
@@ -157,24 +155,23 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
         ((g_state.runtime.pattern == DB_PATTERN_GRADIENT_FILL) ||
          (g_state.runtime.pattern == DB_PATTERN_SNAKE_GRID)) &&
         (g_state.runtime.mode_phase_flag == 0);
-    const float *clear_rgb = NULL;
-    if (g_state.runtime.pattern == DB_PATTERN_BANDS) {
-        static const float bands_rgb[3] = {
-            BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B};
-        clear_rgb = bands_rgb;
-    } else if (use_base_color) {
-        static const float base_rgb[3] = {
-            BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B};
-        clear_rgb = base_rgb;
+    double clear_r = 0.0;
+    double clear_g = 0.0;
+    double clear_b = 0.0;
+    if ((g_state.runtime.pattern == DB_PATTERN_BANDS) ||
+        (use_base_color != 0)) {
+        clear_r = BENCH_GRID_PHASE0_R;
+        clear_g = BENCH_GRID_PHASE0_G;
+        clear_b = BENCH_GRID_PHASE0_B;
     } else {
-        static const float target_rgb[3] = {
-            BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G, BENCH_GRID_PHASE1_B};
-        clear_rgb = target_rgb;
+        clear_r = BENCH_GRID_PHASE1_R;
+        clear_g = BENCH_GRID_PHASE1_G;
+        clear_b = BENCH_GRID_PHASE1_B;
     }
-    clear.color.float32[0] = clear_rgb[0];
-    clear.color.float32[1] = clear_rgb[1];
-    clear.color.float32[2] = clear_rgb[2];
-    clear.color.float32[COLOR_CHANNEL_ALPHA] = 1.0F;
+    clear.color.float32[0] = db_double_to_f32(clear_r);
+    clear.color.float32[1] = db_double_to_f32(clear_g);
+    clear.color.float32[2] = db_double_to_f32(clear_b);
+    clear.color.float32[COLOR_CHANNEL_ALPHA] = db_double_to_f32(1.0);
 
     if (history_mode &&
         ((g_state.history_targets[0].layout_initialized == 0) ||
@@ -198,9 +195,11 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0,
                              NULL, 2U, history_to_clear);
 
-        VkClearColorValue history_clear = {
-            .float32 = {BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
-                        BENCH_GRID_PHASE0_B, 1.0F}};
+        VkClearColorValue history_clear = {0};
+        history_clear.float32[0] = db_double_to_f32(BENCH_GRID_PHASE0_R);
+        history_clear.float32[1] = db_double_to_f32(BENCH_GRID_PHASE0_G);
+        history_clear.float32[2] = db_double_to_f32(BENCH_GRID_PHASE0_B);
+        history_clear.float32[COLOR_CHANNEL_ALPHA] = db_double_to_f32(1.0);
         VkImageSubresourceRange history_range = {0};
         history_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         history_range.levelCount = 1U;
@@ -281,8 +280,9 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
         g_state.command_buffer, g_state.pipeline_layout,
         g_state.swapchain_state.extent, grid_rows, grid_cols);
     VkViewport vpo = {0};
-    vpo.width = (float)g_state.swapchain_state.extent.width;
-    vpo.height = (float)g_state.swapchain_state.extent.height;
+    vpo.width = db_double_to_f32((double)g_state.swapchain_state.extent.width);
+    vpo.height =
+        db_double_to_f32((double)g_state.swapchain_state.extent.height);
     vpo.maxDepth = 1.0F;
     vkCmdSetViewport(g_state.command_buffer, 0, 1, &vpo);
 
@@ -310,7 +310,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             const uint32_t candidate_owner = g_state.work_owner[band];
             const uint32_t owner = db_vk_select_owner_for_work(
                 candidate_owner, active_gpu_count, span_units, frameStart,
-                budget_ns, safety_ns, g_state.ema_ms_per_work_unit);
+                FRAME_BUDGET_NS, FRAME_SAFETY_NS, g_state.ema_ms_per_work_unit);
             if (haveGroup) {
                 vkCmdSetDeviceMask(g_state.command_buffer,
                                    (MASK_GPU0 << owner));
@@ -374,8 +374,8 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
             .have_group = haveGroup,
             .active_gpu_count = active_gpu_count,
             .frame_start_ns = frameStart,
-            .budget_ns = budget_ns,
-            .safety_ns = safety_ns,
+            .budget_ns = FRAME_BUDGET_NS,
+            .safety_ns = FRAME_SAFETY_NS,
             .ema_ms_per_work_unit = g_state.ema_ms_per_work_unit,
             .timing_enabled = g_state.gpu_timing_enabled,
             .timing_query_pool = g_state.timing_query_pool,
@@ -426,8 +426,8 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
                 .have_group = haveGroup,
                 .active_gpu_count = active_gpu_count,
                 .frame_start_ns = frameStart,
-                .budget_ns = budget_ns,
-                .safety_ns = safety_ns,
+                .budget_ns = FRAME_BUDGET_NS,
+                .safety_ns = FRAME_SAFETY_NS,
                 .ema_ms_per_work_unit = g_state.ema_ms_per_work_unit,
                 .timing_enabled = g_state.gpu_timing_enabled,
                 .timing_query_pool = g_state.timing_query_pool,
@@ -680,7 +680,7 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
 
     if (!g_state.gpu_timing_enabled) {
         uint64_t frameEnd = db_now_ns_monotonic();
-        double frame_ms = (double)(frameEnd - frameStart) / DB_NS_PER_MS_D;
+        double frame_ms = (double)(frameEnd - frameStart) / DB_NS_PER_MS;
         db_vk_update_ema_fallback(gpuCount, frame_work_units, frame_ms,
                                   g_state.ema_ms_per_work_unit);
     }
@@ -694,15 +694,15 @@ db_vk_frame_result_t db_vk_render_frame_impl(void) {
         g_state.dirty_draw_frames++;
     }
     g_state.bench_frames++;
-    double bench_ms = (double)(db_now_ns_monotonic() - g_state.bench_start_ns) /
-                      DB_NS_PER_MS_D;
+    double bench_ms =
+        (double)(db_now_ns_monotonic() - g_state.bench_start_ns) / DB_NS_PER_MS;
     db_benchmark_log_periodic(
         "Vulkan", RENDERER_NAME,
         (g_state.log_backend_name != NULL) ? g_state.log_backend_name
                                            : BACKEND_NAME,
         g_state.bench_frames, g_state.runtime.work_unit_count, bench_ms,
         g_state.capability_mode, &g_state.next_progress_log_due_ms,
-        BENCH_LOG_INTERVAL_MS_D);
+        BENCH_LOG_INTERVAL_MS);
     g_state.frame_index++;
     return DB_VK_FRAME_OK;
 }
@@ -713,7 +713,7 @@ void db_vk_shutdown_impl(void) {
     }
     uint64_t bench_end = db_now_ns_monotonic();
     double bench_ms =
-        (double)(bench_end - g_state.bench_start_ns) / DB_NS_PER_MS_D;
+        (double)(bench_end - g_state.bench_start_ns) / DB_NS_PER_MS;
     db_benchmark_log_final(
         "Vulkan", RENDERER_NAME,
         (g_state.log_backend_name != NULL) ? g_state.log_backend_name

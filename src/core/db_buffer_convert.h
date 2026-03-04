@@ -6,9 +6,14 @@
 
 void db_copy_bytes(void *dst, const void *src, size_t byte_count);
 void db_move_bytes(void *dst, const void *src, size_t byte_count);
-void db_copy_f32_buffer(float *dst, const float *src, size_t element_count);
 void db_copy_u32_buffer(uint32_t *dst, const uint32_t *src,
                         size_t element_count);
+void db_fill_u32_buffer(uint32_t *dst, uint32_t element_count,
+                        uint32_t fill_value);
+void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count, uint8_t red,
+                                uint8_t green, uint8_t blue, uint8_t alpha);
+void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count, uint16_t red,
+                            uint16_t green, uint16_t blue, uint16_t alpha);
 void db_copy_rows_u8(uint8_t *dst, size_t dst_stride_bytes, const uint8_t *src,
                      size_t src_stride_bytes, size_t row_bytes,
                      uint32_t row_count);
@@ -17,8 +22,12 @@ void db_convert_rgba8_to_xrgb8888_rows(uint32_t *dst, size_t dst_stride_pixels,
                                        size_t src_stride_pixels,
                                        uint32_t width_pixels,
                                        uint32_t height_rows);
-void db_convert_rgba32f_to_xrgb8888_rows(
-    uint32_t *dst, size_t dst_stride_pixels, const float *src,
+void db_convert_rgba16f_to_xrgb8888_rows(
+    uint32_t *dst, size_t dst_stride_pixels, const uint16_t *src,
     size_t src_stride_pixels, uint32_t width_pixels, uint32_t height_rows);
+void db_convert_rgba16f_to_rgba8888_rows(
+    uint32_t *dst, size_t dst_stride_pixels, const uint16_t *src,
+    size_t src_stride_pixels, uint32_t width_pixels, uint32_t height_rows,
+    uint32_t alpha_u8);
 
 #endif

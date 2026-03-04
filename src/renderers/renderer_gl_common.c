@@ -7,6 +7,7 @@
 #include "../config/benchmark_config.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
+#include "../core/db_numeric.h"
 #include "renderer_benchmark_common.h"
 #include "renderer_snake_common.h"
 #include "renderer_snake_shape_common.h"
@@ -157,6 +158,49 @@ int db_gl_row_range_to_scissor_rect(uint32_t row_start, uint32_t row_count,
     *width_out = viewport_width;
     *height_out = rect_h;
     return 1;
+}
+
+int db_gl_span_to_scissor_rect(const db_snake_col_span_t *span,
+                               uint32_t total_cols, uint32_t total_rows,
+                               int viewport_width, int viewport_height,
+                               int *x_out, int *y_out, int *width_out,
+                               int *height_out) {
+    if ((span == NULL) || (total_cols == 0U) || (total_rows == 0U) ||
+        (span->col_end <= span->col_start) || (span->col_end > total_cols) ||
+        (span->row >= total_rows) || (viewport_width <= 0) ||
+        (viewport_height <= 0) || (x_out == NULL) || (y_out == NULL) ||
+        (width_out == NULL) || (height_out == NULL)) {
+        return 0;
+    }
+
+    const int x0 =
+        (int)(((uint64_t)span->col_start * (uint64_t)viewport_width) /
+              total_cols);
+    int x1 = (int)(((uint64_t)span->col_end * (uint64_t)viewport_width) /
+                   total_cols);
+    if (span->col_end == total_cols) {
+        x1 = viewport_width;
+    }
+    if (x1 <= x0) {
+        return 0;
+    }
+
+    int row_x = 0;
+    int row_y = 0;
+    int row_w = 0;
+    int row_h = 0;
+    if (db_gl_row_range_to_scissor_rect(span->row, 1U, total_rows,
+                                        viewport_width, viewport_height, &row_x,
+                                        &row_y, &row_w, &row_h) == 0) {
+        return 0;
+    }
+    (void)row_x;
+    (void)row_w;
+    *x_out = x0;
+    *y_out = row_y;
+    *width_out = x1 - x0;
+    *height_out = row_h;
+    return (*width_out > 0) && (*height_out > 0);
 }
 
 size_t db_gl_collect_row_upload_ranges(
@@ -379,9 +423,9 @@ db_gl_collect_pattern_upload_ranges(const db_gl_pattern_upload_collect_t *ctx,
                       .y = 0U,
                       .width = ctx->cols,
                       .height = ctx->rows,
-                      .color_r = 0.0F,
-                      .color_g = 0.0F,
-                      .color_b = 0.0F,
+                      .color_r = 0.0,
+                      .color_g = 0.0,
+                      .color_b = 0.0,
                   }
                 : db_snake_region_from_index(ctx->pattern_seed,
                                              plan->active_shape_index);
@@ -646,7 +690,7 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
     const size_t float_count = (size_t)float_count_u64;
     const uint32_t tile_count = db_checked_u64_to_u32(
         DB_BENCH_COMMON_BACKEND, "grid_tile_count", tile_count_u64);
-    float *vertices = (float *)calloc(float_count, sizeof(float));
+    float *vertices = calloc(float_count, sizeof(float));
     if (vertices == NULL) {
         return 0;
     }
@@ -715,20 +759,29 @@ int db_init_vertices_for_runtime_common_with_stride(
 void db_update_grid_vertices_for_bands_rgb_stride(
     float *verts, uint32_t cols, uint32_t rows, uint32_t band_count,
     uint32_t frame_index, size_t stride_floats, size_t color_offset_floats) {
-    const uint32_t tile_count = cols * rows;
-    for (uint32_t tile = 0; tile < tile_count; tile++) {
-        uint32_t col = tile % cols;
-        uint32_t band = (col * band_count) / cols;
+    if ((verts == NULL) || (cols == 0U) || (rows == 0U) || (band_count == 0U)) {
+        return;
+    }
+    for (uint32_t band = 0U; band < band_count; band++) {
+        const uint32_t col_start = (band * cols) / band_count;
+        const uint32_t col_end = ((band + 1U) * cols) / band_count;
+        if ((col_end <= col_start) || (col_start >= cols)) {
+            continue;
+        }
+        double color_r_value = 0.0;
+        double color_g_value = 0.0;
+        double color_b_value = 0.0;
+        db_band_color_rgb(band, band_count, frame_index, &color_r_value,
+                          &color_g_value, &color_b_value);
+        const float color_r = db_double_to_f32(color_r_value);
+        const float color_g = db_double_to_f32(color_g_value);
+        const float color_b = db_double_to_f32(color_b_value);
 
-        float color_r = 0.0F;
-        float color_g = 0.0F;
-        float color_b = 0.0F;
-        db_band_color_rgb(band, band_count, frame_index, &color_r, &color_g,
-                          &color_b);
-
-        size_t base = (size_t)tile * DB_RECT_VERTEX_COUNT * stride_floats;
-        float *unit = &verts[base];
-        db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
-                             color_g, color_b);
+        for (uint32_t row = 0U; row < rows; row++) {
+            const uint32_t first_tile = (row * cols) + col_start;
+            db_set_rect_tile_range_rgb(verts, first_tile, col_end - col_start,
+                                       stride_floats, color_offset_floats,
+                                       color_r, color_g, color_b);
+        }
     }
 }

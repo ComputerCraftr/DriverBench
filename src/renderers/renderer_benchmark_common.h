@@ -14,6 +14,7 @@
 #include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
+#include "../core/db_numeric.h"
 
 #define DB_RECT_VERTEX_COUNT 6U
 #define DB_VERTEX_POSITION_FLOAT_COUNT 2U
@@ -93,8 +94,8 @@ typedef struct {
     int backbuffer_draw_full;
 } db_benchmark_runtime_init_t;
 
-typedef void (*db_gradient_row_color_apply_fn_t)(uint32_t row, float row_r,
-                                                 float row_g, float row_b,
+typedef void (*db_gradient_row_color_apply_fn_t)(uint32_t row, double row_r,
+                                                 double row_g, double row_b,
                                                  void *user_data);
 
 static inline uint64_t
@@ -412,13 +413,13 @@ db_rect_pixels_to_ndc_bounds(int x0_px, int y0_px, int x1_px, int y1_px,
                              int viewport_w_px, int viewport_h_px,
                              float *x0_ndc_out, float *y0_ndc_out,
                              float *x1_ndc_out, float *y1_ndc_out) {
-    const float inv_w = 1.0F / (float)viewport_w_px;
-    const float inv_h = 1.0F / (float)viewport_h_px;
+    const double inv_w = 1.0 / (double)viewport_w_px;
+    const double inv_h = 1.0 / (double)viewport_h_px;
 
-    *x0_ndc_out = (2.0F * (float)x0_px * inv_w) - 1.0F;
-    *x1_ndc_out = (2.0F * (float)x1_px * inv_w) - 1.0F;
-    *y0_ndc_out = (2.0F * (float)y0_px * inv_h) - 1.0F;
-    *y1_ndc_out = (2.0F * (float)y1_px * inv_h) - 1.0F;
+    *x0_ndc_out = db_double_to_f32((2.0 * (double)x0_px * inv_w) - 1.0);
+    *x1_ndc_out = db_double_to_f32((2.0 * (double)x1_px * inv_w) - 1.0);
+    *y0_ndc_out = db_double_to_f32((2.0 * (double)y0_px * inv_h) - 1.0);
+    *y1_ndc_out = db_double_to_f32((2.0 * (double)y1_px * inv_h) - 1.0);
 }
 
 static inline void db_grid_tile_bounds_ndc(uint32_t tile_index, float *x0,
@@ -427,13 +428,13 @@ static inline void db_grid_tile_bounds_ndc(uint32_t tile_index, float *x0,
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t row = tile_index / cols;
     const uint32_t col = tile_index % cols;
-    const float inv_cols = 1.0F / (float)cols;
-    const float inv_rows = 1.0F / (float)rows;
+    const double inv_cols = 1.0 / (double)cols;
+    const double inv_rows = 1.0 / (double)rows;
 
-    *x0 = (2.0F * (float)col * inv_cols) - 1.0F;
-    *x1 = (2.0F * (float)(col + 1U) * inv_cols) - 1.0F;
-    *y1 = 1.0F - (2.0F * (float)row * inv_rows);
-    *y0 = 1.0F - (2.0F * (float)(row + 1U) * inv_rows);
+    *x0 = db_double_to_f32((2.0 * (double)col * inv_cols) - 1.0);
+    *x1 = db_double_to_f32((2.0 * (double)(col + 1U) * inv_cols) - 1.0);
+    *y1 = db_double_to_f32(1.0 - (2.0 * (double)row * inv_rows));
+    *y0 = db_double_to_f32(1.0 - (2.0 * (double)(row + 1U) * inv_rows));
 }
 
 static inline void db_fill_rect_unit_pos(float *unit_base, float x0, float y0,
@@ -469,6 +470,24 @@ static inline void db_set_rect_unit_rgb(float *unit_base, size_t stride_floats,
     }
 }
 
+static inline void
+db_set_rect_tile_range_rgb(float *vertices, uint32_t first_tile_index,
+                           uint32_t tile_count, size_t stride_floats,
+                           size_t color_offset_floats, float color_r,
+                           float color_g, float color_b) {
+    if ((vertices == NULL) || (tile_count == 0U)) {
+        return;
+    }
+    const size_t first_tile_offset =
+        (size_t)first_tile_index * DB_RECT_VERTEX_COUNT * stride_floats;
+    float *unit = &vertices[first_tile_offset];
+    for (uint32_t tile = 0U; tile < tile_count; tile++) {
+        db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
+                             color_g, color_b);
+        unit += (size_t)DB_RECT_VERTEX_COUNT * stride_floats;
+    }
+}
+
 static inline void db_set_rect_unit_alpha(float *unit, size_t stride_floats,
                                           size_t alpha_offset_floats,
                                           float alpha_value) {
@@ -486,46 +505,38 @@ static inline void
 db_fill_grid_all_rgb_stride(float *vertices, uint32_t tile_count,
                             size_t stride_floats, size_t color_offset_floats,
                             float color_r, float color_g, float color_b) {
-    if (vertices == NULL) {
-        return;
-    }
-    for (uint32_t tile_index = 0U; tile_index < tile_count; tile_index++) {
-        const size_t tile_float_offset =
-            (size_t)tile_index * DB_RECT_VERTEX_COUNT * stride_floats;
-        float *unit = &vertices[tile_float_offset];
-        db_set_rect_unit_rgb(unit, stride_floats, color_offset_floats, color_r,
-                             color_g, color_b);
-    }
+    db_set_rect_tile_range_rgb(vertices, 0U, tile_count, stride_floats,
+                               color_offset_floats, color_r, color_g, color_b);
 }
 
 static inline void db_band_color_rgb(uint32_t band_index, uint32_t band_count,
-                                     uint32_t frame_index, float *out_r,
-                                     float *out_g, float *out_b) {
-    const float band_f = (float)band_index;
-    const float frame_f = (float)frame_index;
-    const float pulse =
-        BENCH_PULSE_BASE_F +
-        (BENCH_PULSE_AMP_F *
-         sinf((frame_f * BENCH_PULSE_FREQ_F) + (band_f * BENCH_PULSE_PHASE_F)));
-    const float color_r =
-        pulse * (BENCH_COLOR_R_BASE_F +
-                 (BENCH_COLOR_R_SCALE_F * band_f / (float)band_count));
-    *out_r = color_r;
-    *out_g = pulse * BENCH_COLOR_G_SCALE_F;
-    *out_b = 1.0F - color_r;
+                                     uint32_t frame_index, double *out_r,
+                                     double *out_g, double *out_b) {
+    const double band_value = (double)band_index;
+    const double frame_value = (double)frame_index;
+    const double pulse_value =
+        BENCH_PULSE_BASE +
+        (BENCH_PULSE_AMP * sin((frame_value * BENCH_PULSE_FREQ) +
+                               (band_value * BENCH_PULSE_PHASE)));
+    const double color_r_value =
+        pulse_value * (BENCH_COLOR_R_BASE +
+                       (BENCH_COLOR_R_SCALE * band_value / (double)band_count));
+    *out_r = color_r_value;
+    *out_g = pulse_value * BENCH_COLOR_G_SCALE;
+    *out_b = 1.0 - color_r_value;
 }
 
-static inline float db_color_channel(uint32_t seed) {
-    const float normalized = (float)(seed & 255U) / 255.0F;
-    return DB_COLOR_CHANNEL_BIAS + (normalized * DB_COLOR_CHANNEL_SCALE);
+static inline double db_color_channel(uint32_t seed) {
+    const double normalized = (double)(seed & 255U) / 255.0;
+    return (double)DB_COLOR_CHANNEL_BIAS +
+           (normalized * (double)DB_COLOR_CHANNEL_SCALE);
 }
 
 static inline void db_palette_cycle_color_rgb(uint32_t cycle_index,
-                                              float *out_r, float *out_g,
-                                              float *out_b) {
-    const uint32_t phase_seed = DB_U32_SALT_PALETTE;
+                                              double *out_r, double *out_g,
+                                              double *out_b) {
     const uint32_t seed_base = db_mix_u32(
-        ((cycle_index + 1U) * DB_PALETTE_SALT_BASE_STEP) ^ phase_seed);
+        ((cycle_index + 1U) * DB_PALETTE_SALT_BASE_STEP) ^ DB_U32_SALT_PALETTE);
     *out_r = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_R));
     *out_g = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_G));
     *out_b = db_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_B));
@@ -1066,19 +1077,18 @@ db_gradient_apply_step_to_runtime(db_benchmark_runtime_init_t *runtime,
     runtime->gradient.direction_down = plan->next_state.direction_down;
 }
 
-static inline void db_gradient_row_color_rgb(uint32_t row_index,
-                                             uint32_t head_row,
-                                             int direction_down,
-                                             uint32_t cycle_index, float *out_r,
-                                             float *out_g, float *out_b) {
+static inline void
+db_gradient_row_color_rgb(uint32_t row_index, uint32_t head_row,
+                          int direction_down, uint32_t cycle_index,
+                          double *out_r, double *out_g, double *out_b) {
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t window_rows = db_gradient_window_rows_effective();
-    float source_r = 0.0F;
-    float source_g = 0.0F;
-    float source_b = 0.0F;
-    float target_r = 0.0F;
-    float target_g = 0.0F;
-    float target_b = 0.0F;
+    double source_r = 0.0;
+    double source_g = 0.0;
+    double source_b = 0.0;
+    double target_r = 0.0;
+    double target_g = 0.0;
+    double target_b = 0.0;
     db_palette_cycle_color_rgb(cycle_index, &source_r, &source_g, &source_b);
     db_palette_cycle_color_rgb(cycle_index + 1U, &target_r, &target_g,
                                &target_b);
@@ -1121,14 +1131,14 @@ static inline void db_gradient_row_color_rgb(uint32_t row_index,
     const uint32_t delta = db_checked_u64_to_u32(DB_BENCH_COMMON_BACKEND,
                                                  "gradient_delta", delta_u64);
 
-    float blend = 1.0F;
+    double blend = 1.0;
     if (window_rows > 1U) {
-        const float blend_t = (float)delta / (float)(window_rows - 1U);
-        blend = (direction_down != 0) ? (1.0F - blend_t) : blend_t;
+        const double blend_t = (double)delta / (double)(window_rows - 1U);
+        blend = (direction_down != 0) ? (1.0 - blend_t) : blend_t;
     }
-
-    db_blend_rgb(source_r, source_g, source_b, target_r, target_g, target_b,
-                 blend, out_r, out_g, out_b);
+    *out_r = source_r + ((target_r - source_r) * blend);
+    *out_g = source_g + ((target_g - source_g) * blend);
+    *out_b = source_b + ((target_b - source_b) * blend);
 }
 
 static inline void db_for_each_gradient_row_color(
@@ -1144,9 +1154,9 @@ static inline void db_for_each_gradient_row_color(
         if (row >= rows) {
             break;
         }
-        float row_r = 0.0F;
-        float row_g = 0.0F;
-        float row_b = 0.0F;
+        double row_r = 0.0;
+        double row_g = 0.0;
+        double row_b = 0.0;
         db_gradient_row_color_rgb(row, head_row, direction_down, cycle_index,
                                   &row_r, &row_g, &row_b);
         apply_row_color(row, row_r, row_g, row_b, user_data);

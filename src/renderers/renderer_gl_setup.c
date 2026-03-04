@@ -881,16 +881,16 @@ int db_gl_texture_create_rgba8(unsigned int *out_texture, int width, int height,
                                      pixels);
 }
 
-int db_gl_texture_allocate_rgba32f(unsigned int texture, int width, int height,
+int db_gl_texture_allocate_rgba16f(unsigned int texture, int width, int height,
                                    const void *pixels) {
-    return db_gl_texture_allocate_rgba_typed(texture, width, height, GL_RGBA32F,
-                                             GL_FLOAT, pixels);
+    return db_gl_texture_allocate_rgba_typed(texture, width, height, GL_RGBA16F,
+                                             GL_HALF_FLOAT, pixels);
 }
 
-int db_gl_texture_create_rgba32f(unsigned int *out_texture, int width,
+int db_gl_texture_create_rgba16f(unsigned int *out_texture, int width,
                                  int height, const void *pixels) {
     return db_gl_texture_create_rgba_typed(out_texture, width, height,
-                                           GL_RGBA32F, GL_FLOAT, pixels);
+                                           GL_RGBA16F, GL_HALF_FLOAT, pixels);
 }
 
 void db_gl_texture_delete_if_valid(unsigned int *texture) {
@@ -925,7 +925,7 @@ void db_gl_texture_sub_image_2d_rgba(int x_px, int y_px, int width, int height,
     }
 }
 
-void db_gl_texture_sub_image_2d_rgba32f(int x_px, int y_px, int width,
+void db_gl_texture_sub_image_2d_rgba16f(int x_px, int y_px, int width,
                                         int height, const void *pixels) {
     if ((width <= 0) || (height <= 0)) {
         return;
@@ -934,7 +934,7 @@ void db_gl_texture_sub_image_2d_rgba32f(int x_px, int y_px, int width,
     if (g_upload_proc_table.tex_sub_image_2d != NULL) {
         g_upload_proc_table.tex_sub_image_2d(GL_TEXTURE_2D, 0, x_px, y_px,
                                              (GLsizei)width, (GLsizei)height,
-                                             GL_RGBA, GL_FLOAT, pixels);
+                                             GL_RGBA, GL_HALF_FLOAT, pixels);
     }
 }
 

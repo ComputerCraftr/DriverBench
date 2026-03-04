@@ -33,6 +33,9 @@ int db_run_display_auto(db_display_t display, db_gl_renderer_t renderer,
 int db_run_display(db_display_t display, db_api_t api,
                    db_gl_renderer_t renderer, const char *kms_card_path,
                    const db_cli_config_t *cfg) {
+#ifndef DB_HAS_LINUX_KMS_ATOMIC
+    (void)kms_card_path;
+#endif
     if (db_dispatch_display_is_compiled(display) == 0) {
         db_failf("display_dispatch",
                  "requested display is unavailable in this build "

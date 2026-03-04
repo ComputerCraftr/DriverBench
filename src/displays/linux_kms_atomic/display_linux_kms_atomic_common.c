@@ -37,6 +37,7 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
+#include "../../core/db_numeric.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/renderer_gl_common.h"
@@ -49,10 +50,6 @@
 #define BACKEND_NAME "display_linux_kms_atomic_common"
 
 static const char *g_active_backend = BACKEND_NAME;
-
-static db_gl_generic_proc_t db_kms_egl_resolve_proc(const char *name) {
-    return (db_gl_generic_proc_t)eglGetProcAddress(name);
-}
 
 static __attribute__((noreturn)) void failf(const char *fmt, ...) {
     char message[LOG_MSG_CAPACITY];
@@ -493,12 +490,12 @@ db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
         bench_frames++;
 
         const double bench_ms =
-            (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
+            (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
         db_benchmark_log_periodic(
             db_dispatch_api_name(loop->api), loop->renderer_name, loop->backend,
             bench_frames, loop->work_unit_count, bench_ms,
             loop->capability_mode, &next_progress_log_due_ms,
-            BENCH_LOG_INTERVAL_MS_D);
+            BENCH_LOG_INTERVAL_MS);
         db_sleep_to_fps_cap(loop->backend, frame_start_ns, loop->fps_cap);
     }
     return bench_frames;
@@ -509,8 +506,10 @@ static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
     db_kms_atomic_gl_frame_producer_t *producer =
         (db_kms_atomic_gl_frame_producer_t *)user_ctx;
     if (producer->debug_clear_default_framebuffer != 0) {
-        db_gl_clear_color_rgba(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                               BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        db_gl_clear_color_rgba(db_double_to_f32(BENCH_CLEAR_COLOR_R),
+                               db_double_to_f32(BENCH_CLEAR_COLOR_G),
+                               db_double_to_f32(BENCH_CLEAR_COLOR_B),
+                               db_double_to_f32(BENCH_CLEAR_COLOR_A));
         db_gl_clear_color_buffer();
     }
     producer->renderer->render_frame(frame_index);
@@ -565,7 +564,8 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
                     dpy, cfg, (EGLNativeWindowType)gbm_surf, NULL);
                 if ((surf != EGL_NO_SURFACE) &&
                     eglMakeCurrent(dpy, surf, surf, ctx)) {
-                    db_gl_set_proc_resolver(db_kms_egl_resolve_proc);
+                    db_gl_set_proc_resolver(
+                        (db_gl_proc_resolver_fn_t)eglGetProcAddress);
                     db_gl_preload_upload_proc_table();
                     const char *ver = db_gl_get_version_string();
                     if (db_gl_version_text_at_least(ver, req_gl_major,
@@ -682,7 +682,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
         allow_gles1_1_fallback);
 
-    db_gl_set_proc_resolver(db_kms_egl_resolve_proc);
+    db_gl_set_proc_resolver((db_gl_proc_resolver_fn_t)eglGetProcAddress);
     db_gl_preload_upload_proc_table();
     const char *runtime_version = db_gl_get_version_string();
     const char *runtime_renderer = db_gl_get_renderer_string();
@@ -700,7 +700,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
     renderer->init();
     const char *capability_mode = renderer->capability_mode();
-    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP;
     const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const uint32_t work_unit_count = renderer->work_unit_count();
 
@@ -713,8 +713,10 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     const int debug_clear_default_framebuffer =
         (cfg != NULL) ? cfg->debug_clear_default_framebuffer : 0;
     if (debug_clear_default_framebuffer != 0) {
-        db_gl_clear_color_rgba(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                               BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+        db_gl_clear_color_rgba(db_double_to_f32(BENCH_CLEAR_COLOR_R),
+                               db_double_to_f32(BENCH_CLEAR_COLOR_G),
+                               db_double_to_f32(BENCH_CLEAR_COLOR_B),
+                               db_double_to_f32(BENCH_CLEAR_COLOR_A));
         db_gl_clear_color_buffer();
     }
     renderer->render_frame(0);
@@ -753,7 +755,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     const uint64_t bench_frames = db_kms_atomic_run_frame_loop(
         &loop, &producer, db_kms_atomic_next_gl_fb);
     const double bench_ms =
-        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
+        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
     if (renderer->draw_stats != NULL) {
         uint64_t full_draw_frames = 0U;
         uint64_t dirty_draw_frames = 0U;
@@ -791,7 +793,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
 static struct fb *db_cpu_create_fb_from_framebuffer(
     struct gbm_device *gbm, int fd, const uint32_t *pixels_rgba8,
-    const float *pixels_rgba32f, int use_hdr_float_bo, uint32_t width,
+    const uint16_t *pixels_rgba16f, int use_hdr_float_bo, uint32_t width,
     uint32_t height) {
     uint32_t bo_flags = GBM_BO_USE_SCANOUT;
 #ifdef GBM_BO_USE_WRITE
@@ -818,13 +820,13 @@ static struct fb *db_cpu_create_fb_from_framebuffer(
     const size_t dst_stride_pixels =
         (size_t)map_stride_bytes / sizeof(uint32_t);
     if (use_hdr_float_bo != 0) {
-        if (pixels_rgba32f == NULL) {
+        if (pixels_rgba16f == NULL) {
             gbm_bo_unmap(bo, map_data);
             gbm_bo_destroy(bo);
             diex("cpu hdr framebuffer is NULL");
         }
-        db_convert_rgba32f_to_xrgb8888_rows((uint32_t *)map_ptr,
-                                            dst_stride_pixels, pixels_rgba32f,
+        db_convert_rgba16f_to_xrgb8888_rows((uint32_t *)map_ptr,
+                                            dst_stride_pixels, pixels_rgba16f,
                                             (size_t)width * 4U, width, height);
     } else {
         if (pixels_rgba8 == NULL) {
@@ -848,18 +850,18 @@ static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
     db_renderer_cpu_renderer_render_frame(frame_index);
     const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
     const uint32_t *pixels_rgba8 = NULL;
-    const float *pixels_rgba32f = NULL;
+    const uint16_t *pixels_rgba16f = NULL;
     if (use_hdr_float_bo != 0) {
-        pixels_rgba32f = db_renderer_cpu_renderer_pixels_rgba32f(NULL, NULL);
+        pixels_rgba16f = db_renderer_cpu_renderer_pixels_rgba16f(NULL, NULL);
     } else {
         pixels_rgba8 = db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
     }
-    if (((use_hdr_float_bo != 0) && (pixels_rgba32f == NULL)) ||
+    if (((use_hdr_float_bo != 0) && (pixels_rgba16f == NULL)) ||
         ((use_hdr_float_bo == 0) && (pixels_rgba8 == NULL))) {
         db_failf(producer->backend, "cpu renderer returned NULL framebuffer");
     }
     return db_cpu_create_fb_from_framebuffer(
-        producer->gbm, producer->kms_fd, pixels_rgba8, pixels_rgba32f,
+        producer->gbm, producer->kms_fd, pixels_rgba8, pixels_rgba16f,
         use_hdr_float_bo, producer->width, producer->height);
 }
 
@@ -890,27 +892,27 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
 
     db_renderer_cpu_renderer_init();
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
-    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP;
     const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
 
     db_renderer_cpu_renderer_render_frame(0);
     const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
     const uint32_t *initial_pixels_rgba8 = NULL;
-    const float *initial_pixels_rgba32f = NULL;
+    const uint16_t *initial_pixels_rgba16f = NULL;
     if (use_hdr_float_bo != 0) {
-        initial_pixels_rgba32f =
-            db_renderer_cpu_renderer_pixels_rgba32f(NULL, NULL);
+        initial_pixels_rgba16f =
+            db_renderer_cpu_renderer_pixels_rgba16f(NULL, NULL);
     } else {
         initial_pixels_rgba8 =
             db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
     }
-    if (((use_hdr_float_bo != 0) && (initial_pixels_rgba32f == NULL)) ||
+    if (((use_hdr_float_bo != 0) && (initial_pixels_rgba16f == NULL)) ||
         ((use_hdr_float_bo == 0) && (initial_pixels_rgba8 == NULL))) {
         db_failf(backend, "cpu renderer returned NULL framebuffer");
     }
     struct fb *cur = db_cpu_create_fb_from_framebuffer(
-        gbm, kms.fd, initial_pixels_rgba8, initial_pixels_rgba32f,
+        gbm, kms.fd, initial_pixels_rgba8, initial_pixels_rgba16f,
         use_hdr_float_bo, width, height);
 
     db_kms_atomic_commit_modeset(&kms, width, height, cur->fb_id);
@@ -943,7 +945,7 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
     const uint64_t bench_frames = db_kms_atomic_run_frame_loop(
         &loop, &producer, db_kms_atomic_next_cpu_fb);
     const double bench_ms =
-        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS_D;
+        (double)(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
     db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU), renderer_name,
                            backend, bench_frames, work_unit_count, bench_ms,
                            capability_mode);

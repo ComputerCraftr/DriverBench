@@ -10,8 +10,8 @@
 #include "renderer_snake_shape_common.h"
 
 #define DB_SNAKE_COMMON_BACKEND "renderer_snake_common"
-#define DB_SNAKE_COMMON_COLOR_BIAS 0.20F
-#define DB_SNAKE_COMMON_COLOR_SCALE 0.75F
+#define DB_SNAKE_COMMON_COLOR_BIAS 0.20
+#define DB_SNAKE_COMMON_COLOR_SCALE 0.75
 #define DB_SNAKE_CURSOR_PRE_ENTRY UINT32_MAX
 #define DB_SNAKE_REGION_MAX_DIM_DIVISOR 3U
 #define DB_SNAKE_REGION_MIN_DIM_LARGE 8U
@@ -29,8 +29,8 @@ static inline uint32_t db_snake_grid_cols_effective(void) {
     return (uint32_t)BENCH_WINDOW_WIDTH_PX;
 }
 
-static inline float db_snake_color_channel(uint32_t seed) {
-    const float normalized = (float)(seed & 255U) / 255.0F;
+static inline double db_snake_color_channel(uint32_t seed) {
+    const double normalized = (double)(seed & 255U) / DB_U8_MAX;
     return DB_SNAKE_COMMON_COLOR_BIAS +
            (normalized * DB_SNAKE_COMMON_COLOR_SCALE);
 }
@@ -136,9 +136,9 @@ static inline size_t db_snake_filter_spans_for_shape_cache(
 
 typedef struct {
     db_snake_region_t region;
-    float target_r;
-    float target_g;
-    float target_b;
+    double target_r;
+    double target_g;
+    double target_b;
     int full_fill_on_phase_completed;
     int has_next_mode_phase_flag;
     int next_mode_phase_flag;
@@ -146,6 +146,12 @@ typedef struct {
     uint32_t next_shape_index;
     db_snake_shape_kind_t shape_kind;
 } db_snake_step_target_t;
+
+typedef struct {
+    uint32_t tile_index;
+    uint32_t row;
+    uint32_t col;
+} db_snake_step_tile_t;
 
 static inline uint32_t db_snake_grid_tiles_per_step(uint32_t work_unit_count) {
     if (work_unit_count == 0U) {
@@ -223,6 +229,36 @@ db_snake_tile_index_from_step(const db_snake_region_t *region, uint32_t step) {
                                    ? local_col_step
                                    : ((region->width - 1U) - local_col_step);
     return ((region->y + local_row) * cols) + (region->x + local_col);
+}
+
+static inline int
+db_snake_step_resolve_tile(const db_snake_region_t *region,
+                           const db_snake_shape_cache_t *shape_cache,
+                           uint32_t step, uint32_t cols, uint32_t rows,
+                           db_snake_step_tile_t *out_tile) {
+    if ((region == NULL) || (out_tile == NULL) || (cols == 0U) ||
+        (rows == 0U)) {
+        return 0;
+    }
+    const uint32_t tile_index = db_snake_tile_index_from_step(region, step);
+    const uint32_t row = tile_index / cols;
+    const uint32_t col = tile_index % cols;
+    if ((row >= rows) || (col >= cols)) {
+        return 0;
+    }
+    if (shape_cache != NULL) {
+        const int inside =
+            db_snake_shape_cache_contains_tile(shape_cache, row, col);
+        if (inside == 0) {
+            return 0;
+        }
+    }
+    *out_tile = (db_snake_step_tile_t){
+        .tile_index = tile_index,
+        .row = row,
+        .col = col,
+    };
+    return 1;
 }
 
 static inline void db_snake_append_step_spans_for_region(
@@ -435,9 +471,9 @@ db_snake_plan_next_step(const db_snake_plan_request_t *request) {
             .y = 0U,
             .width = db_snake_grid_cols_effective(),
             .height = db_snake_grid_rows_effective(),
-            .color_r = 0.0F,
-            .color_g = 0.0F,
-            .color_b = 0.0F,
+            .color_r = 0.0,
+            .color_g = 0.0,
+            .color_b = 0.0,
         };
         return db_snake_plan_next_step_for_region(
             &grid_region, 0U, request->cursor, request->prev_start,
@@ -452,26 +488,26 @@ db_snake_plan_next_step(const db_snake_plan_request_t *request) {
         request->prev_count, 0, request->speed_step, 0, 1);
 }
 
-static inline float db_window_blend_factor(uint32_t window_index,
-                                           uint32_t window_size) {
+static inline double db_window_blend_factor(uint32_t window_index,
+                                            uint32_t window_size) {
     const uint32_t span = db_u32_max(window_size, 1U);
     if (span <= 1U) {
-        return 1.0F;
+        return 1.0;
     }
-    return (float)((span - 1U) - window_index) / (float)(span - 1U);
+    return ((double)((span - 1U) - window_index)) / (double)(span - 1U);
 }
 
-static inline void db_grid_target_color_rgb(int clearing_phase, float *out_r,
-                                            float *out_g, float *out_b) {
+static inline void db_grid_target_color_rgb(int clearing_phase, double *out_r,
+                                            double *out_g, double *out_b) {
     if (clearing_phase != 0) {
-        *out_r = BENCH_GRID_PHASE0_R;
-        *out_g = BENCH_GRID_PHASE0_G;
-        *out_b = BENCH_GRID_PHASE0_B;
+        *out_r = (double)BENCH_GRID_PHASE0_R;
+        *out_g = (double)BENCH_GRID_PHASE0_G;
+        *out_b = (double)BENCH_GRID_PHASE0_B;
         return;
     }
-    *out_r = BENCH_GRID_PHASE1_R;
-    *out_g = BENCH_GRID_PHASE1_G;
-    *out_b = BENCH_GRID_PHASE1_B;
+    *out_r = (double)BENCH_GRID_PHASE1_R;
+    *out_g = (double)BENCH_GRID_PHASE1_G;
+    *out_b = (double)BENCH_GRID_PHASE1_B;
 }
 
 static inline db_snake_step_target_t
@@ -487,9 +523,9 @@ db_snake_step_target_from_plan(int full_grid_target_mode, uint32_t pattern_seed,
             .y = 0U,
             .width = db_snake_grid_cols_effective(),
             .height = db_snake_grid_rows_effective(),
-            .color_r = 0.0F,
-            .color_g = 0.0F,
-            .color_b = 0.0F,
+            .color_r = 0.0,
+            .color_g = 0.0,
+            .color_b = 0.0,
         };
         db_grid_target_color_rgb(plan->clearing_phase, &result.target_r,
                                  &result.target_g, &result.target_b);

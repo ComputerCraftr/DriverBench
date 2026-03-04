@@ -27,8 +27,9 @@ uint64_t db_fnv_blockhash_u64(const void *data, size_t len_bytes,
 uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
                                         uint32_t height, size_t stride_bytes,
                                         int rows_bottom_to_top);
-uint64_t db_hash_rgba32f_pixels_canonical(const float *pixels, uint32_t width,
-                                          uint32_t height, size_t stride_bytes,
+uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
+                                          uint32_t width, uint32_t height,
+                                          size_t stride_bytes,
                                           int rows_bottom_to_top);
 
 #endif

@@ -23,22 +23,9 @@ static void db_kms_gl3_render_frame_adapter(uint32_t frame_index) {
     db_renderer_opengl_gl3_3_render_frame(frame_index, 0, 0);
 }
 
-static const char *db_kms_backend_name(db_gl_renderer_t renderer) {
-    (void)renderer;
-    return BACKEND_NAME_GL;
-}
-
-static const char *db_kms_renderer_name(db_gl_renderer_t renderer) {
-    return (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
-               ? db_renderer_name_opengl_gl1_5_gles1_1()
-               : db_renderer_name_opengl_gl3_3();
-}
-
 static void db_runtime_check_gl1(const char *backend,
                                  const char *runtime_version,
                                  int runtime_is_gles) {
-    (void)backend;
-    (void)runtime_version;
     if (runtime_is_gles != 0) {
         db_display_validate_gles_1x_runtime_or_fail(backend, runtime_version);
     }
@@ -107,7 +94,9 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
             ? DB_KMS_ATOMIC_CONTEXT_GL1_5_OR_GLES1_1
             : DB_KMS_ATOMIC_CONTEXT_GL3_3;
 
-    return db_kms_atomic_run(db_kms_backend_name(renderer),
-                             db_kms_renderer_name(renderer), card, context_mode,
+    const char *renderer_name = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
+                                    ? db_renderer_name_opengl_gl1_5_gles1_1()
+                                    : db_renderer_name_opengl_gl3_3();
+    return db_kms_atomic_run(BACKEND_NAME_GL, renderer_name, card, context_mode,
                              &vtable, runtime_check, cfg);
 }

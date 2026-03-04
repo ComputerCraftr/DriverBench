@@ -165,15 +165,15 @@ int db_gl_texture_allocate_rgba8(unsigned int texture, int width, int height,
                                  const void *pixels);
 int db_gl_texture_create_rgba8(unsigned int *out_texture, int width, int height,
                                const void *pixels);
-int db_gl_texture_allocate_rgba32f(unsigned int texture, int width, int height,
+int db_gl_texture_allocate_rgba16f(unsigned int texture, int width, int height,
                                    const void *pixels);
-int db_gl_texture_create_rgba32f(unsigned int *out_texture, int width,
+int db_gl_texture_create_rgba16f(unsigned int *out_texture, int width,
                                  int height, const void *pixels);
 void db_gl_texture_delete_if_valid(unsigned int *texture);
 void db_gl_texture_bind_2d(unsigned int texture);
 void db_gl_texture_sub_image_2d_rgba(int x_px, int y_px, int width, int height,
                                      const void *pixels);
-void db_gl_texture_sub_image_2d_rgba32f(int x_px, int y_px, int width,
+void db_gl_texture_sub_image_2d_rgba16f(int x_px, int y_px, int width,
                                         int height, const void *pixels);
 void db_gl_clear_color_rgba(float red, float green, float blue, float alpha);
 void db_gl_clear_color_rgb(float red, float green, float blue);
@@ -259,6 +259,11 @@ int db_gl_row_range_to_scissor_rect(uint32_t row_start, uint32_t row_count,
                                     uint32_t total_rows, int viewport_width,
                                     int viewport_height, int *x_out, int *y_out,
                                     int *width_out, int *height_out);
+int db_gl_span_to_scissor_rect(const db_snake_col_span_t *span,
+                               uint32_t total_cols, uint32_t total_rows,
+                               int viewport_width, int viewport_height,
+                               int *x_out, int *y_out, int *width_out,
+                               int *height_out);
 size_t db_gl_collect_row_upload_ranges(
     uint32_t row_unit_width, uint32_t row_count_total, size_t unit_stride_bytes,
     const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,

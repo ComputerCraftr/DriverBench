@@ -11,7 +11,7 @@
 
 #include "../../core/db_core.h"
 
-#define MAX_SLEEP_NS_D 100000000.0
+#define MAX_SLEEP_NS 100000000.0
 
 static void db_glfw_init_or_fail(const char *backend) {
     if (!glfwInit()) {
@@ -39,12 +39,6 @@ static GLFWwindow *db_glfw_create_window_or_fail(const char *backend,
     return window;
 }
 
-static void db_glfw_make_current_and_set_swap(GLFWwindow *window,
-                                              int swap_interval) {
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(swap_interval);
-}
-
 static GLFWwindow *
 db_glfw_try_context_window(const char *title, int width_px, int height_px,
                            int client_api, int context_major, int context_minor,
@@ -64,7 +58,8 @@ db_glfw_try_context_window(const char *title, int width_px, int height_px,
     GLFWwindow *window =
         glfwCreateWindow(width_px, height_px, title, NULL, NULL);
     if (window != NULL) {
-        db_glfw_make_current_and_set_swap(window, swap_interval);
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(swap_interval);
     }
     return window;
 }
@@ -144,17 +139,17 @@ void db_glfw_sleep_to_fps_cap(const char *backend, double frame_start_s,
     double remaining_s =
         frame_budget_s - (db_glfw_time_seconds() - frame_start_s);
     while (remaining_s > 0.0) {
-        const double remaining_ns_d = remaining_s * DB_NS_PER_SECOND_D;
-        const double sleep_ns_d =
-            (remaining_ns_d > MAX_SLEEP_NS_D) ? MAX_SLEEP_NS_D : remaining_ns_d;
-        const long sleep_ns =
-            db_checked_double_to_long(backend, "sleep_ns", sleep_ns_d);
-        if (sleep_ns <= 0L) {
+        const double remaining_ns = remaining_s * DB_NS_PER_SECOND;
+        const double sleep_ns =
+            (remaining_ns > MAX_SLEEP_NS) ? MAX_SLEEP_NS : remaining_ns;
+        const long sleep_ns_long =
+            db_checked_double_to_long(backend, "sleep_ns", sleep_ns);
+        if (sleep_ns_long <= 0L) {
             break;
         }
 
         struct timespec request = {0};
-        request.tv_nsec = sleep_ns;
+        request.tv_nsec = sleep_ns_long;
         // NOLINTNEXTLINE(misc-include-cleaner)
         if ((nanosleep(&request, NULL) != 0) && (errno != EINTR)) {
             break;

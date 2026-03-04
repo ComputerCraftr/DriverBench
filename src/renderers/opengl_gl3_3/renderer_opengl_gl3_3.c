@@ -1,5 +1,4 @@
 #include "renderer_opengl_gl3_3.h"
-#include "renderer_opengl_gl3_3_ranges.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -591,11 +590,15 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
     int used_dirty_history_draw = 0;
     if ((g_state.runtime.backbuffer_draw_full == 0) &&
         (snake_plan_valid != 0)) {
-        db_dirty_row_range_t dirty_rows[4] = {
-            {0U, 0U}, {0U, 0U}, {0U, 0U}, {0U, 0U}};
-        const size_t dirty_count = db_gl3_collect_snake_dirty_rows(
-            BACKEND_NAME, &snake_plan, &snake_target.region, dirty_rows);
-        if (dirty_count > 0U) {
+        db_snake_col_span_t spans[BENCH_SNAKE_PHASE_WINDOW_TILES * 2U] = {
+            {0U, 0U, 0U}};
+        const size_t max_spans = sizeof(spans) / sizeof(spans[0]);
+        const size_t span_count = db_snake_collect_damage_spans(
+            spans, max_spans, &snake_target.region, snake_plan.prev_start,
+            snake_plan.prev_count, snake_plan.active_cursor,
+            snake_plan.batch_size, NULL);
+        if (span_count > 0U) {
+            const uint32_t total_cols = db_grid_cols_effective();
             const uint32_t total_rows = db_grid_rows_effective();
             db_gl_bind_framebuffer(GL_READ_FRAMEBUFFER,
                                    g_state.history_fbo[read_index]);
@@ -609,15 +612,15 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
             db_gl_bind_framebuffer(GL_FRAMEBUFFER,
                                    g_state.history_fbo[write_index]);
             db_gl_set_scissor_enabled(1);
-            for (size_t i = 0U; i < dirty_count; i++) {
+            for (size_t i = 0U; i < span_count; i++) {
                 int sx = 0;
                 int sy = 0;
                 int sw = 0;
                 int sh = 0;
-                if (db_gl_row_range_to_scissor_rect(
-                        dirty_rows[i].row_start, dirty_rows[i].row_count,
-                        total_rows, g_state.last_viewport_w,
-                        g_state.last_viewport_h, &sx, &sy, &sw, &sh) == 0) {
+                if (db_gl_span_to_scissor_rect(
+                        &spans[i], total_cols, total_rows,
+                        g_state.last_viewport_w, g_state.last_viewport_h, &sx,
+                        &sy, &sw, &sh) == 0) {
                     continue;
                 }
                 db_gl_set_scissor_rect(sx, sy, sw, sh);

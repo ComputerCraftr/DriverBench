@@ -11,7 +11,7 @@
 
 #define DB_MAX_TEXT_FILE_BYTES (16U * 1024U * 1024U)
 #define DB_RUNTIME_OPTION_CAPACITY 32U
-#define DB_MAX_SLEEP_NS_D 100000000.0
+#define DB_MAX_SLEEP_NS 100000000.0
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 
@@ -258,27 +258,26 @@ void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
         return;
     }
 
-    const double frame_budget_ns_d = DB_NS_PER_SECOND_D / fps_cap;
-    double remaining_ns_d =
-        frame_budget_ns_d - (double)(db_now_ns_monotonic() - frame_start_ns);
-    while (remaining_ns_d > 0.0) {
-        const double sleep_ns_d = (remaining_ns_d > DB_MAX_SLEEP_NS_D)
-                                      ? DB_MAX_SLEEP_NS_D
-                                      : remaining_ns_d;
-        const long sleep_ns =
-            db_checked_double_to_long(backend, "sleep_ns", sleep_ns_d);
-        if (sleep_ns <= 0L) {
+    const double frame_budget_ns = DB_NS_PER_SECOND / fps_cap;
+    double remaining_ns =
+        frame_budget_ns - (double)(db_now_ns_monotonic() - frame_start_ns);
+    while (remaining_ns > 0.0) {
+        const double sleep_ns =
+            (remaining_ns > DB_MAX_SLEEP_NS) ? DB_MAX_SLEEP_NS : remaining_ns;
+        const long sleep_ns_long =
+            db_checked_double_to_long(backend, "sleep_ns", sleep_ns);
+        if (sleep_ns_long <= 0L) {
             break;
         }
 
         struct timespec request = {0};
-        request.tv_nsec = sleep_ns;
+        request.tv_nsec = sleep_ns_long;
         // NOLINTNEXTLINE(misc-include-cleaner)
         if ((nanosleep(&request, NULL) != 0) && (errno != EINTR)) {
             break;
         }
-        remaining_ns_d = frame_budget_ns_d -
-                         (double)(db_now_ns_monotonic() - frame_start_ns);
+        remaining_ns =
+            frame_budget_ns - (double)(db_now_ns_monotonic() - frame_start_ns);
     }
 }
 
@@ -351,7 +350,7 @@ static void db_benchmark_log(const char *api_name, const char *renderer_name,
     }
 
     double ms_per_frame = elapsed_ms / (double)frames;
-    double fps = DB_MS_PER_SECOND_D / ms_per_frame;
+    double fps = DB_MS_PER_SECOND / ms_per_frame;
     const char *mode = (capability_mode != NULL) ? capability_mode : "default";
     if (strcmp(tag, "progress") == 0) {
         printf("%s benchmark (%s): mode=%s frames=%llu total_ms=%.2f "

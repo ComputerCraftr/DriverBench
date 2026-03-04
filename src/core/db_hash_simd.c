@@ -89,6 +89,7 @@ static inline uint32_t db_fnv1a32_block64_scalar(const uint8_t *byte_ptr,
     return block_hash;
 }
 
+#ifndef __aarch64__
 static inline void db_fnv1a32_4x64_scalar(
     const uint8_t *block0, const uint8_t *block1, const uint8_t *block2,
     const uint8_t *block3, uint32_t seed0, uint32_t seed1, uint32_t seed2,
@@ -188,6 +189,7 @@ static inline void db_pack8_u32_to4_u64_scalar_ilp(const uint32_t *in_hashes,
         (uint64_t)in_hashes[DB_BLOCK_HASH_LANE_6] |
         ((uint64_t)in_hashes[DB_BLOCK_HASH_LANE_7] << 32U);
 }
+#endif
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -517,17 +519,16 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
     uint64_t final_hash = init_hash;
     size_t block_index = 0U;
 
-    const size_t avx2_width = DB_BLOCK_HASH_VECTOR_WIDTH_AVX2;
 #if defined(__x86_64__) || defined(__i386__)
     const int x86_kernel = db_hash_select_x86_kernel();
     if (x86_kernel == DB_HASH_X86_KERNEL_AVX2) {
-        for (; block_index + avx2_width <= full_blocks;
-             block_index += avx2_width) {
+        for (; block_index + DB_BLOCK_HASH_VECTOR_WIDTH_AVX2 <= full_blocks;
+             block_index += DB_BLOCK_HASH_VECTOR_WIDTH_AVX2) {
             alignas(32) uint32_t lane_hashes[DB_BLOCK_HASH_VECTOR_WIDTH_AVX2];
             const uint8_t *block_ptrs[DB_BLOCK_HASH_VECTOR_WIDTH_AVX2];
             uint32_t seeds[DB_BLOCK_HASH_VECTOR_WIDTH_AVX2];
-            for (size_t lane_index = 0U; lane_index < avx2_width;
-                 lane_index++) {
+            for (size_t lane_index = 0U;
+                 lane_index < DB_BLOCK_HASH_VECTOR_WIDTH_AVX2; lane_index++) {
                 block_ptrs[lane_index] =
                     byte_ptr +
                     ((block_index + lane_index) * DB_BLOCK_HASH_BYTES);
@@ -550,7 +551,8 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
                 seeds[DB_BLOCK_HASH_LANE_7], lane_hashes);
 
             if (out_block_hashes != NULL) {
-                for (size_t lane_index = 0U; lane_index < avx2_width;
+                for (size_t lane_index = 0U;
+                     lane_index < DB_BLOCK_HASH_VECTOR_WIDTH_AVX2;
                      lane_index++) {
                     out_block_hashes[block_index + lane_index] =
                         lane_hashes[lane_index];
@@ -560,7 +562,8 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
             alignas(32)
                 uint64_t packed_hashes[DB_BLOCK_HASH_VECTOR_WIDTH_AVX2 / 2U];
             db_x86_pack8_u32_to4_u64_avx2(lane_hashes, packed_hashes);
-            for (size_t pair_index = 0U; pair_index < (avx2_width / 2U);
+            for (size_t pair_index = 0U;
+                 pair_index < (DB_BLOCK_HASH_VECTOR_WIDTH_AVX2 / 2U);
                  pair_index++) {
                 final_hash = db_fnv1a64_update_u64_bytes(
                     final_hash, packed_hashes[pair_index]);

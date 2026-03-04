@@ -15,12 +15,6 @@ void db_gl1_draw_solid_rect_pixels(int rect_x, int rect_y, int rect_width,
                                    int viewport_h, float color_r, float color_g,
                                    float color_b);
 
-int db_gl1_snake_span_to_scissor_rect(const db_snake_col_span_t *span,
-                                      uint32_t total_cols, uint32_t total_rows,
-                                      int viewport_w, int viewport_h,
-                                      int *x_out, int *y_out, int *width_out,
-                                      int *height_out);
-
 size_t db_gl1_gradient_dirty_row_total(const db_dirty_row_range_t *dirty_ranges,
                                        size_t dirty_count);
 

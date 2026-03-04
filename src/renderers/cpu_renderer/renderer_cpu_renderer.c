@@ -5,28 +5,26 @@
 #include <stdlib.h>
 
 #include "../../config/benchmark_config.h"
+#include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
+#include "../../core/db_numeric.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_snake_common.h"
 #include "../renderer_snake_shape_common.h"
 
 #define BACKEND_NAME "renderer_cpu_renderer"
 #define DB_ALPHA_U8 255U
-#define DB_ALPHA_F32 1.0F
+#define DB_ALPHA_F16 0x3C00U
 #define DB_CAP_MODE_CPU_OFFSCREEN_BO "cpu_offscreen_bo"
-#define DB_CAP_MODE_CPU_OFFSCREEN_BO_HDR "cpu_offscreen_bo_hdr_rgba32f"
-#define DB_COLOR_SHIFT_A 24U
-#define DB_COLOR_SHIFT_B 16U
-#define DB_COLOR_SHIFT_G 8U
-#define DB_COLOR_SHIFT_R 0U
+#define DB_CAP_MODE_CPU_OFFSCREEN_BO_HDR "cpu_offscreen_bo_hdr_rgba16f"
 #define DB_FLOAT_CHANNELS_PER_PIXEL 4U
 
 typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t *pixels_rgba8;
-    float *pixels_rgba32f;
+    uint16_t *pixels_rgba16f;
     int is_hdr_float_bo;
 } db_cpu_bo_t;
 
@@ -65,70 +63,135 @@ static int db_cpu_hdr_enabled_from_runtime(void) {
     return 1;
 }
 
-static size_t db_cpu_bo_index(const db_cpu_bo_t *bo, uint32_t row,
-                              uint32_t col) {
-    return ((size_t)row * (size_t)bo->width) + (size_t)col;
-}
-
-static void db_cpu_bo_write_rgb_index(db_cpu_bo_t *bo, size_t idx, float red,
-                                      float green, float blue) {
+static void db_cpu_bo_write_rgb_index(db_cpu_bo_t *bo, size_t idx, double red,
+                                      double green, double blue) {
     if (bo->is_hdr_float_bo != 0) {
         const size_t base = idx * DB_FLOAT_CHANNELS_PER_PIXEL;
-        bo->pixels_rgba32f[base + 0U] = red;
-        bo->pixels_rgba32f[base + 1U] = green;
-        bo->pixels_rgba32f[base + 2U] = blue;
-        bo->pixels_rgba32f[base + 3U] = DB_ALPHA_F32;
+        bo->pixels_rgba16f[base + 0U] = db_double_to_f16(red);
+        bo->pixels_rgba16f[base + 1U] = db_double_to_f16(green);
+        bo->pixels_rgba16f[base + 2U] = db_double_to_f16(blue);
+        bo->pixels_rgba16f[base + 3U] = DB_ALPHA_F16;
         return;
     }
-    const uint32_t red_u8 = (uint32_t)db_float01_to_u8_clamped(red);
-    const uint32_t green_u8 = (uint32_t)db_float01_to_u8_clamped(green);
-    const uint32_t blue_u8 = (uint32_t)db_float01_to_u8_clamped(blue);
     bo->pixels_rgba8[idx] =
-        (DB_ALPHA_U8 << DB_COLOR_SHIFT_A) | (blue_u8 << DB_COLOR_SHIFT_B) |
-        (green_u8 << DB_COLOR_SHIFT_G) | (red_u8 << DB_COLOR_SHIFT_R);
+        db_pack_rgba8888_from_rgb01(red, green, blue, DB_ALPHA_U8);
 }
 
 static void db_cpu_bo_read_rgb_index(const db_cpu_bo_t *bo, size_t idx,
-                                     float *out_red, float *out_green,
-                                     float *out_blue) {
+                                     double *out_red, double *out_green,
+                                     double *out_blue) {
     if (bo->is_hdr_float_bo != 0) {
         const size_t base = idx * DB_FLOAT_CHANNELS_PER_PIXEL;
-        *out_red = bo->pixels_rgba32f[base + 0U];
-        *out_green = bo->pixels_rgba32f[base + 1U];
-        *out_blue = bo->pixels_rgba32f[base + 2U];
+        *out_red = db_f16_to_double(bo->pixels_rgba16f[base + 0U]);
+        *out_green = db_f16_to_double(bo->pixels_rgba16f[base + 1U]);
+        *out_blue = db_f16_to_double(bo->pixels_rgba16f[base + 2U]);
         return;
     }
     const uint32_t rgba = bo->pixels_rgba8[idx];
-    *out_red = (float)((rgba >> DB_COLOR_SHIFT_R) & 255U) / DB_U8_MAX_F;
-    *out_green = (float)((rgba >> DB_COLOR_SHIFT_G) & 255U) / DB_U8_MAX_F;
-    *out_blue = (float)((rgba >> DB_COLOR_SHIFT_B) & 255U) / DB_U8_MAX_F;
+    db_unpack_rgba8888_rgb01(rgba, out_red, out_green, out_blue);
 }
 
-static void db_cpu_bo_fill_solid_rgb(db_cpu_bo_t *bo, float red, float green,
-                                     float blue) {
-    const uint64_t pixel_count = (uint64_t)bo->width * (uint64_t)bo->height;
-    for (uint64_t idx = 0U; idx < pixel_count; idx++) {
-        db_cpu_bo_write_rgb_index(bo, (size_t)idx, red, green, blue);
-    }
-}
-
-static void db_cpu_convert_rgba32f_to_rgba8(const db_cpu_bo_t *bo,
-                                            uint32_t *out_rgba8) {
-    if ((bo == NULL) || (out_rgba8 == NULL) || (bo->pixels_rgba32f == NULL)) {
+static void db_cpu_bo_fill_solid_rgb(db_cpu_bo_t *bo, double red, double green,
+                                     double blue) {
+    if ((bo == NULL) || (bo->width == 0U) || (bo->height == 0U)) {
         return;
     }
-    const uint64_t pixel_count = (uint64_t)bo->width * (uint64_t)bo->height;
-    for (uint64_t idx = 0U; idx < pixel_count; idx++) {
-        const size_t base = (size_t)idx * DB_FLOAT_CHANNELS_PER_PIXEL;
-        const uint32_t red_u8 =
-            (uint32_t)db_float01_to_u8_clamped(bo->pixels_rgba32f[base + 0U]);
-        const uint32_t green_u8 =
-            (uint32_t)db_float01_to_u8_clamped(bo->pixels_rgba32f[base + 1U]);
-        const uint32_t blue_u8 =
-            (uint32_t)db_float01_to_u8_clamped(bo->pixels_rgba32f[base + 2U]);
-        out_rgba8[idx] =
-            (DB_ALPHA_U8 << DB_COLOR_SHIFT_A) | (blue_u8 << DB_COLOR_SHIFT_B) |
-            (green_u8 << DB_COLOR_SHIFT_G) | (red_u8 << DB_COLOR_SHIFT_R);
+    if (bo->is_hdr_float_bo != 0) {
+        const uint16_t red_f16 = db_double_to_f16(red);
+        const uint16_t green_f16 = db_double_to_f16(green);
+        const uint16_t blue_f16 = db_double_to_f16(blue);
+        for (uint32_t row = 0U; row < bo->height; row++) {
+            uint16_t *dst =
+                bo->pixels_rgba16f +
+                ((size_t)row * (size_t)bo->width * DB_FLOAT_CHANNELS_PER_PIXEL);
+            db_fill_rgba16f_buffer(dst, bo->width, red_f16, green_f16, blue_f16,
+                                   DB_ALPHA_F16);
+        }
+        return;
+    }
+    const uint32_t packed_color =
+        db_pack_rgba8888_from_rgb01(red, green, blue, DB_ALPHA_U8);
+    for (uint32_t row = 0U; row < bo->height; row++) {
+        uint32_t *dst = bo->pixels_rgba8 + ((size_t)row * bo->width);
+        db_fill_u32_buffer(dst, bo->width, packed_color);
+    }
+}
+
+static void db_cpu_bo_fill_row_span_rgb(db_cpu_bo_t *bo, uint32_t row,
+                                        uint32_t col_start, uint32_t col_count,
+                                        double red, double green, double blue) {
+    if ((bo == NULL) || (row >= bo->height) || (col_start >= bo->width) ||
+        (col_count == 0U)) {
+        return;
+    }
+    const uint32_t max_cols = bo->width - col_start;
+    const uint32_t span_cols = db_u32_min(col_count, max_cols);
+    if (span_cols == 0U) {
+        return;
+    }
+    if (bo->is_hdr_float_bo != 0) {
+        const uint16_t red_f16 = db_double_to_f16(red);
+        const uint16_t green_f16 = db_double_to_f16(green);
+        const uint16_t blue_f16 = db_double_to_f16(blue);
+        uint16_t *dst =
+            bo->pixels_rgba16f + ((((size_t)row * bo->width) + col_start) *
+                                  DB_FLOAT_CHANNELS_PER_PIXEL);
+        db_fill_rgba16f_buffer(dst, span_cols, red_f16, green_f16, blue_f16,
+                               DB_ALPHA_F16);
+        return;
+    }
+    const uint32_t packed_color =
+        db_pack_rgba8888_from_rgb01(red, green, blue, DB_ALPHA_U8);
+    uint32_t *dst = bo->pixels_rgba8 + (((size_t)row * bo->width) + col_start);
+    db_fill_u32_buffer(dst, span_cols, packed_color);
+}
+
+static void db_cpu_bo_fill_row_range_span_rgb(
+    db_cpu_bo_t *bo, uint32_t row_start, uint32_t row_count, uint32_t col_start,
+    uint32_t col_count, double red, double green, double blue) {
+    if ((bo == NULL) || (row_start >= bo->height) || (row_count == 0U) ||
+        (col_count == 0U)) {
+        return;
+    }
+    const uint32_t max_rows = bo->height - row_start;
+    const uint32_t span_rows = db_u32_min(row_count, max_rows);
+    if (bo->is_hdr_float_bo != 0) {
+        const uint16_t red_f16 = db_double_to_f16(red);
+        const uint16_t green_f16 = db_double_to_f16(green);
+        const uint16_t blue_f16 = db_double_to_f16(blue);
+        for (uint32_t row_offset = 0U; row_offset < span_rows; row_offset++) {
+            const uint32_t row = row_start + row_offset;
+            if ((row >= bo->height) || (col_start >= bo->width)) {
+                continue;
+            }
+            const uint32_t max_cols = bo->width - col_start;
+            const uint32_t span_cols = db_u32_min(col_count, max_cols);
+            if (span_cols == 0U) {
+                continue;
+            }
+            uint16_t *dst =
+                bo->pixels_rgba16f + ((((size_t)row * bo->width) + col_start) *
+                                      DB_FLOAT_CHANNELS_PER_PIXEL);
+            db_fill_rgba16f_buffer(dst, span_cols, red_f16, green_f16, blue_f16,
+                                   DB_ALPHA_F16);
+        }
+        return;
+    }
+    const uint32_t packed_color =
+        db_pack_rgba8888_from_rgb01(red, green, blue, DB_ALPHA_U8);
+    for (uint32_t row_offset = 0U; row_offset < span_rows; row_offset++) {
+        const uint32_t row = row_start + row_offset;
+        if ((row >= bo->height) || (col_start >= bo->width)) {
+            continue;
+        }
+        const uint32_t max_cols = bo->width - col_start;
+        const uint32_t span_cols = db_u32_min(col_count, max_cols);
+        if (span_cols == 0U) {
+            continue;
+        }
+        uint32_t *dst =
+            bo->pixels_rgba8 + (((size_t)row * bo->width) + col_start);
+        db_fill_u32_buffer(dst, span_cols, packed_color);
     }
 }
 
@@ -172,19 +235,16 @@ static void db_cpu_set_damage_from_spans(const db_snake_col_span_t *spans,
     g_state.damage_row_count = 1U;
 }
 
-static void db_cpu_apply_gradient_row_color(uint32_t row, float row_red,
-                                            float row_green, float row_blue,
+static void db_cpu_apply_gradient_row_color(uint32_t row, double row_red,
+                                            double row_green, double row_blue,
                                             void *user_data) {
     db_cpu_gradient_row_apply_ctx_t *ctx =
         (db_cpu_gradient_row_apply_ctx_t *)user_data;
     if ((ctx == NULL) || (ctx->bo == NULL)) {
         return;
     }
-    const size_t row_base = (size_t)row * ctx->cols;
-    for (uint32_t col = 0U; col < ctx->cols; col++) {
-        db_cpu_bo_write_rgb_index(ctx->bo, row_base + col, row_red, row_green,
-                                  row_blue);
-    }
+    db_cpu_bo_fill_row_span_rgb(ctx->bo, row, 0U, ctx->cols, row_red, row_green,
+                                row_blue);
 }
 
 static void db_render_bands(db_cpu_bo_t *bo, uint32_t frame_index) {
@@ -195,28 +255,31 @@ static void db_render_bands(db_cpu_bo_t *bo, uint32_t frame_index) {
     }
 
     for (uint32_t band = 0U; band < BENCH_BANDS; band++) {
-        float band_red = 0.0F;
-        float band_green = 0.0F;
-        float band_blue = 0.0F;
+        double band_red = 0.0;
+        double band_green = 0.0;
+        double band_blue = 0.0;
         db_band_color_rgb(band, BENCH_BANDS, frame_index, &band_red,
                           &band_green, &band_blue);
         const uint32_t x0 = (band * cols) / BENCH_BANDS;
         const uint32_t x1 = ((band + 1U) * cols) / BENCH_BANDS;
-        for (uint32_t row = 0U; row < rows; row++) {
-            const size_t row_base = (size_t)row * cols;
-            for (uint32_t col = x0; col < x1; col++) {
-                db_cpu_bo_write_rgb_index(bo, row_base + col, band_red,
-                                          band_green, band_blue);
-            }
+        if ((x1 <= x0) || (x0 >= cols)) {
+            continue;
         }
+        const uint32_t x_end = db_u32_min(x1, cols);
+        const uint32_t span_cols = x_end - x0;
+        if (span_cols == 0U) {
+            continue;
+        }
+        db_cpu_bo_fill_row_range_span_rgb(bo, 0U, rows, x0, span_cols, band_red,
+                                          band_green, band_blue);
     }
 }
 
 static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
                                  const db_snake_region_t *region,
                                  const db_snake_shape_cache_t *shape_cache_ptr,
-                                 float target_red, float target_green,
-                                 float target_blue,
+                                 double target_red, double target_green,
+                                 double target_blue,
                                  int full_fill_on_phase_completed) {
     if ((plan == NULL) || (region == NULL)) {
         return;
@@ -229,11 +292,12 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
     const uint32_t rows = bo->height;
     // Snapshot prior colors for the active blend window BEFORE we mutate the
     // buffer. This mirrors the GL1.5 path and is required for determinism.
-    float prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0F};
+    double prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0};
 
-    const uint32_t max_batch = BENCH_SNAKE_PHASE_WINDOW_TILES;
     const uint32_t batch_limit =
-        (plan->batch_size <= max_batch) ? plan->batch_size : max_batch;
+        (plan->batch_size <= BENCH_SNAKE_PHASE_WINDOW_TILES)
+            ? plan->batch_size
+            : BENCH_SNAKE_PHASE_WINDOW_TILES;
 
     for (uint32_t update_index = 0U; update_index < batch_limit;
          update_index++) {
@@ -241,23 +305,15 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
         if (step >= plan->target_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_snake_tile_index_from_step(region, step);
-        const uint32_t row = tile_index / cols;
-        const uint32_t col = tile_index % cols;
-        if ((row >= rows) || (col >= cols)) {
+        db_snake_step_tile_t tile = {0};
+        if (db_snake_step_resolve_tile(region, shape_cache_ptr, step, cols,
+                                       rows, &tile) == 0) {
             continue;
         }
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
-            if (inside == 0) {
-                continue;
-            }
-        }
-        const size_t idx = db_cpu_bo_index(bo, row, col);
-        float pr = 0.0F;
-        float pg = 0.0F;
-        float pb = 0.0F;
+        const size_t idx = ((size_t)tile.row * (size_t)cols) + (size_t)tile.col;
+        double pr = 0.0;
+        double pg = 0.0;
+        double pb = 0.0;
         db_cpu_bo_read_rgb_index(bo, idx, &pr, &pg, &pb);
         const size_t base = (size_t)update_index * 3U;
         prior_rgb[base + 0U] = pr;
@@ -276,21 +332,14 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
         if (step >= plan->target_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_snake_tile_index_from_step(region, step);
-        const uint32_t row = tile_index / cols;
-        const uint32_t col = tile_index % cols;
-        if ((row >= rows) || (col >= cols)) {
+        db_snake_step_tile_t tile = {0};
+        if (db_snake_step_resolve_tile(region, shape_cache_ptr, step, cols,
+                                       rows, &tile) == 0) {
             continue;
         }
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
-            if (inside == 0) {
-                continue;
-            }
-        }
-        db_cpu_bo_write_rgb_index(bo, db_cpu_bo_index(bo, row, col), target_red,
-                                  target_green, target_blue);
+        const size_t idx = ((size_t)tile.row * (size_t)cols) + (size_t)tile.col;
+        db_cpu_bo_write_rgb_index(bo, idx, target_red, target_green,
+                                  target_blue);
     }
 
     // Blend the active window using the snapshotted prior colors.
@@ -300,48 +349,29 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
         if (step >= plan->target_tile_count) {
             break;
         }
-        const uint32_t tile_index = db_snake_tile_index_from_step(region, step);
-        const uint32_t row = tile_index / cols;
-        const uint32_t col = tile_index % cols;
-        if ((row >= rows) || (col >= cols)) {
+        db_snake_step_tile_t tile = {0};
+        if (db_snake_step_resolve_tile(region, shape_cache_ptr, step, cols,
+                                       rows, &tile) == 0) {
             continue;
         }
-        if (shape_cache_ptr != NULL) {
-            const int inside =
-                db_snake_shape_cache_contains_tile(shape_cache_ptr, row, col);
-            if (inside == 0) {
-                continue;
-            }
-        }
+        const size_t idx = ((size_t)tile.row * (size_t)cols) + (size_t)tile.col;
 
         const size_t prior_base = (size_t)update_index * 3U;
-        const float prior_red = prior_rgb[prior_base + 0U];
-        const float prior_green = prior_rgb[prior_base + 1U];
-        const float prior_blue = prior_rgb[prior_base + 2U];
+        const double prior_red = prior_rgb[prior_base + 0U];
+        const double prior_green = prior_rgb[prior_base + 1U];
+        const double prior_blue = prior_rgb[prior_base + 2U];
 
-        const float blend =
+        const double blend =
             db_window_blend_factor(update_index, plan->batch_size);
-        float out_red = 0.0F;
-        float out_green = 0.0F;
-        float out_blue = 0.0F;
+        double out_red = 0.0;
+        double out_green = 0.0;
+        double out_blue = 0.0;
         db_blend_rgb(prior_red, prior_green, prior_blue, target_red,
                      target_green, target_blue, blend, &out_red, &out_green,
                      &out_blue);
 
-        db_cpu_bo_write_rgb_index(bo, db_cpu_bo_index(bo, row, col), out_red,
-                                  out_green, out_blue);
+        db_cpu_bo_write_rgb_index(bo, idx, out_red, out_green, out_blue);
     }
-}
-
-static void db_render_gradient(db_cpu_bo_t *bo, uint32_t head_row,
-                               int direction_down, uint32_t cycle_index) {
-    db_cpu_gradient_row_apply_ctx_t apply_ctx = {
-        .bo = bo,
-        .cols = bo->width,
-    };
-    db_for_each_gradient_row_color(0U, bo->height, head_row, direction_down,
-                                   cycle_index, db_cpu_apply_gradient_row_color,
-                                   &apply_ctx);
 }
 
 void db_renderer_cpu_renderer_init(void) {
@@ -367,13 +397,13 @@ void db_renderer_cpu_renderer_init(void) {
         .width = grid_cols,
         .height = grid_rows,
         .pixels_rgba8 = NULL,
-        .pixels_rgba32f = NULL,
+        .pixels_rgba16f = NULL,
         .is_hdr_float_bo = db_cpu_hdr_enabled_from_runtime(),
     };
     if (bo.is_hdr_float_bo != 0) {
-        bo.pixels_rgba32f = (float *)db_alloc_aligned_array_or_fail(
-            BACKEND_NAME, "pixels_rgba32f",
-            (size_t)pixel_count * DB_FLOAT_CHANNELS_PER_PIXEL, sizeof(float),
+        bo.pixels_rgba16f = (uint16_t *)db_alloc_aligned_array_or_fail(
+            BACKEND_NAME, "pixels_rgba16f",
+            (size_t)pixel_count * DB_FLOAT_CHANNELS_PER_PIXEL, sizeof(uint16_t),
             DB_CACHELINE_ALIGNMENT_BYTES);
     } else {
         bo.pixels_rgba8 = (uint32_t *)db_alloc_aligned_array_or_fail(
@@ -481,9 +511,14 @@ void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
             g_state.runtime.mode_phase_flag,
             g_state.runtime.gradient.cycle_index,
             g_state.runtime.bench_speed_step);
-        db_render_gradient(write_bo, plan.render_state.head_row,
-                           plan.render_state.direction_down,
-                           plan.render_state.cycle_index);
+        db_cpu_gradient_row_apply_ctx_t apply_ctx = {
+            .bo = write_bo,
+            .cols = write_bo->width,
+        };
+        db_for_each_gradient_row_color(
+            0U, write_bo->height, plan.render_state.head_row,
+            plan.render_state.direction_down, plan.render_state.cycle_index,
+            db_cpu_apply_gradient_row_color, &apply_ctx);
         db_cpu_set_damage_from_gradient_plan(&plan, write_bo->height);
         db_gradient_apply_step_to_runtime(&g_state.runtime, &plan);
     }
@@ -516,7 +551,11 @@ const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
                 BACKEND_NAME, "pixels_rgba8_staging", (size_t)pixel_count,
                 sizeof(uint32_t), DB_CACHELINE_ALIGNMENT_BYTES);
     }
-    db_cpu_convert_rgba32f_to_rgba8(&g_state.bo, g_state.pixels_rgba8_staging);
+    db_convert_rgba16f_to_rgba8888_rows(
+        g_state.pixels_rgba8_staging, (size_t)g_state.bo.width,
+        g_state.bo.pixels_rgba16f,
+        (size_t)g_state.bo.width * DB_FLOAT_CHANNELS_PER_PIXEL,
+        g_state.bo.width, g_state.bo.height, DB_ALPHA_U8);
     return g_state.pixels_rgba8_staging;
 }
 
@@ -535,8 +574,8 @@ int db_renderer_cpu_renderer_is_hdr_float_bo(void) {
     return (g_state.initialized != 0) && (g_state.bo.is_hdr_float_bo != 0);
 }
 
-const float *db_renderer_cpu_renderer_pixels_rgba32f(uint32_t *out_width,
-                                                     uint32_t *out_height) {
+const uint16_t *db_renderer_cpu_renderer_pixels_rgba16f(uint32_t *out_width,
+                                                        uint32_t *out_height) {
     if (g_state.initialized == 0) {
         return NULL;
     }
@@ -549,7 +588,7 @@ const float *db_renderer_cpu_renderer_pixels_rgba32f(uint32_t *out_width,
     if (g_state.bo.is_hdr_float_bo == 0) {
         return NULL;
     }
-    return g_state.bo.pixels_rgba32f;
+    return g_state.bo.pixels_rgba16f;
 }
 
 uint64_t db_renderer_cpu_renderer_state_hash(void) {
@@ -578,6 +617,6 @@ void db_renderer_cpu_renderer_shutdown(void) {
     free(g_state.pixels_rgba8_staging);
     free(g_state.snake_row_bounds);
     free(g_state.bo.pixels_rgba8);
-    free(g_state.bo.pixels_rgba32f);
+    free(g_state.bo.pixels_rgba16f);
     g_state = (db_cpu_renderer_state_t){0};
 }

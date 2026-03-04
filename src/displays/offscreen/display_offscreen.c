@@ -19,7 +19,7 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     db_install_signal_handlers();
 
     const uint32_t frame_limit = (cfg != NULL) ? cfg->frame_limit : 0U;
-    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP_D;
+    const double fps_cap = (cfg != NULL) ? cfg->fps_cap : BENCH_FPS_CAP;
     const db_display_hash_settings_t hash_settings =
         db_display_resolve_hash_settings(
             0, 0, (cfg != NULL) ? cfg->hash_mode : "none");
@@ -53,15 +53,16 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
             uint32_t pixel_height = 0U;
             uint64_t bo_hash = 0U;
             if (db_renderer_cpu_renderer_is_hdr_float_bo() != 0) {
-                const float *pixels = db_renderer_cpu_renderer_pixels_rgba32f(
-                    &pixel_width, &pixel_height);
+                const uint16_t *pixels =
+                    db_renderer_cpu_renderer_pixels_rgba16f(&pixel_width,
+                                                            &pixel_height);
                 if (pixels == NULL) {
                     db_failf(BACKEND_NAME,
                              "cpu renderer returned NULL HDR framebuffer");
                 }
-                bo_hash = db_hash_rgba32f_pixels_canonical(
+                bo_hash = db_hash_rgba16f_pixels_canonical(
                     pixels, pixel_width, pixel_height,
-                    (size_t)pixel_width * 4U * sizeof(float), 0);
+                    (size_t)pixel_width * 4U * sizeof(uint16_t), 0);
             } else {
                 const uint32_t *pixels = db_renderer_cpu_renderer_pixels_rgba8(
                     &pixel_width, &pixel_height);
@@ -78,11 +79,11 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
 
         frames++;
         const double elapsed_ms =
-            (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS_D;
+            (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
         db_benchmark_log_periodic(
             db_dispatch_api_name(DB_API_CPU), db_renderer_name_cpu(),
             BACKEND_NAME, frames, work_unit_count, elapsed_ms, capability_mode,
-            &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS_D);
+            &next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS);
         db_sleep_to_fps_cap(BACKEND_NAME, frame_start_ns, fps_cap);
     }
 
@@ -95,15 +96,16 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
         uint32_t final_width = 0U;
         uint32_t final_height = 0U;
         if (db_renderer_cpu_renderer_is_hdr_float_bo() != 0) {
-            const float *final_pixels = db_renderer_cpu_renderer_pixels_rgba32f(
-                &final_width, &final_height);
+            const uint16_t *final_pixels =
+                db_renderer_cpu_renderer_pixels_rgba16f(&final_width,
+                                                        &final_height);
             if (final_pixels == NULL) {
                 db_failf(BACKEND_NAME,
                          "cpu renderer returned NULL HDR framebuffer");
             }
-            bo_hash_tracker.final_hash = db_hash_rgba32f_pixels_canonical(
+            bo_hash_tracker.final_hash = db_hash_rgba16f_pixels_canonical(
                 final_pixels, final_width, final_height,
-                (size_t)final_width * 4U * sizeof(float), 0);
+                (size_t)final_width * 4U * sizeof(uint16_t), 0);
         } else {
             const uint32_t *final_pixels =
                 db_renderer_cpu_renderer_pixels_rgba8(&final_width,
@@ -119,7 +121,7 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     }
 
     const double total_ms =
-        (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS_D;
+        (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
     db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU),
                            db_renderer_name_cpu(), BACKEND_NAME, frames,
                            work_unit_count, total_ms, capability_mode);

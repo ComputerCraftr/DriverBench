@@ -6,20 +6,18 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+
 #ifdef DB_HAVE_STDCKDINT
 #if DB_HAVE_STDCKDINT
 #include <stdckdint.h>
 #define DB_CAN_USE_STDCKDINT 1
 #endif
 #endif
-#define DB_MS_PER_SECOND_D 1000.0
-#define DB_NS_PER_MS_D 1000000.0
-#define DB_NS_PER_SECOND_D 1000000000.0
+#define DB_MS_PER_SECOND 1000.0
+#define DB_NS_PER_MS 1000000.0
+#define DB_NS_PER_SECOND 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
 #define DB_CACHELINE_ALIGNMENT_BYTES 64U
-#define DB_U24_MAX_F 16777215.0F
-#define DB_U8_MAX_F 255.0F
-#define DB_ROUND_HALF_UP_F 0.5F
 #define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "allow_remote_display"
 #define DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE "backbuffer_draw_mode"
 #define DB_RUNTIME_OPT_BENCH_SPEED "bench_speed"
@@ -37,6 +35,7 @@
 #define DB_U32_MIX_MUL_A 0x7FEB352DU
 #define DB_U32_MIX_MUL_B 0x846CA68BU
 
+// Logging and diagnostics.
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
 void db_infof(const char *backend, const char *fmt, ...)
@@ -45,6 +44,7 @@ int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt, va_list ap);
 int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
+// Runtime option parsing and process lifecycle.
 int db_parse_bool_text(const char *value, int *out_value);
 int db_parse_fps_cap_text(const char *value, double *out_value);
 uint32_t db_fold_u64_to_u32(uint64_t value);
@@ -59,10 +59,12 @@ uint64_t db_now_ns_monotonic(void);
 void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
                          double fps_cap);
 
+// File helpers.
 uint8_t *db_read_file_or_fail(const char *backend, const char *path,
                               size_t *out_sz);
 char *db_read_text_file_or_fail(const char *backend, const char *path);
 
+// Benchmark logging.
 void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
                                const char *backend_name, uint64_t frames,
                                uint32_t work_units, double elapsed_ms,
@@ -88,6 +90,7 @@ void db_benchmark_log_final(const char *api_name, const char *renderer_name,
         }                                                                      \
     } while (0)
 
+// Checked conversion and allocation helpers.
 static inline int32_t db_checked_u32_to_i32(const char *backend,
                                             const char *field_name,
                                             uint32_t value) {
@@ -194,102 +197,6 @@ static inline long db_checked_double_to_long(const char *backend,
         db_failf(backend, "%s out of long range: %.3f", field_name, value);
     }
     return (long)value;
-}
-
-static inline uint32_t db_u32_range(uint32_t seed, uint32_t min_value,
-                                    uint32_t max_value) {
-    if (max_value <= min_value) {
-        return min_value;
-    }
-    return min_value + (seed % (max_value - min_value + 1U));
-}
-
-static inline float db_u32_to_unit_f32(uint32_t value) {
-    const uint32_t value_24 = value >> 8U;
-    return (float)value_24 / DB_U24_MAX_F;
-}
-
-static inline uint8_t db_float01_to_u8_clamped(float value01) {
-    float clamped = value01;
-    if (clamped < 0.0F) {
-        clamped = 0.0F;
-    } else if (clamped > 1.0F) {
-        clamped = 1.0F;
-    }
-    float scaled = (clamped * DB_U8_MAX_F) + DB_ROUND_HALF_UP_F;
-    if (scaled > DB_U8_MAX_F) {
-        scaled = DB_U8_MAX_F;
-    }
-    return (uint8_t)scaled;
-}
-
-static inline float db_u32_to_range_f32(uint32_t value, float min_value,
-                                        float max_value) {
-    if (max_value <= min_value) {
-        return min_value;
-    }
-    return min_value + (db_u32_to_unit_f32(value) * (max_value - min_value));
-}
-
-static inline void db_blend_rgb(float prior_r, float prior_g, float prior_b,
-                                float target_r, float target_g, float target_b,
-                                float blend_factor, float *out_r, float *out_g,
-                                float *out_b) {
-    if (blend_factor <= 0.0F) {
-        *out_r = prior_r;
-        *out_g = prior_g;
-        *out_b = prior_b;
-        return;
-    }
-    if (blend_factor >= 1.0F) {
-        *out_r = target_r;
-        *out_g = target_g;
-        *out_b = target_b;
-        return;
-    }
-    *out_r = prior_r + ((target_r - prior_r) * blend_factor);
-    *out_g = prior_g + ((target_g - prior_g) * blend_factor);
-    *out_b = prior_b + ((target_b - prior_b) * blend_factor);
-}
-
-static inline uint32_t db_u32_min(uint32_t lhs, uint32_t rhs) {
-    return (lhs < rhs) ? lhs : rhs;
-}
-
-static inline uint32_t db_u32_max(uint32_t lhs, uint32_t rhs) {
-    return (lhs > rhs) ? lhs : rhs;
-}
-
-static inline uint32_t db_u32_clamp(uint32_t value, uint32_t min_value,
-                                    uint32_t max_value) {
-    if (value < min_value) {
-        return min_value;
-    }
-    if (value > max_value) {
-        return max_value;
-    }
-    return value;
-}
-
-static inline uint32_t db_u32_next_pow2(uint32_t value) {
-    if (value <= 1U) {
-        return 1U;
-    }
-    value--;
-    value |= value >> 1U;
-    value |= value >> 2U;
-    value |= value >> 4U;
-    value |= value >> 8U;
-    value |= value >> 16U;
-    return value + 1U;
-}
-
-static inline uint32_t db_u32_saturating_sub(uint32_t lhs, uint32_t rhs) {
-    return (lhs > rhs) ? (lhs - rhs) : 0U;
-}
-
-static inline uint32_t db_u32_wrapping_sub(uint32_t lhs, uint32_t rhs) {
-    return lhs - rhs;
 }
 
 static inline uint32_t db_checked_add_u32(const char *backend,

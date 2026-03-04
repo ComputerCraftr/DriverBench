@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "../../core/db_core.h"
+#include "../../core/db_numeric.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_gl_common.h"
 #include "../renderer_snake_common.h"
@@ -52,48 +53,6 @@ void db_gl1_draw_solid_rect_pixels(int rect_x, int rect_y, int rect_width,
     db_gl_clear_color_buffer();
 }
 
-int db_gl1_snake_span_to_scissor_rect(const db_snake_col_span_t *span,
-                                      uint32_t total_cols, uint32_t total_rows,
-                                      int viewport_w, int viewport_h,
-                                      int *x_out, int *y_out, int *width_out,
-                                      int *height_out) {
-    if ((span == NULL) || (total_cols == 0U) || (total_rows == 0U) ||
-        (span->col_end <= span->col_start) || (span->col_end > total_cols) ||
-        (span->row >= total_rows) || (viewport_w <= 0) || (viewport_h <= 0) ||
-        (x_out == NULL) || (y_out == NULL) || (width_out == NULL) ||
-        (height_out == NULL)) {
-        return 0;
-    }
-
-    const int x0 =
-        (int)(((uint64_t)span->col_start * (uint64_t)viewport_w) / total_cols);
-    int x1 =
-        (int)(((uint64_t)span->col_end * (uint64_t)viewport_w) / total_cols);
-    if (span->col_end == total_cols) {
-        x1 = viewport_w;
-    }
-    if (x1 <= x0) {
-        return 0;
-    }
-
-    int row_x = 0;
-    int row_y = 0;
-    int row_w = 0;
-    int row_h = 0;
-    if (db_gl_row_range_to_scissor_rect(span->row, 1U, total_rows, viewport_w,
-                                        viewport_h, &row_x, &row_y, &row_w,
-                                        &row_h) == 0) {
-        return 0;
-    }
-    (void)row_x;
-    (void)row_w;
-    *x_out = x0;
-    *y_out = row_y;
-    *width_out = x1 - x0;
-    *height_out = row_h;
-    return (*width_out > 0) && (*height_out > 0);
-}
-
 size_t db_gl1_gradient_dirty_row_total(const db_dirty_row_range_t *dirty_ranges,
                                        size_t dirty_count) {
     size_t total_rows = 0U;
@@ -111,8 +70,8 @@ int db_gl1_gradient_should_use_mesh(const db_dirty_row_range_t *dirty_ranges,
     return (dirty_row_total > 0U) && (dirty_row_total <= mesh_row_threshold);
 }
 
-static void db_gl1_draw_gradient_row_color(uint32_t row, float row_r,
-                                           float row_g, float row_b,
+static void db_gl1_draw_gradient_row_color(uint32_t row, double row_r,
+                                           double row_g, double row_b,
                                            void *user_data) {
     db_gl1_gradient_gpu_apply_ctx_t *ctx =
         (db_gl1_gradient_gpu_apply_ctx_t *)user_data;
@@ -128,9 +87,10 @@ static void db_gl1_draw_gradient_row_color(uint32_t row, float row_r,
             &rect_y, &rect_width, &rect_height) == 0) {
         return;
     }
-    db_gl1_draw_solid_rect_pixels(rect_x, rect_y, rect_width, rect_height,
-                                  ctx->viewport_w, ctx->viewport_h, row_r,
-                                  row_g, row_b);
+    db_gl1_draw_solid_rect_pixels(
+        rect_x, rect_y, rect_width, rect_height, ctx->viewport_w,
+        ctx->viewport_h, db_double_to_f32(row_r), db_double_to_f32(row_g),
+        db_double_to_f32(row_b));
 }
 
 void db_gl1_draw_gradient_dirty_rows_gpu(
@@ -191,11 +151,11 @@ void db_gl1_draw_bands_gpu(uint32_t cols, uint32_t band_count,
             x1 = (int)viewport_w;
         }
 
-        float color_r = 0.0F;
-        float color_g = 0.0F;
-        float color_b = 0.0F;
-        db_band_color_rgb(band, band_count, frame_index, &color_r, &color_g,
-                          &color_b);
+        double color_r_value = 0.0;
+        double color_g_value = 0.0;
+        double color_b_value = 0.0;
+        db_band_color_rgb(band, band_count, frame_index, &color_r_value,
+                          &color_g_value, &color_b_value);
 
         if (x0 < 0) {
             x0 = 0;
@@ -208,8 +168,9 @@ void db_gl1_draw_bands_gpu(uint32_t cols, uint32_t band_count,
             continue;
         }
 
-        db_gl1_draw_solid_rect_pixels(x0, 0, rect_w, (int)viewport_h,
-                                      viewport_w, viewport_h, color_r, color_g,
-                                      color_b);
+        db_gl1_draw_solid_rect_pixels(
+            x0, 0, rect_w, (int)viewport_h, viewport_w, viewport_h,
+            db_double_to_f32(color_r_value), db_double_to_f32(color_g_value),
+            db_double_to_f32(color_b_value));
     }
 }

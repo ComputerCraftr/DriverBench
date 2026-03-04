@@ -59,13 +59,14 @@ uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
     return hash;
 }
 
-uint64_t db_hash_rgba32f_pixels_canonical(const float *pixels, uint32_t width,
-                                          uint32_t height, size_t stride_bytes,
+uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
+                                          uint32_t width, uint32_t height,
+                                          size_t stride_bytes,
                                           int rows_bottom_to_top) {
     if ((pixels == NULL) || (width == 0U) || (height == 0U)) {
         return 0U;
     }
-    const size_t row_bytes = (size_t)width * 4U * sizeof(float);
+    const size_t row_bytes = (size_t)width * 4U * sizeof(uint16_t);
     if (stride_bytes < row_bytes) {
         return 0U;
     }
@@ -78,7 +79,7 @@ uint64_t db_hash_rgba32f_pixels_canonical(const float *pixels, uint32_t width,
 
     const uint8_t *src_bytes = (const uint8_t *)pixels;
     uint8_t *const canonical_bytes = (uint8_t *)db_alloc_aligned_array_or_fail(
-        "db_hash", "rgba32f_canonical_bytes", packed_bytes, sizeof(uint8_t),
+        "db_hash", "rgba16f_canonical_bytes", packed_bytes, sizeof(uint8_t),
         DB_CACHELINE_ALIGNMENT_BYTES);
     for (uint32_t row = 0U; row < height; row++) {
         const uint32_t src_row =
