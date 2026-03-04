@@ -77,11 +77,6 @@ static inline uint64_t db_fnv_blockhash_finalize(uint64_t hash_value,
     return hash_value;
 }
 
-static inline uint32_t db_fold_size_to_u32(size_t value) {
-    const uint64_t wide_value = (uint64_t)value;
-    return (uint32_t)(wide_value ^ (wide_value >> DB_BLOCK_HASH_SHIFT_32));
-}
-
 // Scalar hashing kernels.
 static inline uint32_t db_fnv1a32_block64_scalar(const uint8_t *byte_ptr,
                                                  uint32_t seed_xor) {
@@ -303,10 +298,7 @@ DB_HASH_TARGET_SSE41 static inline void db_fnv1a32_4x64_sse41(
 
     alignas(16) uint32_t lane_results[DB_BLOCK_HASH_VECTOR_WIDTH];
     _mm_store_si128((__m128i *)lane_results, lane_hash);
-    out_hashes[DB_BLOCK_HASH_LANE_0] = lane_results[DB_BLOCK_HASH_LANE_0];
-    out_hashes[DB_BLOCK_HASH_LANE_1] = lane_results[DB_BLOCK_HASH_LANE_1];
-    out_hashes[DB_BLOCK_HASH_LANE_2] = lane_results[DB_BLOCK_HASH_LANE_2];
-    out_hashes[DB_BLOCK_HASH_LANE_3] = lane_results[DB_BLOCK_HASH_LANE_3];
+    db_copy_u32_buffer(out_hashes, lane_results, DB_BLOCK_HASH_VECTOR_WIDTH);
 }
 
 DB_HASH_TARGET_AVX2 static inline void db_fnv1a32_8x64_avx2(
@@ -540,7 +532,8 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
                     byte_ptr +
                     ((block_index + lane_index) * DB_BLOCK_HASH_BYTES);
                 seeds[lane_index] =
-                    seed32 ^ db_fold_size_to_u32(block_index + lane_index);
+                    seed32 ^ db_fold_u64_to_u32((uint64_t)block_index +
+                                                (uint64_t)lane_index);
             }
             db_fnv1a32_8x64_avx2(
                 block_ptrs[DB_BLOCK_HASH_LANE_0],
@@ -605,21 +598,29 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
             ((block_index + DB_BLOCK_HASH_LANE_7) * DB_BLOCK_HASH_BYTES);
 
         const uint32_t seed0 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_0);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_0);
         const uint32_t seed1 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_1);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_1);
         const uint32_t seed2 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_2);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_2);
         const uint32_t seed3 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_3);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_3);
         const uint32_t seed4 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_4);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_4);
         const uint32_t seed5 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_5);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_5);
         const uint32_t seed6 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_6);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_6);
         const uint32_t seed7 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_7);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_7);
 
 #ifdef __aarch64__
         uint32_t half0[DB_BLOCK_HASH_VECTOR_WIDTH];
@@ -628,14 +629,9 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
                              seed2, seed3, half0);
         db_fnv1a32_4x64_neon(block4, block5, block6, block7, seed4, seed5,
                              seed6, seed7, half1);
-        lane_hashes[DB_BLOCK_HASH_LANE_0] = half0[DB_BLOCK_HASH_LANE_0];
-        lane_hashes[DB_BLOCK_HASH_LANE_1] = half0[DB_BLOCK_HASH_LANE_1];
-        lane_hashes[DB_BLOCK_HASH_LANE_2] = half0[DB_BLOCK_HASH_LANE_2];
-        lane_hashes[DB_BLOCK_HASH_LANE_3] = half0[DB_BLOCK_HASH_LANE_3];
-        lane_hashes[DB_BLOCK_HASH_LANE_4] = half1[DB_BLOCK_HASH_LANE_0];
-        lane_hashes[DB_BLOCK_HASH_LANE_5] = half1[DB_BLOCK_HASH_LANE_1];
-        lane_hashes[DB_BLOCK_HASH_LANE_6] = half1[DB_BLOCK_HASH_LANE_2];
-        lane_hashes[DB_BLOCK_HASH_LANE_7] = half1[DB_BLOCK_HASH_LANE_3];
+        db_copy_u32_buffer(lane_hashes, half0, DB_BLOCK_HASH_VECTOR_WIDTH);
+        db_copy_u32_buffer(lane_hashes + DB_BLOCK_HASH_VECTOR_WIDTH, half1,
+                           DB_BLOCK_HASH_VECTOR_WIDTH);
 #elif defined(__x86_64__) || defined(__i386__)
         if (x86_kernel == DB_HASH_X86_KERNEL_SSE41 ||
             x86_kernel == DB_HASH_X86_KERNEL_AVX2) {
@@ -645,14 +641,9 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
                                   seed2, seed3, half0);
             db_fnv1a32_4x64_sse41(block4, block5, block6, block7, seed4, seed5,
                                   seed6, seed7, half1);
-            lane_hashes[DB_BLOCK_HASH_LANE_0] = half0[DB_BLOCK_HASH_LANE_0];
-            lane_hashes[DB_BLOCK_HASH_LANE_1] = half0[DB_BLOCK_HASH_LANE_1];
-            lane_hashes[DB_BLOCK_HASH_LANE_2] = half0[DB_BLOCK_HASH_LANE_2];
-            lane_hashes[DB_BLOCK_HASH_LANE_3] = half0[DB_BLOCK_HASH_LANE_3];
-            lane_hashes[DB_BLOCK_HASH_LANE_4] = half1[DB_BLOCK_HASH_LANE_0];
-            lane_hashes[DB_BLOCK_HASH_LANE_5] = half1[DB_BLOCK_HASH_LANE_1];
-            lane_hashes[DB_BLOCK_HASH_LANE_6] = half1[DB_BLOCK_HASH_LANE_2];
-            lane_hashes[DB_BLOCK_HASH_LANE_7] = half1[DB_BLOCK_HASH_LANE_3];
+            db_copy_u32_buffer(lane_hashes, half0, DB_BLOCK_HASH_VECTOR_WIDTH);
+            db_copy_u32_buffer(lane_hashes + DB_BLOCK_HASH_VECTOR_WIDTH, half1,
+                               DB_BLOCK_HASH_VECTOR_WIDTH);
         } else {
             db_fnv1a32_8x64_scalar(block0, block1, block2, block3, block4,
                                    block5, block6, block7, seed0, seed1, seed2,
@@ -754,13 +745,17 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
             ((block_index + DB_BLOCK_HASH_LANE_3) * DB_BLOCK_HASH_BYTES);
 
         const uint32_t seed0 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_0);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_0);
         const uint32_t seed1 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_1);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_1);
         const uint32_t seed2 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_2);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_2);
         const uint32_t seed3 =
-            seed32 ^ db_fold_size_to_u32(block_index + DB_BLOCK_HASH_LANE_3);
+            seed32 ^
+            db_fold_u64_to_u32((uint64_t)block_index + DB_BLOCK_HASH_LANE_3);
 
 #ifdef __aarch64__
         db_fnv1a32_4x64_neon(block0, block1, block2, block3, seed0, seed1,
@@ -780,14 +775,8 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
 #endif
 
         if (out_block_hashes != NULL) {
-            out_block_hashes[block_index + DB_BLOCK_HASH_LANE_0] =
-                lane_hashes[DB_BLOCK_HASH_LANE_0];
-            out_block_hashes[block_index + DB_BLOCK_HASH_LANE_1] =
-                lane_hashes[DB_BLOCK_HASH_LANE_1];
-            out_block_hashes[block_index + DB_BLOCK_HASH_LANE_2] =
-                lane_hashes[DB_BLOCK_HASH_LANE_2];
-            out_block_hashes[block_index + DB_BLOCK_HASH_LANE_3] =
-                lane_hashes[DB_BLOCK_HASH_LANE_3];
+            db_copy_u32_buffer(out_block_hashes + block_index, lane_hashes,
+                               DB_BLOCK_HASH_VECTOR_WIDTH);
         }
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -831,7 +820,7 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
     for (; block_index < full_blocks; block_index++) {
         const uint32_t block_hash = db_fnv1a32_block64_scalar(
             byte_ptr + (block_index * DB_BLOCK_HASH_BYTES),
-            seed32 ^ db_fold_size_to_u32(block_index));
+            seed32 ^ db_fold_u64_to_u32((uint64_t)block_index));
         if (out_block_hashes != NULL) {
             out_block_hashes[block_index] = block_hash;
         }
@@ -844,7 +833,7 @@ static inline uint64_t db_fnv_blockhash_u64_internal(
                       byte_ptr + (full_blocks * DB_BLOCK_HASH_BYTES),
                       tail_bytes);
         const uint32_t tail_hash = db_fnv1a32_block64_scalar(
-            tail_block, seed32 ^ db_fold_size_to_u32(full_blocks));
+            tail_block, seed32 ^ db_fold_u64_to_u32((uint64_t)full_blocks));
         if (out_block_hashes != NULL) {
             out_block_hashes[full_blocks] = tail_hash;
         }

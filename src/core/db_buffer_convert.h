@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 void db_copy_bytes(void *dst, const void *src, size_t byte_count);
+void db_move_bytes(void *dst, const void *src, size_t byte_count);
 void db_copy_f32_buffer(float *dst, const float *src, size_t element_count);
 void db_copy_u32_buffer(uint32_t *dst, const uint32_t *src,
                         size_t element_count);

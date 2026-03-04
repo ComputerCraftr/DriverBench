@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "../config/benchmark_config.h"
+#include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
 
@@ -825,15 +826,13 @@ static inline size_t db_append_nonzero_row_ranges(
         index++;
     }
     if (index == copy_limit) {
-        for (size_t copy_index = 0U; copy_index < copy_limit; copy_index++) {
-            out_ranges[out_count + copy_index] = ranges[copy_index];
-        }
+        db_copy_bytes(out_ranges + out_count, ranges,
+                      copy_limit * sizeof(db_dirty_row_range_t));
         return out_count + copy_limit;
     }
     if (index > 0U) {
-        for (size_t copy_index = 0U; copy_index < index; copy_index++) {
-            out_ranges[out_count + copy_index] = ranges[copy_index];
-        }
+        db_copy_bytes(out_ranges + out_count, ranges,
+                      index * sizeof(db_dirty_row_range_t));
         out_count += index;
     }
 
@@ -929,10 +928,9 @@ static inline size_t db_gradient_normalize_row_ranges(
         }
         const size_t insert_index = db_gradient_row_range_lower_bound(
             out_ranges, out_count, candidate.row_start);
-        for (size_t shift_index = out_count; shift_index > insert_index;
-             shift_index--) {
-            out_ranges[shift_index] = out_ranges[shift_index - 1U];
-        }
+        db_move_bytes(out_ranges + insert_index + 1U, out_ranges + insert_index,
+                      (out_count - insert_index) *
+                          sizeof(db_dirty_row_range_t));
         out_ranges[insert_index] = candidate;
         out_count++;
     }

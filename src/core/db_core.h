@@ -32,6 +32,10 @@
 #define DB_RUNTIME_OPT_OFFSCREEN "offscreen"
 #define DB_RUNTIME_OPT_RANDOM_SEED "random_seed"
 #define DB_RUNTIME_OPT_VSYNC "vsync"
+#define DB_U32_MIX_SHIFT_A 16U
+#define DB_U32_MIX_SHIFT_B 15U
+#define DB_U32_MIX_MUL_A 0x7FEB352DU
+#define DB_U32_MIX_MUL_B 0x846CA68BU
 
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
@@ -43,6 +47,8 @@ int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...)
 
 int db_parse_bool_text(const char *value, int *out_value);
 int db_parse_fps_cap_text(const char *value, double *out_value);
+uint32_t db_fold_u64_to_u32(uint64_t value);
+uint32_t db_mix_u32(uint32_t value);
 const char *db_runtime_option_get(const char *name);
 void db_runtime_option_set(const char *name, const char *value);
 void db_validate_runtime_environment(const char *backend,

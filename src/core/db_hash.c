@@ -7,19 +7,6 @@
 #include "db_buffer_convert.h"
 #include "db_core.h"
 
-uint32_t db_fold_u64_to_u32(uint64_t value) {
-    return (uint32_t)(value ^ (value >> 32U));
-}
-
-uint32_t db_mix_u32(uint32_t value) {
-    value ^= value >> DB_HASH_MIX_SHIFT_A;
-    value *= DB_HASH_MIX_MUL_A;
-    value ^= value >> DB_HASH_MIX_SHIFT_B;
-    value *= DB_HASH_MIX_MUL_B;
-    value ^= value >> DB_HASH_MIX_SHIFT_A;
-    return value;
-}
-
 uint64_t db_fnv1a64_extend(uint64_t hash, const void *data, size_t size) {
     const unsigned char *bytes = (const unsigned char *)data;
     for (size_t i = 0U; i < size; i++) {

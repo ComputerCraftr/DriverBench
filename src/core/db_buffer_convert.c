@@ -13,6 +13,14 @@ void db_copy_bytes(void *dst, const void *src, size_t byte_count) {
     memcpy(dst, src, byte_count);
 }
 
+void db_move_bytes(void *dst, const void *src, size_t byte_count) {
+    if ((dst == NULL) || (src == NULL) || (byte_count == 0U)) {
+        return;
+    }
+    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+    memmove(dst, src, byte_count);
+}
+
 void db_copy_f32_buffer(float *dst, const float *src, size_t element_count) {
     db_copy_bytes(dst, src, element_count * sizeof(float));
 }

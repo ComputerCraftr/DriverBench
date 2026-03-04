@@ -45,6 +45,19 @@ static int db_ascii_ieq(const char *lhs, const char *rhs) {
     return (*lhs == '\0') && (*rhs == '\0');
 }
 
+uint32_t db_fold_u64_to_u32(uint64_t value) {
+    return (uint32_t)(value ^ (value >> 32U));
+}
+
+uint32_t db_mix_u32(uint32_t value) {
+    value ^= value >> DB_U32_MIX_SHIFT_A;
+    value *= DB_U32_MIX_MUL_A;
+    value ^= value >> DB_U32_MIX_SHIFT_B;
+    value *= DB_U32_MIX_MUL_B;
+    value ^= value >> DB_U32_MIX_SHIFT_A;
+    return value;
+}
+
 static void db_signal_handler(int signum) {
     (void)signum;
     db_stop_requested = 1;
