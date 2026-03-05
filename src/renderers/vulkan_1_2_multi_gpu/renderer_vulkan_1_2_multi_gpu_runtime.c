@@ -40,7 +40,8 @@ static inline db_vk_grid_row_block_draw_req_t db_vk_gradient_row_block_req(
                 .render_mode = (uint32_t)pattern,
                 .gradient_head_row = state->head_row,
                 .snake_shape_index = 0U,
-                .direction_flag = state->direction_down,
+                .gradient_direction_flag = state->direction_down,
+                .snake_phase_flag = 0,
                 .snake_cursor = 0U,
                 .snake_batch_size = 0U,
                 .snake_phase_completed = 0,
@@ -150,13 +151,11 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         return DB_VK_FRAME_STOP;
     }
     const int acquire_suboptimal = (ar == VK_SUBOPTIMAL_KHR);
-    const db_history_runtime_mode_flags_t mode_flags =
-        db_history_runtime_mode_flags(&g_state.runtime);
     const int read_index = db_history_pair_read_index(&g_state.history_pair);
     const int write_index = db_history_pair_write_index(&g_state.history_pair);
     if (db_history_pair_sync_descriptor_index_if_needed(
-            mode_flags.uses_history_pipeline, &g_state.history_descriptor_index,
-            &g_state.history_pair) != 0) {
+            g_state.runtime_flags.uses_history_pipeline,
+            &g_state.history_descriptor_index, &g_state.history_pair) != 0) {
         db_vk_update_history_descriptor(
             g_state.device, g_state.descriptor_set, g_state.history_sampler,
             g_state.history_targets[read_index].view);
@@ -178,7 +177,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     VkClearValue clear = {0};
     db_history_seed_background_rgba_f32(&g_state.runtime, clear.color.float32);
 
-    if ((mode_flags.uses_history_pipeline != 0) &&
+    if ((g_state.runtime_flags.uses_history_pipeline != 0) &&
         ((g_state.history_targets[0].layout_initialized == 0) ||
          (g_state.history_targets[1].layout_initialized == 0))) {
         VkImageMemoryBarrier history_to_clear[2] = {{0}, {0}};
@@ -235,7 +234,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                              0, NULL, 2U, history_to_read);
     }
 
-    if (mode_flags.uses_history_pipeline != 0) {
+    if (g_state.runtime_flags.uses_history_pipeline != 0) {
         VkImageMemoryBarrier write_to_color = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         write_to_color.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -254,15 +253,17 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
 
     VkRenderPassBeginInfo rbi = {.sType =
                                      VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    rbi.renderPass = (mode_flags.uses_history_pipeline != 0)
+    rbi.renderPass = (g_state.runtime_flags.uses_history_pipeline != 0)
                          ? g_state.history_render_pass
                          : g_state.render_pass;
-    rbi.framebuffer = (mode_flags.uses_history_pipeline != 0)
+    rbi.framebuffer = (g_state.runtime_flags.uses_history_pipeline != 0)
                           ? g_state.history_targets[write_index].framebuffer
                           : g_state.swapchain_state.framebuffers[img_index];
     rbi.renderArea.extent = g_state.swapchain_state.extent;
-    rbi.clearValueCount = (mode_flags.uses_history_pipeline != 0) ? 0U : 1U;
-    rbi.pClearValues = (mode_flags.uses_history_pipeline != 0) ? NULL : &clear;
+    rbi.clearValueCount =
+        (g_state.runtime_flags.uses_history_pipeline != 0) ? 0U : 1U;
+    rbi.pClearValues =
+        (g_state.runtime_flags.uses_history_pipeline != 0) ? NULL : &clear;
     vkCmdBeginRenderPass(g_state.command_buffer, &rbi,
                          VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(g_state.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -290,7 +291,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     vpo.maxDepth = 1.0F;
     vkCmdSetViewport(g_state.command_buffer, 0, 1, &vpo);
 
-    if (mode_flags.is_bands != 0) {
+    if (g_state.runtime_flags.is_bands != 0) {
         frame_full_draw = 1;
         for (uint32_t band = 0U; band < BENCH_BANDS; band++) {
             const uint32_t x0 =
@@ -341,7 +342,8 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                         .color = db_vk_shader_ignored_color_rgb,
                         .render_mode = DB_PATTERN_BANDS,
                         .gradient_head_row = 0U,
-                        .direction_flag = 0,
+                        .gradient_direction_flag = 0,
+                        .snake_phase_flag = 0,
                         .snake_cursor = 0U,
                         .snake_batch_size = 0U,
                         .snake_shape_index = 0U,
@@ -362,7 +364,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             grid_tiles_per_gpu[owner] += span_units;
             grid_tiles_drawn += span_units;
         }
-    } else if (mode_flags.is_snake_history_texture != 0) {
+    } else if (g_state.runtime_flags.is_snake_history_texture != 0) {
         const db_history_snake_step_eval_t eval =
             db_history_eval_snake_step_from_runtime(&g_state.runtime);
         const db_snake_plan_t plan = eval.plan;
@@ -399,7 +401,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             frame_dirty_draw = 1;
         }
         db_history_apply_snake_step_to_runtime(&g_state.runtime, &eval);
-    } else if (mode_flags.is_gradient != 0) {
+    } else if (g_state.runtime_flags.is_gradient != 0) {
         const db_gradient_damage_plan_t plan = db_gradient_step_from_runtime(
             g_state.runtime.pattern, g_state.runtime.gradient.head_row,
             g_state.runtime.gradient.direction_down,
@@ -486,7 +488,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     }
     vkCmdEndRenderPass(g_state.command_buffer);
 
-    if (mode_flags.uses_history_pipeline != 0) {
+    if (g_state.runtime_flags.uses_history_pipeline != 0) {
         VkImageMemoryBarrier write_to_src = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         write_to_src.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -564,7 +566,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
     DB_VK_CHECK(BACKEND_NAME, vkEndCommandBuffer(g_state.command_buffer));
 
     VkPipelineStageFlags wait_stage =
-        (mode_flags.uses_history_pipeline != 0)
+        (g_state.runtime_flags.uses_history_pipeline != 0)
             ? VK_PIPELINE_STAGE_TRANSFER_BIT
             : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO};

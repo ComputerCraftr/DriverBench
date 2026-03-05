@@ -6,7 +6,6 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 #include "../renderer_gl_common.h"
-#include "../renderer_history_common.h"
 
 size_t
 db_gl1_collect_pattern_damage_ranges(const db_gl1_damage_collect_ctx_t *ctx,
@@ -36,14 +35,12 @@ db_gl1_collect_pattern_damage_ranges(const db_gl1_damage_collect_ctx_t *ctx,
     };
     db_gl_upload_range_t *local_range_storage = upload_ranges;
     size_t local_range_capacity = BENCH_SNAKE_PHASE_WINDOW_TILES;
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(ctx->pattern);
-    if (pattern_flags.is_snake_history_texture != 0) {
+    if (ctx->is_snake_history_texture_pattern != 0) {
         local_range_storage = ctx->default_history_range_storage;
         local_range_capacity = (ctx->snake_scratch != NULL)
                                    ? ctx->snake_scratch->span_capacity
                                    : 0U;
-    } else if (pattern_flags.is_gradient != 0) {
+    } else if (ctx->is_gradient_pattern != 0) {
         local_range_capacity = ctx->gradient_dirty_range_cap;
     } else {
         local_range_capacity = 1U;

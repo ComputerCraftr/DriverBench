@@ -43,6 +43,7 @@ typedef struct {
     char capability_mode[DB_GL_CAPABILITY_MODE_MAX];
     db_renderer_frame_stats_t frame;
     db_benchmark_runtime_init_t runtime;
+    db_history_pattern_mode_flags_t runtime_flags;
     db_gl_vertex_init_t vertex;
     int is_es_context;
     // Double-buffered preserved-backbuffer support: replay prior frame damage
@@ -55,8 +56,6 @@ typedef struct {
     int backbuffer_valid;
     db_gl_buffer_cache_t buffers;
     int client_arrays_configured;
-    int rect_clear_scope_active;
-    int scissor_enabled_state;
     int vbo_arrays_configured;
 } renderer_state_t;
 
@@ -77,6 +76,14 @@ typedef struct {
     int force_replay_full;
 } db_gl1_snake_frame_state_t;
 
+typedef struct {
+    double color_b;
+    double color_g;
+    double color_r;
+    int viewport_h;
+    int viewport_w;
+} db_gl1_scissor_fill_ctx_t;
+
 static renderer_state_t g_state = {0};
 
 static void db_gl1_seed_backbuffer_clear_cb(const float rgba[4],
@@ -86,58 +93,9 @@ static void db_gl1_seed_backbuffer_clear_cb(const float rgba[4],
         return;
     }
     db_gl_set_scissor_enabled(0);
-    g_state.scissor_enabled_state = 0;
     db_gl_clear_color_rgb(rgba[0], rgba[1], rgba[2]);
     db_gl_clear_color_buffer();
 }
-
-static void db_gl1_set_scissor_enabled_cached(int enabled) {
-    const int normalized_enabled = (enabled != 0) ? 1 : 0;
-    if ((g_state.scissor_enabled_state >= 0) &&
-        (g_state.scissor_enabled_state == normalized_enabled)) {
-        return;
-    }
-    db_gl_set_scissor_enabled(normalized_enabled);
-    g_state.scissor_enabled_state = normalized_enabled;
-}
-
-static int db_gl1_scissor_scope_pause_if_active(void) {
-    if (g_state.rect_clear_scope_active == 0) {
-        return 0;
-    }
-    db_gl1_set_scissor_enabled_cached(0);
-    return 1;
-}
-
-static void db_gl1_scissor_scope_resume_if_paused(int paused_scope) {
-    if (paused_scope == 0) {
-        return;
-    }
-    db_gl1_set_scissor_enabled_cached(1);
-}
-
-static int db_gl1_scissor_scope_open_if_needed(void) {
-    if (g_state.rect_clear_scope_active != 0) {
-        return 0;
-    }
-    db_gl1_set_scissor_enabled_cached(1);
-    return 1;
-}
-
-static void db_gl1_scissor_scope_close_if_opened(int opened_scope) {
-    if (opened_scope == 0) {
-        return;
-    }
-    db_gl1_set_scissor_enabled_cached(0);
-}
-
-typedef struct {
-    double color_b;
-    double color_g;
-    double color_r;
-    int viewport_h;
-    int viewport_w;
-} db_gl1_scissor_fill_ctx_t;
 
 static void db_gl1_apply_scissor_fill_rect(const db_gl_scissor_rect_t *rect,
                                            void *user_data) {
@@ -153,13 +111,11 @@ static void db_gl1_apply_scissor_fill_rect(const db_gl_scissor_rect_t *rect,
 }
 
 static void db_gl1_refresh_capability_mode(void) {
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
     const char *draw_mode = db_gl_capability_mode_draw_select(
-        pattern_flags.uses_ff_rect_draw_mode,
-        pattern_flags.is_snake_history_texture, 0);
+        g_state.runtime_flags.uses_ff_rect_draw_mode,
+        g_state.runtime_flags.is_snake_history_texture, 0);
     const char *upload_mode = db_gl_capability_mode_upload_select(
-        pattern_flags.uses_ff_rect_draw_mode,
+        g_state.runtime_flags.uses_ff_rect_draw_mode,
         db_gl_capability_mode_upload_from_probe(
             (g_state.buffers.vbo != 0U) ? 1 : 0, &g_state.vertex.upload));
     db_gl_capability_mode_compose(
@@ -188,7 +144,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
                                  uint32_t shape_kind, uint32_t pattern_seed,
                                  uint32_t shape_index, double target_r,
                                  double target_g, double target_b,
-                                 int full_fill_on_phase_completed) {
+                                 int force_full_fill_on_phase_complete) {
     if ((plan == NULL) || (region == NULL)) {
         return;
     }
@@ -199,7 +155,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
     if ((region->width == 0U) || (region->height == 0U)) {
         return;
     }
-    if ((full_fill_on_phase_completed != 0) && (plan->phase_completed != 0)) {
+    if ((force_full_fill_on_phase_complete != 0) && (plan->phase_completed != 0)) {
         db_fill_grid_all_rgb_stride(
             g_state.vertex.vertices, g_state.runtime.work_unit_count,
             g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
@@ -209,9 +165,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
     }
     db_snake_shape_cache_t shape_cache = {0};
     const db_snake_shape_cache_t *shape_cache_ptr = NULL;
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
-    if (pattern_flags.is_snake_shapes != 0) {
+    if (g_state.runtime_flags.is_snake_shapes != 0) {
         if ((g_state.snake_scratch.row_bounds != NULL) &&
             (db_snake_shape_cache_init_from_index(
                  &shape_cache, g_state.snake_scratch.row_bounds,
@@ -383,6 +337,7 @@ static void
 db_gl1_draw_gradient_dirty_rows_mesh(const db_dirty_row_range_t *dirty_ranges,
                                      size_t dirty_count, uint32_t head_row,
                                      int direction_down, uint32_t cycle_index) {
+    db_gl_set_scissor_enabled(0);
     const uint32_t cols = db_grid_cols_effective();
     const uint32_t rows = db_grid_rows_effective();
     if ((cols == 0U) || (rows == 0U)) {
@@ -446,10 +401,8 @@ db_gl1_draw_gradient_dirty_rows_hybrid(const db_dirty_row_range_t *dirty_ranges,
     const int use_mesh = db_gl1_gradient_should_use_mesh(
         dirty_ranges, dirty_count, DB_GL1_GRADIENT_MESH_ROW_THRESHOLD);
     if (use_mesh != 0) {
-        const int paused_scope = db_gl1_scissor_scope_pause_if_active();
         db_gl1_draw_gradient_dirty_rows_mesh(
             dirty_ranges, dirty_count, head_row, direction_down, cycle_index);
-        db_gl1_scissor_scope_resume_if_paused(paused_scope);
         return;
     }
     db_gl1_draw_gradient_dirty_rows_gpu(BACKEND_NAME, dirty_ranges, dirty_count,
@@ -480,6 +433,9 @@ db_collect_gl1_damage_ranges(const db_snake_plan_t *plan, int force_full_upload,
         .default_history_range_storage =
             g_state.snake_replay.curr_upload_ranges,
         .gradient_dirty_range_cap = DB_GL1_GRADIENT_DIRTY_RANGE_CAP,
+        .is_gradient_pattern = g_state.runtime_flags.is_gradient,
+        .is_snake_history_texture_pattern =
+            g_state.runtime_flags.is_snake_history_texture,
     };
     return db_gl1_collect_pattern_damage_ranges(&collect_ctx, range_storage,
                                                 range_capacity);
@@ -545,9 +501,8 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     g_state.snake_scratch.row_bounds_capacity = 0U;
     g_state.snake_scratch.span_capacity = 0U;
     db_history_snake_backbuffer_state_reset(&g_state.snake_backbuffer_state, 0);
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
-    if (pattern_flags.is_snake_history_texture != 0) {
+    g_state.runtime_flags = db_history_runtime_mode_flags(&g_state.runtime);
+    if (g_state.runtime_flags.is_snake_history_texture != 0) {
         const size_t scratch_capacity =
             db_snake_scratch_capacity_from_work_units(
                 g_state.runtime.work_unit_count);
@@ -563,7 +518,7 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
             (db_snake_col_span_t *)db_alloc_array_or_fail(
                 BACKEND_NAME, "snake_spans", scratch_capacity,
                 sizeof(*g_state.snake_scratch.spans));
-        if (pattern_flags.is_snake_shapes != 0) {
+        if (g_state.runtime_flags.is_snake_shapes != 0) {
             g_state.snake_scratch.row_bounds =
                 (db_snake_shape_row_bounds_t *)db_alloc_array_or_fail(
                     BACKEND_NAME, "snake_row_bounds", db_grid_rows_effective(),
@@ -588,7 +543,6 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     db_gl_set_client_state_color_array_enabled(1);
     g_state.client_arrays_configured = 0;
     g_state.vbo_arrays_configured = 0;
-    g_state.scissor_enabled_state = -1;
 
     if (db_gl_context_advertises_vbo() != 0) {
         const size_t probe_bytes = (size_t)g_state.vertex.draw_vertex_count *
@@ -634,13 +588,11 @@ static void db_gl1_render_snake_draw_pass(
     const db_snake_region_t *snake_target_region = &snake_frame->target_region;
     db_gl_upload_range_t *range_storage = snake_frame->preview_ranges;
     size_t draw_range_count = snake_frame->preview_count;
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
-    const int is_grid_pattern = pattern_flags.is_snake_grid;
+    const int is_grid_pattern = g_state.runtime_flags.is_snake_grid;
     const int is_grid_or_rect =
-        (is_grid_pattern != 0) || (pattern_flags.is_snake_rect != 0);
+        (is_grid_pattern != 0) || (g_state.runtime_flags.is_snake_rect != 0);
     const int snake_transition_frame =
-        (plan->phase_completed != 0) || (plan->target_completed != 0) ||
+        (plan->phase_completed != 0) || (plan->phase_completed != 0) ||
         (plan->active_cursor == DB_SNAKE_CURSOR_PRE_ENTRY) ||
         (plan->next_cursor == DB_SNAKE_CURSOR_PRE_ENTRY);
     const int settled_scissor_heuristic_ok =
@@ -665,7 +617,7 @@ static void db_gl1_render_snake_draw_pass(
     size_t active_range_count = 0U;
     int scissor_applied = 0;
     if (use_settled_scissor != 0) {
-        const int opened_scope = db_gl1_scissor_scope_open_if_needed();
+        db_gl_set_scissor_enabled(1);
         const size_t settled_span_count = db_snake_collect_damage_spans(
             g_state.snake_scratch.spans, g_state.snake_scratch.span_capacity,
             snake_target_region, plan->prev_start, plan->prev_count,
@@ -686,7 +638,7 @@ static void db_gl1_render_snake_draw_pass(
         if (applied_rect_count > 0U) {
             scissor_applied = 1;
         }
-        db_gl1_scissor_scope_close_if_opened(opened_scope);
+        db_gl_set_scissor_enabled(0);
         active_range_count = db_gl1_build_snake_upload_ranges(
             plan, snake_frame->force_full_upload, active_ranges,
             active_range_capacity, allow_overdraw_collapse);
@@ -798,8 +750,6 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
     state->plan = eval.plan;
     db_snake_step_target_t target = eval.target;
     const db_snake_shape_kind_t shape_kind = eval.shape_kind;
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
     state->target_region = target.region;
     state->target_r = target.target_r;
     state->target_g = target.target_g;
@@ -832,9 +782,9 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
     state->preview_count = db_gl1_build_snake_upload_ranges(
         &state->plan, state->force_full_upload, state->preview_ranges,
         state->preview_capacity, allow_overdraw_collapse);
-    if ((pattern_flags.is_snake_grid != 0) && (state->force_full_upload != 0) &&
-        dirty_backbuffer_mode && has_viewport &&
-        (g_state.snake_scratch.spans != NULL)) {
+    if ((g_state.runtime_flags.is_snake_grid != 0) &&
+        (state->force_full_upload != 0) && dirty_backbuffer_mode &&
+        has_viewport && (g_state.snake_scratch.spans != NULL)) {
         // Grid fast-path on invalid backbuffer: clear to the pre-step base
         // phase, then redraw the full non-base set (settled + active). If the
         // span set exceeds capacity, keep the normal full upload.
@@ -844,9 +794,9 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
             double base_r = 0.0;
             double base_g = 0.0;
             double base_b = 0.0;
-            const int base_phase = (state->plan.clearing_phase == 0) ? 1 : 0;
+            const int base_phase = (state->plan.phase_flag == 0) ? 1 : 0;
             db_grid_target_color_rgb(base_phase, &base_r, &base_g, &base_b);
-            db_gl1_set_scissor_enabled_cached(0);
+            db_gl_set_scissor_enabled(0);
             db_gl_clear_color_rgb(db_double_to_f32(base_r),
                                   db_double_to_f32(base_g),
                                   db_double_to_f32(base_b));
@@ -914,14 +864,12 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
     db_render_snake_step(
         &state->plan, &target.region, shape_kind, g_state.runtime.pattern_seed,
         state->plan.active_shape_index, target.target_r, target.target_g,
-        target.target_b, target.full_fill_on_phase_completed);
+        target.target_b, target.force_full_fill_on_phase_complete);
     db_history_apply_snake_step_to_runtime(&g_state.runtime, &eval);
 }
 
 static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                                          int is_double_buffered) {
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
     const db_gradient_damage_plan_t gradient_plan =
         db_gradient_step_from_runtime(g_state.runtime.pattern,
                                       g_state.runtime.gradient.head_row,
@@ -1089,7 +1037,7 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                     db_gl1_gradient_should_use_mesh(
                         curr_draw_ranges, curr_draw_count,
                         DB_GL1_GRADIENT_MESH_ROW_THRESHOLD);
-                if ((pattern_flags.is_gradient_sweep != 0) &&
+                if ((g_state.runtime_flags.is_gradient_sweep != 0) &&
                     (has_replay != 0) && (has_current == 0)) {
                     // At bottom bounce, sweep can be replay-only for one frame.
                     persist_ranges = g_state.gradient_prev_frame.draw_rows;
@@ -1113,9 +1061,6 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                 } else if ((has_replay_draw != 0) && (has_current != 0) &&
                            (replay_uses_mesh != 0) &&
                            (current_uses_mesh != 0)) {
-                    // Keep scissor pause optimization only for mesh+mesh.
-                    const int paused_scope =
-                        db_gl1_scissor_scope_pause_if_active();
                     db_gl1_draw_gradient_dirty_rows_mesh(
                         replay_draw_ptr, replay_draw_count,
                         g_state.gradient_prev_frame.state.head_row,
@@ -1126,7 +1071,6 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                         gradient_render_head_row,
                         gradient_render_direction_down,
                         gradient_render_cycle_index);
-                    db_gl1_scissor_scope_resume_if_paused(paused_scope);
                 } else {
                     if (has_replay_draw != 0) {
                         db_gl1_draw_gradient_dirty_rows_hybrid(
@@ -1212,28 +1156,21 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
     const int viewport_h = viewport_state.viewport_height_px;
     const int has_viewport = viewport_state.has_viewport;
     const int is_double_buffered = (double_buffered != 0);
-    const db_history_runtime_mode_flags_t mode_flags =
-        db_history_runtime_mode_flags(&g_state.runtime);
     const int allow_overdraw_collapse =
-        ((mode_flags.is_snake_history_texture != 0) &&
-         (mode_flags.is_snake_shapes == 0))
+        ((g_state.runtime_flags.is_snake_history_texture != 0) &&
+         (g_state.runtime_flags.is_snake_shapes == 0))
             ? 1
             : 0;
-    const int use_frame_solid_rect_scope = mode_flags.uses_ff_rect_draw_mode;
 
-    if (use_frame_solid_rect_scope != 0) {
-        db_gl1_set_scissor_enabled_cached(1);
-        g_state.rect_clear_scope_active = 1;
-    }
-
-    if (mode_flags.is_snake_history_texture != 0) {
-        db_gl1_prepare_snake_frame_state(&snake_frame, is_double_buffered,
-                                         mode_flags.uses_dirty_backbuffer_mode,
-                                         has_viewport, allow_overdraw_collapse);
-    } else if (mode_flags.is_gradient != 0) {
+    if (g_state.runtime_flags.is_snake_history_texture != 0) {
+        db_gl1_prepare_snake_frame_state(
+            &snake_frame, is_double_buffered,
+            g_state.runtime_flags.uses_dirty_backbuffer_mode, has_viewport,
+            allow_overdraw_collapse);
+    } else if (g_state.runtime_flags.is_gradient != 0) {
         db_gl1_render_gradient_frame(viewport_w, viewport_h,
                                      is_double_buffered);
-    } else if (mode_flags.is_bands != 0) {
+    } else if (g_state.runtime_flags.is_bands != 0) {
         // Bands are solid rect fills directly to the default framebuffer.
         db_gl1_draw_bands_gpu(db_grid_cols_effective(), BENCH_BANDS,
                               frame_index, viewport_width_px,
@@ -1242,16 +1179,12 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
                                      &g_state.frame.dirty_draw_frames, 1, 0);
     }
 
-    if (mode_flags.is_snake_history_texture != 0) {
-        db_gl1_render_snake_draw_pass(&snake_frame, allow_overdraw_collapse,
-                                      mode_flags.uses_dirty_backbuffer_mode,
-                                      viewport_w, viewport_h);
+    if (g_state.runtime_flags.is_snake_history_texture != 0) {
+        db_gl1_render_snake_draw_pass(
+            &snake_frame, allow_overdraw_collapse,
+            g_state.runtime_flags.uses_dirty_backbuffer_mode, viewport_w,
+            viewport_h);
     }
-    if (use_frame_solid_rect_scope != 0) {
-        db_gl1_set_scissor_enabled_cached(0);
-        g_state.rect_clear_scope_active = 0;
-    }
-
     g_state.frame.state_hash = db_benchmark_runtime_state_hash_cross_renderer(
         &g_state.runtime, g_state.frame.frame_index, db_grid_cols_effective(),
         db_grid_rows_effective());

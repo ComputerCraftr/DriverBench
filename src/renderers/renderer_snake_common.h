@@ -22,62 +22,80 @@
 #define DB_SNAKE_REGION_SALT_ORIGIN_X DB_U32_GOLDEN_RATIO
 #define DB_SNAKE_REGION_SALT_ORIGIN_Y DB_U32_SALT_ORIGIN_Y
 
-static inline uint32_t db_snake_grid_rows_effective(void) {
-    return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
-}
-
-static inline uint32_t db_snake_grid_cols_effective(void) {
-    return (uint32_t)BENCH_WINDOW_WIDTH_PX;
-}
-
-static inline double db_snake_color_channel(uint32_t seed) {
-    const double normalized = (double)(seed & 255U) / DB_U8_MAX;
-    return DB_SNAKE_COMMON_COLOR_BIAS +
-           (normalized * DB_SNAKE_COMMON_COLOR_SCALE);
-}
-
 typedef struct {
     uint32_t active_shape_index;
     uint32_t active_cursor;
     uint32_t prev_start;
     uint32_t prev_count;
     uint32_t batch_size;
-    int clearing_phase;
+    int phase_flag;
     int phase_completed;
     uint32_t next_prev_start;
     uint32_t next_prev_count;
-    int next_clearing_phase;
+    int next_phase_flag;
     uint32_t target_tile_count;
-    int target_completed;
     uint32_t next_shape_index;
     uint32_t next_cursor;
     int wrapped;
 } db_snake_plan_t;
 
 typedef struct {
-    int full_grid_target_mode;
+    int is_grid_mode;
     uint32_t seed;
     uint32_t shape_index;
     uint32_t cursor;
     uint32_t prev_start;
     uint32_t prev_count;
-    int clearing_phase;
+    int phase_flag;
     uint32_t speed_step;
 } db_snake_plan_request_t;
 
+typedef struct {
+    uint32_t row;
+    uint32_t col_start;
+    uint32_t col_end;
+} db_snake_col_span_t;
+
+typedef struct {
+    db_snake_region_t region;
+    double target_r;
+    double target_g;
+    double target_b;
+    int force_full_fill_on_phase_complete;
+    int has_next_phase_flag;
+    int next_phase_flag;
+    int has_next_shape_index;
+    uint32_t next_shape_index;
+    db_snake_shape_kind_t shape_kind;
+} db_snake_step_target_t;
+
+typedef struct {
+    db_snake_plan_t plan;
+    db_snake_step_target_t target;
+    db_snake_shape_kind_t shape_kind;
+    int is_grid_mode;
+    int is_shapes_mode;
+} db_snake_step_eval_t;
+
+typedef struct {
+    uint32_t tile_index;
+    uint32_t row;
+    uint32_t col;
+} db_snake_step_tile_t;
+
 static inline db_snake_plan_request_t
-db_snake_plan_request_make(int full_grid_target_mode, uint32_t seed,
+db_snake_plan_request_make(int is_grid_mode, uint32_t seed,
                            uint32_t shape_index, uint32_t cursor,
                            uint32_t prev_start, uint32_t prev_count,
-                           int clearing_phase, uint32_t speed_step) {
+                           int phase_flag, uint32_t speed_step) {
     const db_snake_plan_request_t request = {
-        .full_grid_target_mode = full_grid_target_mode,
+        .is_grid_mode = is_grid_mode,
         .seed = seed,
         .shape_index = shape_index,
         .cursor = cursor,
         .prev_start = prev_start,
         .prev_count = prev_count,
-        .clearing_phase = clearing_phase,
+        .phase_flag = phase_flag,
         .speed_step = speed_step,
     };
     return request;
@@ -95,12 +113,6 @@ db_snake_plan_span_capacity_needed(const db_snake_plan_t *plan) {
     }
     return db_snake_span_capacity_needed(plan->prev_count, plan->batch_size);
 }
-
-typedef struct {
-    uint32_t row;
-    uint32_t col_start;
-    uint32_t col_end;
-} db_snake_col_span_t;
 
 static inline int
 db_snake_try_merge_adjacent_span(db_snake_col_span_t *existing,
@@ -148,32 +160,19 @@ static inline size_t db_snake_filter_spans_for_shape_cache(
     return out_count;
 }
 
-typedef struct {
-    db_snake_region_t region;
-    double target_r;
-    double target_g;
-    double target_b;
-    int full_fill_on_phase_completed;
-    int has_next_direction_flag;
-    int next_direction_flag;
-    int has_next_shape_index;
-    uint32_t next_shape_index;
-    db_snake_shape_kind_t shape_kind;
-} db_snake_step_target_t;
+static inline uint32_t db_snake_grid_rows_effective(void) {
+    return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
+}
 
-typedef struct {
-    db_snake_plan_t plan;
-    db_snake_step_target_t target;
-    db_snake_shape_kind_t shape_kind;
-    int is_grid_mode;
-    int is_shapes_mode;
-} db_snake_step_eval_t;
+static inline uint32_t db_snake_grid_cols_effective(void) {
+    return (uint32_t)BENCH_WINDOW_WIDTH_PX;
+}
 
-typedef struct {
-    uint32_t tile_index;
-    uint32_t row;
-    uint32_t col;
-} db_snake_step_tile_t;
+static inline double db_snake_color_channel(uint32_t seed) {
+    const double normalized = (double)(seed & 255U) / DB_U8_MAX;
+    return DB_SNAKE_COMMON_COLOR_BIAS +
+           (normalized * DB_SNAKE_COMMON_COLOR_SCALE);
+}
 
 static inline uint32_t db_snake_grid_tiles_per_step(uint32_t work_unit_count) {
     if (work_unit_count == 0U) {
@@ -412,19 +411,19 @@ static inline int db_snake_span_row_bounds(const db_snake_col_span_t *spans,
 static inline db_snake_plan_t db_snake_plan_next_step_for_region(
     const db_snake_region_t *region, uint32_t active_shape_index,
     uint32_t active_cursor, uint32_t prev_start, uint32_t prev_count,
-    int clearing_phase, uint32_t cursor_step, int toggle_clearing_on_complete,
+    int phase_flag, uint32_t cursor_step, int toggle_clearing_on_complete,
     int advance_shape_index_on_complete) {
     db_snake_plan_t plan = {0};
     plan.active_shape_index = active_shape_index;
     plan.active_cursor = active_cursor;
     plan.prev_start = prev_start;
     plan.prev_count = prev_count;
-    plan.clearing_phase = clearing_phase;
+    plan.phase_flag = phase_flag;
     if (region == NULL) {
         plan.next_cursor = active_cursor;
         plan.next_prev_start = prev_start;
         plan.next_prev_count = prev_count;
-        plan.next_clearing_phase = clearing_phase;
+        plan.next_phase_flag = phase_flag;
         plan.next_shape_index = active_shape_index;
         return plan;
     }
@@ -434,7 +433,7 @@ static inline db_snake_plan_t db_snake_plan_next_step_for_region(
         plan.next_cursor = active_cursor;
         plan.next_prev_start = prev_start;
         plan.next_prev_count = prev_count;
-        plan.next_clearing_phase = clearing_phase;
+        plan.next_phase_flag = phase_flag;
         plan.next_shape_index = active_shape_index;
         return plan;
     }
@@ -446,29 +445,27 @@ static inline db_snake_plan_t db_snake_plan_next_step_for_region(
     if (plan.active_cursor == DB_SNAKE_CURSOR_PRE_ENTRY) {
         plan.active_cursor = 0U;
         plan.batch_size = 0U;
-        plan.target_completed = 0;
         plan.phase_completed = 0;
         plan.next_cursor = 0U;
         plan.next_prev_start = 0U;
         plan.next_prev_count = 0U;
-        plan.next_clearing_phase = clearing_phase;
+        plan.next_phase_flag = phase_flag;
         plan.next_shape_index = plan.active_shape_index;
         plan.wrapped = 0;
         return plan;
     }
 
     plan.batch_size = tiles_per_step;
-    plan.target_completed = (plan.active_cursor >= target_tile_count) ? 1 : 0;
-    plan.phase_completed = plan.target_completed;
+    plan.phase_completed = (plan.active_cursor >= target_tile_count) ? 1 : 0;
     plan.next_shape_index = plan.active_shape_index;
     plan.wrapped = 0;
     plan.next_prev_start = plan.active_cursor;
     uint32_t advanced_count = 0U;
-    plan.next_clearing_phase = clearing_phase;
-    if (plan.target_completed != 0) {
+    plan.next_phase_flag = phase_flag;
+    if (plan.phase_completed != 0) {
         plan.next_cursor = DB_SNAKE_CURSOR_PRE_ENTRY;
         if (toggle_clearing_on_complete != 0) {
-            plan.next_clearing_phase = !clearing_phase;
+            plan.next_phase_flag = !phase_flag;
         }
         if (advance_shape_index_on_complete != 0) {
             plan.next_shape_index = plan.active_shape_index + 1U;
@@ -499,7 +496,7 @@ db_snake_plan_next_step(const db_snake_plan_request_t *request) {
         return plan;
     }
 
-    if (request->full_grid_target_mode != 0) {
+    if (request->is_grid_mode != 0) {
         const db_snake_region_t grid_region = {
             .x = 0U,
             .y = 0U,
@@ -511,7 +508,7 @@ db_snake_plan_next_step(const db_snake_plan_request_t *request) {
         };
         return db_snake_plan_next_step_for_region(
             &grid_region, 0U, request->cursor, request->prev_start,
-            request->prev_count, request->clearing_phase, request->speed_step,
+            request->prev_count, request->phase_flag, request->speed_step,
             1, 0);
     }
 
@@ -531,9 +528,9 @@ static inline double db_window_blend_factor(uint32_t window_index,
     return ((double)((span - 1U) - window_index)) / (double)(span - 1U);
 }
 
-static inline void db_grid_target_color_rgb(int clearing_phase, double *out_r,
+static inline void db_grid_target_color_rgb(int phase_flag, double *out_r,
                                             double *out_g, double *out_b) {
-    if (clearing_phase != 0) {
+    if (phase_flag != 0) {
         *out_r = (double)BENCH_GRID_PHASE0_R;
         *out_g = (double)BENCH_GRID_PHASE0_G;
         *out_b = (double)BENCH_GRID_PHASE0_B;
@@ -545,13 +542,13 @@ static inline void db_grid_target_color_rgb(int clearing_phase, double *out_r,
 }
 
 static inline db_snake_step_target_t
-db_snake_step_target_from_plan(int full_grid_target_mode, uint32_t pattern_seed,
+db_snake_step_target_from_plan(int is_grid_mode, uint32_t pattern_seed,
                                const db_snake_plan_t *plan) {
     db_snake_step_target_t result = {0};
     if (plan == NULL) {
         return result;
     }
-    if (full_grid_target_mode != 0) {
+    if (is_grid_mode != 0) {
         result.region = (db_snake_region_t){
             .x = 0U,
             .y = 0U,
@@ -561,11 +558,11 @@ db_snake_step_target_from_plan(int full_grid_target_mode, uint32_t pattern_seed,
             .color_g = 0.0,
             .color_b = 0.0,
         };
-        db_grid_target_color_rgb(plan->clearing_phase, &result.target_r,
+        db_grid_target_color_rgb(plan->phase_flag, &result.target_r,
                                  &result.target_g, &result.target_b);
-        result.full_fill_on_phase_completed = 1;
-        result.has_next_direction_flag = 1;
-        result.next_direction_flag = plan->next_clearing_phase;
+        result.force_full_fill_on_phase_complete = 1;
+        result.has_next_phase_flag = 1;
+        result.next_phase_flag = plan->next_phase_flag;
         return result;
     }
 
@@ -585,13 +582,13 @@ static inline db_snake_step_eval_t
 db_snake_step_eval_from_runtime(db_pattern_t pattern, uint32_t pattern_seed,
                                 uint32_t shape_index, uint32_t cursor,
                                 uint32_t prev_start, uint32_t prev_count,
-                                int direction_flag, uint32_t bench_speed_step) {
+                                int phase_flag, uint32_t bench_speed_step) {
     db_snake_step_eval_t result = {0};
     result.is_grid_mode = (pattern == DB_PATTERN_SNAKE_GRID);
     result.is_shapes_mode = (pattern == DB_PATTERN_SNAKE_SHAPES);
     const db_snake_plan_request_t request = db_snake_plan_request_make(
         result.is_grid_mode, pattern_seed, shape_index, cursor, prev_start,
-        prev_count, direction_flag, bench_speed_step);
+        prev_count, phase_flag, bench_speed_step);
     result.plan = db_snake_plan_next_step(&request);
     result.target = db_snake_step_target_from_plan(result.is_grid_mode,
                                                    pattern_seed, &result.plan);

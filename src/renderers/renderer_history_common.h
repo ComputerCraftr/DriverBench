@@ -22,6 +22,67 @@ typedef struct {
     int read_index;
 } db_history_pair_state_t;
 
+typedef struct {
+    db_snake_col_span_t *spans;
+    size_t span_capacity;
+    db_snake_shape_row_bounds_t *row_bounds;
+    size_t row_bounds_capacity;
+} db_history_snake_scratch_t;
+
+typedef struct {
+    int is_bands;
+    int is_gradient;
+    int is_gradient_fill;
+    int is_gradient_sweep;
+    int is_shape_snake;
+    int is_snake_grid;
+    int is_snake_rect;
+    int is_snake_shapes;
+    int is_snake_history_texture;
+    int uses_dirty_backbuffer_mode;
+    int uses_ff_rect_draw_mode;
+    int uses_history_pipeline;
+} db_history_pattern_mode_flags_t;
+
+typedef struct {
+    db_snake_plan_t plan;
+    db_snake_step_target_t target;
+    db_snake_shape_kind_t shape_kind;
+    int is_grid_mode;
+    int is_shapes_mode;
+} db_history_snake_step_eval_t;
+
+typedef void (*db_history_seed_clear_f32_cb_t)(const float rgba[4],
+                                               void *user_data);
+
+typedef struct {
+    int counted_full_draw;
+    int counted_dirty_draw;
+} db_history_draw_stats_counted_t;
+
+typedef struct {
+    int reset_gradient_replay;
+    int reset_shape_snake_prev_count;
+} db_history_preserve_reset_flags_t;
+
+typedef struct {
+    db_history_preserve_reset_flags_t reset_flags;
+    int should_seed_targets;
+    int history_valid_after_resize;
+} db_history_resize_preserve_policy_t;
+
+typedef struct {
+    uint32_t seed_frames_remaining;
+    uint32_t resync_frames_remaining;
+    int initial_seed_done;
+    int backbuffer_valid;
+} db_history_snake_backbuffer_state_t;
+
+typedef struct {
+    int should_seed_now;
+    int should_force_full_upload;
+} db_history_snake_backbuffer_action_t;
+
 static inline db_history_pair_state_t
 db_history_pair_state_make(int is_valid, int read_index) {
     return (db_history_pair_state_t){
@@ -44,13 +105,6 @@ db_history_pair_state_seeded(db_history_pair_state_t *state) {
     }
     *state = db_history_pair_state_make(1, 0);
 }
-
-typedef struct {
-    db_snake_col_span_t *spans;
-    size_t span_capacity;
-    db_snake_shape_row_bounds_t *row_bounds;
-    size_t row_bounds_capacity;
-} db_history_snake_scratch_t;
 
 static inline int db_runtime_backbuffer_replay_enabled(
     const db_benchmark_runtime_init_t *runtime) {
@@ -75,11 +129,6 @@ static inline int db_runtime_uses_dirty_backbuffer_mode(
 static inline uint32_t
 db_history_seed_frame_count_for_swapchain(int is_double_buffered) {
     return (is_double_buffered != 0) ? 2U : 1U;
-}
-
-static inline uint32_t
-db_history_resync_frame_count_for_swapchain(int is_double_buffered) {
-    return db_history_seed_frame_count_for_swapchain(is_double_buffered);
 }
 
 static inline int db_history_should_seed_backbuffer_now(
@@ -147,31 +196,6 @@ static inline int db_history_should_reset_gradient_replay(db_pattern_t pattern,
     return (is_gradient != 0) && (preserved == 0);
 }
 
-typedef struct {
-    int is_bands;
-    int is_gradient;
-    int is_gradient_fill;
-    int is_gradient_sweep;
-    int is_shape_snake;
-    int is_snake_grid;
-    int is_snake_rect;
-    int is_snake_shapes;
-    int is_snake_history_texture;
-    int uses_dirty_backbuffer_mode;
-    int uses_ff_rect_draw_mode;
-    int uses_history_pipeline;
-} db_history_pattern_mode_flags_t;
-
-typedef db_history_pattern_mode_flags_t db_history_runtime_mode_flags_t;
-
-typedef struct {
-    db_snake_plan_t plan;
-    db_snake_step_target_t target;
-    db_snake_shape_kind_t shape_kind;
-    int is_grid_mode;
-    int is_shapes_mode;
-} db_history_snake_step_eval_t;
-
 static inline db_history_pattern_mode_flags_t
 db_history_pattern_mode_flags(db_pattern_t pattern) {
     db_history_pattern_mode_flags_t flags = {0};
@@ -205,7 +229,7 @@ db_history_eval_snake_step_from_runtime(
     const db_snake_step_eval_t eval = db_snake_step_eval_from_runtime(
         runtime->pattern, runtime->pattern_seed, runtime->snake.shape_index,
         runtime->snake.cursor, runtime->snake.prev_start,
-        runtime->snake.prev_count, runtime->gradient.direction_down,
+        runtime->snake.prev_count, runtime->snake.grid_phase_flag,
         runtime->bench_speed_step);
     return (db_history_snake_step_eval_t){
         .plan = eval.plan,
@@ -224,8 +248,8 @@ static inline void db_history_apply_snake_step_to_runtime(
     }
     const db_snake_plan_t *plan = &eval->plan;
     const db_snake_step_target_t *target = &eval->target;
-    if (target->has_next_direction_flag != 0) {
-        runtime->gradient.direction_down = target->next_direction_flag;
+    if (target->has_next_phase_flag != 0) {
+        runtime->snake.grid_phase_flag = target->next_phase_flag;
     }
     if (eval->is_grid_mode == 0) {
         if (target->has_next_shape_index != 0) {
@@ -289,9 +313,6 @@ db_history_seed_background_rgba_f32(const db_benchmark_runtime_init_t *runtime,
                                        &out_rgba[2]);
     out_rgba[3] = db_double_to_f32(1.0);
 }
-
-typedef void (*db_history_seed_clear_f32_cb_t)(const float rgba[4],
-                                               void *user_data);
 
 static inline int db_history_run_seed_clear_if_needed(
     int should_seed, const db_benchmark_runtime_init_t *runtime,
@@ -392,11 +413,6 @@ static inline void db_history_record_draw_stats(uint64_t *full_draw_frames,
     }
 }
 
-typedef struct {
-    int counted_full_draw;
-    int counted_dirty_draw;
-} db_history_draw_stats_counted_t;
-
 static inline db_history_draw_stats_counted_t
 db_history_classify_counted_draw(int frame_full_draw, int frame_dirty_draw,
                                  uint32_t work_units_drawn) {
@@ -409,27 +425,16 @@ db_history_classify_counted_draw(int frame_full_draw, int frame_dirty_draw,
     };
 }
 
-static inline db_history_runtime_mode_flags_t
+static inline db_history_pattern_mode_flags_t
 db_history_runtime_mode_flags(const db_benchmark_runtime_init_t *runtime) {
     if (runtime == NULL) {
-        return (db_history_runtime_mode_flags_t){0};
+        return (db_history_pattern_mode_flags_t){0};
     }
-    db_history_runtime_mode_flags_t flags =
+    db_history_pattern_mode_flags_t flags =
         db_history_pattern_mode_flags(runtime->pattern);
     flags.uses_dirty_backbuffer_mode = (runtime->backbuffer_draw_full == 0);
     return flags;
 }
-
-typedef struct {
-    int reset_gradient_replay;
-    int reset_shape_snake_prev_count;
-} db_history_preserve_reset_flags_t;
-
-typedef struct {
-    db_history_preserve_reset_flags_t reset_flags;
-    int should_seed_targets;
-    int history_valid_after_resize;
-} db_history_resize_preserve_policy_t;
 
 static inline db_history_preserve_reset_flags_t
 db_history_preserve_reset_flags_for_pattern(db_pattern_t pattern,
@@ -587,18 +592,6 @@ static inline int db_history_pair_sync_descriptor_index_if_needed(
     return 1;
 }
 
-typedef struct {
-    uint32_t seed_frames_remaining;
-    uint32_t resync_frames_remaining;
-    int initial_seed_done;
-    int backbuffer_valid;
-} db_history_snake_backbuffer_state_t;
-
-typedef struct {
-    int should_seed_now;
-    int should_force_full_upload;
-} db_history_snake_backbuffer_action_t;
-
 static inline db_history_snake_backbuffer_state_t
 db_history_snake_backbuffer_state_load(uint32_t seed_frames_remaining,
                                        uint32_t resync_frames_remaining,
@@ -618,7 +611,7 @@ static inline void db_history_snake_backbuffer_state_reset(
         return;
     }
     *state = db_history_snake_backbuffer_state_load(
-        0U, db_history_resync_frame_count_for_swapchain(is_double_buffered), 0,
+        0U, db_history_seed_frame_count_for_swapchain(is_double_buffered), 0,
         0);
 }
 
@@ -718,7 +711,7 @@ static inline void db_history_invalidate_snake_backbuffer_on_resize(
     if (io_snake_backbuffer_state != NULL) {
         io_snake_backbuffer_state->backbuffer_valid = 0;
         io_snake_backbuffer_state->resync_frames_remaining =
-            db_history_resync_frame_count_for_swapchain(is_double_buffered);
+            db_history_seed_frame_count_for_swapchain(is_double_buffered);
     }
 }
 

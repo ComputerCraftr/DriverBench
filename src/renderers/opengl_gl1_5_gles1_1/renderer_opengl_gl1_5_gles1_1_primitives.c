@@ -99,6 +99,7 @@ void db_gl1_draw_gradient_dirty_rows_gpu(
     if (viewport_w <= 0 || viewport_h <= 0) {
         return;
     }
+    db_gl_set_scissor_enabled(1);
     const uint32_t total_rows = db_grid_rows_effective();
     db_gl1_gradient_gpu_apply_ctx_t apply_ctx = {
         .total_rows = total_rows,
@@ -136,6 +137,7 @@ void db_gl1_draw_bands_gpu(uint32_t cols, uint32_t band_count,
     if (viewport_w <= 0 || viewport_h <= 0) {
         return;
     }
+    db_gl_set_scissor_enabled(1);
     for (uint32_t band = 0U; band < band_count; band++) {
         const uint32_t tile_x0 = (uint32_t)(((uint64_t)band * (uint64_t)cols) /
                                             (uint64_t)band_count);

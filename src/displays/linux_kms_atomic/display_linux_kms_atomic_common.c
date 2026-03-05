@@ -52,18 +52,6 @@
 
 static const char *g_active_backend = BACKEND_NAME;
 
-static __attribute__((noreturn)) void failf(const char *fmt, ...) {
-    char message[LOG_MSG_CAPACITY];
-    va_list ap;
-    va_start(ap, fmt);
-    (void)db_vsnprintf(message, sizeof(message), fmt, ap);
-    va_end(ap);
-    db_failf(g_active_backend, "%s", message);
-}
-
-static void die(const char *msg) { failf("%s: %s", msg, strerror(errno)); }
-static void diex(const char *msg) { failf("%s", msg); }
-
 struct kms_atomic {
     int fd;
 
@@ -146,6 +134,18 @@ typedef struct {
     db_kms_atomic_next_fb_fn_t next_fb_fn;
     double *next_progress_log_due_ms;
 } db_kms_atomic_shared_loop_ctx_t;
+
+static __attribute__((noreturn)) void failf(const char *fmt, ...) {
+    char message[LOG_MSG_CAPACITY];
+    va_list ap;
+    va_start(ap, fmt);
+    (void)db_vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+    db_failf(g_active_backend, "%s", message);
+}
+
+static void die(const char *msg) { failf("%s: %s", msg, strerror(errno)); }
+static void diex(const char *msg) { failf("%s", msg); }
 
 static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
                             const char *name) {

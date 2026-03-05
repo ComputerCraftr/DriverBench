@@ -56,6 +56,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.timing_query_pool = ctx->timing_query_pool;
     g_state.gpu_timing_enabled = ctx->gpu_timing_enabled;
     g_state.runtime = ctx->runtime;
+    g_state.runtime_flags = db_history_runtime_mode_flags(&g_state.runtime);
     g_state.capability_mode = ctx->capability_mode;
     for (uint32_t i = 0; i < MAX_BAND_OWNER; i++) {
         g_state.work_owner[i] = ctx->work_owner[i];
@@ -74,9 +75,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.frame.state_hash = DB_FNV1A64_OFFSET;
     g_state.next_progress_log_due_ms = 0.0;
     g_state.frame.frame_index = 0U;
-    const db_history_pattern_mode_flags_t mode_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
-    if (mode_flags.is_snake_history_texture != 0) {
+    if (g_state.runtime_flags.is_snake_history_texture != 0) {
         g_state.runtime.snake.cursor = DB_SNAKE_CURSOR_PRE_ENTRY;
     } else {
         g_state.runtime.snake.cursor = 0U;
@@ -88,7 +87,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.snake_scratch.row_bounds = NULL;
     g_state.snake_scratch.row_bounds_capacity = 0U;
     g_state.snake_scratch.span_capacity = 0U;
-    if (mode_flags.is_snake_history_texture != 0) {
+    if (g_state.runtime_flags.is_snake_history_texture != 0) {
         const size_t scratch_capacity =
             db_snake_scratch_capacity_from_work_units(
                 g_state.runtime.work_unit_count);

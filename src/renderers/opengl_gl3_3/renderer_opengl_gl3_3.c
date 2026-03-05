@@ -41,7 +41,7 @@ typedef struct {
     int u_grid_rows;
     int u_grid_target_color;
     int u_history_tex;
-    int u_direction_flag;
+    int u_gradient_direction_flag;
     int u_palette_cycle;
     int u_pattern_seed;
     int u_render_mode;
@@ -49,6 +49,7 @@ typedef struct {
     int u_snake_cursor;
     int u_snake_phase_completed;
     int u_snake_shape_index;
+    int u_snake_phase_flag;
     int u_frame_index;
     int history_height;
     unsigned int history_fbo[2];
@@ -56,8 +57,10 @@ typedef struct {
     unsigned int history_tex[2];
     int history_width;
     db_gl_viewport_cache_t viewport;
+    db_history_pattern_mode_flags_t runtime_flags;
     unsigned int program;
-    int uniform_direction_flag_cache;
+    int uniform_gradient_direction_flag_cache;
+    int uniform_snake_phase_flag_cache;
     int uniform_snake_phase_completed_cache;
     uint32_t uniform_gradient_head_row_cache;
     int uniform_gradient_head_row_cache_valid;
@@ -111,10 +114,8 @@ static void db_gl3_seed_history_targets_clear_cb(const float rgba[4],
 }
 
 static void db_gl3_refresh_capability_mode(void) {
-    const db_history_runtime_mode_flags_t mode_flags =
-        db_history_runtime_mode_flags(&g_state.runtime);
     const char *draw_mode = db_gl_capability_mode_draw_select(
-        0, mode_flags.uses_history_pipeline, 1);
+        0, g_state.runtime_flags.uses_history_pipeline, 1);
     db_gl_capability_mode_compose(
         g_state.capability_mode, sizeof(g_state.capability_mode), draw_mode,
         DB_GL_CAP_UPLOAD_VBO,
@@ -164,9 +165,7 @@ static void db_gl3_create_fallback_texture(void) {
 
 static void db_gl3_ensure_history_targets(int viewport_width_px,
                                           int viewport_height_px) {
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
-    if (pattern_flags.uses_history_pipeline == 0) {
+    if (g_state.runtime_flags.uses_history_pipeline == 0) {
         return;
     }
 
@@ -356,6 +355,8 @@ void db_renderer_opengl_gl3_3_init(void) {
     if (!db_init_vertices_for_mode()) {
         failf("failed to allocate benchmark vertex buffers");
     }
+    db_gl_set_scissor_enabled(0);
+    g_state.runtime_flags = db_history_runtime_mode_flags(&g_state.runtime);
 
     db_gl_gen_vertex_arrays(1, &g_state.vao);
     unsigned int vbo_u32 = 0U;
@@ -401,8 +402,8 @@ void db_renderer_opengl_gl3_3_init(void) {
         db_gl_get_uniform_location(g_state.program, "u_render_mode");
     g_state.u_band_count =
         db_gl_get_uniform_location(g_state.program, "u_band_count");
-    g_state.u_direction_flag =
-        db_gl_get_uniform_location(g_state.program, "u_direction_flag");
+    g_state.u_gradient_direction_flag = db_gl_get_uniform_location(
+        g_state.program, "u_gradient_direction_flag");
     g_state.u_snake_cursor =
         db_gl_get_uniform_location(g_state.program, "u_snake_cursor");
     g_state.u_snake_phase_completed =
@@ -417,6 +418,8 @@ void db_renderer_opengl_gl3_3_init(void) {
         db_gl_get_uniform_location(g_state.program, "u_gradient_head_row");
     g_state.u_snake_shape_index =
         db_gl_get_uniform_location(g_state.program, "u_snake_shape_index");
+    g_state.u_snake_phase_flag = db_gl_get_uniform_location(
+        g_state.program, "u_snake_phase_flag");
     g_state.u_frame_index =
         db_gl_get_uniform_location(g_state.program, "u_frame_index");
     g_state.u_gradient_window_rows =
@@ -431,7 +434,8 @@ void db_renderer_opengl_gl3_3_init(void) {
         db_gl_get_uniform_location(g_state.program, "u_grid_target_color");
     g_state.u_history_tex =
         db_gl_get_uniform_location(g_state.program, "u_history_tex");
-    g_state.uniform_direction_flag_cache = -1;
+    g_state.uniform_gradient_direction_flag_cache = -1;
+    g_state.uniform_snake_phase_flag_cache = -1;
     g_state.uniform_snake_phase_completed_cache = -1;
     g_state.uniform_snake_cursor_cache = 0U;
     g_state.uniform_snake_cursor_cache_valid = 0;
@@ -472,9 +476,7 @@ void db_renderer_opengl_gl3_3_init(void) {
         db_gl_texture_bind_2d(g_state.fallback_tex);
     }
 
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(g_state.runtime.pattern);
-    if ((pattern_flags.is_bands != 0) && (g_state.u_frame_index >= 0)) {
+    if ((g_state.runtime_flags.is_bands != 0) && (g_state.u_frame_index >= 0)) {
         db_gl_uniform1ui(g_state.u_frame_index, 0);
     }
 
@@ -490,9 +492,12 @@ void db_renderer_opengl_gl3_3_init(void) {
                                  &g_state.uniform_palette_cycle_cache,
                                  &g_state.uniform_palette_cycle_cache_valid,
                                  g_state.runtime.gradient.cycle_index);
-    db_set_uniform1i_if_changed(g_state.u_direction_flag,
-                                &g_state.uniform_direction_flag_cache,
+    db_set_uniform1i_if_changed(g_state.u_gradient_direction_flag,
+                                &g_state.uniform_gradient_direction_flag_cache,
                                 g_state.runtime.gradient.direction_down);
+    db_set_uniform1i_if_changed(g_state.u_snake_phase_flag,
+                                &g_state.uniform_snake_phase_flag_cache,
+                                g_state.runtime.snake.grid_phase_flag);
     db_set_uniform1i_if_changed(g_state.u_snake_phase_completed,
                                 &g_state.uniform_snake_phase_completed_cache,
                                 g_state.runtime.snake.phase_completed);
@@ -509,21 +514,20 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
 
     db_gl3_ensure_history_targets(g_state.viewport.last_viewport_w,
                                   g_state.viewport.last_viewport_h);
-    const db_history_runtime_mode_flags_t mode_flags =
-        db_history_runtime_mode_flags(&g_state.runtime);
     db_snake_plan_t snake_plan = {0};
     db_snake_step_target_t snake_target = {0};
     int snake_plan_valid = 0;
-    if (mode_flags.is_snake_history_texture != 0) {
+    if (g_state.runtime_flags.is_snake_history_texture != 0) {
         const db_history_snake_step_eval_t eval =
             db_history_eval_snake_step_from_runtime(&g_state.runtime);
         snake_plan = eval.plan;
         snake_target = eval.target;
         snake_plan_valid = 1;
-        if (snake_target.has_next_direction_flag != 0) {
-            db_set_uniform1i_if_changed(g_state.u_direction_flag,
-                                        &g_state.uniform_direction_flag_cache,
-                                        snake_plan.clearing_phase);
+        if (snake_target.has_next_phase_flag != 0) {
+            db_set_uniform1i_if_changed(
+                g_state.u_snake_phase_flag,
+                &g_state.uniform_snake_phase_flag_cache,
+                snake_plan.phase_flag);
         }
         if (snake_target.has_next_shape_index != 0) {
             db_set_uniform1ui_if_changed(
@@ -546,7 +550,7 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
             &g_state.uniform_snake_phase_completed_cache,
             snake_plan.phase_completed);
         db_history_apply_snake_step_to_runtime(&g_state.runtime, &eval);
-    } else if (mode_flags.is_gradient != 0) {
+    } else if (g_state.runtime_flags.is_gradient != 0) {
         const db_gradient_damage_plan_t plan = db_gradient_step_from_runtime(
             g_state.runtime.pattern, g_state.runtime.gradient.head_row,
             g_state.runtime.gradient.direction_down,
@@ -558,20 +562,22 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
             &g_state.uniform_gradient_head_row_cache,
             &g_state.uniform_gradient_head_row_cache_valid,
             plan.render_state.head_row);
-        db_set_uniform1i_if_changed(g_state.u_direction_flag,
-                                    &g_state.uniform_direction_flag_cache,
-                                    plan.render_state.direction_down);
+        db_set_uniform1i_if_changed(
+            g_state.u_gradient_direction_flag,
+            &g_state.uniform_gradient_direction_flag_cache,
+            plan.render_state.direction_down);
         db_set_uniform1ui_if_changed(g_state.u_palette_cycle,
                                      &g_state.uniform_palette_cycle_cache,
                                      &g_state.uniform_palette_cycle_cache_valid,
                                      plan.render_state.cycle_index);
-    } else if (mode_flags.is_bands != 0) {
+    } else if (g_state.runtime_flags.is_bands != 0) {
         if (g_state.u_frame_index >= 0) {
             db_gl_uniform1ui(g_state.u_frame_index, frame_index);
         }
     }
 
-    if (mode_flags.uses_history_pipeline == 0) {
+    if (g_state.runtime_flags.uses_history_pipeline == 0) {
+        db_gl_set_scissor_enabled(0);
         if (g_state.fallback_tex != 0U) {
             db_gl_active_texture(GL_TEXTURE0);
             db_gl_texture_bind_2d(g_state.fallback_tex);
@@ -618,7 +624,8 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
     }
     int drew_dirty_history = 0;
     if (db_history_should_use_snake_history_scissor_pass(
-            mode_flags.uses_dirty_backbuffer_mode, snake_plan_valid) != 0) {
+            g_state.runtime_flags.uses_dirty_backbuffer_mode,
+            snake_plan_valid) != 0) {
         db_snake_col_span_t spans[BENCH_SNAKE_PHASE_WINDOW_TILES * 2U] = {
             {0U, 0U, 0U}};
         const size_t max_spans = sizeof(spans) / sizeof(spans[0]);
@@ -647,7 +654,6 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
                     g_state.viewport.last_viewport_w,
                     g_state.viewport.last_viewport_h,
                     db_gl3_apply_scissor_draw_rect, (void *)&scissor_ctx);
-            db_gl_set_scissor_enabled(0);
             if (applied_rect_count > 0U) {
                 drew_dirty_history = 1;
             }
@@ -662,6 +668,7 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
     } else {
         db_gl_bind_framebuffer(GL_FRAMEBUFFER,
                                g_state.history_fbo[write_index]);
+        db_gl_set_scissor_enabled(0);
         db_gl_draw_arrays_triangles(
             0, db_gl_draw_vertex_count_i32(BACKEND_NAME,
                                            g_state.vertex.draw_vertex_count));

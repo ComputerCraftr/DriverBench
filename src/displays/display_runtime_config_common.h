@@ -16,6 +16,31 @@ typedef struct {
     const char *hash_report;
 } db_display_runtime_config_t;
 
+typedef struct {
+    db_display_runtime_config_t runtime;
+    db_display_hash_settings_t hash_settings;
+} db_display_runtime_hash_config_t;
+
+typedef struct {
+    db_display_hash_tracker_t state;
+    db_display_hash_tracker_t output;
+} db_display_dual_hash_trackers_t;
+
+typedef struct {
+    const char *api_name;
+    const char *backend;
+    const char *capability_mode;
+    const char *renderer_name;
+    db_display_hash_tracker_t *output_hash_tracker;
+    db_display_hash_tracker_t *state_hash_tracker;
+    double *next_progress_log_due_ms;
+    uint32_t work_unit_count;
+    int output_hash_enabled;
+    int state_hash_enabled;
+} db_display_frame_step_t;
+
+typedef uint64_t (*db_display_hash_value_fn_t)(void *user_data);
+
 static inline db_display_runtime_config_t
 db_display_runtime_config_from_cli(const db_cli_config_t *cfg) {
     db_display_runtime_config_t config = {
@@ -50,11 +75,6 @@ db_display_hash_settings_from_config(const db_display_runtime_config_t *config,
                                             config->hash_mode);
 }
 
-typedef struct {
-    db_display_runtime_config_t runtime;
-    db_display_hash_settings_t hash_settings;
-} db_display_runtime_hash_config_t;
-
 static inline db_display_runtime_hash_config_t
 db_display_runtime_hash_config_from_cli(const db_cli_config_t *cfg,
                                         int default_state_hash_enabled,
@@ -67,24 +87,6 @@ db_display_runtime_hash_config_from_cli(const db_cli_config_t *cfg,
             &runtime, default_state_hash_enabled, default_output_hash_enabled),
     };
 }
-
-typedef struct {
-    db_display_hash_tracker_t state;
-    db_display_hash_tracker_t output;
-} db_display_dual_hash_trackers_t;
-
-typedef struct {
-    const char *api_name;
-    const char *backend;
-    const char *capability_mode;
-    const char *renderer_name;
-    db_display_hash_tracker_t *output_hash_tracker;
-    db_display_hash_tracker_t *state_hash_tracker;
-    double *next_progress_log_due_ms;
-    uint32_t work_unit_count;
-    int output_hash_enabled;
-    int state_hash_enabled;
-} db_display_frame_step_t;
 
 static inline db_display_frame_step_t db_display_frame_step_make(
     const char *api_name, const char *backend, const char *capability_mode,
@@ -105,8 +107,6 @@ static inline db_display_frame_step_t db_display_frame_step_make(
         .state_hash_enabled = state_hash_enabled,
     };
 }
-
-typedef uint64_t (*db_display_hash_value_fn_t)(void *user_data);
 
 static inline db_display_dual_hash_trackers_t
 db_display_dual_hash_trackers_create(const char *backend,

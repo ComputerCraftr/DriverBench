@@ -193,8 +193,34 @@ typedef struct {
     int loaded;
 } db_gl_upload_proc_table_t;
 
+// Track a small fixed number of texture units for redundant bind elision.
+#define DB_GL_TRACKED_TEXTURE_UNIT_COUNT 32U
+
 static db_gl_upload_proc_table_t g_upload_proc_table = {0};
 static db_gl_proc_resolver_fn_t g_proc_resolver = NULL;
+static int g_blend_enabled_state = -1;
+static int g_client_state_color_array_enabled = -1;
+static int g_client_state_texcoord_array_enabled = -1;
+static int g_client_state_vertex_array_enabled = -1;
+static int g_cull_face_enabled_state = -1;
+static int g_depth_test_enabled_state = -1;
+static unsigned int g_bound_draw_framebuffer = 0U;
+static int g_bound_draw_framebuffer_valid = 0;
+static unsigned int g_bound_read_framebuffer = 0U;
+static int g_bound_read_framebuffer_valid = 0;
+static unsigned int g_bound_vertex_array = 0U;
+static int g_bound_vertex_array_valid = 0;
+static unsigned int g_current_program = 0U;
+static int g_current_program_valid = 0;
+static int g_scissor_enabled_state = -1;
+static unsigned int
+    g_texture2d_binding_by_unit[DB_GL_TRACKED_TEXTURE_UNIT_COUNT] = {0U};
+static int g_texture2d_binding_valid_by_unit[DB_GL_TRACKED_TEXTURE_UNIT_COUNT] =
+    {0};
+static unsigned int g_texture2d_enabled_state = 0U;
+static int g_texture2d_enabled_state_valid = 0;
+static unsigned int g_active_texture_unit = GL_TEXTURE0;
+static int g_active_texture_unit_valid = 0;
 
 // Section map:
 // 1) Version/extension parsing and capability advertisement.
@@ -481,6 +507,30 @@ void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver) {
                  "preload");
     }
     g_proc_resolver = resolver;
+    g_active_texture_unit = GL_TEXTURE0;
+    g_active_texture_unit_valid = 0;
+    g_blend_enabled_state = -1;
+    g_client_state_color_array_enabled = -1;
+    g_client_state_texcoord_array_enabled = -1;
+    g_client_state_vertex_array_enabled = -1;
+    g_cull_face_enabled_state = -1;
+    g_depth_test_enabled_state = -1;
+    g_bound_draw_framebuffer = 0U;
+    g_bound_draw_framebuffer_valid = 0;
+    g_bound_read_framebuffer = 0U;
+    g_bound_read_framebuffer_valid = 0;
+    g_bound_vertex_array = 0U;
+    g_bound_vertex_array_valid = 0;
+    g_current_program = 0U;
+    g_current_program_valid = 0;
+    g_scissor_enabled_state = -1;
+    g_texture2d_enabled_state = 0U;
+    g_texture2d_enabled_state_valid = 0;
+    for (size_t unit_index = 0U;
+         unit_index < DB_GL_TRACKED_TEXTURE_UNIT_COUNT; unit_index++) {
+        g_texture2d_binding_by_unit[unit_index] = 0U;
+        g_texture2d_binding_valid_by_unit[unit_index] = 0;
+    }
 }
 
 static void db_gl_load_upload_proc_table(void) {
@@ -944,6 +994,22 @@ void db_gl_texture_delete_if_valid(unsigned int *texture) {
 
 void db_gl_texture_bind_2d(unsigned int texture) {
     db_gl_load_upload_proc_table();
+    if ((g_active_texture_unit_valid != 0) &&
+        (g_active_texture_unit >= GL_TEXTURE0) &&
+        (g_active_texture_unit <
+         (GL_TEXTURE0 + DB_GL_TRACKED_TEXTURE_UNIT_COUNT))) {
+        const size_t unit_index = (size_t)(g_active_texture_unit - GL_TEXTURE0);
+        if ((g_texture2d_binding_valid_by_unit[unit_index] != 0) &&
+            (g_texture2d_binding_by_unit[unit_index] == texture)) {
+            return;
+        }
+        if (g_upload_proc_table.bind_texture != NULL) {
+            g_upload_proc_table.bind_texture(GL_TEXTURE_2D, (GLuint)texture);
+            g_texture2d_binding_by_unit[unit_index] = texture;
+            g_texture2d_binding_valid_by_unit[unit_index] = 1;
+        }
+        return;
+    }
     if (g_upload_proc_table.bind_texture != NULL) {
         g_upload_proc_table.bind_texture(GL_TEXTURE_2D, (GLuint)texture);
     }
@@ -996,42 +1062,63 @@ void db_gl_clear_color_buffer(void) {
 
 void db_gl_set_blend_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if (g_blend_enabled_state == normalized_enabled) {
+        return;
+    }
+    if ((normalized_enabled != 0) && (g_upload_proc_table.enable != NULL)) {
         g_upload_proc_table.enable(GL_BLEND);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable != NULL)) {
+    if ((normalized_enabled == 0) && (g_upload_proc_table.disable != NULL)) {
         g_upload_proc_table.disable(GL_BLEND);
     }
+    g_blend_enabled_state = normalized_enabled;
 }
 
 void db_gl_set_cull_face_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if (g_cull_face_enabled_state == normalized_enabled) {
+        return;
+    }
+    if ((normalized_enabled != 0) && (g_upload_proc_table.enable != NULL)) {
         g_upload_proc_table.enable(GL_CULL_FACE);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable != NULL)) {
+    if ((normalized_enabled == 0) && (g_upload_proc_table.disable != NULL)) {
         g_upload_proc_table.disable(GL_CULL_FACE);
     }
+    g_cull_face_enabled_state = normalized_enabled;
 }
 
 void db_gl_set_depth_test_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if (g_depth_test_enabled_state == normalized_enabled) {
+        return;
+    }
+    if ((normalized_enabled != 0) && (g_upload_proc_table.enable != NULL)) {
         g_upload_proc_table.enable(GL_DEPTH_TEST);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable != NULL)) {
+    if ((normalized_enabled == 0) && (g_upload_proc_table.disable != NULL)) {
         g_upload_proc_table.disable(GL_DEPTH_TEST);
     }
+    g_depth_test_enabled_state = normalized_enabled;
 }
 
 void db_gl_set_scissor_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if ((g_scissor_enabled_state >= 0) &&
+        (g_scissor_enabled_state == normalized_enabled)) {
+        return;
+    }
+    if ((normalized_enabled != 0) && (g_upload_proc_table.enable != NULL)) {
         g_upload_proc_table.enable(GL_SCISSOR_TEST);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable != NULL)) {
+    if ((normalized_enabled == 0) && (g_upload_proc_table.disable != NULL)) {
         g_upload_proc_table.disable(GL_SCISSOR_TEST);
     }
+    g_scissor_enabled_state = normalized_enabled;
 }
 
 void db_gl_set_scissor_rect(int x_px, int y_px, int width, int height) {
@@ -1077,42 +1164,70 @@ void db_gl_read_pixels_rgba16f(int x_px, int y_px, int width, int height,
 
 void db_gl_set_texture_2d_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if ((g_texture2d_enabled_state_valid != 0) &&
+        ((int)g_texture2d_enabled_state == normalized_enabled)) {
+        return;
+    }
+    if ((normalized_enabled != 0) && (g_upload_proc_table.enable != NULL)) {
         g_upload_proc_table.enable(GL_TEXTURE_2D);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable != NULL)) {
+    if ((normalized_enabled == 0) && (g_upload_proc_table.disable != NULL)) {
         g_upload_proc_table.disable(GL_TEXTURE_2D);
     }
+    g_texture2d_enabled_state = (unsigned int)normalized_enabled;
+    g_texture2d_enabled_state_valid = 1;
 }
 
 void db_gl_set_client_state_vertex_array_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable_client_state != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if (g_client_state_vertex_array_enabled == normalized_enabled) {
+        return;
+    }
+    if ((normalized_enabled != 0) &&
+        (g_upload_proc_table.enable_client_state != NULL)) {
         g_upload_proc_table.enable_client_state(GL_VERTEX_ARRAY);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable_client_state != NULL)) {
+    if ((normalized_enabled == 0) &&
+        (g_upload_proc_table.disable_client_state != NULL)) {
         g_upload_proc_table.disable_client_state(GL_VERTEX_ARRAY);
     }
+    g_client_state_vertex_array_enabled = normalized_enabled;
 }
 
 void db_gl_set_client_state_color_array_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable_client_state != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if (g_client_state_color_array_enabled == normalized_enabled) {
+        return;
+    }
+    if ((normalized_enabled != 0) &&
+        (g_upload_proc_table.enable_client_state != NULL)) {
         g_upload_proc_table.enable_client_state(GL_COLOR_ARRAY);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable_client_state != NULL)) {
+    if ((normalized_enabled == 0) &&
+        (g_upload_proc_table.disable_client_state != NULL)) {
         g_upload_proc_table.disable_client_state(GL_COLOR_ARRAY);
     }
+    g_client_state_color_array_enabled = normalized_enabled;
 }
 
 void db_gl_set_client_state_texcoord_array_enabled(int enabled) {
     db_gl_load_upload_proc_table();
-    if ((enabled != 0) && (g_upload_proc_table.enable_client_state != NULL)) {
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if (g_client_state_texcoord_array_enabled == normalized_enabled) {
+        return;
+    }
+    if ((normalized_enabled != 0) &&
+        (g_upload_proc_table.enable_client_state != NULL)) {
         g_upload_proc_table.enable_client_state(GL_TEXTURE_COORD_ARRAY);
     }
-    if ((enabled == 0) && (g_upload_proc_table.disable_client_state != NULL)) {
+    if ((normalized_enabled == 0) &&
+        (g_upload_proc_table.disable_client_state != NULL)) {
         g_upload_proc_table.disable_client_state(GL_TEXTURE_COORD_ARRAY);
     }
+    g_client_state_texcoord_array_enabled = normalized_enabled;
 }
 
 void db_gl_set_vertex_pointer_2f(int stride_bytes, const void *pointer) {
@@ -1158,8 +1273,14 @@ void db_gl_draw_arrays_triangle_strip(int first, int count) {
 // 3) Wrapper APIs: shader/program and modern pipeline operations.
 void db_gl_active_texture(unsigned int texture_unit) {
     db_gl_load_upload_proc_table();
+    if ((g_active_texture_unit_valid != 0) &&
+        (g_active_texture_unit == texture_unit)) {
+        return;
+    }
     if (g_upload_proc_table.active_texture != NULL) {
         g_upload_proc_table.active_texture((GLenum)texture_unit);
+        g_active_texture_unit = texture_unit;
+        g_active_texture_unit_valid = 1;
     }
 }
 
@@ -1172,16 +1293,54 @@ void db_gl_attach_shader(unsigned int program, unsigned int shader) {
 
 void db_gl_bind_framebuffer(unsigned int target, unsigned int framebuffer) {
     db_gl_load_upload_proc_table();
+    const int target_is_framebuffer = ((GLenum)target == GL_FRAMEBUFFER);
+    const int target_is_read = ((GLenum)target == GL_READ_FRAMEBUFFER);
+    const int target_is_draw = ((GLenum)target == GL_DRAW_FRAMEBUFFER);
+    if (target_is_framebuffer != 0) {
+        if ((g_bound_read_framebuffer_valid != 0) &&
+            (g_bound_draw_framebuffer_valid != 0) &&
+            (g_bound_read_framebuffer == framebuffer) &&
+            (g_bound_draw_framebuffer == framebuffer)) {
+            return;
+        }
+    } else if (target_is_read != 0) {
+        if ((g_bound_read_framebuffer_valid != 0) &&
+            (g_bound_read_framebuffer == framebuffer)) {
+            return;
+        }
+    } else if (target_is_draw != 0) {
+        if ((g_bound_draw_framebuffer_valid != 0) &&
+            (g_bound_draw_framebuffer == framebuffer)) {
+            return;
+        }
+    }
     if (g_upload_proc_table.bind_framebuffer != NULL) {
         g_upload_proc_table.bind_framebuffer((GLenum)target,
                                              (GLuint)framebuffer);
+        if (target_is_framebuffer != 0) {
+            g_bound_read_framebuffer = framebuffer;
+            g_bound_read_framebuffer_valid = 1;
+            g_bound_draw_framebuffer = framebuffer;
+            g_bound_draw_framebuffer_valid = 1;
+        } else if (target_is_read != 0) {
+            g_bound_read_framebuffer = framebuffer;
+            g_bound_read_framebuffer_valid = 1;
+        } else if (target_is_draw != 0) {
+            g_bound_draw_framebuffer = framebuffer;
+            g_bound_draw_framebuffer_valid = 1;
+        }
     }
 }
 
 void db_gl_bind_vertex_array(unsigned int vao) {
     db_gl_load_upload_proc_table();
+    if ((g_bound_vertex_array_valid != 0) && (g_bound_vertex_array == vao)) {
+        return;
+    }
     if (g_upload_proc_table.bind_vertex_array != NULL) {
         g_upload_proc_table.bind_vertex_array((GLuint)vao);
+        g_bound_vertex_array = vao;
+        g_bound_vertex_array_valid = 1;
     }
 }
 
@@ -1388,8 +1547,13 @@ void db_gl_uniform3f(int location, float x_val, float y_val, float z_val) {
 
 void db_gl_use_program(unsigned int program) {
     db_gl_load_upload_proc_table();
+    if ((g_current_program_valid != 0) && (g_current_program == program)) {
+        return;
+    }
     if (g_upload_proc_table.use_program != NULL) {
         g_upload_proc_table.use_program((GLuint)program);
+        g_current_program = program;
+        g_current_program_valid = 1;
     }
 }
 

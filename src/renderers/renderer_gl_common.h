@@ -266,7 +266,6 @@ const char *db_gl_get_version_string(void);
 const char *db_gl_get_renderer_string(void);
 const char *db_gl_get_extensions_string(void);
 void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver);
-void db_gl_preload_upload_proc_table(void);
 void db_gl_context_probe_upload_capabilities(size_t bytes,
                                              const float *initial_vertices,
                                              db_gl_upload_probe_result_t *out);
@@ -356,5 +355,6 @@ int db_init_vertices_for_runtime_common_with_stride(
 void db_update_grid_vertices_for_bands_rgb_stride(
     float *verts, uint32_t cols, uint32_t rows, uint32_t band_count,
     uint32_t frame_index, size_t stride_floats, size_t color_offset_floats);
+void db_gl_preload_upload_proc_table(void);
 
 #endif

@@ -22,6 +22,8 @@ typedef struct {
     size_t damage_row_count;
     db_gl_upload_range_t *default_history_range_storage;
     size_t gradient_dirty_range_cap;
+    int is_gradient_pattern;
+    int is_snake_history_texture_pattern;
 } db_gl1_damage_collect_ctx_t;
 
 size_t

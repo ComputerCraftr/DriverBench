@@ -27,10 +27,6 @@
 #define BACKEND_NAME "display_offscreen"
 #define BACKEND_NAME_GL3_OFFSCREEN "display_offscreen_gl3_fbo"
 
-static uint64_t db_offscreen_cpu_bo_hash(void) {
-    return db_display_cpu_renderer_bo_hash_or_fail(BACKEND_NAME);
-}
-
 typedef struct {
     const db_display_frame_step_t *frame_step;
     const db_display_gl_renderer_ops_t *renderer_ops;
@@ -44,6 +40,10 @@ typedef struct {
 typedef struct {
     const db_display_frame_step_t *frame_step;
 } db_offscreen_cpu_loop_ctx_t;
+
+static uint64_t db_offscreen_cpu_bo_hash(void) {
+    return db_display_cpu_renderer_bo_hash_or_fail(BACKEND_NAME);
+}
 
 static db_display_frame_loop_result_t
 db_offscreen_cpu_frame_step(void *user_data, uint32_t frame_index,

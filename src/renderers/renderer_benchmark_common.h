@@ -79,6 +79,7 @@ typedef struct {
     uint32_t prev_start;
     uint32_t prev_count;
     uint32_t batch_size;
+    int grid_phase_flag;
     int phase_completed;
 } db_snake_state_t;
 
@@ -113,8 +114,7 @@ static inline uint64_t db_benchmark_runtime_state_hash_cross_renderer(
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.prev_count);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.batch_size);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.phase_completed);
-    // Shared direction bit for gradient sweep direction and snake phase
-    // direction (replaces legacy standalone mode-phase runtime field).
+    hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->snake.grid_phase_flag);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient.direction_down);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient.head_row);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)runtime->gradient.cycle_index);
@@ -122,14 +122,6 @@ static inline uint64_t db_benchmark_runtime_state_hash_cross_renderer(
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)render_width);
     hash = db_fnv1a64_mix_u64(hash, (uint64_t)render_height);
     return hash;
-}
-
-static inline uint64_t
-db_benchmark_runtime_state_hash(const db_benchmark_runtime_init_t *runtime,
-                                uint32_t frame_index, uint32_t render_width,
-                                uint32_t render_height) {
-    return db_benchmark_runtime_state_hash_cross_renderer(
-        runtime, frame_index, render_width, render_height);
 }
 
 static inline uint32_t db_grid_rows_effective(void) {
@@ -210,7 +202,7 @@ static inline void db_benchmark_seed_background_color_rgb(
     if ((runtime != NULL) && (runtime->pattern == DB_PATTERN_SNAKE_GRID)) {
         // Snake grid alternates between two stable full-grid phases. Seed to
         // the current base phase so the first dirty update composes correctly.
-        if (runtime->gradient.direction_down == 0) {
+        if (runtime->snake.grid_phase_flag == 0) {
             *out_r = BENCH_GRID_PHASE0_R;
             *out_g = BENCH_GRID_PHASE0_G;
             *out_b = BENCH_GRID_PHASE0_B;
@@ -419,6 +411,7 @@ db_init_benchmark_runtime_common(const char *backend_name,
         (requested == DB_PATTERN_SNAKE_RECT) ||
         (requested == DB_PATTERN_SNAKE_SHAPES)) {
         out_state->snake.cursor = UINT32_MAX;
+        out_state->snake.grid_phase_flag = 0;
     }
 
     db_log_benchmark_mode(backend_name, requested, out_state->pattern_seed,

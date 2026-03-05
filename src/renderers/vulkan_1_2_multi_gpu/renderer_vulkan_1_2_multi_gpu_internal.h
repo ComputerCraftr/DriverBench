@@ -27,27 +27,6 @@
 #define DB_CAP_MODE_VK_UPLOAD_NONE "none"
 #define DB_VK_CAPABILITY_MODE_MAX 128U
 
-static inline const char *
-db_vk_capability_draw_mode_name(db_pattern_t pattern) {
-    const db_history_pattern_mode_flags_t pattern_flags =
-        db_history_pattern_mode_flags(pattern);
-    const int uses_history = pattern_flags.uses_history_pipeline;
-    return (uses_history != 0) ? DB_CAP_MODE_VK_DRAW_HISTORY_DIRTY
-                               : DB_CAP_MODE_VK_DRAW_TILES_FULL;
-}
-
-static inline const char *db_vk_scheduler_mode_name(int have_group) {
-    return (have_group != 0) ? DB_CAP_MODE_VK_SCHED_DEVICE_GROUP
-                             : DB_CAP_MODE_VK_SCHED_SINGLE_GPU;
-}
-
-static inline uint32_t db_vk_normalize_gpu_count(uint32_t gpu_count) {
-    if (gpu_count == 0U) {
-        return 1U;
-    }
-    return (gpu_count > MAX_GPU_COUNT) ? MAX_GPU_COUNT : gpu_count;
-}
-
 typedef struct {
     float offset_ndc[2];
     float scale_ndc[2];
@@ -58,12 +37,13 @@ typedef struct {
     uint32_t gradient_window_rows;
     uint32_t grid_cols;
     uint32_t grid_rows;
-    int32_t direction_flag;
+    int32_t gradient_direction_flag;
     uint32_t palette_cycle;
     uint32_t pattern_seed;
     uint32_t render_mode;
     uint32_t snake_batch_size;
     uint32_t snake_cursor;
+    int32_t snake_phase_flag;
     uint32_t snake_shape_index;
     int32_t snake_phase_completed;
     uint32_t viewport_height;
@@ -163,6 +143,7 @@ typedef struct {
     uint32_t gradient_window_rows;
     db_gradient_backbuffer_replay_state_t gradient_prev_frame;
     db_history_pair_state_t history_pair;
+    db_history_pattern_mode_flags_t runtime_flags;
     int have_group;
     int have_prev_timing_frame;
     int history_descriptor_index;
@@ -202,7 +183,8 @@ typedef struct {
     const float *color;
     uint32_t render_mode;
     uint32_t gradient_head_row;
-    int direction_flag;
+    int gradient_direction_flag;
+    int snake_phase_flag;
     uint32_t snake_cursor;
     uint32_t snake_batch_size;
     uint32_t snake_shape_index;
@@ -270,6 +252,27 @@ typedef struct {
     VkInstance instance;
     VkSurfaceKHR surface;
 } db_vk_cleanup_ctx_t;
+
+static inline const char *
+db_vk_capability_draw_mode_name(db_pattern_t pattern) {
+    const db_history_pattern_mode_flags_t pattern_flags =
+        db_history_pattern_mode_flags(pattern);
+    const int uses_history = pattern_flags.uses_history_pipeline;
+    return (uses_history != 0) ? DB_CAP_MODE_VK_DRAW_HISTORY_DIRTY
+                               : DB_CAP_MODE_VK_DRAW_TILES_FULL;
+}
+
+static inline const char *db_vk_scheduler_mode_name(int have_group) {
+    return (have_group != 0) ? DB_CAP_MODE_VK_SCHED_DEVICE_GROUP
+                             : DB_CAP_MODE_VK_SCHED_SINGLE_GPU;
+}
+
+static inline uint32_t db_vk_normalize_gpu_count(uint32_t gpu_count) {
+    if (gpu_count == 0U) {
+        return 1U;
+    }
+    return (gpu_count > MAX_GPU_COUNT) ? MAX_GPU_COUNT : gpu_count;
+}
 
 extern renderer_state_t g_state;
 

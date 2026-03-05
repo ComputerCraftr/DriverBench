@@ -13,6 +13,36 @@
 #include "displays/display_types.h"
 #include "renderers/renderer_benchmark_common.h"
 
+typedef struct {
+    const char *cli_option;
+    const char *runtime_option;
+    int kind;
+} db_cli_runtime_option_map_t;
+
+enum {
+    DB_CLI_RT_BOOL = 0,
+    DB_CLI_RT_FPS_CAP = 1,
+    DB_CLI_RT_MODE = 2,
+    DB_CLI_RT_RANDOM_SEED = 3,
+    DB_CLI_RT_HASH_REPORT = 4,
+    DB_CLI_RT_FRAME_LIMIT = 5,
+    DB_CLI_RT_HASH_MODE = 6,
+    DB_CLI_RT_BENCH_SPEED = 7,
+    DB_CLI_RT_OFFSCREEN = 8,
+    DB_CLI_RT_VSYNC = 9,
+    DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER = 10,
+    DB_CLI_RT_BACKBUFFER_DRAW_MODE = 11,
+    DB_CLI_RT_CPU_HDR = 12,
+};
+
+#define DB_CLI_RUNTIME_TEXT_LEN 64U
+#define DB_CLI_RUNTIME_TEXT_SLOTS 32U
+
+static struct {
+    char slots[DB_CLI_RUNTIME_TEXT_SLOTS][DB_CLI_RUNTIME_TEXT_LEN];
+    size_t used;
+} g_cli_runtime_text_pool = {0};
+
 static int db_string_is(const char *value, const char *expected) {
     return (value != NULL) && (expected != NULL) &&
            (strcmp(value, expected) == 0);
@@ -71,36 +101,6 @@ static const char *db_cli_mode_normalized_or_null(const char *value) {
     }
     return NULL;
 }
-
-typedef struct {
-    const char *cli_option;
-    const char *runtime_option;
-    int kind;
-} db_cli_runtime_option_map_t;
-
-enum {
-    DB_CLI_RT_BOOL = 0,
-    DB_CLI_RT_FPS_CAP = 1,
-    DB_CLI_RT_MODE = 2,
-    DB_CLI_RT_RANDOM_SEED = 3,
-    DB_CLI_RT_HASH_REPORT = 4,
-    DB_CLI_RT_FRAME_LIMIT = 5,
-    DB_CLI_RT_HASH_MODE = 6,
-    DB_CLI_RT_BENCH_SPEED = 7,
-    DB_CLI_RT_OFFSCREEN = 8,
-    DB_CLI_RT_VSYNC = 9,
-    DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER = 10,
-    DB_CLI_RT_BACKBUFFER_DRAW_MODE = 11,
-    DB_CLI_RT_CPU_HDR = 12,
-};
-
-#define DB_CLI_RUNTIME_TEXT_LEN 64U
-#define DB_CLI_RUNTIME_TEXT_SLOTS 32U
-
-static struct {
-    char slots[DB_CLI_RUNTIME_TEXT_SLOTS][DB_CLI_RUNTIME_TEXT_LEN];
-    size_t used;
-} g_cli_runtime_text_pool = {0};
 
 static const char *db_cli_store_runtime_text_or_exit(const char *value) {
     if (g_cli_runtime_text_pool.used >= DB_CLI_RUNTIME_TEXT_SLOTS) {
