@@ -27,8 +27,12 @@
 #define DB_RUNTIME_OPT_FRAME_LIMIT "frame_limit"
 #define DB_RUNTIME_OPT_HASH "hash"
 #define DB_RUNTIME_OPT_HASH_REPORT "hash_report"
+#define DB_RUNTIME_OPT_METRICS_MODE "metrics_mode"
 #define DB_RUNTIME_OPT_OFFSCREEN "offscreen"
 #define DB_RUNTIME_OPT_RANDOM_SEED "random_seed"
+#define DB_RUNTIME_OPT_VK_ALLOW_CPU_WORKERS "vk_allow_cpu_workers"
+#define DB_RUNTIME_OPT_VK_MULTI_DEVICE_POLICY "vk_multi_device_policy"
+#define DB_RUNTIME_OPT_VK_NO_PRESENT "vk_no_present"
 #define DB_RUNTIME_OPT_VSYNC "vsync"
 #define DB_U32_MIX_SHIFT_A 16U
 #define DB_U32_MIX_SHIFT_B 15U

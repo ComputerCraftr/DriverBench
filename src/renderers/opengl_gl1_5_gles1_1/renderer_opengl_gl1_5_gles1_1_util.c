@@ -1,6 +1,10 @@
 #include "renderer_opengl_gl1_5_gles1_1_util.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "../../core/db_numeric.h"
+#include "../renderer_benchmark_common.h"
 
 size_t db_rect_tile_bytes(size_t floats_per_vertex) {
     return (size_t)DB_RECT_VERTEX_COUNT * sizeof(float) * floats_per_vertex;

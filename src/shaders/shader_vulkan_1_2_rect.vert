@@ -14,18 +14,27 @@ layout(push_constant) uniform PC {
     uint grid_rows;
     int gradient_direction_flag;
     uint palette_cycle;
-    uint pattern_seed;
     uint render_mode;
     uint snake_batch_size;
     uint snake_cursor;
     int snake_phase_flag;
     int snake_phase_completed;
-    uint snake_shape_index;
+    uint snake_shape_kind;
+    uint snake_region_height;
+    uint snake_region_width;
+    uint snake_region_x;
+    uint snake_region_y;
+    vec4 snake_region_color;
+    vec4 snake_profile0;
+    vec4 snake_profile1;
+    vec4 snake_profile2;
+    uint snake_triangle_variant;
     uint viewport_height;
     uint viewport_width;
     uint frame_index;
     uint band_count;
-} pc;
+}
+pc;
 #else
 // OpenGL-mode GLSL tools reject push constants; keep a compatible fallback
 // block so editor diagnostics remain useful.
@@ -41,18 +50,27 @@ layout(std140, binding = 0) uniform PC {
     uint grid_rows;
     int gradient_direction_flag;
     uint palette_cycle;
-    uint pattern_seed;
     uint render_mode;
     uint snake_batch_size;
     uint snake_cursor;
     int snake_phase_flag;
     int snake_phase_completed;
-    uint snake_shape_index;
+    uint snake_shape_kind;
+    uint snake_region_height;
+    uint snake_region_width;
+    uint snake_region_x;
+    uint snake_region_y;
+    vec4 snake_region_color;
+    vec4 snake_profile0;
+    vec4 snake_profile1;
+    vec4 snake_profile2;
+    uint snake_triangle_variant;
     uint viewport_height;
     uint viewport_width;
     uint frame_index;
     uint band_count;
-} pc;
+}
+pc;
 #endif
 
 layout(location = 0) out vec4 v_color;

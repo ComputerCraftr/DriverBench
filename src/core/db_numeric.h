@@ -30,9 +30,9 @@
 #define DB_F16_EXP_BIAS 15U
 #define DB_F16_FROM_F32_MANT_SHIFT 13U
 
-#define DB_PACKED_RGB_SHIFT_BLUE 0U
-#define DB_PACKED_RGB_SHIFT_GREEN 8U
 #define DB_PACKED_RGB_SHIFT_RED 16U
+#define DB_PACKED_RGB_SHIFT_GREEN 8U
+#define DB_PACKED_RGB_SHIFT_BLUE 0U
 #define DB_PACKED_RGB_SHIFT_ALPHA 24U
 
 static inline uint32_t db_u32_min(uint32_t lhs, uint32_t rhs) {
@@ -98,12 +98,18 @@ static inline double db_u32_to_range_f64(uint32_t value, double min_value,
     return min_value + (db_u32_to_unit_f64(value) * (max_value - min_value));
 }
 
+static inline double db_u8_to_unit_f64(uint32_t value_u8) {
+    return (double)(value_u8 & UINT8_MAX) / DB_U8_MAX;
+}
+
 // Narrowing policy group (determinism-sensitive):
 // - f64 -> f32: IEEE-754 round-to-nearest, ties-to-even (via cast + default FP
 //   environment).
 // - f64 in [0, 1] -> u8: clamp + round-half-up.
 // - f64 -> f16: explicit conversion with ties-to-even in mantissa rounding
 //   paths.
+// - Triplet helpers centralize RGB narrowing so call sites do not do ad-hoc
+//   per-channel casts/conversions in hot paths.
 //
 // Canonicalization contract for f16 conversions:
 // - Zero is canonicalized to +0 in both directions.
@@ -113,6 +119,25 @@ static inline double db_u32_to_range_f64(uint32_t value, double min_value,
 // Rationale: these rules remove representation-only variation (-0, signed NaN)
 // from deterministic state/pixel processing while preserving meaningful sign.
 static inline float db_double_to_f32(double value) { return (float)value; }
+
+static inline float db_u32_to_f32(uint32_t value) {
+    return db_double_to_f32((double)value);
+}
+
+static inline float db_u32_ratio_to_f32(uint32_t numerator,
+                                        uint32_t denominator) {
+    // Callers must validate denominator != 0 to keep divide-by-zero policy
+    // explicit at use sites.
+    return db_double_to_f32((double)numerator / (double)denominator);
+}
+
+static inline uint32_t db_f32_to_bits_u32(float value) {
+    union {
+        float f32;
+        uint32_t u32;
+    } pun = {.f32 = value};
+    return pun.u32;
+}
 
 static inline uint8_t db_double01_to_u8_clamped(double value01) {
     double clamped = value01;
@@ -128,6 +153,50 @@ static inline uint8_t db_double01_to_u8_clamped(double value01) {
     return (uint8_t)scaled;
 }
 
+static inline void db_rgb01_to_u8_triplet(double red, double green, double blue,
+                                          uint8_t *red_u8_out,
+                                          uint8_t *green_u8_out,
+                                          uint8_t *blue_u8_out) {
+    if (red_u8_out != NULL) {
+        *red_u8_out = db_double01_to_u8_clamped(red);
+    }
+    if (green_u8_out != NULL) {
+        *green_u8_out = db_double01_to_u8_clamped(green);
+    }
+    if (blue_u8_out != NULL) {
+        *blue_u8_out = db_double01_to_u8_clamped(blue);
+    }
+}
+
+static inline void db_rgba01_to_u8_quad(double red, double green, double blue,
+                                        double alpha, uint8_t *red_u8_out,
+                                        uint8_t *green_u8_out,
+                                        uint8_t *blue_u8_out,
+                                        uint8_t *alpha_u8_out) {
+    db_rgb01_to_u8_triplet(red, green, blue, red_u8_out, green_u8_out,
+                           blue_u8_out);
+    if (alpha_u8_out != NULL) {
+        *alpha_u8_out = db_double01_to_u8_clamped(alpha);
+    }
+}
+
+static inline void db_rgb_f64_to_f32_triplet(double red, double green,
+                                             double blue, float *red_out,
+                                             float *green_out,
+                                             float *blue_out) {
+    // Intentional immediate narrowing at the API boundary: internal math stays
+    // f64; output buffers/uniform payloads use f32.
+    if (red_out != NULL) {
+        *red_out = db_double_to_f32(red);
+    }
+    if (green_out != NULL) {
+        *green_out = db_double_to_f32(green);
+    }
+    if (blue_out != NULL) {
+        *blue_out = db_double_to_f32(blue);
+    }
+}
+
 // Deterministic pack/unpack helpers built on narrowing policy functions.
 static inline uint32_t db_pack_xrgb8888_from_rgb_u8(uint32_t red_u8,
                                                     uint32_t green_u8,
@@ -139,9 +208,10 @@ static inline uint32_t db_pack_xrgb8888_from_rgb_u8(uint32_t red_u8,
 
 static inline uint32_t db_pack_xrgb8888_from_rgb01(double red, double green,
                                                    double blue) {
-    const uint32_t red_u8 = db_double01_to_u8_clamped(red);
-    const uint32_t green_u8 = db_double01_to_u8_clamped(green);
-    const uint32_t blue_u8 = db_double01_to_u8_clamped(blue);
+    uint8_t red_u8 = 0U;
+    uint8_t green_u8 = 0U;
+    uint8_t blue_u8 = 0U;
+    db_rgb01_to_u8_triplet(red, green, blue, &red_u8, &green_u8, &blue_u8);
     return db_pack_xrgb8888_from_rgb_u8(red_u8, green_u8, blue_u8);
 }
 
@@ -158,9 +228,10 @@ static inline uint32_t db_pack_rgba8888_from_rgb_u8(uint32_t red_u8,
 static inline uint32_t db_pack_rgba8888_from_rgb01(double red, double green,
                                                    double blue,
                                                    uint32_t alpha_u8) {
-    const uint32_t red_u8 = db_double01_to_u8_clamped(red);
-    const uint32_t green_u8 = db_double01_to_u8_clamped(green);
-    const uint32_t blue_u8 = db_double01_to_u8_clamped(blue);
+    uint8_t red_u8 = 0U;
+    uint8_t green_u8 = 0U;
+    uint8_t blue_u8 = 0U;
+    db_rgb01_to_u8_triplet(red, green, blue, &red_u8, &green_u8, &blue_u8);
     return db_pack_rgba8888_from_rgb_u8(red_u8, green_u8, blue_u8, alpha_u8);
 }
 
@@ -172,19 +243,16 @@ static inline uint32_t db_unpack_rgba8888_channel_u8(uint32_t packed_rgba,
 static inline void db_unpack_rgba8888_rgb01(uint32_t packed_rgba, double *red,
                                             double *green, double *blue) {
     if (red != NULL) {
-        *red = (double)db_unpack_rgba8888_channel_u8(packed_rgba,
-                                                     DB_PACKED_RGB_SHIFT_BLUE) /
-               DB_U8_MAX;
+        *red = db_u8_to_unit_f64(db_unpack_rgba8888_channel_u8(
+            packed_rgba, DB_PACKED_RGB_SHIFT_BLUE));
     }
     if (green != NULL) {
-        *green = (double)db_unpack_rgba8888_channel_u8(
-                     packed_rgba, DB_PACKED_RGB_SHIFT_GREEN) /
-                 DB_U8_MAX;
+        *green = db_u8_to_unit_f64(db_unpack_rgba8888_channel_u8(
+            packed_rgba, DB_PACKED_RGB_SHIFT_GREEN));
     }
     if (blue != NULL) {
-        *blue = (double)db_unpack_rgba8888_channel_u8(packed_rgba,
-                                                      DB_PACKED_RGB_SHIFT_RED) /
-                DB_U8_MAX;
+        *blue = db_u8_to_unit_f64(db_unpack_rgba8888_channel_u8(
+            packed_rgba, DB_PACKED_RGB_SHIFT_RED));
     }
 }
 

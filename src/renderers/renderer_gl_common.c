@@ -43,72 +43,6 @@ static int db_gl_upload_ranges_can_merge(const db_gl_upload_range_t *left,
     return same_delta;
 }
 
-static size_t
-db_gl_upload_range_lower_bound_by_dst(const db_gl_upload_range_t *ranges,
-                                      size_t sorted_count,
-                                      size_t dst_offset_bytes) {
-    if ((ranges == NULL) || (sorted_count == 0U)) {
-        return 0U;
-    }
-    if (dst_offset_bytes <= ranges[0].dst_offset_bytes) {
-        return 0U;
-    }
-
-    size_t hi = 1U;
-    while ((hi < sorted_count) &&
-           (ranges[hi].dst_offset_bytes < dst_offset_bytes)) {
-        hi <<= 1U;
-    }
-    size_t lo = hi >> 1U;
-    if (hi > sorted_count) {
-        hi = sorted_count;
-    }
-    while (lo < hi) {
-        const size_t mid = lo + ((hi - lo) >> 1U);
-        if (ranges[mid].dst_offset_bytes < dst_offset_bytes) {
-            lo = mid + 1U;
-        } else {
-            hi = mid;
-        }
-    }
-    return lo;
-}
-
-static size_t db_gl_normalize_upload_ranges(
-    const db_gl_upload_range_t *source_ranges, size_t source_count,
-    db_gl_upload_range_t *out_ranges, size_t out_capacity) {
-    if ((source_ranges == NULL) || (out_ranges == NULL) ||
-        (out_capacity == 0U)) {
-        return 0U;
-    }
-
-    size_t out_count = 0U;
-    for (size_t index = 0U;
-         (index < source_count) && (out_count < out_capacity); index++) {
-        const db_gl_upload_range_t candidate = source_ranges[index];
-        if ((candidate.size_bytes == 0U) ||
-            (candidate.dst_offset_bytes > (SIZE_MAX - candidate.size_bytes)) ||
-            (candidate.src_offset_bytes > (SIZE_MAX - candidate.size_bytes))) {
-            continue;
-        }
-        if ((out_count == 0U) ||
-            (candidate.dst_offset_bytes >=
-             out_ranges[out_count - 1U].dst_offset_bytes)) {
-            out_ranges[out_count++] = candidate;
-            continue;
-        }
-        const size_t insert_index = db_gl_upload_range_lower_bound_by_dst(
-            out_ranges, out_count, candidate.dst_offset_bytes);
-        for (size_t shift_index = out_count; shift_index > insert_index;
-             shift_index--) {
-            out_ranges[shift_index] = out_ranges[shift_index - 1U];
-        }
-        out_ranges[insert_index] = candidate;
-        out_count++;
-    }
-    return db_gl_coalesce_upload_ranges_in_place(out_ranges, out_count);
-}
-
 db_gl_upload_range_t db_gl_upload_full_range(size_t total_bytes) {
     return (db_gl_upload_range_t){
         .dst_offset_bytes = 0U,
@@ -566,133 +500,6 @@ void db_gl_draw_dirty_ranges_common(const char *backend_name,
     }
 }
 
-size_t db_gl_coalesce_upload_ranges_in_place(db_gl_upload_range_t *ranges,
-                                             size_t range_count) {
-    if ((ranges == NULL) || (range_count <= 1U)) {
-        return range_count;
-    }
-
-    size_t write_index = 0U;
-    db_gl_upload_range_t current = ranges[0];
-    for (size_t index = 1U; index < range_count; index++) {
-        const db_gl_upload_range_t next = ranges[index];
-        if ((next.size_bytes == 0U) || (current.size_bytes == 0U)) {
-            continue;
-        }
-        if (db_gl_upload_ranges_can_merge(&current, &next) == 0) {
-            ranges[write_index++] = current;
-            current = next;
-            continue;
-        }
-        current.size_bytes += next.size_bytes;
-    }
-    ranges[write_index++] = current;
-    return write_index;
-}
-
-size_t db_gl_optimize_upload_ranges(db_gl_upload_range_t *ranges,
-                                    size_t range_count, int allow_overdraw,
-                                    size_t collapse_threshold) {
-    if ((ranges == NULL) || (range_count == 0U)) {
-        return 0U;
-    }
-
-    // Fused pass: coalesce contiguous ranges while collecting collapse bounds,
-    // avoiding an extra full pass after coalescing.
-    size_t optimized_count = 0U;
-    int has_pending = 0;
-    db_gl_upload_range_t pending = {0U, 0U, 0U};
-
-    int has_bounds = 0;
-    size_t min_src = 0U;
-    size_t min_dst = 0U;
-    size_t max_src_end = 0U;
-    size_t max_dst_end = 0U;
-
-    for (size_t index = 0U; index < range_count; index++) {
-        const db_gl_upload_range_t candidate = ranges[index];
-        if (candidate.size_bytes == 0U) {
-            continue;
-        }
-        if (has_pending == 0) {
-            pending = candidate;
-            has_pending = 1;
-            continue;
-        }
-        if (db_gl_upload_ranges_can_merge(&pending, &candidate) != 0) {
-            pending.size_bytes += candidate.size_bytes;
-            continue;
-        }
-
-        ranges[optimized_count++] = pending;
-        const size_t src_end = pending.src_offset_bytes + pending.size_bytes;
-        const size_t dst_end = pending.dst_offset_bytes + pending.size_bytes;
-        if (has_bounds == 0) {
-            min_src = pending.src_offset_bytes;
-            min_dst = pending.dst_offset_bytes;
-            max_src_end = src_end;
-            max_dst_end = dst_end;
-            has_bounds = 1;
-        } else {
-            if (pending.src_offset_bytes < min_src) {
-                min_src = pending.src_offset_bytes;
-            }
-            if (pending.dst_offset_bytes < min_dst) {
-                min_dst = pending.dst_offset_bytes;
-            }
-            if (src_end > max_src_end) {
-                max_src_end = src_end;
-            }
-            if (dst_end > max_dst_end) {
-                max_dst_end = dst_end;
-            }
-        }
-        pending = candidate;
-    }
-
-    if (has_pending != 0) {
-        ranges[optimized_count++] = pending;
-        const size_t src_end = pending.src_offset_bytes + pending.size_bytes;
-        const size_t dst_end = pending.dst_offset_bytes + pending.size_bytes;
-        if (has_bounds == 0) {
-            min_src = pending.src_offset_bytes;
-            min_dst = pending.dst_offset_bytes;
-            max_src_end = src_end;
-            max_dst_end = dst_end;
-            has_bounds = 1;
-        } else {
-            if (pending.src_offset_bytes < min_src) {
-                min_src = pending.src_offset_bytes;
-            }
-            if (pending.dst_offset_bytes < min_dst) {
-                min_dst = pending.dst_offset_bytes;
-            }
-            if (src_end > max_src_end) {
-                max_src_end = src_end;
-            }
-            if (dst_end > max_dst_end) {
-                max_dst_end = dst_end;
-            }
-        }
-    }
-
-    if ((allow_overdraw != 0) && (optimized_count > collapse_threshold) &&
-        (has_bounds != 0)) {
-        const size_t span_src = max_src_end - min_src;
-        const size_t span_dst = max_dst_end - min_dst;
-        if (span_src == span_dst) {
-            ranges[0] = (db_gl_upload_range_t){
-                .src_offset_bytes = min_src,
-                .dst_offset_bytes = min_dst,
-                .size_bytes = span_src,
-            };
-            optimized_count = 1U;
-        }
-    }
-
-    return optimized_count;
-}
-
 size_t db_gl_copy_upload_ranges(const db_gl_upload_range_t *source_ranges,
                                 size_t source_count,
                                 db_gl_upload_range_t *out_ranges,
@@ -711,15 +518,13 @@ size_t db_gl_copy_upload_ranges(const db_gl_upload_range_t *source_ranges,
         index++;
     }
     if (index == copy_limit) {
-        for (size_t copy_index = 0U; copy_index < copy_limit; copy_index++) {
-            out_ranges[copy_index] = source_ranges[copy_index];
-        }
+        db_copy_bytes(out_ranges, source_ranges,
+                      copy_limit * sizeof(*source_ranges));
         return copy_limit;
     }
     if (index > 0U) {
-        for (size_t copy_index = 0U; copy_index < index; copy_index++) {
-            out_ranges[copy_index] = source_ranges[copy_index];
-        }
+        db_copy_bytes(out_ranges, source_ranges,
+                      index * sizeof(*source_ranges));
         out_count = index;
     }
     for (; (index < source_count) && (out_count < out_capacity); index++) {
@@ -729,90 +534,6 @@ size_t db_gl_copy_upload_ranges(const db_gl_upload_range_t *source_ranges,
         out_ranges[out_count++] = source_ranges[index];
     }
     return out_count;
-}
-
-size_t db_gl_subtract_upload_ranges(const db_gl_upload_range_t *base_ranges,
-                                    size_t base_count,
-                                    const db_gl_upload_range_t *cut_ranges,
-                                    size_t cut_count,
-                                    db_gl_upload_range_t *out_ranges,
-                                    size_t out_capacity) {
-    if ((base_ranges == NULL) || (base_count == 0U) || (out_ranges == NULL) ||
-        (out_capacity == 0U)) {
-        return 0U;
-    }
-    db_gl_upload_range_t normalized_base[BENCH_SNAKE_PHASE_WINDOW_TILES] = {
-        {0U, 0U, 0U}};
-    DB_LOG_CAPACITY_EXCEEDED_ONCE("renderer_gl_common",
-                                  "subtract_upload_ranges.base_normalize",
-                                  base_count, BENCH_SNAKE_PHASE_WINDOW_TILES);
-    const size_t normalized_base_count =
-        db_gl_normalize_upload_ranges(base_ranges, base_count, normalized_base,
-                                      BENCH_SNAKE_PHASE_WINDOW_TILES);
-    if (normalized_base_count == 0U) {
-        return 0U;
-    }
-
-    db_gl_upload_range_t normalized_cut[BENCH_SNAKE_PHASE_WINDOW_TILES] = {
-        {0U, 0U, 0U}};
-    DB_LOG_CAPACITY_EXCEEDED_ONCE("renderer_gl_common",
-                                  "subtract_upload_ranges.cut_normalize",
-                                  cut_count, BENCH_SNAKE_PHASE_WINDOW_TILES);
-    const size_t normalized_cut_count = db_gl_normalize_upload_ranges(
-        cut_ranges, cut_count, normalized_cut, BENCH_SNAKE_PHASE_WINDOW_TILES);
-    if (normalized_cut_count == 0U) {
-        const size_t out_count = db_gl_copy_upload_ranges(
-            normalized_base, normalized_base_count, out_ranges, out_capacity);
-        return db_gl_coalesce_upload_ranges_in_place(out_ranges, out_count);
-    }
-
-    size_t out_count = 0U;
-    size_t cut_index = 0U;
-    for (size_t base_index = 0U;
-         (base_index < normalized_base_count) && (out_count < out_capacity);
-         base_index++) {
-        const db_gl_upload_range_t base = normalized_base[base_index];
-        const size_t base_start = base.dst_offset_bytes;
-        const size_t base_end = base.dst_offset_bytes + base.size_bytes;
-        size_t current_start = base_start;
-
-        while (cut_index < normalized_cut_count) {
-            const db_gl_upload_range_t cut = normalized_cut[cut_index];
-            const size_t cut_start = cut.dst_offset_bytes;
-            const size_t cut_end = cut.dst_offset_bytes + cut.size_bytes;
-            if (cut_end <= current_start) {
-                cut_index++;
-                continue;
-            }
-            if (cut_start >= base_end) {
-                break;
-            }
-            if ((current_start < cut_start) && (out_count < out_capacity)) {
-                out_ranges[out_count++] = (db_gl_upload_range_t){
-                    .dst_offset_bytes = current_start,
-                    .src_offset_bytes =
-                        base.src_offset_bytes + (current_start - base_start),
-                    .size_bytes = cut_start - current_start,
-                };
-            }
-            if (cut_end >= base_end) {
-                current_start = base_end;
-                break;
-            }
-            current_start = cut_end;
-            cut_index++;
-        }
-
-        if ((current_start < base_end) && (out_count < out_capacity)) {
-            out_ranges[out_count++] = (db_gl_upload_range_t){
-                .dst_offset_bytes = current_start,
-                .src_offset_bytes =
-                    base.src_offset_bytes + (current_start - base_start),
-                .size_bytes = base_end - current_start,
-            };
-        }
-    }
-    return db_gl_coalesce_upload_ranges_in_place(out_ranges, out_count);
 }
 
 int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
@@ -840,11 +561,6 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
     if (vertices == NULL) {
         return 0;
     }
-    const float phase0_r = db_double_to_f32(BENCH_GRID_PHASE0_R);
-    const float phase0_g = db_double_to_f32(BENCH_GRID_PHASE0_G);
-    const float phase0_b = db_double_to_f32(BENCH_GRID_PHASE0_B);
-    const float alpha_1 = db_double_to_f32(1.0);
-
     for (uint32_t tile_index = 0; tile_index < tile_count; tile_index++) {
         float x0 = 0.0F;
         float y0 = 0.0F;
@@ -856,13 +572,14 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
         float *unit = &vertices[base];
         db_fill_rect_unit_pos(unit, x0, y0, x1, y1, vertex_stride);
         db_set_rect_unit_rgb(unit, vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, phase0_r, phase0_g,
-                             phase0_b);
+                             DB_VERTEX_POSITION_FLOAT_COUNT,
+                             BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F,
+                             BENCH_GRID_PHASE0_B_F);
         if (vertex_stride == DB_ES_VERTEX_FLOAT_STRIDE) {
             db_set_rect_unit_alpha(unit, vertex_stride,
                                    DB_VERTEX_POSITION_FLOAT_COUNT +
                                        DB_VERTEX_COLOR_FLOAT_COUNT,
-                                   alpha_1);
+                                   BENCH_CLEAR_COLOR_A_F);
         }
     }
 
@@ -923,9 +640,11 @@ void db_update_grid_vertices_for_bands_rgb_stride(
         double color_b_value = 0.0;
         db_band_color_rgb(band, band_count, frame_index, &color_r_value,
                           &color_g_value, &color_b_value);
-        const float color_r = db_double_to_f32(color_r_value);
-        const float color_g = db_double_to_f32(color_g_value);
-        const float color_b = db_double_to_f32(color_b_value);
+        float color_r = 0.0F;
+        float color_g = 0.0F;
+        float color_b = 0.0F;
+        db_rgb_f64_to_f32_triplet(color_r_value, color_g_value, color_b_value,
+                                  &color_r, &color_g, &color_b);
 
         for (uint32_t row = 0U; row < rows; row++) {
             const uint32_t first_tile = (row * cols) + col_start;

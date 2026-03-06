@@ -23,9 +23,15 @@
 #define DB_CAP_MODE_VK_DRAW_HISTORY_DIRTY "history_dirty_draw"
 #define DB_CAP_MODE_VK_DRAW_TILES_FULL "tiles_full_draw"
 #define DB_CAP_MODE_VK_SCHED_DEVICE_GROUP "device_group_multi_gpu"
+#define DB_CAP_MODE_VK_SCHED_INDEPENDENT_MULTI_DEVICE "independent_multi_device"
 #define DB_CAP_MODE_VK_SCHED_SINGLE_GPU "single_gpu"
 #define DB_CAP_MODE_VK_UPLOAD_NONE "none"
 #define DB_VK_CAPABILITY_MODE_MAX 128U
+#define DB_VK_LANE_REASON_MAX 96U
+#define DB_VK_BLOCKING_FRAME_BUDGET_NS 16666666ULL
+#define DB_VK_BLOCKING_FRAME_SAFETY_NS 2000000ULL
+#define DB_VK_NONBLOCKING_FRAME_BUDGET_NS 4000000ULL
+#define DB_VK_NONBLOCKING_FRAME_SAFETY_NS 500000ULL
 
 typedef struct {
     float offset_ndc[2];
@@ -39,13 +45,21 @@ typedef struct {
     uint32_t grid_rows;
     int32_t gradient_direction_flag;
     uint32_t palette_cycle;
-    uint32_t pattern_seed;
     uint32_t render_mode;
     uint32_t snake_batch_size;
     uint32_t snake_cursor;
     int32_t snake_phase_flag;
-    uint32_t snake_shape_index;
     int32_t snake_phase_completed;
+    uint32_t snake_shape_kind;
+    uint32_t snake_region_height;
+    uint32_t snake_region_width;
+    uint32_t snake_region_x;
+    uint32_t snake_region_y;
+    float snake_region_color[4];
+    float snake_profile0[4];
+    float snake_profile1[4];
+    float snake_profile2[4];
+    uint32_t snake_triangle_variant;
     uint32_t viewport_height;
     uint32_t viewport_width;
     uint32_t frame_index;
@@ -53,20 +67,83 @@ typedef struct {
 } PushConstants;
 
 typedef struct {
+    uint32_t render_mode;
+    uint32_t shape_index;
+    uint32_t pattern_seed;
+    int valid;
+    uint32_t snake_shape_kind;
+    uint32_t snake_region_height;
+    uint32_t snake_region_width;
+    uint32_t snake_region_x;
+    uint32_t snake_region_y;
+    float snake_region_color[4];
+    float snake_profile0[4];
+    float snake_profile1[4];
+    float snake_profile2[4];
+    uint32_t snake_triangle_variant;
+} db_vk_shape_uniform_cache_t;
+
+typedef struct {
     VkPhysicalDeviceGroupProperties grp;
     uint32_t presentable_mask;
 } DeviceGroupInfo;
 
+typedef enum {
+    DB_VK_EXECUTION_MODE_SINGLE_GPU = 0,
+    DB_VK_EXECUTION_MODE_DEVICE_GROUP = 1,
+    DB_VK_EXECUTION_MODE_INDEPENDENT_DEVICES = 2,
+} db_vk_execution_mode_t;
+
+typedef enum {
+    DB_VK_LANE_BACKEND_PRIMARY = 0,
+    DB_VK_LANE_BACKEND_GROUP = 1,
+    DB_VK_LANE_BACKEND_INDEPENDENT = 2,
+} db_vk_lane_backend_t;
+
+typedef struct {
+    VkPhysicalDevice phys;
+    VkPhysicalDeviceProperties properties;
+    uint32_t queue_family_index;
+    int supports_graphics;
+    int supports_present;
+    int supports_external_memory_interop;
+    int supports_external_semaphore_interop;
+} db_vk_physical_device_info_t;
+
+typedef struct {
+    VkPhysicalDevice phys;
+    db_vk_lane_backend_t backend;
+    uint32_t physical_index;
+    uint32_t queue_family_index;
+    uint32_t device_mask;
+    int group_index;
+    int group_lane_index;
+    int can_present;
+    int can_compose_to_primary;
+    int supports_required_format_usage;
+    int active_for_scheduler;
+    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+    char inactive_reason[DB_VK_LANE_REASON_MAX];
+} db_vk_device_lane_t;
+
 typedef struct {
     uint32_t phys_count;
     VkPhysicalDevice phys[MAX_GPU_COUNT];
+    db_vk_physical_device_info_t phys_info[MAX_GPU_COUNT];
     uint32_t group_count;
     VkPhysicalDeviceGroupProperties groups[MAX_GPU_COUNT];
+    DeviceGroupInfo group_info[MAX_GPU_COUNT];
     int have_group;
     uint32_t chosen_count;
     VkPhysicalDevice chosen_phys[MAX_GPU_COUNT];
     uint32_t present_mask;
     VkPhysicalDevice present_phys;
+    db_vk_execution_mode_t execution_mode;
+    uint32_t primary_phys_index;
+    uint32_t primary_lane_index;
+    uint32_t lane_count;
+    uint32_t active_lane_count;
+    db_vk_device_lane_t lanes[MAX_GPU_COUNT];
 } DeviceSelectionState;
 
 typedef struct {
@@ -120,7 +197,7 @@ typedef struct {
     int gpu_timing_enabled;
     db_benchmark_runtime_init_t runtime;
     const char *capability_mode;
-    const uint32_t *work_owner;
+    int no_present_mode;
     const double *ema_ms_per_work_unit;
     double timestamp_period_ns;
 } db_vk_state_init_ctx_t;
@@ -144,7 +221,7 @@ typedef struct {
     db_gradient_backbuffer_replay_state_t gradient_prev_frame;
     db_history_pair_state_t history_pair;
     db_history_pattern_mode_flags_t runtime_flags;
-    int have_group;
+    int no_present_mode;
     int have_prev_timing_frame;
     int history_descriptor_index;
     VkRenderPass history_render_pass;
@@ -156,6 +233,14 @@ typedef struct {
     VkInstance instance;
     const char *log_backend_name;
     double next_progress_log_due_ms;
+    double frame_time_ema_ms;
+    double frame_jitter_ema_ms;
+    double present_frame_ema_ms;
+    double present_jitter_ema_ms;
+    double present_frame_p50_ms;
+    double present_frame_p95_ms;
+    double present_frame_p99_ms;
+    uint64_t present_retries;
     db_benchmark_runtime_init_t runtime;
     VkPhysicalDevice present_phys;
     VkPipeline pipeline;
@@ -163,6 +248,11 @@ typedef struct {
     VkPresentModeKHR present_mode;
     uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
     uint32_t prev_frame_work_units[MAX_GPU_COUNT];
+    uint64_t cumulative_work_units[MAX_GPU_COUNT];
+    uint64_t cumulative_frames_with_work[MAX_GPU_COUNT];
+    double *render_frame_samples_ms;
+    uint32_t render_frame_samples_count;
+    uint32_t render_frame_samples_capacity;
     VkQueue queue;
     VkSemaphore render_done;
     VkRenderPass render_pass;
@@ -175,8 +265,13 @@ typedef struct {
     VkQueryPool timing_query_pool;
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_memory;
-    uint32_t work_owner[MAX_BAND_OWNER];
+    VkBuffer hash_readback_buffer;
+    VkDeviceMemory hash_readback_memory;
+    size_t hash_readback_size_bytes;
     db_vk_wsi_config_t wsi_config;
+    uint64_t output_hash;
+    int output_hash_enabled;
+    db_vk_shape_uniform_cache_t shape_uniform_cache;
 } renderer_state_t;
 
 typedef struct {
@@ -195,10 +290,17 @@ typedef struct {
 } db_vk_draw_payload_t;
 
 typedef struct {
-    uint32_t candidate_owner;
+    float color[3];
+    db_vk_draw_payload_t payload;
+    int valid;
+} db_vk_draw_payload_cache_t;
+
+typedef struct {
     uint32_t span_units;
     uint32_t row_start;
     uint32_t row_end;
+    uint32_t col_start;
+    uint32_t col_end;
     db_vk_draw_payload_t payload;
 } db_vk_grid_row_block_draw_req_t;
 
@@ -216,7 +318,6 @@ typedef struct {
     VkExtent2D extent;
     int have_group;
     uint32_t active_gpu_count;
-    uint64_t frame_start_ns;
     uint64_t budget_ns;
     uint64_t safety_ns;
     const double *ema_ms_per_work_unit;
@@ -229,6 +330,7 @@ typedef struct {
     uint32_t *grid_tiles_drawn;
     uint32_t grid_rows;
     uint32_t grid_cols;
+    db_vk_draw_payload_cache_t *payload_cache;
 } db_vk_owner_draw_ctx_t;
 
 typedef struct {
@@ -238,6 +340,8 @@ typedef struct {
     VkSemaphore render_done;
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_memory;
+    VkBuffer hash_readback_buffer;
+    VkDeviceMemory hash_readback_memory;
     VkPipeline pipeline;
     VkPipelineLayout pipeline_layout;
     SwapchainState *swapchain_state;
@@ -262,9 +366,15 @@ db_vk_capability_draw_mode_name(db_pattern_t pattern) {
                                : DB_CAP_MODE_VK_DRAW_TILES_FULL;
 }
 
-static inline const char *db_vk_scheduler_mode_name(int have_group) {
-    return (have_group != 0) ? DB_CAP_MODE_VK_SCHED_DEVICE_GROUP
-                             : DB_CAP_MODE_VK_SCHED_SINGLE_GPU;
+static inline const char *
+db_vk_scheduler_mode_name(db_vk_execution_mode_t execution_mode) {
+    if (execution_mode == DB_VK_EXECUTION_MODE_DEVICE_GROUP) {
+        return DB_CAP_MODE_VK_SCHED_DEVICE_GROUP;
+    }
+    if (execution_mode == DB_VK_EXECUTION_MODE_INDEPENDENT_DEVICES) {
+        return DB_CAP_MODE_VK_SCHED_INDEPENDENT_MULTI_DEVICE;
+    }
+    return DB_CAP_MODE_VK_SCHED_SINGLE_GPU;
 }
 
 static inline uint32_t db_vk_normalize_gpu_count(uint32_t gpu_count) {
@@ -272,6 +382,27 @@ static inline uint32_t db_vk_normalize_gpu_count(uint32_t gpu_count) {
         return 1U;
     }
     return (gpu_count > MAX_GPU_COUNT) ? MAX_GPU_COUNT : gpu_count;
+}
+
+static inline int db_vk_present_mode_is_blocking(VkPresentModeKHR mode) {
+    return (mode == VK_PRESENT_MODE_FIFO_KHR) ||
+           (mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+}
+
+static inline uint64_t
+db_vk_scheduler_frame_budget_ns(VkPresentModeKHR present_mode) {
+    if (db_vk_present_mode_is_blocking(present_mode) != 0) {
+        return DB_VK_BLOCKING_FRAME_BUDGET_NS;
+    }
+    return DB_VK_NONBLOCKING_FRAME_BUDGET_NS;
+}
+
+static inline uint64_t
+db_vk_scheduler_frame_safety_ns(VkPresentModeKHR present_mode) {
+    if (db_vk_present_mode_is_blocking(present_mode) != 0) {
+        return DB_VK_BLOCKING_FRAME_SAFETY_NS;
+    }
+    return DB_VK_NONBLOCKING_FRAME_SAFETY_NS;
 }
 
 extern renderer_state_t g_state;
@@ -391,11 +522,10 @@ int db_vk_recreate_history_targets_preserve(
 void db_vk_draw_owner_grid_row_block(
     const db_vk_owner_draw_ctx_t *ctx,
     const db_vk_grid_row_block_draw_req_t *req);
-uint32_t db_vk_select_owner_for_work(uint32_t candidate_owner,
-                                     uint32_t gpu_count, uint32_t work_units,
-                                     uint64_t frame_start_ns,
+uint32_t db_vk_select_owner_for_work(uint32_t gpu_count, uint32_t work_units,
                                      uint64_t budget_ns, uint64_t safety_ns,
-                                     const double *ema_ms_per_unit);
+                                     const double *ema_ms_per_unit,
+                                     const uint32_t *frame_work_units);
 void db_vk_owner_timing_begin(VkCommandBuffer cmd, int timing_enabled,
                               VkQueryPool query_pool, uint32_t owner,
                               uint8_t *owner_started);
@@ -414,6 +544,10 @@ void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
 void db_vk_update_ema_fallback(uint32_t gpu_count,
                                const uint32_t *frame_work_units,
                                double frame_ms, double *ema_ms_per_work_unit);
+void db_vk_scheduler_update_frame_pacing(double frame_ms, double *frame_ema_ms,
+                                         double *frame_jitter_ema_ms);
+double db_vk_scheduler_percentile_sorted(const double *samples, size_t count,
+                                         double pct);
 void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx);
 void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx);
 

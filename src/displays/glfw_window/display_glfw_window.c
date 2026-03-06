@@ -50,8 +50,10 @@
 #ifdef DB_HAS_VULKAN_API
 typedef struct {
     const char *backend_name;
-    db_display_hash_tracker_t *hash_tracker;
+    db_display_hash_tracker_t *state_hash_tracker;
+    db_display_hash_tracker_t *output_hash_tracker;
     int state_hash_enabled;
+    int output_hash_enabled;
 } db_glfw_vulkan_loop_ctx_t;
 #endif
 
@@ -391,10 +393,11 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
     state->debug_clear_buf_bytes = chunk_bytes;
 
     // Cache clear color bytes.
-    state->debug_clear_rgba[0] = db_double01_to_u8_clamped(BENCH_CLEAR_COLOR_R);
-    state->debug_clear_rgba[1] = db_double01_to_u8_clamped(BENCH_CLEAR_COLOR_G);
-    state->debug_clear_rgba[2] = db_double01_to_u8_clamped(BENCH_CLEAR_COLOR_B);
-    state->debug_clear_rgba[3] = db_double01_to_u8_clamped(BENCH_CLEAR_COLOR_A);
+    db_rgba01_to_u8_quad(
+        BENCH_CLEAR_COLOR_R, BENCH_CLEAR_COLOR_G, BENCH_CLEAR_COLOR_B,
+        BENCH_CLEAR_COLOR_A, &state->debug_clear_rgba[0],
+        &state->debug_clear_rgba[1], &state->debug_clear_rgba[2],
+        &state->debug_clear_rgba[3]);
 
     // Fill the buffer once via shared conversion helper.
     db_fill_rgba8_byte_pattern(
@@ -564,14 +567,14 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
         }
     }
 
-    const float tex_u = (state->texture_width == 0U)
-                            ? 1.0F
-                            : db_double_to_f32((double)pixel_width /
-                                               (double)state->texture_width);
-    const float tex_v = (state->texture_height == 0U)
-                            ? 1.0F
-                            : db_double_to_f32((double)pixel_height /
-                                               (double)state->texture_height);
+    const float tex_u =
+        (state->texture_width == 0U)
+            ? 1.0F
+            : db_u32_ratio_to_f32(pixel_width, state->texture_width);
+    const float tex_v =
+        (state->texture_height == 0U)
+            ? 1.0F
+            : db_u32_ratio_to_f32(pixel_height, state->texture_height);
     state->texcoords[DB_GL_QUAD_V0_X] = 0.0F;
     state->texcoords[DB_GL_QUAD_V0_Y] = tex_v;
     state->texcoords[DB_GL_QUAD_V1_X] = tex_u;
@@ -733,7 +736,9 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         .user_data = &loop_ctx,
         .window = window,
     };
-    const uint64_t frames = db_glfw_run_loop(&loop);
+    const db_display_frame_loop_run_result_t loop_result =
+        db_glfw_run_loop(&loop);
+    const uint64_t frames = loop_result.frames;
 
     const double bench_ms =
         (double)(db_now_ns_monotonic() - bench_start_ns) / DB_NS_PER_MS;
@@ -862,7 +867,9 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         .user_data = &loop_ctx,
         .window = window,
     };
-    const uint64_t frames = db_glfw_run_loop(&loop);
+    const db_display_frame_loop_run_result_t loop_result =
+        db_glfw_run_loop(&loop);
+    const uint64_t frames = loop_result.frames;
 
     const double bench_ms =
         (double)(db_now_ns_monotonic() - bench_start_ns) / DB_NS_PER_MS;
@@ -903,6 +910,7 @@ static void db_glfw_vk_get_framebuffer_size(void *window_handle, int *width,
 
 static db_display_frame_loop_result_t
 db_glfw_vulkan_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
+    (void)frame_index;
     (void)elapsed_ms;
     const db_glfw_vulkan_loop_ctx_t *ctx =
         (const db_glfw_vulkan_loop_ctx_t *)user_data;
@@ -911,7 +919,12 @@ db_glfw_vulkan_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
     if ((ctx->state_hash_enabled != 0) && (frame_result == DB_VK_FRAME_OK)) {
         const uint64_t state_hash =
             db_renderer_vulkan_1_2_multi_gpu_state_hash();
-        db_display_hash_tracker_record(ctx->hash_tracker, state_hash);
+        db_display_hash_tracker_record(ctx->state_hash_tracker, state_hash);
+    }
+    if ((ctx->output_hash_enabled != 0) && (frame_result == DB_VK_FRAME_OK)) {
+        const uint64_t output_hash =
+            db_renderer_vulkan_1_2_multi_gpu_output_hash();
+        db_display_hash_tracker_record(ctx->output_hash_tracker, output_hash);
     }
     if (frame_result == DB_VK_FRAME_STOP) {
         db_infof(ctx->backend_name, "renderer requested stop");
@@ -932,7 +945,6 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
     const db_display_runtime_config_t runtime_cfg = runtime_hash_cfg.runtime;
     const db_display_hash_settings_t hash_settings =
         runtime_hash_cfg.hash_settings;
-    (void)hash_settings.output_hash_enabled;
 
     GLFWwindow *window = db_glfw_create_no_api_window(
         BACKEND_NAME_VK, "Vulkan 1.2 opportunistic multi-GPU (device groups)",
@@ -958,13 +970,17 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
     db_renderer_vulkan_1_2_multi_gpu_init(
         &wsi_config,
         (cfg != NULL) ? cfg->vsync_enabled : BENCH_DEFAULT_VSYNC_ENABLED);
-    db_display_hash_tracker_t hash_tracker = db_display_hash_tracker_create(
-        BACKEND_NAME_VK, hash_settings.state_hash_enabled, "state_hash",
-        runtime_cfg.hash_report);
+    db_renderer_vulkan_1_2_multi_gpu_set_output_hash_enabled(
+        hash_settings.output_hash_enabled);
+    db_display_dual_hash_trackers_t hash_trackers =
+        db_display_dual_hash_trackers_create_from_runtime(
+            BACKEND_NAME_VK, &runtime_hash_cfg, "state_hash", "fbo_hash");
     const db_glfw_vulkan_loop_ctx_t loop_ctx = {
         .backend_name = BACKEND_NAME_VK,
-        .hash_tracker = &hash_tracker,
+        .state_hash_tracker = &hash_trackers.state,
+        .output_hash_tracker = &hash_trackers.output,
         .state_hash_enabled = hash_settings.state_hash_enabled,
+        .output_hash_enabled = hash_settings.output_hash_enabled,
     };
     const db_glfw_loop_t loop = {
         .backend = BACKEND_NAME_VK,
@@ -974,11 +990,16 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
         .user_data = (void *)&loop_ctx,
         .window = window,
     };
-    (void)db_glfw_run_loop(&loop);
+    const db_display_frame_loop_run_result_t loop_result =
+        db_glfw_run_loop(&loop);
+    db_renderer_vulkan_1_2_multi_gpu_set_present_metrics(
+        loop_result.frame_ema_ms, loop_result.jitter_ema_ms,
+        loop_result.frame_p50_ms, loop_result.frame_p95_ms,
+        loop_result.frame_p99_ms, loop_result.retries);
     db_display_log_draw_stats_with_fn(
         BACKEND_NAME_VK, db_renderer_vulkan_1_2_multi_gpu_draw_stats);
     db_renderer_vulkan_1_2_multi_gpu_shutdown();
-    db_display_hash_tracker_log_final(BACKEND_NAME_VK, &hash_tracker);
+    db_display_dual_hash_trackers_log_final(BACKEND_NAME_VK, &hash_trackers);
     db_glfw_destroy_window(window);
     return 0;
 }

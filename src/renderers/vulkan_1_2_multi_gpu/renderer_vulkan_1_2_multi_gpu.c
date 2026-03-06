@@ -1,9 +1,5 @@
 #include <stdint.h>
 
-#include "../../core/db_core.h"
-#include "../renderer_benchmark_common.h"
-#include "../renderer_history_common.h"
-#include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 
 // NOLINTBEGIN(misc-include-cleaner)
@@ -25,8 +21,8 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.instance = ctx->instance;
     g_state.surface = ctx->surface;
     g_state.selection = ctx->selection;
-    g_state.have_group = ctx->have_group;
-    g_state.gpu_count = db_vk_normalize_gpu_count(ctx->gpu_count);
+    g_state.gpu_count =
+        db_vk_normalize_gpu_count(g_state.selection.active_lane_count);
     g_state.present_phys = ctx->present_phys;
     g_state.device = ctx->device;
     g_state.queue = ctx->queue;
@@ -58,13 +54,13 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.runtime = ctx->runtime;
     g_state.runtime_flags = db_history_runtime_mode_flags(&g_state.runtime);
     g_state.capability_mode = ctx->capability_mode;
-    for (uint32_t i = 0; i < MAX_BAND_OWNER; i++) {
-        g_state.work_owner[i] = ctx->work_owner[i];
-    }
+    g_state.no_present_mode = ctx->no_present_mode;
     for (uint32_t i = 0; i < MAX_GPU_COUNT; i++) {
         g_state.ema_ms_per_work_unit[i] = ctx->ema_ms_per_work_unit[i];
         g_state.prev_frame_work_units[i] = 0U;
         g_state.prev_frame_owner_used[i] = 0U;
+        g_state.cumulative_work_units[i] = 0U;
+        g_state.cumulative_frames_with_work[i] = 0U;
     }
     g_state.have_prev_timing_frame = 0;
     g_state.timestamp_period_ns = ctx->timestamp_period_ns;
@@ -73,6 +69,12 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.frame.full_draw_frames = 0U;
     g_state.frame.dirty_draw_frames = 0U;
     g_state.frame.state_hash = DB_FNV1A64_OFFSET;
+    g_state.output_hash = DB_FNV1A64_OFFSET;
+    g_state.output_hash_enabled = 0;
+    g_state.shape_uniform_cache.valid = 0;
+    g_state.hash_readback_buffer = VK_NULL_HANDLE;
+    g_state.hash_readback_memory = VK_NULL_HANDLE;
+    g_state.hash_readback_size_bytes = 0U;
     g_state.next_progress_log_due_ms = 0.0;
     g_state.frame.frame_index = 0U;
     if (g_state.runtime_flags.is_snake_history_texture != 0) {
@@ -106,6 +108,28 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.gradient_window_rows = db_gradient_window_rows_effective();
     db_history_gradient_replay_state_reset(&g_state.gradient_prev_frame);
     g_state.history_pair.is_valid = 0;
+    g_state.frame_time_ema_ms = 0.0;
+    g_state.frame_jitter_ema_ms = 0.0;
+    g_state.present_frame_ema_ms = 0.0;
+    g_state.present_jitter_ema_ms = 0.0;
+    g_state.present_frame_p50_ms = 0.0;
+    g_state.present_frame_p95_ms = 0.0;
+    g_state.present_frame_p99_ms = 0.0;
+    g_state.present_retries = 0U;
+    g_state.render_frame_samples_ms = NULL;
+    g_state.render_frame_samples_count = 0U;
+    g_state.render_frame_samples_capacity = 0U;
+}
+
+void db_renderer_vulkan_1_2_multi_gpu_set_present_metrics(
+    double frame_ema_ms, double jitter_ema_ms, double p50_ms, double p95_ms,
+    double p99_ms, uint64_t retries) {
+    g_state.present_frame_ema_ms = frame_ema_ms;
+    g_state.present_jitter_ema_ms = jitter_ema_ms;
+    g_state.present_frame_p50_ms = p50_ms;
+    g_state.present_frame_p95_ms = p95_ms;
+    g_state.present_frame_p99_ms = p99_ms;
+    g_state.present_retries = retries;
 }
 
 // NOLINTEND(misc-include-cleaner)

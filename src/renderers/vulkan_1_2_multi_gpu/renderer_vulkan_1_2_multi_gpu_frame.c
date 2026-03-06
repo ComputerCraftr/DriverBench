@@ -13,8 +13,6 @@
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
 #define COLOR_CHANNEL_ALPHA 3U
 #define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
-#define FRAME_BUDGET_NS 16666666ULL
-#define FRAME_SAFETY_NS 2000000ULL
 #define MASK_GPU0 1U
 #define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
 #define WAIT_TIMEOUT_NS 100000000ULL
@@ -22,7 +20,6 @@
 #define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
-    uint32_t candidate_owner;
     uint32_t span_units;
     uint32_t row;
     uint32_t col_start;
@@ -36,6 +33,7 @@ typedef struct {
     VkExtent2D extent;
     uint32_t grid_rows;
     uint32_t grid_cols;
+    db_vk_draw_payload_cache_t *payload_cache;
 } db_vk_grid_draw_ctx_t;
 
 typedef struct {
@@ -48,8 +46,12 @@ typedef struct {
 typedef struct {
     uint32_t row_start;
     uint32_t row_end;
+    uint32_t col_start;
+    uint32_t col_end;
     db_vk_draw_dynamic_req_t dynamic;
 } db_vk_grid_row_block_draw_cmd_t;
+
+#define DB_VK_SNAKE_ROW_BLOCK_MIN_ROWS 2U
 
 static const VkShaderStageFlags db_pc_stages =
     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -58,14 +60,10 @@ void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
                                        VkPipelineLayout layout,
                                        VkExtent2D extent, uint32_t grid_rows,
                                        uint32_t grid_cols) {
-    const float base_color[4] = {db_double_to_f32(BENCH_GRID_PHASE0_R),
-                                 db_double_to_f32(BENCH_GRID_PHASE0_G),
-                                 db_double_to_f32(BENCH_GRID_PHASE0_B),
-                                 db_double_to_f32(1.0)};
-    const float target_color[4] = {db_double_to_f32(BENCH_GRID_PHASE1_R),
-                                   db_double_to_f32(BENCH_GRID_PHASE1_G),
-                                   db_double_to_f32(BENCH_GRID_PHASE1_B),
-                                   db_double_to_f32(1.0)};
+    float base_color[4] = {BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F,
+                           BENCH_GRID_PHASE0_B_F, BENCH_CLEAR_COLOR_A_F};
+    float target_color[4] = {BENCH_GRID_PHASE1_R_F, BENCH_GRID_PHASE1_G_F,
+                             BENCH_GRID_PHASE1_B_F, BENCH_CLEAR_COLOR_A_F};
 
     vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, gradient_window_rows),
@@ -92,6 +90,69 @@ void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
                        sizeof(extent.width), &extent.width);
 }
 
+static void db_vk_payload_color_values(const db_vk_draw_payload_t *payload,
+                                       float out_color[3]) {
+    if ((payload == NULL) || (payload->color == NULL)) {
+        out_color[0] = 0.0F;
+        out_color[1] = 0.0F;
+        out_color[2] = 0.0F;
+        return;
+    }
+    out_color[0] = payload->color[0];
+    out_color[1] = payload->color[1];
+    out_color[2] = payload->color[2];
+}
+
+static int
+db_vk_draw_payload_cache_matches(const db_vk_draw_payload_cache_t *cache,
+                                 const db_vk_draw_payload_t *payload) {
+    if ((cache == NULL) || (payload == NULL) || (cache->valid == 0)) {
+        return 0;
+    }
+    float color[3] = {0.0F, 0.0F, 0.0F};
+    db_vk_payload_color_values(payload, color);
+    return (cache->payload.render_mode == payload->render_mode) &&
+           (cache->payload.gradient_head_row == payload->gradient_head_row) &&
+           (cache->payload.gradient_direction_flag ==
+            payload->gradient_direction_flag) &&
+           (cache->payload.snake_phase_flag == payload->snake_phase_flag) &&
+           (cache->payload.snake_cursor == payload->snake_cursor) &&
+           (cache->payload.snake_batch_size == payload->snake_batch_size) &&
+           (cache->payload.snake_shape_index == payload->snake_shape_index) &&
+           (cache->payload.snake_phase_completed ==
+            payload->snake_phase_completed) &&
+           (cache->payload.palette_cycle == payload->palette_cycle) &&
+           (cache->payload.frame_index == payload->frame_index) &&
+           (cache->payload.band_count == payload->band_count) &&
+           (cache->color[0] == color[0]) && (cache->color[1] == color[1]) &&
+           (cache->color[2] == color[2]);
+}
+
+static void
+db_vk_draw_payload_cache_store(db_vk_draw_payload_cache_t *cache,
+                               const db_vk_draw_payload_t *payload) {
+    if ((cache == NULL) || (payload == NULL)) {
+        return;
+    }
+    cache->payload = *payload;
+    db_vk_payload_color_values(payload, cache->color);
+    cache->valid = 1;
+}
+
+static void db_vk_push_constants_draw_geometry(VkCommandBuffer cmd,
+                                               VkPipelineLayout layout,
+                                               float ndc_x0, float ndc_y0,
+                                               float ndc_x1, float ndc_y1) {
+    const float offset_ndc[2] = {ndc_x0, ndc_y0};
+    const float scale_ndc[2] = {(ndc_x1 - ndc_x0), (ndc_y1 - ndc_y0)};
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
+                       (uint32_t)offsetof(PushConstants, offset_ndc),
+                       sizeof(offset_ndc), offset_ndc);
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
+                       (uint32_t)offsetof(PushConstants, scale_ndc),
+                       sizeof(scale_ndc), scale_ndc);
+}
+
 void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
                                        VkPipelineLayout layout,
                                        const db_vk_draw_dynamic_req_t *req) {
@@ -103,13 +164,15 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
     pc.offset_ndc[1] = req->ndc_y0;
     pc.scale_ndc[0] = (req->ndc_x1 - req->ndc_x0);
     pc.scale_ndc[1] = (req->ndc_y1 - req->ndc_y0);
-    pc.color[0] = req->payload.color[0];
-    pc.color[1] = req->payload.color[1];
-    pc.color[2] = req->payload.color[2];
+    float payload_color[3] = {0.0F, 0.0F, 0.0F};
+    db_vk_payload_color_values(&req->payload, payload_color);
+    pc.color[0] = payload_color[0];
+    pc.color[1] = payload_color[1];
+    pc.color[2] = payload_color[2];
     pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
     pc.render_mode = req->payload.render_mode;
     pc.gradient_head_row = req->payload.gradient_head_row;
-    pc.snake_shape_index = req->payload.snake_shape_index;
+    const uint32_t shape_index = req->payload.snake_shape_index;
     pc.gradient_direction_flag = (int32_t)req->payload.gradient_direction_flag;
     pc.snake_phase_flag = (int32_t)req->payload.snake_phase_flag;
     pc.snake_cursor = req->payload.snake_cursor;
@@ -120,8 +183,99 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
     pc.band_count = req->payload.band_count;
     const db_history_pattern_mode_flags_t mode_flags =
         db_history_pattern_mode_flags((db_pattern_t)req->payload.render_mode);
-    pc.pattern_seed =
-        (mode_flags.is_shape_snake != 0) ? g_state.runtime.pattern_seed : 0U;
+    if (mode_flags.is_snake_region_mode != 0) {
+        db_vk_shape_uniform_cache_t *const cache = &g_state.shape_uniform_cache;
+        const uint32_t pattern_seed = g_state.runtime.pattern_seed;
+        const uint32_t render_mode = req->payload.render_mode;
+        const int is_shapes_mode =
+            (((db_pattern_t)render_mode) == DB_PATTERN_SNAKE_SHAPES) ? 1 : 0;
+        const int cache_hit = (cache->valid != 0) &&
+                              (cache->render_mode == render_mode) &&
+                              (cache->shape_index == shape_index) &&
+                              (cache->pattern_seed == pattern_seed);
+        if (cache_hit == 0) {
+            const db_snake_shape_kind_t shape_kind =
+                db_snake_shapes_kind_from_index(pattern_seed, shape_index,
+                                                DB_U32_SALT_PALETTE);
+            const db_snake_region_t region =
+                db_snake_region_from_index(pattern_seed, shape_index);
+            cache->render_mode = render_mode;
+            cache->shape_index = shape_index;
+            cache->pattern_seed = pattern_seed;
+            cache->snake_region_height = region.height;
+            cache->snake_region_width = region.width;
+            cache->snake_region_x = region.x;
+            cache->snake_region_y = region.y;
+            db_rgb_f64_to_f32_triplet(
+                region.color_r, region.color_g, region.color_b,
+                &cache->snake_region_color[0], &cache->snake_region_color[1],
+                &cache->snake_region_color[2]);
+            cache->snake_region_color[3] = 1.0F;
+            if (is_shapes_mode != 0) {
+                const db_snake_shape_profile_t profile =
+                    db_snake_shape_profile_from_index(pattern_seed, shape_index,
+                                                      DB_U32_SALT_PALETTE,
+                                                      shape_kind);
+                db_snake_shape_profile_f32_t profile_f32 = {0};
+                db_snake_shape_profile_to_f32(&profile, &profile_f32);
+                cache->snake_shape_kind = (uint32_t)shape_kind;
+                cache->snake_profile0[0] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_X];
+                cache->snake_profile0[1] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_Y];
+                cache->snake_profile0[2] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_DIAMOND_RADIUS];
+                cache->snake_profile0[3] =
+                    profile_f32
+                        .values[DB_SNAKE_PROFILE_VAL_TRIANGLE_BOTTOM_WIDTH];
+                cache->snake_profile1[0] =
+                    profile_f32
+                        .values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_TOP_WIDTH];
+                cache->snake_profile1[1] =
+                    profile_f32
+                        .values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_BOTTOM_WIDTH];
+                cache->snake_profile1[2] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_WIDTH];
+                cache->snake_profile1[3] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_HEIGHT];
+                cache->snake_profile2[0] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_X];
+                cache->snake_profile2[1] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_Y];
+                cache->snake_profile2[2] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_COS];
+                cache->snake_profile2[3] =
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_SIN];
+                cache->snake_triangle_variant = profile_f32.triangle_variant;
+            } else {
+                cache->snake_shape_kind = 0U;
+                for (size_t profile_index = 0U; profile_index < 4U;
+                     profile_index++) {
+                    cache->snake_profile0[profile_index] = 0.0F;
+                    cache->snake_profile1[profile_index] = 0.0F;
+                    cache->snake_profile2[profile_index] = 0.0F;
+                }
+                cache->snake_triangle_variant = 0U;
+            }
+            cache->valid = 1;
+        }
+        pc.snake_region_height = cache->snake_region_height;
+        pc.snake_region_width = cache->snake_region_width;
+        pc.snake_region_x = cache->snake_region_x;
+        pc.snake_region_y = cache->snake_region_y;
+        db_copy_bytes(pc.snake_region_color, cache->snake_region_color,
+                      sizeof(pc.snake_region_color));
+        if (is_shapes_mode != 0) {
+            pc.snake_shape_kind = cache->snake_shape_kind;
+            db_copy_bytes(pc.snake_profile0, cache->snake_profile0,
+                          sizeof(pc.snake_profile0));
+            db_copy_bytes(pc.snake_profile1, cache->snake_profile1,
+                          sizeof(pc.snake_profile1));
+            db_copy_bytes(pc.snake_profile2, cache->snake_profile2,
+                          sizeof(pc.snake_profile2));
+            pc.snake_triangle_variant = cache->snake_triangle_variant;
+        }
+    }
     vkCmdPushConstants(cmd, layout, db_pc_stages, 0U,
                        (uint32_t)offsetof(PushConstants, base_color), &pc);
     vkCmdPushConstants(cmd, layout, db_pc_stages,
@@ -131,8 +285,38 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
                        (uint32_t)offsetof(PushConstants, gradient_head_row),
                        sizeof(pc.gradient_head_row), &pc.gradient_head_row);
     vkCmdPushConstants(cmd, layout, db_pc_stages,
-                       (uint32_t)offsetof(PushConstants, snake_shape_index),
-                       sizeof(pc.snake_shape_index), &pc.snake_shape_index);
+                       (uint32_t)offsetof(PushConstants, snake_region_height),
+                       sizeof(pc.snake_region_height), &pc.snake_region_height);
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
+                       (uint32_t)offsetof(PushConstants, snake_region_width),
+                       sizeof(pc.snake_region_width), &pc.snake_region_width);
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
+                       (uint32_t)offsetof(PushConstants, snake_region_x),
+                       sizeof(pc.snake_region_x), &pc.snake_region_x);
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
+                       (uint32_t)offsetof(PushConstants, snake_region_y),
+                       sizeof(pc.snake_region_y), &pc.snake_region_y);
+    vkCmdPushConstants(cmd, layout, db_pc_stages,
+                       (uint32_t)offsetof(PushConstants, snake_region_color),
+                       sizeof(pc.snake_region_color), pc.snake_region_color);
+    if (mode_flags.is_snake_shapes != 0) {
+        vkCmdPushConstants(cmd, layout, db_pc_stages,
+                           (uint32_t)offsetof(PushConstants, snake_shape_kind),
+                           sizeof(pc.snake_shape_kind), &pc.snake_shape_kind);
+        vkCmdPushConstants(cmd, layout, db_pc_stages,
+                           (uint32_t)offsetof(PushConstants, snake_profile0),
+                           sizeof(pc.snake_profile0), pc.snake_profile0);
+        vkCmdPushConstants(cmd, layout, db_pc_stages,
+                           (uint32_t)offsetof(PushConstants, snake_profile1),
+                           sizeof(pc.snake_profile1), pc.snake_profile1);
+        vkCmdPushConstants(cmd, layout, db_pc_stages,
+                           (uint32_t)offsetof(PushConstants, snake_profile2),
+                           sizeof(pc.snake_profile2), pc.snake_profile2);
+        vkCmdPushConstants(
+            cmd, layout, db_pc_stages,
+            (uint32_t)offsetof(PushConstants, snake_triangle_variant),
+            sizeof(pc.snake_triangle_variant), &pc.snake_triangle_variant);
+    }
     vkCmdPushConstants(
         cmd, layout, db_pc_stages,
         (uint32_t)offsetof(PushConstants, gradient_direction_flag),
@@ -153,9 +337,6 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, palette_cycle),
                        sizeof(pc.palette_cycle), &pc.palette_cycle);
-    vkCmdPushConstants(cmd, layout, db_pc_stages,
-                       (uint32_t)offsetof(PushConstants, pattern_seed),
-                       sizeof(pc.pattern_seed), &pc.pattern_seed);
     vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, frame_index),
                        sizeof(pc.frame_index), &pc.frame_index);
@@ -361,16 +542,16 @@ int db_vk_recreate_history_targets_preserve(
     return copied;
 }
 
-static void db_vk_grid_span_bounds_ndc(uint32_t row, uint32_t col_start,
-                                       uint32_t col_end, uint32_t rows,
-                                       uint32_t cols, float *x0, float *y0,
-                                       float *x1, float *y1) {
-    const double inv_cols = 1.0 / (double)cols;
-    const double inv_rows = 1.0 / (double)rows;
-    *x0 = db_double_to_f32((2.0 * (double)col_start * inv_cols) - 1.0);
-    *x1 = db_double_to_f32((2.0 * (double)col_end * inv_cols) - 1.0);
-    *y0 = db_double_to_f32((2.0 * (double)row * inv_rows) - 1.0);
-    *y1 = db_double_to_f32((2.0 * (double)(row + 1U) * inv_rows) - 1.0);
+static void db_vk_pixel_bounds_ndc(uint32_t x0_px, uint32_t y0_px,
+                                   uint32_t x1_px, uint32_t y1_px,
+                                   VkExtent2D extent, float *x0, float *y0,
+                                   float *x1, float *y1) {
+    const double inv_w = 1.0 / (double)db_u32_max(extent.width, 1U);
+    const double inv_h = 1.0 / (double)db_u32_max(extent.height, 1U);
+    *x0 = db_double_to_f32((2.0 * (double)x0_px * inv_w) - 1.0);
+    *x1 = db_double_to_f32((2.0 * (double)x1_px * inv_w) - 1.0);
+    *y0 = db_double_to_f32((2.0 * (double)y0_px * inv_h) - 1.0);
+    *y1 = db_double_to_f32((2.0 * (double)y1_px * inv_h) - 1.0);
 }
 
 static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx,
@@ -400,17 +581,27 @@ static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx,
     float ndc_y0 = 0.0F;
     float ndc_x1 = 0.0F;
     float ndc_y1 = 0.0F;
-    db_vk_grid_span_bounds_ndc(req->row, req->col_start, req->col_end,
-                               ctx->grid_rows, ctx->grid_cols, &ndc_x0, &ndc_y0,
-                               &ndc_x1, &ndc_y1);
+    db_vk_pixel_bounds_ndc(x0, y0, x1, y1, ctx->extent, &ndc_x0, &ndc_y0,
+                           &ndc_x1, &ndc_y1);
 
     db_vk_grid_span_draw_cmd_t local_req = *req;
     local_req.dynamic.ndc_x0 = ndc_x0;
     local_req.dynamic.ndc_y0 = ndc_y0;
     local_req.dynamic.ndc_x1 = ndc_x1;
     local_req.dynamic.ndc_y1 = ndc_y1;
-    db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout,
-                                      &local_req.dynamic);
+    if ((ctx->payload_cache == NULL) ||
+        (db_vk_draw_payload_cache_matches(ctx->payload_cache,
+                                          &local_req.dynamic.payload) == 0)) {
+        db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout,
+                                          &local_req.dynamic);
+        db_vk_draw_payload_cache_store(ctx->payload_cache,
+                                       &local_req.dynamic.payload);
+    } else {
+        db_vk_push_constants_draw_geometry(
+            ctx->cmd, ctx->layout, local_req.dynamic.ndc_x0,
+            local_req.dynamic.ndc_y0, local_req.dynamic.ndc_x1,
+            local_req.dynamic.ndc_y1);
+    }
     vkCmdDraw(ctx->cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
@@ -419,38 +610,57 @@ db_vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
                           const db_vk_grid_row_block_draw_cmd_t *req) {
     if ((ctx == NULL) || (req == NULL) || (req->row_end <= req->row_start) ||
         (req->row_start >= ctx->grid_rows) || (ctx->grid_rows == 0U) ||
-        (ctx->grid_cols == 0U)) {
+        (ctx->grid_cols == 0U) || (req->col_end <= req->col_start) ||
+        (req->col_start >= ctx->grid_cols)) {
         return;
     }
     uint32_t row_end = req->row_end;
     if (row_end > ctx->grid_rows) {
         row_end = ctx->grid_rows;
     }
+    uint32_t col_end = req->col_end;
+    if (col_end > ctx->grid_cols) {
+        col_end = ctx->grid_cols;
+    }
 
+    const uint32_t x0 = (ctx->extent.width * req->col_start) / ctx->grid_cols;
+    const uint32_t x1 = (ctx->extent.width * col_end) / ctx->grid_cols;
     const uint32_t y0 = (ctx->extent.height * req->row_start) / ctx->grid_rows;
     const uint32_t y1 = (ctx->extent.height * row_end) / ctx->grid_rows;
-    if (y1 <= y0) {
+    if ((x1 <= x0) || (y1 <= y0)) {
         return;
     }
     VkRect2D sc = {0};
-    sc.offset.x = 0;
+    sc.offset.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", x0);
     sc.offset.y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", y0);
-    sc.extent.width = ctx->extent.width;
+    sc.extent.width = x1 - x0;
     sc.extent.height = y1 - y0;
     vkCmdSetScissor(ctx->cmd, 0, 1, &sc);
 
-    const double inv_rows = 1.0 / (double)ctx->grid_rows;
-    const float ndc_y0 =
-        db_double_to_f32((2.0 * (double)req->row_start * inv_rows) - 1.0);
-    const float ndc_y1 =
-        db_double_to_f32((2.0 * (double)row_end * inv_rows) - 1.0);
+    float ndc_x0 = 0.0F;
+    float ndc_y0 = 0.0F;
+    float ndc_x1 = 0.0F;
+    float ndc_y1 = 0.0F;
+    db_vk_pixel_bounds_ndc(x0, y0, x1, y1, ctx->extent, &ndc_x0, &ndc_y0,
+                           &ndc_x1, &ndc_y1);
     db_vk_grid_row_block_draw_cmd_t local_req = *req;
-    local_req.dynamic.ndc_x0 = -1.0F;
+    local_req.dynamic.ndc_x0 = ndc_x0;
     local_req.dynamic.ndc_y0 = ndc_y0;
-    local_req.dynamic.ndc_x1 = 1.0F;
+    local_req.dynamic.ndc_x1 = ndc_x1;
     local_req.dynamic.ndc_y1 = ndc_y1;
-    db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout,
-                                      &local_req.dynamic);
+    if ((ctx->payload_cache == NULL) ||
+        (db_vk_draw_payload_cache_matches(ctx->payload_cache,
+                                          &local_req.dynamic.payload) == 0)) {
+        db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout,
+                                          &local_req.dynamic);
+        db_vk_draw_payload_cache_store(ctx->payload_cache,
+                                       &local_req.dynamic.payload);
+    } else {
+        db_vk_push_constants_draw_geometry(
+            ctx->cmd, ctx->layout, local_req.dynamic.ndc_x0,
+            local_req.dynamic.ndc_y0, local_req.dynamic.ndc_x1,
+            local_req.dynamic.ndc_y1);
+    }
     vkCmdDraw(ctx->cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
@@ -489,10 +699,15 @@ static void db_vk_draw_owner_grid_span(const db_vk_owner_draw_ctx_t *ctx,
         return;
     }
 
-    uint32_t owner = db_vk_select_owner_for_work(
-        req->candidate_owner, ctx->active_gpu_count, req->span_units,
-        ctx->frame_start_ns, ctx->budget_ns, ctx->safety_ns,
-        ctx->ema_ms_per_work_unit);
+    uint32_t owner = 0U;
+    if (ctx->active_gpu_count <= 1U) {
+        owner = 0U;
+    } else {
+        // Owner selection is fully scheduler-driven (no local hint/probe path).
+        owner = db_vk_select_owner_for_work(
+            ctx->active_gpu_count, req->span_units, ctx->budget_ns,
+            ctx->safety_ns, ctx->ema_ms_per_work_unit, ctx->frame_work_units);
+    }
     ctx->grid_tiles_per_gpu[owner] += req->span_units;
     *ctx->grid_tiles_drawn += req->span_units;
     if (ctx->have_group) {
@@ -507,6 +722,7 @@ static void db_vk_draw_owner_grid_span(const db_vk_owner_draw_ctx_t *ctx,
         .extent = ctx->extent,
         .grid_rows = ctx->grid_rows,
         .grid_cols = ctx->grid_cols,
+        .payload_cache = ctx->payload_cache,
     };
     const db_vk_grid_span_draw_cmd_t draw_req = {
         .row = req->row,
@@ -537,10 +753,15 @@ void db_vk_draw_owner_grid_row_block(
         return;
     }
 
-    uint32_t owner = db_vk_select_owner_for_work(
-        req->candidate_owner, ctx->active_gpu_count, req->span_units,
-        ctx->frame_start_ns, ctx->budget_ns, ctx->safety_ns,
-        ctx->ema_ms_per_work_unit);
+    uint32_t owner = 0U;
+    if (ctx->active_gpu_count <= 1U) {
+        owner = 0U;
+    } else {
+        // Owner selection is fully scheduler-driven (no local hint/probe path).
+        owner = db_vk_select_owner_for_work(
+            ctx->active_gpu_count, req->span_units, ctx->budget_ns,
+            ctx->safety_ns, ctx->ema_ms_per_work_unit, ctx->frame_work_units);
+    }
     ctx->grid_tiles_per_gpu[owner] += req->span_units;
     *ctx->grid_tiles_drawn += req->span_units;
     if (ctx->have_group) {
@@ -555,10 +776,13 @@ void db_vk_draw_owner_grid_row_block(
         .extent = ctx->extent,
         .grid_rows = ctx->grid_rows,
         .grid_cols = ctx->grid_cols,
+        .payload_cache = ctx->payload_cache,
     };
     const db_vk_grid_row_block_draw_cmd_t draw_req = {
         .row_start = req->row_start,
         .row_end = req->row_end,
+        .col_start = req->col_start,
+        .col_end = req->col_end,
         .dynamic =
             {
                 .ndc_x0 = 0.0F,
@@ -575,35 +799,106 @@ void db_vk_draw_owner_grid_row_block(
     ctx->frame_work_units[owner] += req->span_units;
 }
 
-static void db_vk_draw_owner_grid_span_mode(
-    const db_vk_owner_draw_ctx_t *ctx, uint32_t candidate_owner,
-    uint32_t span_units, uint32_t row, uint32_t col_start, uint32_t col_end,
-    const float color[3], uint32_t render_mode, uint32_t shape_index,
-    uint32_t active_cursor, int snake_phase_flag, uint32_t batch_size,
-    int phase_completed) {
-    const db_vk_grid_span_draw_req_t req = {
-        .candidate_owner = candidate_owner,
-        .span_units = span_units,
-        .row = row,
-        .col_start = col_start,
-        .col_end = col_end,
-        .payload =
-            {
-                .color = color,
-                .render_mode = render_mode,
-                .gradient_head_row = 0U,
-                .gradient_direction_flag = 0,
-                .snake_phase_flag = snake_phase_flag,
-                .snake_cursor = active_cursor,
-                .snake_batch_size = batch_size,
-                .snake_shape_index = shape_index,
-                .snake_phase_completed = phase_completed,
-                .palette_cycle = 0U,
-                .frame_index = 0U,
-                .band_count = 0U,
-            },
+static void db_vk_draw_snake_spans_coalesced(
+    const db_vk_owner_draw_ctx_t *ctx, const db_snake_col_span_t *spans,
+    size_t span_count, const float color[3], uint32_t render_mode,
+    uint32_t snake_shape_index, uint32_t active_cursor, int snake_phase_flag,
+    uint32_t batch_size, int phase_completed) {
+    if ((ctx == NULL) || (spans == NULL) || (span_count == 0U) ||
+        (ctx->grid_cols == 0U) || (ctx->grid_rows == 0U)) {
+        return;
+    }
+    const db_vk_draw_payload_t payload_base = {
+        .color = color,
+        .render_mode = render_mode,
+        .gradient_head_row = 0U,
+        .gradient_direction_flag = 0,
+        .snake_phase_flag = snake_phase_flag,
+        .snake_cursor = active_cursor,
+        .snake_batch_size = batch_size,
+        .snake_shape_index = snake_shape_index,
+        .snake_phase_completed = phase_completed,
+        .palette_cycle = 0U,
+        .frame_index = 0U,
+        .band_count = 0U,
     };
-    db_vk_draw_owner_grid_span(ctx, &req);
+
+    size_t span_cursor = 0U;
+    while (span_cursor < span_count) {
+        const uint32_t row = spans[span_cursor].row;
+        const size_t row_start = span_cursor;
+        size_t row_end = row_start + 1U;
+        while ((row_end < span_count) && (spans[row_end].row == row)) {
+            row_end++;
+        }
+
+        if ((row_end - row_start) == 1U) {
+            const db_snake_col_span_t base = spans[row_start];
+            if (base.col_end > base.col_start) {
+                size_t run_end = row_end;
+                uint32_t run_rows = 1U;
+                while (run_end < span_count) {
+                    const uint32_t next_row = base.row + run_rows;
+                    const size_t next_row_start = run_end;
+                    if (spans[next_row_start].row != next_row) {
+                        break;
+                    }
+                    size_t next_row_end = next_row_start + 1U;
+                    while ((next_row_end < span_count) &&
+                           (spans[next_row_end].row == next_row)) {
+                        next_row_end++;
+                    }
+                    if ((next_row_end - next_row_start) != 1U) {
+                        break;
+                    }
+                    const db_snake_col_span_t next = spans[next_row_start];
+                    if ((next.col_start != base.col_start) ||
+                        (next.col_end != base.col_end)) {
+                        break;
+                    }
+                    run_rows++;
+                    run_end = next_row_end;
+                }
+
+                if (run_rows >= DB_VK_SNAKE_ROW_BLOCK_MIN_ROWS) {
+                    const uint32_t row_units = base.col_end - base.col_start;
+                    const uint64_t span_units_u64 =
+                        (uint64_t)run_rows * (uint64_t)row_units;
+                    const uint32_t span_units = db_checked_u64_to_u32(
+                        BACKEND_NAME, "snake_row_block_units", span_units_u64);
+                    const db_vk_grid_row_block_draw_req_t req = {
+                        .span_units = span_units,
+                        .row_start = base.row,
+                        .row_end = base.row + run_rows,
+                        .col_start = base.col_start,
+                        .col_end = base.col_end,
+                        .payload = payload_base,
+                    };
+                    db_vk_draw_owner_grid_row_block(ctx, &req);
+                    span_cursor = run_end;
+                    continue;
+                }
+            }
+        }
+
+        for (size_t span_index = row_start; span_index < row_end;
+             span_index++) {
+            const db_snake_col_span_t span = spans[span_index];
+            const uint32_t span_units = span.col_end - span.col_start;
+            if (span_units == 0U) {
+                continue;
+            }
+            const db_vk_grid_span_draw_req_t req = {
+                .span_units = span_units,
+                .row = span.row,
+                .col_start = span.col_start,
+                .col_end = span.col_end,
+                .payload = payload_base,
+            };
+            db_vk_draw_owner_grid_span(ctx, &req);
+        }
+        span_cursor = row_end;
+    }
 }
 
 void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
@@ -632,18 +927,10 @@ void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
     db_snake_col_span_t *spans = g_state.snake_scratch.spans;
     const size_t span_count = db_snake_collect_damage_spans_for_plan(
         spans, max_spans, &grid_region, plan, NULL);
-    for (size_t span_index = 0U; span_index < span_count; span_index++) {
-        const db_snake_col_span_t span = spans[span_index];
-        const uint32_t span_units = span.col_end - span.col_start;
-        if (span_units == 0U) {
-            continue;
-        }
-        db_vk_draw_owner_grid_span_mode(
-            ctx, span.row % ctx->active_gpu_count, span_units, span.row,
-            span.col_start, span.col_end, color, DB_PATTERN_SNAKE_GRID, 0U,
-            plan->active_cursor, plan->phase_flag, plan->batch_size,
-            plan->phase_completed);
-    }
+    db_vk_draw_snake_spans_coalesced(ctx, spans, span_count, color,
+                                     DB_PATTERN_SNAKE_GRID, 0U,
+                                     plan->active_cursor, plan->phase_flag,
+                                     plan->batch_size, plan->phase_completed);
 }
 
 void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
@@ -683,20 +970,20 @@ void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
             }
         }
     }
-    const size_t span_count = db_snake_collect_damage_spans(
+    size_t span_count = db_snake_collect_damage_spans(
         spans, max_spans, &region, snake_prev_start, snake_prev_count,
         plan->active_cursor, plan->batch_size, shape_cache_ptr);
-    for (size_t i = 0U; i < span_count; i++) {
-        const uint32_t span_units = spans[i].col_end - spans[i].col_start;
-        if (span_units == 0U) {
-            continue;
-        }
-        db_vk_draw_owner_grid_span_mode(
-            ctx, spans[i].row % ctx->active_gpu_count, span_units, spans[i].row,
-            spans[i].col_start, spans[i].col_end, color, render_mode,
-            plan->active_shape_index, plan->active_cursor, 0, plan->batch_size,
-            plan->phase_completed);
+    if ((span_count == 0U) && (shape_cache_ptr != NULL) &&
+        ((snake_prev_count > 0U) || (plan->batch_size > 0U))) {
+        // Fallback: if shape-cache filtering degenerates to empty coverage,
+        // fall back to region spans so frames do not stall/blank.
+        span_count = db_snake_collect_damage_spans(
+            spans, max_spans, &region, snake_prev_start, snake_prev_count,
+            plan->active_cursor, plan->batch_size, NULL);
     }
+    db_vk_draw_snake_spans_coalesced(
+        ctx, spans, span_count, color, render_mode, plan->active_shape_index,
+        plan->active_cursor, 0, plan->batch_size, plan->phase_completed);
 }
 
 void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx) {
@@ -708,6 +995,12 @@ void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx) {
     vkDestroySemaphore(ctx->device, ctx->render_done, NULL);
     vkDestroyBuffer(ctx->device, ctx->vertex_buffer, NULL);
     vkFreeMemory(ctx->device, ctx->vertex_memory, NULL);
+    if (ctx->hash_readback_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(ctx->device, ctx->hash_readback_buffer, NULL);
+    }
+    if (ctx->hash_readback_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(ctx->device, ctx->hash_readback_memory, NULL);
+    }
     vkDestroyPipeline(ctx->device, ctx->pipeline, NULL);
     vkDestroyPipelineLayout(ctx->device, ctx->pipeline_layout, NULL);
     if (ctx->history_sampler != VK_NULL_HANDLE) {

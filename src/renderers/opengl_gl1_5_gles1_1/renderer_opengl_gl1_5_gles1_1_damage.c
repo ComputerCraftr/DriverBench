@@ -48,6 +48,7 @@ db_gl1_collect_pattern_damage_ranges(const db_gl1_damage_collect_ctx_t *ctx,
         local_range_storage = range_storage;
         local_range_capacity = range_capacity;
     }
-    return db_gl_collect_pattern_upload_ranges(
+    const size_t range_count = db_gl_collect_pattern_upload_ranges(
         &collect_ctx, local_range_storage, local_range_capacity);
+    return range_count;
 }

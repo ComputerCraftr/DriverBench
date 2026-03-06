@@ -316,6 +316,23 @@ static inline void db_log_benchmark_mode(const char *backend_name,
              db_pattern_mode_name(pattern), BENCH_BANDS, bench_speed_step);
 }
 
+static inline void
+db_log_renderer_capability_mode(const char *backend_name,
+                                const char *capability_mode) {
+    if ((backend_name == NULL) || (capability_mode == NULL)) {
+        return;
+    }
+    db_infof(backend_name, "using capability mode: %s", capability_mode);
+}
+
+static inline void db_log_renderer_scheduler_mode(const char *backend_name,
+                                                  const char *scheduler_mode) {
+    if ((backend_name == NULL) || (scheduler_mode == NULL)) {
+        return;
+    }
+    db_infof(backend_name, "using scheduler mode: %s", scheduler_mode);
+}
+
 static inline uint32_t db_pattern_work_unit_count(db_pattern_t pattern) {
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t cols = db_grid_cols_effective();
@@ -546,7 +563,7 @@ static inline void db_band_color_rgb(uint32_t band_index, uint32_t band_count,
 }
 
 static inline double db_color_channel(uint32_t seed) {
-    const double normalized = (double)(seed & 255U) / 255.0;
+    const double normalized = db_u8_to_unit_f64(seed);
     return DB_COLOR_CHANNEL_BIAS + (normalized * DB_COLOR_CHANNEL_SCALE);
 }
 
@@ -874,35 +891,6 @@ static inline size_t db_append_nonzero_row_ranges(
     return out_count;
 }
 
-static inline size_t db_gradient_build_curr_draw_ranges(
-    const db_dirty_row_range_t *skipped_ranges, size_t skipped_count,
-    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
-    db_dirty_row_range_t *out_ranges, size_t out_capacity) {
-    if ((out_ranges == NULL) || (out_capacity == 0U)) {
-        return 0U;
-    }
-    // Fast path: only dirty ranges contributed this frame.
-    // Avoids an unnecessary append pass over skipped ranges.
-    if ((skipped_count == 0U) && (dirty_ranges != NULL) && (dirty_count > 0U) &&
-        (dirty_count <= out_capacity)) {
-        return db_append_nonzero_row_ranges(dirty_ranges, dirty_count,
-                                            out_ranges, out_capacity, 0U);
-    }
-    // Fast path: only skipped/replay ranges contributed this frame.
-    // Avoids an unnecessary append pass over current dirty ranges.
-    if ((dirty_count == 0U) && (skipped_ranges != NULL) &&
-        (skipped_count > 0U) && (skipped_count <= out_capacity)) {
-        return db_append_nonzero_row_ranges(skipped_ranges, skipped_count,
-                                            out_ranges, out_capacity, 0U);
-    }
-
-    size_t out_count = db_append_nonzero_row_ranges(
-        skipped_ranges, skipped_count, out_ranges, out_capacity, 0U);
-    out_count = db_append_nonzero_row_ranges(
-        dirty_ranges, dirty_count, out_ranges, out_capacity, out_count);
-    return out_count;
-}
-
 static inline size_t
 db_gradient_row_range_lower_bound(const db_dirty_row_range_t *ranges,
                                   size_t sorted_count, uint32_t row_start) {
@@ -993,6 +981,49 @@ static inline size_t db_gradient_normalize_row_ranges(
         out_ranges[merged_count++] = current;
     }
     return merged_count;
+}
+
+static inline size_t db_gradient_build_curr_draw_ranges(
+    const db_dirty_row_range_t *skipped_ranges, size_t skipped_count,
+    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
+    db_dirty_row_range_t *out_ranges, size_t out_capacity) {
+    if ((out_ranges == NULL) || (out_capacity == 0U)) {
+        return 0U;
+    }
+    // Fast path: only dirty ranges contributed this frame.
+    // Avoids an unnecessary append pass over skipped ranges.
+    if ((skipped_count == 0U) && (dirty_ranges != NULL) && (dirty_count > 0U) &&
+        (dirty_count <= out_capacity)) {
+        size_t out_count = db_append_nonzero_row_ranges(
+            dirty_ranges, dirty_count, out_ranges, out_capacity, 0U);
+        if (out_count > 1U) {
+            out_count = db_gradient_normalize_row_ranges(
+                out_ranges, out_count, out_ranges, out_capacity);
+        }
+        return out_count;
+    }
+    // Fast path: only skipped/replay ranges contributed this frame.
+    // Avoids an unnecessary append pass over current dirty ranges.
+    if ((dirty_count == 0U) && (skipped_ranges != NULL) &&
+        (skipped_count > 0U) && (skipped_count <= out_capacity)) {
+        size_t out_count = db_append_nonzero_row_ranges(
+            skipped_ranges, skipped_count, out_ranges, out_capacity, 0U);
+        if (out_count > 1U) {
+            out_count = db_gradient_normalize_row_ranges(
+                out_ranges, out_count, out_ranges, out_capacity);
+        }
+        return out_count;
+    }
+
+    size_t out_count = db_append_nonzero_row_ranges(
+        skipped_ranges, skipped_count, out_ranges, out_capacity, 0U);
+    out_count = db_append_nonzero_row_ranges(
+        dirty_ranges, dirty_count, out_ranges, out_capacity, out_count);
+    if (out_count > 1U) {
+        out_count = db_gradient_normalize_row_ranges(out_ranges, out_count,
+                                                     out_ranges, out_capacity);
+    }
+    return out_count;
 }
 
 static inline size_t db_gradient_subtract_replay_ranges(

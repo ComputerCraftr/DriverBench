@@ -51,12 +51,9 @@ static inline const uint8_t *db_gl_read_framebuffer_rgba8_or_fail(
     const size_t byte_count = (size_t)byte_count_u64;
     if ((scratch->bytes == NULL) || (scratch->size < byte_count)) {
         free(scratch->bytes);
-        scratch->bytes = (uint8_t *)malloc(byte_count);
-        if (scratch->bytes == NULL) {
-            db_failf(backend,
-                     "Failed to allocate framebuffer hash buffer (%zu bytes)",
-                     byte_count);
-        }
+        scratch->bytes = (uint8_t *)db_alloc_aligned_array_or_fail(
+            backend, "gl_hash_rgba8_bytes", byte_count, sizeof(uint8_t),
+            DB_CACHELINE_ALIGNMENT_BYTES);
         scratch->size = byte_count;
     }
 
@@ -92,14 +89,9 @@ static inline const uint16_t *db_gl_read_framebuffer_rgba16f_or_fail(
     const size_t required_f16_values = pixel_count * 4U;
     if ((scratch->pixels == NULL) || (scratch->pixel_count < pixel_count)) {
         free(scratch->pixels);
-        scratch->pixels =
-            (uint16_t *)malloc(required_f16_values * sizeof(uint16_t));
-        if (scratch->pixels == NULL) {
-            db_failf(backend,
-                     "Failed to allocate framebuffer f16 hash buffer (%zu "
-                     "pixels)",
-                     pixel_count);
-        }
+        scratch->pixels = (uint16_t *)db_alloc_aligned_array_or_fail(
+            backend, "gl_hash_rgba16f_pixels", required_f16_values,
+            sizeof(uint16_t), DB_CACHELINE_ALIGNMENT_BYTES);
         scratch->pixel_count = pixel_count;
     }
 

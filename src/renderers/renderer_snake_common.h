@@ -7,6 +7,7 @@
 #include "../config/benchmark_config.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
+#include "../core/db_numeric.h"
 #include "renderer_benchmark_common.h"
 #include "renderer_snake_shape_common.h"
 
@@ -83,6 +84,27 @@ typedef struct {
     uint32_t col;
 } db_snake_step_tile_t;
 
+enum db_snake_shape_profile_value_index_t {
+    DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_X = 0U,
+    DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_Y = 1U,
+    DB_SNAKE_PROFILE_VAL_DIAMOND_RADIUS = 2U,
+    DB_SNAKE_PROFILE_VAL_TRIANGLE_BOTTOM_WIDTH = 3U,
+    DB_SNAKE_PROFILE_VAL_TRAPEZOID_TOP_WIDTH = 4U,
+    DB_SNAKE_PROFILE_VAL_TRAPEZOID_BOTTOM_WIDTH = 5U,
+    DB_SNAKE_PROFILE_VAL_RECT_HALF_WIDTH = 6U,
+    DB_SNAKE_PROFILE_VAL_RECT_HALF_HEIGHT = 7U,
+    DB_SNAKE_PROFILE_VAL_EXTENT_X = 8U,
+    DB_SNAKE_PROFILE_VAL_EXTENT_Y = 9U,
+    DB_SNAKE_PROFILE_VAL_ROTATE_COS = 10U,
+    DB_SNAKE_PROFILE_VAL_ROTATE_SIN = 11U,
+    DB_SNAKE_PROFILE_VAL_COUNT = 12U,
+};
+
+typedef struct {
+    float values[DB_SNAKE_PROFILE_VAL_COUNT];
+    uint32_t triangle_variant;
+} db_snake_shape_profile_f32_t;
+
 static inline db_snake_plan_request_t
 db_snake_plan_request_make(int is_grid_mode, uint32_t seed,
                            uint32_t shape_index, uint32_t cursor,
@@ -104,6 +126,39 @@ db_snake_plan_request_make(int is_grid_mode, uint32_t seed,
 static inline size_t db_snake_span_capacity_needed(uint32_t settled_count,
                                                    uint32_t active_count) {
     return (size_t)settled_count + (size_t)active_count;
+}
+
+static inline void
+db_snake_shape_profile_to_f32(const db_snake_shape_profile_t *profile,
+                              db_snake_shape_profile_f32_t *out_profile_f32) {
+    if ((profile == NULL) || (out_profile_f32 == NULL)) {
+        return;
+    }
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_X] =
+        db_double_to_f32(profile->circle_radius_x);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_Y] =
+        db_double_to_f32(profile->circle_radius_y);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_DIAMOND_RADIUS] =
+        db_double_to_f32(profile->diamond_radius);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_TRIANGLE_BOTTOM_WIDTH] =
+        db_double_to_f32(profile->triangle_bottom_width);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_TOP_WIDTH] =
+        db_double_to_f32(profile->trapezoid_top_width);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_BOTTOM_WIDTH] =
+        db_double_to_f32(profile->trapezoid_bottom_width);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_RECT_HALF_WIDTH] =
+        db_double_to_f32(profile->rect_half_width);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_RECT_HALF_HEIGHT] =
+        db_double_to_f32(profile->rect_half_height);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_EXTENT_X] =
+        db_double_to_f32(profile->extent_x);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_EXTENT_Y] =
+        db_double_to_f32(profile->extent_y);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_ROTATE_COS] =
+        db_double_to_f32(profile->rotate_cos);
+    out_profile_f32->values[DB_SNAKE_PROFILE_VAL_ROTATE_SIN] =
+        db_double_to_f32(profile->rotate_sin);
+    out_profile_f32->triangle_variant = profile->triangle_variant;
 }
 
 static inline size_t
@@ -169,7 +224,7 @@ static inline uint32_t db_snake_grid_cols_effective(void) {
 }
 
 static inline double db_snake_color_channel(uint32_t seed) {
-    const double normalized = (double)(seed & 255U) / DB_U8_MAX;
+    const double normalized = (double)(seed & UINT8_MAX) / DB_U8_MAX;
     return DB_SNAKE_COMMON_COLOR_BIAS +
            (normalized * DB_SNAKE_COMMON_COLOR_SCALE);
 }
@@ -282,6 +337,45 @@ db_snake_step_resolve_tile(const db_snake_region_t *region,
     return 1;
 }
 
+static inline uint32_t
+db_snake_plan_active_batch_limit(const db_snake_plan_t *plan,
+                                 uint32_t capacity) {
+    if ((plan == NULL) || (capacity == 0U)) {
+        return 0U;
+    }
+    return (plan->batch_size < capacity) ? plan->batch_size : capacity;
+}
+
+static inline int db_snake_plan_resolve_active_tile(
+    const db_snake_plan_t *plan, const db_snake_region_t *region,
+    const db_snake_shape_cache_t *shape_cache, uint32_t update_index,
+    uint32_t cols, uint32_t rows, db_snake_step_tile_t *out_tile) {
+    if ((plan == NULL) || (region == NULL) || (out_tile == NULL)) {
+        return 0;
+    }
+    const uint32_t step = plan->active_cursor + update_index;
+    if (step >= plan->target_tile_count) {
+        return 0;
+    }
+    return db_snake_step_resolve_tile(region, shape_cache, step, cols, rows,
+                                      out_tile);
+}
+
+static inline int db_snake_plan_resolve_prev_tile(
+    const db_snake_plan_t *plan, const db_snake_region_t *region,
+    const db_snake_shape_cache_t *shape_cache, uint32_t prev_offset,
+    uint32_t cols, uint32_t rows, db_snake_step_tile_t *out_tile) {
+    if ((plan == NULL) || (region == NULL) || (out_tile == NULL)) {
+        return 0;
+    }
+    const uint32_t step = plan->prev_start + prev_offset;
+    if (step >= plan->target_tile_count) {
+        return 0;
+    }
+    return db_snake_step_resolve_tile(region, shape_cache, step, cols, rows,
+                                      out_tile);
+}
+
 static inline void db_snake_append_step_spans_for_region(
     db_snake_col_span_t *spans, size_t max_spans, size_t *inout_span_count,
     uint32_t region_x, uint32_t region_y, uint32_t region_cols,
@@ -374,32 +468,19 @@ static inline int db_snake_span_row_bounds(const db_snake_col_span_t *spans,
         (out_row_count == NULL)) {
         return 0;
     }
-    // Spans are emitted in monotonic row order; find first/last valid spans to
-    // avoid a full scan in common cases.
-    size_t first_index = 0U;
-    while (first_index < span_count) {
-        const db_snake_col_span_t span = spans[first_index];
-        if ((span.col_end > span.col_start) && (span.row < max_rows)) {
-            break;
-        }
-        first_index++;
-    }
-    if (first_index == span_count) {
+    if (span_count == 0U) {
         return 0;
     }
-    size_t last_index = span_count;
-    while (last_index > first_index) {
-        const db_snake_col_span_t span = spans[last_index - 1U];
-        if ((span.col_end > span.col_start) && (span.row < max_rows)) {
-            break;
-        }
-        last_index--;
-    }
-    if (last_index <= first_index) {
+    // Spans are generated in monotonic row order and shape filtering compacts
+    // out invalid entries, so row bounds are the first and last span rows.
+    const db_snake_col_span_t first_span = spans[0U];
+    const db_snake_col_span_t last_span = spans[span_count - 1U];
+    if ((first_span.col_end <= first_span.col_start) ||
+        (last_span.col_end <= last_span.col_start)) {
         return 0;
     }
-    const uint32_t row_start = spans[first_index].row;
-    const uint32_t row_end_exclusive = spans[last_index - 1U].row + 1U;
+    const uint32_t row_start = first_span.row;
+    const uint32_t row_end_exclusive = last_span.row + 1U;
     if ((row_end_exclusive <= row_start) || (row_start >= max_rows)) {
         return 0;
     }

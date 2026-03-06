@@ -33,6 +33,10 @@ enum {
     DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER = 10,
     DB_CLI_RT_BACKBUFFER_DRAW_MODE = 11,
     DB_CLI_RT_CPU_HDR = 12,
+    DB_CLI_RT_VK_NO_PRESENT = 13,
+    DB_CLI_RT_METRICS_MODE = 14,
+    DB_CLI_RT_VK_ALLOW_CPU_WORKERS = 15,
+    DB_CLI_RT_VK_MULTI_DEVICE_POLICY = 16,
 };
 
 #define DB_CLI_RUNTIME_TEXT_LEN 64U
@@ -73,8 +77,12 @@ static void db_usage(void) {
           "  --hash <none|state|pixel|both>\n"
           "  --frame-limit <value>\n"
           "  --hash-report <final|aggregate|both>\n"
+          "  --metrics-mode <basic|dual>\n"
           "  --offscreen <0|1>\n"
           "  --random-seed <value>\n"
+          "  --vk-allow-cpu-workers <0|1>\n"
+          "  --vk-multi-device-policy <auto|group_only|independent_ok>\n"
+          "  --vk-no-present <0|1>\n"
           "  --vsync <0|1|on|off|true|false>\n"
           "  --help\n",
           stderr);
@@ -243,6 +251,31 @@ static const char *db_cli_parse_hash_mode_or_exit(const char *raw_value) {
     return "none";
 }
 
+static const char *db_cli_parse_metrics_mode_or_exit(const char *raw_value) {
+    if (db_string_is(raw_value, "basic") || db_string_is(raw_value, "dual")) {
+        return raw_value;
+    }
+    db_failf("driverbench_cli",
+             "invalid value for --metrics-mode: %s "
+             "(expected: basic|dual)",
+             raw_value);
+    return "basic";
+}
+
+static const char *
+db_cli_parse_vk_multi_device_policy_or_exit(const char *raw_value) {
+    if (db_string_is(raw_value, "auto") ||
+        db_string_is(raw_value, "group_only") ||
+        db_string_is(raw_value, "independent_ok")) {
+        return raw_value;
+    }
+    db_failf("driverbench_cli",
+             "invalid value for --vk-multi-device-policy: %s "
+             "(expected: auto|group_only|independent_ok)",
+             raw_value);
+    return "auto";
+}
+
 static const char *db_expect_value(int argc, char **argv, int *index) {
     if ((*index + 1) >= argc) {
         db_failf("driverbench_cli", "missing value for option: %s",
@@ -326,8 +359,15 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
         {"--hash", DB_RUNTIME_OPT_HASH, DB_CLI_RT_HASH_MODE},
         {"--frame-limit", DB_RUNTIME_OPT_FRAME_LIMIT, DB_CLI_RT_FRAME_LIMIT},
         {"--hash-report", DB_RUNTIME_OPT_HASH_REPORT, DB_CLI_RT_HASH_REPORT},
+        {"--metrics-mode", DB_RUNTIME_OPT_METRICS_MODE, DB_CLI_RT_METRICS_MODE},
         {"--offscreen", DB_RUNTIME_OPT_OFFSCREEN, DB_CLI_RT_OFFSCREEN},
         {"--random-seed", DB_RUNTIME_OPT_RANDOM_SEED, DB_CLI_RT_RANDOM_SEED},
+        {"--vk-allow-cpu-workers", DB_RUNTIME_OPT_VK_ALLOW_CPU_WORKERS,
+         DB_CLI_RT_VK_ALLOW_CPU_WORKERS},
+        {"--vk-multi-device-policy", DB_RUNTIME_OPT_VK_MULTI_DEVICE_POLICY,
+         DB_CLI_RT_VK_MULTI_DEVICE_POLICY},
+        {"--vk-no-present", DB_RUNTIME_OPT_VK_NO_PRESENT,
+         DB_CLI_RT_VK_NO_PRESENT},
         {"--vsync", DB_RUNTIME_OPT_VSYNC, DB_CLI_RT_VSYNC},
     };
 
@@ -338,6 +378,8 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
             switch (mappings[map_index].kind) {
             case DB_CLI_RT_BOOL:
             case DB_CLI_RT_CPU_HDR:
+            case DB_CLI_RT_VK_ALLOW_CPU_WORKERS:
+            case DB_CLI_RT_VK_NO_PRESENT:
                 db_cli_set_runtime_bool_or_exit(
                     mappings[map_index].runtime_option,
                     mappings[map_index].cli_option, value);
@@ -363,6 +405,18 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
                 break;
             case DB_CLI_RT_HASH_MODE:
                 cfg->hash_mode = db_cli_parse_hash_mode_or_exit(value);
+                break;
+            case DB_CLI_RT_METRICS_MODE:
+                db_runtime_option_set(
+                    DB_RUNTIME_OPT_METRICS_MODE,
+                    db_cli_store_runtime_text_or_exit(
+                        db_cli_parse_metrics_mode_or_exit(value)));
+                break;
+            case DB_CLI_RT_VK_MULTI_DEVICE_POLICY:
+                db_runtime_option_set(
+                    DB_RUNTIME_OPT_VK_MULTI_DEVICE_POLICY,
+                    db_cli_store_runtime_text_or_exit(
+                        db_cli_parse_vk_multi_device_policy_or_exit(value)));
                 break;
             case DB_CLI_RT_BENCH_SPEED:
                 db_cli_set_runtime_bench_speed_or_exit(value);
@@ -503,7 +557,7 @@ static void db_cli_validate_hash_mode_or_exit(const db_cli_config_t *cfg) {
         (cfg->display == DB_DISPLAY_OFFSCREEN)) {
         if (api == DB_API_VULKAN) {
             supports_state = 1;
-            supports_pixel = 0;
+            supports_pixel = (cfg->display == DB_DISPLAY_GLFW_WINDOW) ? 1 : 0;
         } else if ((api == DB_API_OPENGL) || (api == DB_API_CPU)) {
             supports_state = 1;
             supports_pixel = 1;

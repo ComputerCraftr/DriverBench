@@ -336,21 +336,10 @@ size_t db_gl_for_each_upload_row_span(const char *backend_name,
                                       size_t range_count,
                                       db_gl_upload_row_span_apply_fn_t apply_fn,
                                       void *user_data);
-size_t db_gl_coalesce_upload_ranges_in_place(db_gl_upload_range_t *ranges,
-                                             size_t range_count);
-size_t db_gl_optimize_upload_ranges(db_gl_upload_range_t *ranges,
-                                    size_t range_count, int allow_overdraw,
-                                    size_t collapse_threshold);
 size_t db_gl_copy_upload_ranges(const db_gl_upload_range_t *source_ranges,
                                 size_t source_count,
                                 db_gl_upload_range_t *out_ranges,
                                 size_t out_capacity);
-size_t db_gl_subtract_upload_ranges(const db_gl_upload_range_t *base_ranges,
-                                    size_t base_count,
-                                    const db_gl_upload_range_t *cut_ranges,
-                                    size_t cut_count,
-                                    db_gl_upload_range_t *out_ranges,
-                                    size_t out_capacity);
 
 int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
                                  db_pattern_t pattern, size_t vertex_stride);

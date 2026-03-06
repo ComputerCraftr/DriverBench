@@ -143,9 +143,10 @@ db_glfw_loop_frame_adapter(void *user_data, uint32_t frame_index,
     return loop->frame_fn(loop->user_data, frame_index, elapsed_ms);
 }
 
-uint64_t db_glfw_run_loop(const db_glfw_loop_t *loop) {
+db_display_frame_loop_run_result_t
+db_glfw_run_loop(const db_glfw_loop_t *loop) {
     if ((loop == NULL) || (loop->frame_fn == NULL) || (loop->window == NULL)) {
-        return 0U;
+        return (db_display_frame_loop_run_result_t){0};
     }
     const db_display_frame_loop_t shared_loop = {
         .backend = loop->backend,
@@ -156,5 +157,5 @@ uint64_t db_glfw_run_loop(const db_glfw_loop_t *loop) {
         .pre_frame_fn = db_glfw_loop_pre_frame,
         .frame_fn = db_glfw_loop_frame_adapter,
     };
-    return db_display_run_frame_loop(&shared_loop).frames;
+    return db_display_run_frame_loop(&shared_loop);
 }

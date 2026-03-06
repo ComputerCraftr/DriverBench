@@ -58,15 +58,26 @@ VkPresentModeKHR db_vk_choose_present_mode(VkPhysicalDevice present_phys,
     if (vsync_enabled != 0) {
         present_mode = VK_PRESENT_MODE_FIFO_KHR;
     } else {
-        present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        int have_mailbox = 0;
+        int have_immediate = 0;
+        int have_fifo_relaxed = 0;
         for (uint32_t i = 0; i < mode_count; i++) {
-            if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
-                present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-                break;
-            }
             if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+                have_mailbox = 1;
+            } else if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
+                have_immediate = 1;
+            } else if (modes[i] == VK_PRESENT_MODE_FIFO_RELAXED_KHR) {
+                have_fifo_relaxed = 1;
             }
+        }
+        if (have_mailbox != 0) {
+            present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+        } else if (have_fifo_relaxed != 0) {
+            present_mode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+        } else if (have_immediate != 0) {
+            present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        } else {
+            present_mode = VK_PRESENT_MODE_FIFO_KHR;
         }
     }
     free(modes);
@@ -124,20 +135,19 @@ void db_vk_create_history_target(VkPhysicalDevice phys, VkDevice device,
         failf("Invalid history target setup");
     }
 
-    VkImageCreateInfo ici = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ici.imageType = VK_IMAGE_TYPE_2D;
-    ici.format = format;
-    ici.extent.width = extent.width;
-    ici.extent.height = extent.height;
-    ici.extent.depth = 1U;
-    ici.mipLevels = 1U;
-    ici.arrayLayers = 1U;
-    ici.samples = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageCreateInfo ici = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = format,
+        .extent = {.width = extent.width, .height = extent.height, .depth = 1U},
+        .mipLevels = 1U,
+        .arrayLayers = 1U,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     DB_VK_CHECK(BACKEND_NAME,
                 vkCreateImage(device, &ici, NULL, &target->image));
 
@@ -201,9 +211,14 @@ void db_vk_create_swapchain_state(const db_vk_wsi_config_t *wsi_config,
     }
 
     VkSwapchainCreateInfoKHR create_info = {
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
-    create_info.surface = surface;
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = surface,
+        .preTransform = caps.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR};
     create_info.minImageCount = caps.minImageCount + 1;
+    if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+        create_info.minImageCount = db_u32_max(create_info.minImageCount, 3U);
+    }
     if (caps.maxImageCount &&
         (create_info.minImageCount > caps.maxImageCount)) {
         create_info.minImageCount = caps.maxImageCount;
@@ -215,8 +230,6 @@ void db_vk_create_swapchain_state(const db_vk_wsi_config_t *wsi_config,
     create_info.imageUsage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    create_info.preTransform = caps.currentTransform;
-    create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     create_info.presentMode = present_mode;
     create_info.clipped = VK_TRUE;
 

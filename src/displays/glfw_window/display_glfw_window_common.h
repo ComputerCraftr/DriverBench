@@ -33,6 +33,6 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     int *out_is_gles, int offscreen_enabled);
 void db_glfw_destroy_window(GLFWwindow *window);
 void db_glfw_poll_events(void);
-uint64_t db_glfw_run_loop(const db_glfw_loop_t *loop);
+db_display_frame_loop_run_result_t db_glfw_run_loop(const db_glfw_loop_t *loop);
 
 #endif

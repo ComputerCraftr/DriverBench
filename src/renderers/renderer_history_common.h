@@ -3,8 +3,10 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "../core/db_buffer_convert.h"
+#include "../core/db_core.h"
 #include "../core/db_numeric.h"
 #include "renderer_benchmark_common.h"
 #include "renderer_snake_common.h"
@@ -27,14 +29,17 @@ typedef struct {
     size_t span_capacity;
     db_snake_shape_row_bounds_t *row_bounds;
     size_t row_bounds_capacity;
+    uint32_t *active_tile_indices;
+    uint8_t *active_tile_valid;
+    double *active_prior_rgb;
+    uint32_t active_tile_capacity;
 } db_history_snake_scratch_t;
 
 typedef struct {
     int is_bands;
     int is_gradient;
-    int is_gradient_fill;
     int is_gradient_sweep;
-    int is_shape_snake;
+    int is_snake_region_mode;
     int is_snake_grid;
     int is_snake_rect;
     int is_snake_shapes;
@@ -96,6 +101,41 @@ static inline void db_history_pair_state_reset(db_history_pair_state_t *state) {
         return;
     }
     *state = db_history_pair_state_make(0, -1);
+}
+
+static inline void
+db_history_snake_active_cache_init(db_history_snake_scratch_t *scratch,
+                                   const char *backend, uint32_t tile_capacity,
+                                   uint32_t prior_rgb_components) {
+    if ((scratch == NULL) || (backend == NULL) || (tile_capacity == 0U) ||
+        (prior_rgb_components == 0U)) {
+        return;
+    }
+    scratch->active_tile_indices = (uint32_t *)db_alloc_aligned_array_or_fail(
+        backend, "snake_active_tile_indices", (size_t)tile_capacity,
+        sizeof(uint32_t), DB_CACHELINE_ALIGNMENT_BYTES);
+    scratch->active_tile_valid = (uint8_t *)db_alloc_aligned_array_or_fail(
+        backend, "snake_active_tile_valid", (size_t)tile_capacity,
+        sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES);
+    scratch->active_prior_rgb = (double *)db_alloc_aligned_array_or_fail(
+        backend, "snake_active_prior_rgb",
+        (size_t)tile_capacity * (size_t)prior_rgb_components, sizeof(double),
+        DB_CACHELINE_ALIGNMENT_BYTES);
+    scratch->active_tile_capacity = tile_capacity;
+}
+
+static inline void
+db_history_snake_active_cache_free(db_history_snake_scratch_t *scratch) {
+    if (scratch == NULL) {
+        return;
+    }
+    free(scratch->active_tile_indices);
+    free(scratch->active_tile_valid);
+    free(scratch->active_prior_rgb);
+    scratch->active_tile_indices = NULL;
+    scratch->active_tile_valid = NULL;
+    scratch->active_prior_rgb = NULL;
+    scratch->active_tile_capacity = 0U;
 }
 
 static inline void
@@ -182,12 +222,11 @@ db_history_pattern_mode_flags(db_pattern_t pattern) {
     flags.is_bands = (pattern == DB_PATTERN_BANDS);
     flags.is_gradient = (pattern == DB_PATTERN_GRADIENT_SWEEP) ||
                         (pattern == DB_PATTERN_GRADIENT_FILL);
-    flags.is_gradient_fill = (pattern == DB_PATTERN_GRADIENT_FILL);
     flags.is_gradient_sweep = (pattern == DB_PATTERN_GRADIENT_SWEEP);
     flags.is_snake_grid = (pattern == DB_PATTERN_SNAKE_GRID);
     flags.is_snake_rect = (pattern == DB_PATTERN_SNAKE_RECT);
     flags.is_snake_shapes = (pattern == DB_PATTERN_SNAKE_SHAPES);
-    flags.is_shape_snake =
+    flags.is_snake_region_mode =
         (flags.is_snake_rect != 0) || (flags.is_snake_shapes != 0);
     flags.is_snake_history_texture = (flags.is_snake_grid != 0) ||
                                      (flags.is_snake_rect != 0) ||
@@ -272,15 +311,7 @@ db_history_seed_background_rgb_f32(const db_benchmark_runtime_init_t *runtime,
     double clear_g = 0.0;
     double clear_b = 0.0;
     db_history_seed_background_rgb_d(runtime, &clear_r, &clear_g, &clear_b);
-    if (out_r != NULL) {
-        *out_r = db_double_to_f32(clear_r);
-    }
-    if (out_g != NULL) {
-        *out_g = db_double_to_f32(clear_g);
-    }
-    if (out_b != NULL) {
-        *out_b = db_double_to_f32(clear_b);
-    }
+    db_rgb_f64_to_f32_triplet(clear_r, clear_g, clear_b, out_r, out_g, out_b);
 }
 
 static inline void
@@ -316,10 +347,8 @@ db_history_seed_background_rgba8(const db_benchmark_runtime_init_t *runtime,
     double clear_g = 0.0;
     double clear_b = 0.0;
     db_history_seed_background_rgb_d(runtime, &clear_r, &clear_g, &clear_b);
-    out_rgba[0] = db_double01_to_u8_clamped(clear_r);
-    out_rgba[1] = db_double01_to_u8_clamped(clear_g);
-    out_rgba[2] = db_double01_to_u8_clamped(clear_b);
-    out_rgba[3] = 255U;
+    db_rgba01_to_u8_quad(clear_r, clear_g, clear_b, 1.0, &out_rgba[0],
+                         &out_rgba[1], &out_rgba[2], &out_rgba[3]);
 }
 
 static inline void
@@ -405,6 +434,121 @@ db_history_classify_counted_draw(int frame_full_draw, int frame_dirty_draw,
     };
 }
 
+static inline void db_history_record_draw_stats_for_work(
+    uint64_t *full_draw_frames, uint64_t *dirty_draw_frames,
+    int frame_full_draw, int frame_dirty_draw, uint32_t work_units_drawn) {
+    const db_history_draw_stats_counted_t counted =
+        db_history_classify_counted_draw(frame_full_draw, frame_dirty_draw,
+                                         work_units_drawn);
+    db_history_record_draw_stats(full_draw_frames, dirty_draw_frames,
+                                 counted.counted_full_draw,
+                                 counted.counted_dirty_draw);
+}
+
+static inline void db_history_record_mesh_draw_stats(
+    uint64_t *full_draw_frames, uint64_t *dirty_draw_frames,
+    int draw_is_full_mesh, uint32_t work_units_drawn) {
+    const int frame_full_draw = (draw_is_full_mesh != 0) ? 1 : 0;
+    const int frame_dirty_draw = (draw_is_full_mesh != 0) ? 0 : 1;
+    db_history_record_draw_stats_for_work(full_draw_frames, dirty_draw_frames,
+                                          frame_full_draw, frame_dirty_draw,
+                                          work_units_drawn);
+}
+
+static inline void db_history_record_history_pass_draw_stats(
+    uint64_t *full_draw_frames, uint64_t *dirty_draw_frames,
+    int used_dirty_history_path, uint32_t work_units_drawn) {
+    const int frame_full_draw = (used_dirty_history_path != 0) ? 0 : 1;
+    const int frame_dirty_draw = (used_dirty_history_path != 0) ? 1 : 0;
+    db_history_record_draw_stats_for_work(full_draw_frames, dirty_draw_frames,
+                                          frame_full_draw, frame_dirty_draw,
+                                          work_units_drawn);
+}
+
+static inline void
+db_history_copy_draw_stats(const db_renderer_frame_stats_t *frame,
+                           uint64_t *full_draw_frames,
+                           uint64_t *dirty_draw_frames) {
+    if (frame == NULL) {
+        return;
+    }
+    if (full_draw_frames != NULL) {
+        *full_draw_frames = frame->full_draw_frames;
+    }
+    if (dirty_draw_frames != NULL) {
+        *dirty_draw_frames = frame->dirty_draw_frames;
+    }
+}
+
+static inline db_gradient_damage_plan_t
+db_history_eval_gradient_step_from_runtime(
+    const db_benchmark_runtime_init_t *runtime) {
+    if (runtime == NULL) {
+        return (db_gradient_damage_plan_t){0};
+    }
+    return db_gradient_step_from_runtime(
+        runtime->pattern, runtime->gradient.head_row,
+        runtime->gradient.direction_down, runtime->gradient.cycle_index,
+        runtime->bench_speed_step);
+}
+
+static inline void db_history_apply_gradient_step_to_runtime(
+    db_benchmark_runtime_init_t *runtime,
+    const db_gradient_damage_plan_t *plan) {
+    if ((runtime == NULL) || (plan == NULL)) {
+        return;
+    }
+    db_gradient_apply_step_to_runtime(runtime, plan);
+}
+
+static inline void
+db_history_finalize_frame(db_renderer_frame_stats_t *frame,
+                          const db_benchmark_runtime_init_t *runtime,
+                          uint32_t cols, uint32_t rows) {
+    if ((frame == NULL) || (runtime == NULL)) {
+        return;
+    }
+    frame->state_hash = db_benchmark_runtime_state_hash_cross_renderer(
+        runtime, frame->frame_index, cols, rows);
+    frame->frame_index++;
+}
+
+static inline void db_history_convert_rgba16f_staging_dirty_rows(
+    uint32_t *dst_rgba8, size_t dst_stride_pixels, const uint16_t *src_rgba16f,
+    size_t src_stride_f16, uint32_t width_pixels, uint32_t total_rows,
+    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
+    uint32_t alpha_u8) {
+    if ((dst_rgba8 == NULL) || (src_rgba16f == NULL) ||
+        (dst_stride_pixels == 0U) || (src_stride_f16 == 0U) ||
+        (width_pixels == 0U) || (total_rows == 0U) || (dirty_ranges == NULL) ||
+        (dirty_count == 0U)) {
+        return;
+    }
+    for (size_t range_index = 0U; range_index < dirty_count; range_index++) {
+        const db_dirty_row_range_t range = dirty_ranges[range_index];
+        if ((range.row_count == 0U) || (range.row_start >= total_rows)) {
+            continue;
+        }
+        const uint32_t row_end = db_u32_min(
+            total_rows,
+            db_checked_add_u32("renderer_history_common", "staging_row_end",
+                               range.row_start, range.row_count));
+        const uint32_t row_count =
+            db_checked_sub_u32("renderer_history_common", "staging_row_count",
+                               row_end, range.row_start);
+        if (row_count == 0U) {
+            continue;
+        }
+        uint32_t *dst_row =
+            dst_rgba8 + ((size_t)range.row_start * dst_stride_pixels);
+        const uint16_t *src_row =
+            src_rgba16f + ((size_t)range.row_start * src_stride_f16);
+        db_convert_rgba16f_to_rgba8888_rows(dst_row, dst_stride_pixels, src_row,
+                                            src_stride_f16, width_pixels,
+                                            row_count, alpha_u8);
+    }
+}
+
 static inline db_history_pattern_mode_flags_t
 db_history_runtime_mode_flags(const db_benchmark_runtime_init_t *runtime) {
     if (runtime == NULL) {
@@ -419,13 +563,13 @@ db_history_runtime_mode_flags(const db_benchmark_runtime_init_t *runtime) {
 static inline db_history_preserve_reset_flags_t
 db_history_preserve_reset_flags_for_pattern(db_pattern_t pattern,
                                             int preserved) {
+    const db_history_pattern_mode_flags_t mode_flags =
+        db_history_pattern_mode_flags(pattern);
     db_history_preserve_reset_flags_t flags = {0};
     flags.reset_gradient_replay =
         db_history_should_reset_gradient_replay(pattern, preserved);
     flags.reset_shape_snake_prev_count =
-        (((pattern == DB_PATTERN_SNAKE_RECT) ||
-          (pattern == DB_PATTERN_SNAKE_SHAPES)) &&
-         (preserved == 0));
+        (mode_flags.is_snake_region_mode != 0) && (preserved == 0);
     return flags;
 }
 
