@@ -8,10 +8,6 @@
 #include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 
-#if !defined(VERT_SPV_PATH) || !defined(FRAG_SPV_PATH)
-#error "Vulkan SPIR-V shader paths must be provided by the build system."
-#endif
-
 // NOLINTBEGIN(misc-include-cleaner)
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
@@ -114,8 +110,7 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
     pc.render_mode = req->payload.render_mode;
     pc.gradient_head_row = req->payload.gradient_head_row;
     pc.snake_shape_index = req->payload.snake_shape_index;
-    pc.gradient_direction_flag =
-        (int32_t)req->payload.gradient_direction_flag;
+    pc.gradient_direction_flag = (int32_t)req->payload.gradient_direction_flag;
     pc.snake_phase_flag = (int32_t)req->payload.snake_phase_flag;
     pc.snake_cursor = req->payload.snake_cursor;
     pc.snake_batch_size = req->payload.snake_batch_size;
@@ -144,8 +139,7 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
         sizeof(pc.gradient_direction_flag), &pc.gradient_direction_flag);
     vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, snake_phase_flag),
-                       sizeof(pc.snake_phase_flag),
-                       &pc.snake_phase_flag);
+                       sizeof(pc.snake_phase_flag), &pc.snake_phase_flag);
     vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, snake_cursor),
                        sizeof(pc.snake_cursor), &pc.snake_cursor);

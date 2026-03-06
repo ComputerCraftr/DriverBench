@@ -202,7 +202,6 @@ static void db_present_cpu_init_state(db_cpu_present_gl_state_t *state,
     db_gl_set_depth_test_enabled(0);
     db_gl_set_cull_face_enabled(0);
     db_gl_set_blend_enabled(0);
-    db_gl_set_scissor_enabled(0);
     db_gl_set_texture_2d_enabled(1);
     db_gl_set_client_state_vertex_array_enabled(1);
     db_gl_set_client_state_texcoord_array_enabled(1);

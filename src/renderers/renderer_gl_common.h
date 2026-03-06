@@ -29,6 +29,18 @@
 #define DB_GL_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE "opengl_shader_vbo_map_range"
 #define DB_GL_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT                            \
     "opengl_shader_vbo_persistent"
+#define DB_GL_HISTORY_TARGET_COUNT 2U
+#define DB_GL_COLOR_COMPONENT_COUNT DB_VERTEX_COLOR_FLOAT_COUNT
+#define DB_GL_COLOR_R_INDEX 0U
+#define DB_GL_COLOR_G_INDEX 1U
+#define DB_GL_COLOR_B_INDEX 2U
+#define DB_GL_COLOR_R_OFFSET DB_VERTEX_POSITION_FLOAT_COUNT
+#define DB_GL_COLOR_G_OFFSET                                                   \
+    (DB_VERTEX_POSITION_FLOAT_COUNT + DB_GL_COLOR_G_INDEX)
+#define DB_GL_COLOR_B_OFFSET                                                   \
+    (DB_VERTEX_POSITION_FLOAT_COUNT + DB_GL_COLOR_B_INDEX)
+#define DB_GL_COLOR_A_OFFSET                                                   \
+    (DB_VERTEX_POSITION_FLOAT_COUNT + DB_VERTEX_COLOR_FLOAT_COUNT)
 
 typedef void (*db_gl_generic_proc_t)(void);
 typedef unsigned int (*db_gl_get_error_fn_t)(void);
@@ -46,13 +58,6 @@ typedef struct {
     size_t src_offset_bytes;
     size_t size_bytes;
 } db_gl_upload_range_t;
-
-typedef struct {
-    int height_px;
-    int width_px;
-    int x_px;
-    int y_px;
-} db_gl_scissor_rect_t;
 
 db_gl_upload_range_t db_gl_upload_full_range(size_t total_bytes);
 
@@ -117,6 +122,14 @@ typedef struct {
     unsigned int bound_array_buffer;
     size_t vbo_bytes;
 } db_gl_buffer_cache_t;
+
+typedef struct {
+    float *scratch_vertices;
+    size_t scratch_float_capacity;
+    size_t vbo_offset_bytes;
+    size_t vbo_capacity_bytes;
+    size_t first_vertex;
+} db_gl_compact_vbo_state_t;
 
 enum {
     DB_GL_QUAD_V0_X = 0,
@@ -205,8 +218,6 @@ void db_gl_clear_color_buffer(void);
 void db_gl_set_blend_enabled(int enabled);
 void db_gl_set_cull_face_enabled(int enabled);
 void db_gl_set_depth_test_enabled(int enabled);
-void db_gl_set_scissor_enabled(int enabled);
-void db_gl_set_scissor_rect(int x_px, int y_px, int width, int height);
 void db_gl_set_pack_alignment_1(void);
 void db_gl_read_pixels_rgba8(int x_px, int y_px, int width, int height,
                              void *pixels);
@@ -279,22 +290,29 @@ void db_gl_upload_ranges_target(
 void db_gl_upload_buffer(const void *source, size_t bytes,
                          int use_persistent_upload, void *persistent_mapped_ptr,
                          int use_map_range_upload, int use_map_buffer_upload);
+size_t db_gl_compact_vbo_total_bytes(size_t base_vbo_bytes);
+void db_gl_compact_vbo_init_or_fail(const char *backend_name,
+                                    db_gl_compact_vbo_state_t *compact,
+                                    size_t base_vbo_bytes,
+                                    size_t vertex_stride);
+void db_gl_compact_vbo_free(db_gl_compact_vbo_state_t *compact);
+int db_gl_compact_copy_ranges_from_vertices(
+    const db_gl_upload_range_t *ranges, size_t range_count,
+    const float *source_vertices, size_t upload_bytes, size_t vertex_stride,
+    db_gl_compact_vbo_state_t *compact, size_t *out_compact_bytes);
+int db_gl_upload_compact_prepared(const db_gl_compact_vbo_state_t *compact,
+                                  const db_gl_upload_probe_result_t *upload,
+                                  size_t compact_bytes);
+void db_gl_upload_vbo_damage_ranges(const float *vertices, size_t upload_bytes,
+                                    const db_gl_upload_probe_result_t *upload,
+                                    const db_gl_upload_range_t *range_storage,
+                                    size_t upload_range_count);
+void db_gl_draw_dirty_ranges_common(const char *backend_name,
+                                    size_t vertex_stride,
+                                    uint32_t draw_vertex_count,
+                                    const db_gl_upload_range_t *ranges,
+                                    size_t range_count);
 void db_gl_unmap_current_array_buffer(void);
-int db_gl_row_range_to_scissor_rect(uint32_t row_start, uint32_t row_count,
-                                    uint32_t total_rows, int viewport_width,
-                                    int viewport_height, int *x_out, int *y_out,
-                                    int *width_out, int *height_out);
-int db_gl_span_to_scissor_rect(const db_snake_col_span_t *span,
-                               uint32_t total_cols, uint32_t total_rows,
-                               int viewport_width, int viewport_height,
-                               int *x_out, int *y_out, int *width_out,
-                               int *height_out);
-typedef void (*db_gl_scissor_rect_apply_fn_t)(const db_gl_scissor_rect_t *rect,
-                                              void *user_data);
-size_t db_gl_for_each_span_scissor_rect_merged(
-    const db_snake_col_span_t *spans, size_t span_count, uint32_t total_cols,
-    uint32_t total_rows, int viewport_width, int viewport_height,
-    db_gl_scissor_rect_apply_fn_t apply, void *user_data);
 size_t db_gl_collect_row_upload_ranges(
     uint32_t row_unit_width, uint32_t row_count_total, size_t unit_stride_bytes,
     const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
@@ -320,6 +338,9 @@ size_t db_gl_for_each_upload_row_span(const char *backend_name,
                                       void *user_data);
 size_t db_gl_coalesce_upload_ranges_in_place(db_gl_upload_range_t *ranges,
                                              size_t range_count);
+size_t db_gl_optimize_upload_ranges(db_gl_upload_range_t *ranges,
+                                    size_t range_count, int allow_overdraw,
+                                    size_t collapse_threshold);
 size_t db_gl_copy_upload_ranges(const db_gl_upload_range_t *source_ranges,
                                 size_t source_count,
                                 db_gl_upload_range_t *out_ranges,

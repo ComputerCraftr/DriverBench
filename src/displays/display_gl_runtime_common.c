@@ -172,7 +172,6 @@ void db_display_gl_debug_clear_default_framebuffer_if_enabled(
     if (debug_clear_enabled == 0) {
         return;
     }
-    db_gl_set_scissor_enabled(0);
     db_gl_clear_color_rgba(db_double_to_f32(BENCH_CLEAR_COLOR_R),
                            db_double_to_f32(BENCH_CLEAR_COLOR_G),
                            db_double_to_f32(BENCH_CLEAR_COLOR_B),

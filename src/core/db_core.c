@@ -9,7 +9,6 @@
 #include <string.h>
 #include <time.h>
 
-#define DB_MAX_TEXT_FILE_BYTES (16U * 1024U * 1024U)
 #define DB_RUNTIME_OPTION_CAPACITY 32U
 #define DB_MAX_SLEEP_NS 100000000.0
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
@@ -279,66 +278,6 @@ void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
         remaining_ns =
             frame_budget_ns - (double)(db_now_ns_monotonic() - frame_start_ns);
     }
-}
-
-uint8_t *db_read_file_or_fail(const char *backend, const char *path,
-                              size_t *out_sz) {
-    FILE *file = fopen(path, "rb");
-    if (file == NULL) {
-        db_failf(backend, "Failed to open shader file: %s", path);
-    }
-
-    if (fseek(file, 0, SEEK_END) != 0) {
-        fclose(file);
-        db_failf(backend, "Failed to seek shader file: %s", path);
-    }
-    long file_size = ftell(file);
-    if (file_size < 0) {
-        fclose(file);
-        db_failf(backend, "Failed to stat shader file: %s", path);
-    }
-    if (fseek(file, 0, SEEK_SET) != 0) {
-        fclose(file);
-        db_failf(backend, "Failed to rewind shader file: %s", path);
-    }
-
-    uint8_t *buffer = (uint8_t *)malloc((size_t)file_size);
-    if (buffer == NULL) {
-        fclose(file);
-        db_failf(backend, "Failed to allocate %ld bytes for %s", file_size,
-                 path);
-    }
-
-    size_t read_size = fread(buffer, 1, (size_t)file_size, file);
-    fclose(file);
-    if (read_size != (size_t)file_size) {
-        free(buffer);
-        db_failf(backend, "Failed to read shader file: %s", path);
-    }
-
-    *out_sz = (size_t)file_size;
-    return buffer;
-}
-
-char *db_read_text_file_or_fail(const char *backend, const char *path) {
-    size_t file_size = 0;
-    uint8_t *buffer_u8 = db_read_file_or_fail(backend, path, &file_size);
-    if ((file_size == SIZE_MAX) ||
-        (file_size > (size_t)DB_MAX_TEXT_FILE_BYTES)) {
-        free(buffer_u8);
-        db_failf(backend, "Text file too large: %s (%zu bytes)", path,
-                 file_size);
-    }
-    char *text = (char *)calloc(file_size + 1U, 1U);
-    if (text == NULL) {
-        free(buffer_u8);
-        db_failf(backend, "Failed to allocate text buffer for %s", path);
-    }
-    for (size_t i = 0; i < file_size; i++) {
-        text[i] = (char)buffer_u8[i];
-    }
-    free(buffer_u8);
-    return text;
 }
 
 static void db_benchmark_log(const char *api_name, const char *renderer_name,

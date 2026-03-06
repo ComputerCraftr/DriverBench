@@ -1,25 +1,26 @@
 #version 330 core
 in vec3 v_color;
-flat in int v_tile_index;
 out vec4 out_color;
 
+uniform uint u_band_count;
+uniform int u_gradient_direction_flag;
 uniform uint u_gradient_head_row;
 uniform uint u_gradient_window_rows;
-uniform vec3 u_grid_base_color;
-uniform uint u_band_count;
 uniform uint u_grid_cols;
 uniform uint u_grid_rows;
+uniform vec3 u_grid_base_color;
 uniform vec3 u_grid_target_color;
 uniform sampler2D u_history_tex;
-uniform int u_gradient_direction_flag;
 uniform int u_snake_phase_flag;
+uniform int u_snake_phase_completed;
 uniform uint u_palette_cycle;
 uniform uint u_pattern_seed;
 uniform uint u_render_mode;
 uniform uint u_snake_batch_size;
 uniform uint u_snake_cursor;
-uniform int u_snake_phase_completed;
 uniform uint u_snake_shape_index;
+uniform uint u_viewport_height;
+uniform uint u_viewport_width;
 uniform uint u_frame_index;
 
 const uint SHAPE_KIND_RECT = 0u;
@@ -382,6 +383,18 @@ db_snake_region_desc_t db_full_grid_region(uint rows_u, uint cols_u) {
     return region;
 }
 
+void db_row_col_from_frag_coord(out int row_i, out int col_i) {
+    float rows = float(max(u_grid_rows, 1u));
+    float cols = float(max(u_grid_cols, 1u));
+    float viewport_height = float(max(u_viewport_height, 1u));
+    float viewport_width = float(max(u_viewport_width, 1u));
+    float y = clamp(gl_FragCoord.y, 0.0, viewport_height - 1.0);
+    float x = clamp(gl_FragCoord.x, 0.0, viewport_width - 1.0);
+    float y_top = (viewport_height - 1.0) - y;
+    row_i = int(floor((y_top * rows) / viewport_height));
+    col_i = int(floor((x * cols) / viewport_width));
+}
+
 vec4 db_gradient_color(
     int row_i,
     uint head_row_u,
@@ -410,10 +423,9 @@ vec4 db_gradient_color(
     return db_rgba(mix(source_color, target_color, blend));
 }
 
-uint db_band_index_from_tile(uint tile_index, uint cols, uint band_count) {
-    uint safe_cols = max(cols, 1u);
-    uint safe_bands = max(band_count, 1u);
-    uint col_u = tile_index % safe_cols;
+uint db_band_index_from_col(uint col_u, uint cols_u, uint band_count_u) {
+    uint safe_cols = max(cols_u, 1u);
+    uint safe_bands = max(band_count_u, 1u);
     return (col_u * safe_bands) / safe_cols;
 }
 
@@ -461,23 +473,22 @@ void main() {
     const uint RENDER_MODE_SNAKE_RECT = 4u;
     const uint RENDER_MODE_SNAKE_SHAPES = 5u;
 
-    uint tile_index_u = uint(max(v_tile_index, 0));
+    int row_i = 0;
+    int col_i = 0;
+    db_row_col_from_frag_coord(row_i, col_i);
     uint cols_u = max(u_grid_cols, 1u);
-    uint band_count = max(u_band_count, 1u);
+    uint band_count_u = max(u_band_count, 1u);
 
     if(u_render_mode == RENDER_MODE_BANDS) {
-        out_color = db_rgba(db_band_color(db_band_index_from_tile(tile_index_u, cols_u, band_count), band_count, u_frame_index));
+        uint col_u = uint(max(col_i, 0));
+        out_color = db_rgba(db_band_color(db_band_index_from_col(col_u, cols_u, band_count_u), band_count_u, u_frame_index));
         return;
     }
-    int tile_index = int(tile_index_u);
-    int cols = int(cols_u);
-    int row = tile_index / cols;
-
     if((u_render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
         (u_render_mode == RENDER_MODE_GRADIENT_FILL)) {
         bool is_sweep = (u_render_mode == RENDER_MODE_GRADIENT_SWEEP);
         bool direction_down = is_sweep ? (u_gradient_direction_flag != 0) : true;
-        out_color = db_gradient_color(row, u_gradient_head_row, u_palette_cycle, direction_down);
+        out_color = db_gradient_color(row_i, u_gradient_head_row, u_palette_cycle, direction_down);
         return;
     }
     if((u_render_mode != RENDER_MODE_SNAKE_GRID) &&
@@ -486,9 +497,8 @@ void main() {
         out_color = db_rgba(v_color);
         return;
     }
-    int col = tile_index - (row * cols);
-    uint row_u = uint(max(row, 0));
-    uint col_u = uint(max(col, 0));
+    uint row_u = uint(max(row_i, 0));
+    uint col_u = uint(max(col_i, 0));
     uint rows_u = max(u_grid_rows, 1u);
     ivec2 history_coord = ivec2(gl_FragCoord.xy);
     vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;

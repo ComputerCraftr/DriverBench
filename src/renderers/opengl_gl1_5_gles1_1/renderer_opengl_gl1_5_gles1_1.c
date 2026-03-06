@@ -1,7 +1,6 @@
 #include "renderer_opengl_gl1_5_gles1_1.h"
 #include "renderer_opengl_gl1_5_gles1_1_damage.h"
-#include "renderer_opengl_gl1_5_gles1_1_primitives.h"
-#include "renderer_opengl_gl1_5_gles1_1_ranges.h"
+#include "renderer_opengl_gl1_5_gles1_1_util.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -12,6 +11,7 @@
 #include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
 #include "../renderer_benchmark_common.h"
+#include "../renderer_gl_api.h"
 #include "../renderer_gl_common.h"
 #include "../renderer_history_common.h"
 #include "../renderer_snake_common.h"
@@ -20,14 +20,7 @@
 
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
 #define DB_GL1_GRADIENT_DIRTY_RANGE_CAP 2U
-// Crossover: above this many damaged rows, scissor/rect clears are typically
-// cheaper than mesh upload+draw for gradient updates.
-#define DB_GL1_GRADIENT_MESH_ROW_THRESHOLD 8U
 #define DB_GL1_GRADIENT_REPLAY_ROW_CAP 4U
-// Crossover: when upload ranges are highly fragmented, collapse to one span.
-#define DB_GL1_SNAKE_RANGE_COLLAPSE_THRESHOLD 8U
-// Crossover: prefer settled-span scissor clear earlier to reduce VBO traffic.
-#define DB_GL1_SNAKE_SCISSOR_ROW_THRESHOLD 8U
 #define ES_STRIDE_BYTES ((int)(sizeof(float) * DB_ES_VERTEX_FLOAT_STRIDE))
 #define STRIDE_BYTES ((int)(sizeof(float) * DB_VERTEX_FLOAT_STRIDE))
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
@@ -40,28 +33,36 @@ typedef struct {
 } db_gl1_snake_replay_t;
 
 typedef struct {
+    // Runtime mode and benchmark state
     char capability_mode[DB_GL_CAPABILITY_MODE_MAX];
     db_renderer_frame_stats_t frame;
     db_benchmark_runtime_init_t runtime;
     db_history_pattern_mode_flags_t runtime_flags;
+
+    // Vertex and viewport state
     db_gl_vertex_init_t vertex;
+    db_gl_viewport_cache_t viewport;
     int is_es_context;
-    // Double-buffered preserved-backbuffer support: replay prior frame damage
-    // onto the next backbuffer (which may contain N-1) before current damage.
+
+    // History/replay state
     db_gradient_backbuffer_replay_state_t gradient_prev_frame;
     db_gl1_snake_replay_t snake_replay;
     db_history_snake_scratch_t snake_scratch;
     db_history_snake_backbuffer_state_t snake_backbuffer_state;
-    db_gl_viewport_cache_t viewport;
     int backbuffer_valid;
+
+    // GL objects and caches
     db_gl_buffer_cache_t buffers;
+    db_gl_compact_vbo_state_t compact_vbo;
+
+    // CPU shadow state for compact snake upload path
+    float *snake_color_state;
+    size_t snake_color_capacity;
+
+    // Vertex attribute cache flags
     int client_arrays_configured;
     int vbo_arrays_configured;
 } renderer_state_t;
-
-typedef struct {
-    uint32_t cols;
-} db_gl1_gradient_mesh_apply_ctx_t;
 
 typedef struct {
     db_snake_plan_t plan;
@@ -76,15 +77,106 @@ typedef struct {
     int force_replay_full;
 } db_gl1_snake_frame_state_t;
 
-typedef struct {
-    double color_b;
-    double color_g;
-    double color_r;
-    int viewport_h;
-    int viewport_w;
-} db_gl1_scissor_fill_ctx_t;
-
 static renderer_state_t g_state = {0};
+
+static int db_gl1_has_snake_color_state(void) {
+    return (g_state.snake_color_state != NULL) &&
+           (g_state.snake_color_capacity >=
+            ((size_t)g_state.runtime.work_unit_count *
+             DB_GL_COLOR_COMPONENT_COUNT));
+}
+
+static float *db_gl1_snake_tile_color_ptr(uint32_t tile_index) {
+    if (db_gl1_has_snake_color_state() == 0) {
+        return NULL;
+    }
+    if ((size_t)tile_index >= (size_t)g_state.runtime.work_unit_count) {
+        return NULL;
+    }
+    return &g_state.snake_color_state[(size_t)tile_index *
+                                      DB_GL_COLOR_COMPONENT_COUNT];
+}
+
+static void db_gl1_init_snake_color_state_from_vertices(void) {
+    if ((db_gl1_has_snake_color_state() == 0) ||
+        (g_state.vertex.vertices == NULL)) {
+        return;
+    }
+    const size_t stride = g_state.vertex.vertex_stride;
+    const size_t color_offset = DB_VERTEX_POSITION_FLOAT_COUNT;
+    for (uint32_t tile_index = 0U; tile_index < g_state.runtime.work_unit_count;
+         tile_index++) {
+        const size_t base =
+            (size_t)tile_index * (size_t)DB_RECT_VERTEX_COUNT * stride;
+        const float *unit = &g_state.vertex.vertices[base];
+        float *tile_color = db_gl1_snake_tile_color_ptr(tile_index);
+        if (tile_color == NULL) {
+            continue;
+        }
+        tile_color[DB_GL_COLOR_R_INDEX] =
+            unit[color_offset + DB_GL_COLOR_R_INDEX];
+        tile_color[DB_GL_COLOR_G_INDEX] =
+            unit[color_offset + DB_GL_COLOR_G_INDEX];
+        tile_color[DB_GL_COLOR_B_INDEX] =
+            unit[color_offset + DB_GL_COLOR_B_INDEX];
+    }
+}
+
+static void db_gl1_refresh_tile_positions_for_viewport(int viewport_w,
+                                                       int viewport_h) {
+    if ((viewport_w <= 0) || (viewport_h <= 0) ||
+        (g_state.vertex.vertices == NULL)) {
+        return;
+    }
+    const uint32_t cols = db_grid_cols_effective();
+    const uint32_t rows = db_grid_rows_effective();
+    if ((cols == 0U) || (rows == 0U)) {
+        return;
+    }
+
+    for (uint32_t tile_index = 0U; tile_index < g_state.vertex.work_unit_count;
+         tile_index++) {
+        const uint32_t row = tile_index / cols;
+        const uint32_t col = tile_index % cols;
+        const int x0_px =
+            (int)(((uint64_t)col * (uint64_t)viewport_w) / (uint64_t)cols);
+        int x1_px = (int)((((uint64_t)col + 1U) * (uint64_t)viewport_w) /
+                          (uint64_t)cols);
+        if ((col + 1U) == cols) {
+            x1_px = viewport_w;
+        }
+
+        const int y_top_px =
+            (int)(((uint64_t)row * (uint64_t)viewport_h) / (uint64_t)rows);
+        int y_bottom_px = (int)((((uint64_t)row + 1U) * (uint64_t)viewport_h) /
+                                (uint64_t)rows);
+        if ((row + 1U) == rows) {
+            y_bottom_px = viewport_h;
+        }
+        const int y0_px = viewport_h - y_bottom_px;
+        const int y1_px = viewport_h - y_top_px;
+
+        const float x0 = db_gl1_ndc_from_pixel_coord(x0_px, viewport_w);
+        const float x1 = db_gl1_ndc_from_pixel_coord(x1_px, viewport_w);
+        const float y0 = db_gl1_ndc_from_pixel_coord(y0_px, viewport_h);
+        const float y1 = db_gl1_ndc_from_pixel_coord(y1_px, viewport_h);
+
+        const size_t base = (size_t)tile_index * DB_RECT_VERTEX_COUNT *
+                            g_state.vertex.vertex_stride;
+        db_fill_rect_unit_pos(&g_state.vertex.vertices[base], x0, y0, x1, y1,
+                              g_state.vertex.vertex_stride);
+    }
+
+    if (g_state.buffers.vbo != 0U) {
+        const size_t upload_bytes = (size_t)g_state.vertex.draw_vertex_count *
+                                    g_state.vertex.vertex_stride *
+                                    sizeof(float);
+        const db_gl_upload_range_t full_range =
+            db_gl_upload_full_range(upload_bytes);
+        db_gl_upload_vbo_damage_ranges(g_state.vertex.vertices, upload_bytes,
+                                       &g_state.vertex.upload, &full_range, 1U);
+    }
+}
 
 static void db_gl1_seed_backbuffer_clear_cb(const float rgba[4],
                                             void *user_data) {
@@ -92,22 +184,8 @@ static void db_gl1_seed_backbuffer_clear_cb(const float rgba[4],
     if (rgba == NULL) {
         return;
     }
-    db_gl_set_scissor_enabled(0);
     db_gl_clear_color_rgb(rgba[0], rgba[1], rgba[2]);
     db_gl_clear_color_buffer();
-}
-
-static void db_gl1_apply_scissor_fill_rect(const db_gl_scissor_rect_t *rect,
-                                           void *user_data) {
-    const db_gl1_scissor_fill_ctx_t *ctx =
-        (const db_gl1_scissor_fill_ctx_t *)user_data;
-    if ((rect == NULL) || (ctx == NULL)) {
-        return;
-    }
-    db_gl1_draw_solid_rect_pixels(
-        rect->x_px, rect->y_px, rect->width_px, rect->height_px,
-        ctx->viewport_w, ctx->viewport_h, db_double_to_f32(ctx->color_r),
-        db_double_to_f32(ctx->color_g), db_double_to_f32(ctx->color_b));
 }
 
 static void db_gl1_refresh_capability_mode(void) {
@@ -155,12 +233,28 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
     if ((region->width == 0U) || (region->height == 0U)) {
         return;
     }
-    if ((force_full_fill_on_phase_complete != 0) && (plan->phase_completed != 0)) {
-        db_fill_grid_all_rgb_stride(
-            g_state.vertex.vertices, g_state.runtime.work_unit_count,
-            g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-            db_double_to_f32(target_r), db_double_to_f32(target_g),
-            db_double_to_f32(target_b));
+    if ((force_full_fill_on_phase_complete != 0) &&
+        (plan->phase_completed != 0)) {
+        const float target_r_f = db_double_to_f32(target_r);
+        const float target_g_f = db_double_to_f32(target_g);
+        const float target_b_f = db_double_to_f32(target_b);
+        if (db_gl1_has_snake_color_state() != 0) {
+            for (uint32_t tile_index = 0U;
+                 tile_index < g_state.runtime.work_unit_count; tile_index++) {
+                float *tile_color = db_gl1_snake_tile_color_ptr(tile_index);
+                if (tile_color == NULL) {
+                    continue;
+                }
+                tile_color[0] = target_r_f;
+                tile_color[1] = target_g_f;
+                tile_color[2] = target_b_f;
+            }
+        } else {
+            db_fill_grid_all_rgb_stride(
+                g_state.vertex.vertices, g_state.runtime.work_unit_count,
+                g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
+                target_r_f, target_g_f, target_b_f);
+        }
         return;
     }
     db_snake_shape_cache_t shape_cache = {0};
@@ -180,10 +274,12 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
     const float target_r_f = db_double_to_f32(target_r);
     const float target_g_f = db_double_to_f32(target_g);
     const float target_b_f = db_double_to_f32(target_b);
-    double prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES * 3U] = {0.0};
+    double prior_rgb[BENCH_SNAKE_PHASE_WINDOW_TILES *
+                     DB_GL_COLOR_COMPONENT_COUNT] = {0.0};
     for (uint32_t update_index = 0U; update_index < plan->batch_size;
          update_index++) {
-        const size_t prior_base = (size_t)update_index * 3U;
+        const size_t prior_base =
+            (size_t)update_index * DB_GL_COLOR_COMPONENT_COUNT;
         const uint32_t step = plan->active_cursor + update_index;
         if (step >= plan->target_tile_count) {
             break;
@@ -196,13 +292,23 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         const size_t tile_float_offset = (size_t)tile.tile_index *
                                          DB_RECT_VERTEX_COUNT *
                                          g_state.vertex.vertex_stride;
-        float *unit = &g_state.vertex.vertices[tile_float_offset];
-        prior_rgb[prior_base] =
-            (double)unit[DB_VERTEX_POSITION_FLOAT_COUNT + 0U];
-        prior_rgb[prior_base + 1U] =
-            (double)unit[DB_VERTEX_POSITION_FLOAT_COUNT + 1U];
-        prior_rgb[prior_base + 2U] =
-            (double)unit[DB_VERTEX_POSITION_FLOAT_COUNT + 2U];
+        float *tile_color = db_gl1_snake_tile_color_ptr(tile.tile_index);
+        if (tile_color != NULL) {
+            prior_rgb[prior_base + DB_GL_COLOR_R_INDEX] =
+                (double)tile_color[DB_GL_COLOR_R_INDEX];
+            prior_rgb[prior_base + DB_GL_COLOR_G_INDEX] =
+                (double)tile_color[DB_GL_COLOR_G_INDEX];
+            prior_rgb[prior_base + DB_GL_COLOR_B_INDEX] =
+                (double)tile_color[DB_GL_COLOR_B_INDEX];
+        } else {
+            float *unit = &g_state.vertex.vertices[tile_float_offset];
+            prior_rgb[prior_base + DB_GL_COLOR_R_INDEX] =
+                (double)unit[DB_GL_COLOR_R_OFFSET];
+            prior_rgb[prior_base + DB_GL_COLOR_G_INDEX] =
+                (double)unit[DB_GL_COLOR_G_OFFSET];
+            prior_rgb[prior_base + DB_GL_COLOR_B_INDEX] =
+                (double)unit[DB_GL_COLOR_B_OFFSET];
+        }
     }
 
     for (uint32_t update_index = 0U; update_index < plan->prev_count;
@@ -219,10 +325,17 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         const size_t tile_float_offset = (size_t)tile.tile_index *
                                          DB_RECT_VERTEX_COUNT *
                                          g_state.vertex.vertex_stride;
-        float *unit = &g_state.vertex.vertices[tile_float_offset];
-        db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, target_r_f,
-                             target_g_f, target_b_f);
+        float *tile_color = db_gl1_snake_tile_color_ptr(tile.tile_index);
+        if (tile_color != NULL) {
+            tile_color[0] = target_r_f;
+            tile_color[1] = target_g_f;
+            tile_color[2] = target_b_f;
+        } else {
+            float *unit = &g_state.vertex.vertices[tile_float_offset];
+            db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
+                                 DB_VERTEX_POSITION_FLOAT_COUNT, target_r_f,
+                                 target_g_f, target_b_f);
+        }
     }
 
     for (uint32_t update_index = 0U; update_index < plan->batch_size;
@@ -242,8 +355,8 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         const double blend_factor =
             db_window_blend_factor(update_index, plan->batch_size);
 
-        float *unit = &g_state.vertex.vertices[tile_float_offset];
-        const size_t prior_base = (size_t)update_index * 3U;
+        const size_t prior_base =
+            (size_t)update_index * DB_GL_COLOR_COMPONENT_COUNT;
         const double prior_r = prior_rgb[prior_base];
         const double prior_g = prior_rgb[prior_base + 1U];
         const double prior_b = prior_rgb[prior_base + 2U];
@@ -255,38 +368,93 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         const float out_r = db_double_to_f32(out_r_value);
         const float out_g = db_double_to_f32(out_g_value);
         const float out_b = db_double_to_f32(out_b_value);
-        db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
-                             out_b);
+        float *tile_color = db_gl1_snake_tile_color_ptr(tile.tile_index);
+        if (tile_color != NULL) {
+            tile_color[0] = out_r;
+            tile_color[1] = out_g;
+            tile_color[2] = out_b;
+        } else {
+            float *unit = &g_state.vertex.vertices[tile_float_offset];
+            db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
+                                 DB_VERTEX_POSITION_FLOAT_COUNT, out_r, out_g,
+                                 out_b);
+        }
     }
 }
 
-static void db_gl1_set_gradient_grid_row_rgb(uint32_t row, uint32_t cols,
-                                             double row_r, double row_g,
-                                             double row_b) {
-    if (cols == 0U) {
-        return;
-    }
-    db_set_rect_tile_range_rgb(
-        g_state.vertex.vertices, row * cols, cols, g_state.vertex.vertex_stride,
-        DB_VERTEX_POSITION_FLOAT_COUNT, db_double_to_f32(row_r),
-        db_double_to_f32(row_g), db_double_to_f32(row_b));
-}
-
-static void db_gl1_write_gradient_row_color_to_mesh(uint32_t row, double row_r,
-                                                    double row_g, double row_b,
-                                                    void *user_data) {
-    db_gl1_gradient_mesh_apply_ctx_t *ctx =
-        (db_gl1_gradient_mesh_apply_ctx_t *)user_data;
-    if (ctx == NULL || ctx->cols == 0U) {
-        return;
+static size_t db_gl1_build_gradient_compact_row_vertices(
+    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
+    uint32_t head_row, int direction_down, uint32_t cycle_index, int viewport_w,
+    int viewport_h, float *dst_vertices, size_t dst_float_capacity) {
+    if ((dirty_ranges == NULL) || (dirty_count == 0U) || (viewport_w <= 0) ||
+        (viewport_h <= 0) || (dst_vertices == NULL) ||
+        (dst_float_capacity == 0U)) {
+        return 0U;
     }
     const uint32_t rows = db_grid_rows_effective();
     if (rows == 0U) {
-        return;
+        return 0U;
     }
-    db_gl1_set_gradient_grid_row_rgb(row % rows, ctx->cols, row_r, row_g,
-                                     row_b);
+    const size_t stride = g_state.vertex.vertex_stride;
+    const size_t rect_float_count = (size_t)DB_RECT_VERTEX_COUNT * stride;
+    if (rect_float_count == 0U) {
+        return 0U;
+    }
+
+    size_t rect_count = 0U;
+    for (size_t i = 0U; i < dirty_count; i++) {
+        const uint32_t row_start = dirty_ranges[i].row_start;
+        const uint32_t row_count_raw = dirty_ranges[i].row_count;
+        if ((row_count_raw == 0U) || (row_start >= rows)) {
+            continue;
+        }
+        const uint32_t row_end =
+            db_u32_min(rows, db_checked_add_u32(BACKEND_NAME, "row_end",
+                                                row_start, row_count_raw));
+        const uint32_t row_count =
+            db_checked_sub_u32(BACKEND_NAME, "row_count", row_end, row_start);
+        for (uint32_t row_offset = 0U; row_offset < row_count; row_offset++) {
+            const uint32_t row = row_start + row_offset;
+            int rect_x = 0;
+            int rect_y = 0;
+            int rect_w = 0;
+            int rect_h = 0;
+            if (db_gl1_row_range_to_rect(row, 1U, rows, viewport_w, viewport_h,
+                                         &rect_x, &rect_y, &rect_w,
+                                         &rect_h) == 0) {
+                continue;
+            }
+            if (((rect_count + 1U) * rect_float_count) > dst_float_capacity) {
+                return rect_count;
+            }
+
+            double row_r = 0.0;
+            double row_g = 0.0;
+            double row_b = 0.0;
+            db_gradient_row_color_rgb(row, head_row, direction_down,
+                                      cycle_index, &row_r, &row_g, &row_b);
+
+            const float x0 = db_gl1_ndc_from_pixel_coord(rect_x, viewport_w);
+            const float x1 =
+                db_gl1_ndc_from_pixel_coord(rect_x + rect_w, viewport_w);
+            const float y0 = db_gl1_ndc_from_pixel_coord(rect_y, viewport_h);
+            const float y1 =
+                db_gl1_ndc_from_pixel_coord(rect_y + rect_h, viewport_h);
+            const size_t base = rect_count * rect_float_count;
+            float *const unit = &dst_vertices[base];
+            db_fill_rect_unit_pos(unit, x0, y0, x1, y1, stride);
+            db_set_rect_unit_rgb(unit, stride, DB_VERTEX_POSITION_FLOAT_COUNT,
+                                 db_double_to_f32(row_r),
+                                 db_double_to_f32(row_g),
+                                 db_double_to_f32(row_b));
+            if (g_state.is_es_context != 0) {
+                db_set_rect_unit_alpha(unit, stride, DB_GL_COLOR_A_OFFSET,
+                                       1.0F);
+            }
+            rect_count++;
+        }
+    }
+    return rect_count;
 }
 
 static void db_gl1_configure_client_arrays_if_needed(void) {
@@ -333,81 +501,331 @@ static void db_gl1_configure_vbo_arrays_if_needed(void) {
     g_state.client_arrays_configured = 0;
 }
 
-static void
-db_gl1_draw_gradient_dirty_rows_mesh(const db_dirty_row_range_t *dirty_ranges,
-                                     size_t dirty_count, uint32_t head_row,
-                                     int direction_down, uint32_t cycle_index) {
-    db_gl_set_scissor_enabled(0);
-    const uint32_t cols = db_grid_cols_effective();
-    const uint32_t rows = db_grid_rows_effective();
-    if ((cols == 0U) || (rows == 0U)) {
+static void db_gl1_invalidate_array_pointer_cache(void) {
+    g_state.client_arrays_configured = 0;
+    g_state.vbo_arrays_configured = 0;
+}
+
+static void db_gl1_draw_compact_scratch_vbo(const char *first_vertex_label,
+                                            size_t draw_vertex_count) {
+    if ((first_vertex_label == NULL) || (draw_vertex_count == 0U)) {
         return;
     }
+    db_gl1_configure_vbo_arrays_if_needed();
+    db_gl_draw_arrays_triangles(
+        db_checked_u32_to_i32(
+            BACKEND_NAME, first_vertex_label,
+            db_checked_size_to_u32(BACKEND_NAME, first_vertex_label,
+                                   g_state.compact_vbo.first_vertex)),
+        db_gl_draw_vertex_count_i32(BACKEND_NAME, draw_vertex_count));
+}
 
-    db_gl1_gradient_mesh_apply_ctx_t apply_ctx = {.cols = cols};
-    for (size_t i = 0U; i < dirty_count; i++) {
-        const uint32_t row_start = dirty_ranges[i].row_start;
-        const uint32_t row_count_raw = dirty_ranges[i].row_count;
-        if ((row_count_raw == 0U) || (row_start >= rows)) {
-            continue;
-        }
-        const uint32_t row_end =
-            db_u32_min(rows, db_checked_add_u32(BACKEND_NAME, "row_end",
-                                                row_start, row_count_raw));
-        const uint32_t row_count =
-            db_checked_sub_u32(BACKEND_NAME, "row_count", row_end, row_start);
-        if (row_count == 0U) {
-            continue;
-        }
-        db_for_each_gradient_row_color(
-            row_start, row_count, head_row, direction_down, cycle_index,
-            db_gl1_write_gradient_row_color_to_mesh, &apply_ctx);
-    }
-
-    db_gl_upload_range_t upload_ranges[DB_GL1_GRADIENT_REPLAY_ROW_CAP] = {
-        {0U, 0U, 0U}, {0U, 0U, 0U}, {0U, 0U, 0U}, {0U, 0U, 0U}};
-    const size_t upload_count = db_gl_collect_row_upload_ranges(
-        cols, rows, db_rect_tile_bytes(g_state.vertex.vertex_stride),
-        dirty_ranges, dirty_count, NULL, upload_ranges,
-        DB_GL1_GRADIENT_REPLAY_ROW_CAP);
-    if (upload_count == 0U) {
+static void db_gl1_draw_compact_scratch_client(size_t draw_vertex_count) {
+    if (draw_vertex_count == 0U) {
         return;
     }
+    db_gl1_configure_client_arrays_if_needed();
+    const int client_stride =
+        (g_state.is_es_context != 0) ? ES_STRIDE_BYTES : STRIDE_BYTES;
+    const int client_color_components = (g_state.is_es_context != 0)
+                                            ? DB_ES_VERTEX_COLOR_FLOAT_COUNT
+                                            : DB_VERTEX_COLOR_FLOAT_COUNT;
+    db_gl_set_vertex_pointer_2f(client_stride,
+                                &g_state.compact_vbo.scratch_vertices[0]);
+    db_gl_set_color_pointer_f(
+        client_color_components, client_stride,
+        &g_state.compact_vbo.scratch_vertices[DB_VERTEX_POSITION_FLOAT_COUNT]);
+    db_gl_draw_arrays_triangles(
+        0, db_gl_draw_vertex_count_i32(BACKEND_NAME, draw_vertex_count));
+    db_gl1_invalidate_array_pointer_cache();
+}
 
-    const size_t upload_bytes = (size_t)g_state.vertex.draw_vertex_count *
-                                g_state.vertex.vertex_stride * sizeof(float);
-    if (g_state.buffers.vbo != 0U) {
-        db_gl_upload_ranges_target(g_state.vertex.vertices, upload_bytes,
-                                   upload_ranges, upload_count,
-                                   DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, 0U,
-                                   g_state.vertex.upload.use_persistent_upload,
-                                   g_state.vertex.upload.persistent_mapped_ptr,
-                                   g_state.vertex.upload.use_map_range_upload,
-                                   g_state.vertex.upload.use_map_buffer_upload);
-        db_gl1_configure_vbo_arrays_if_needed();
-    } else {
-        db_gl1_configure_client_arrays_if_needed();
+static int db_gl1_draw_compact_ranges_once(const db_gl_upload_range_t *ranges,
+                                           size_t range_count,
+                                           size_t upload_bytes) {
+    if ((ranges == NULL) || (range_count == 0U) ||
+        (g_state.buffers.vbo == 0U) ||
+        (g_state.compact_vbo.scratch_vertices == NULL) ||
+        (g_state.compact_vbo.vbo_capacity_bytes == 0U)) {
+        return 0;
     }
-    db_gl1_draw_dirty_ranges_common(BACKEND_NAME, g_state.vertex.vertex_stride,
-                                    g_state.vertex.draw_vertex_count,
-                                    upload_ranges, upload_count);
+    size_t compact_bytes = 0U;
+    if (db_gl_compact_copy_ranges_from_vertices(
+            ranges, range_count, g_state.vertex.vertices, upload_bytes,
+            g_state.vertex.vertex_stride, &g_state.compact_vbo,
+            &compact_bytes) == 0) {
+        return 0;
+    }
+    if (db_gl_upload_compact_prepared(
+            &g_state.compact_vbo, &g_state.vertex.upload, compact_bytes) == 0) {
+        return 0;
+    }
+    const size_t bytes_per_vertex =
+        g_state.vertex.vertex_stride * sizeof(float);
+    db_gl1_draw_compact_scratch_vbo("compact_first_vertex",
+                                    compact_bytes / bytes_per_vertex);
+    return 1;
+}
+
+static int
+db_gl1_draw_compact_client_ranges_once(const db_gl_upload_range_t *ranges,
+                                       size_t range_count,
+                                       size_t upload_bytes) {
+    if ((ranges == NULL) || (range_count == 0U) ||
+        (g_state.compact_vbo.scratch_vertices == NULL)) {
+        return 0;
+    }
+    size_t compact_bytes = 0U;
+    if (db_gl_compact_copy_ranges_from_vertices(
+            ranges, range_count, g_state.vertex.vertices, upload_bytes,
+            g_state.vertex.vertex_stride, &g_state.compact_vbo,
+            &compact_bytes) == 0) {
+        return 0;
+    }
+
+    db_gl1_draw_compact_scratch_client(
+        compact_bytes / (g_state.vertex.vertex_stride * sizeof(float)));
+    return 1;
+}
+
+static int db_gl1_draw_compact_ranges_from_snake_colors_once(
+    const db_gl_upload_range_t *ranges, size_t range_count) {
+    if ((ranges == NULL) || (range_count == 0U) ||
+        (g_state.compact_vbo.scratch_vertices == NULL) ||
+        (g_state.compact_vbo.vbo_capacity_bytes == 0U) ||
+        (g_state.vertex.vertices == NULL) ||
+        (db_gl1_has_snake_color_state() == 0)) {
+        return 0;
+    }
+
+    const size_t stride = g_state.vertex.vertex_stride;
+    const size_t bytes_per_vertex = stride * sizeof(float);
+    const size_t tile_bytes = (size_t)DB_RECT_VERTEX_COUNT * bytes_per_vertex;
+    const size_t tile_float_count = (size_t)DB_RECT_VERTEX_COUNT * stride;
+    if ((bytes_per_vertex == 0U) || (tile_bytes == 0U) ||
+        (tile_float_count == 0U)) {
+        return 0;
+    }
+
+    const size_t total_tiles = (size_t)g_state.runtime.work_unit_count;
+    size_t out_tile_count = 0U;
+    for (size_t range_index = 0U; range_index < range_count; range_index++) {
+        const db_gl_upload_range_t *range = &ranges[range_index];
+        if ((range->size_bytes == 0U) ||
+            ((range->src_offset_bytes % tile_bytes) != 0U) ||
+            ((range->size_bytes % tile_bytes) != 0U)) {
+            continue;
+        }
+        const size_t first_tile = range->src_offset_bytes / tile_bytes;
+        const size_t range_tiles = range->size_bytes / tile_bytes;
+        if ((first_tile > total_tiles) ||
+            (range_tiles > (total_tiles - first_tile))) {
+            return 0;
+        }
+        if (out_tile_count > (SIZE_MAX - range_tiles)) {
+            return 0;
+        }
+        out_tile_count += range_tiles;
+    }
+    if (out_tile_count == 0U) {
+        return 0;
+    }
+    if ((out_tile_count > (SIZE_MAX / tile_float_count)) ||
+        ((out_tile_count * tile_float_count) >
+         g_state.compact_vbo.scratch_float_capacity)) {
+        return 0;
+    }
+
+    size_t out_index = 0U;
+    for (size_t range_index = 0U; range_index < range_count; range_index++) {
+        const db_gl_upload_range_t *range = &ranges[range_index];
+        if ((range->size_bytes == 0U) ||
+            ((range->src_offset_bytes % tile_bytes) != 0U) ||
+            ((range->size_bytes % tile_bytes) != 0U)) {
+            continue;
+        }
+        const size_t first_tile = range->src_offset_bytes / tile_bytes;
+        const size_t range_tiles = range->size_bytes / tile_bytes;
+        for (size_t tile_offset = 0U; tile_offset < range_tiles;
+             tile_offset++) {
+            const size_t tile_index = first_tile + tile_offset;
+            const size_t src_base = tile_index * tile_float_count;
+            const size_t dst_base = out_index * tile_float_count;
+            const float *tile_color =
+                &g_state.snake_color_state[tile_index *
+                                           DB_GL_COLOR_COMPONENT_COUNT];
+            for (size_t vertex_index = 0U; vertex_index < DB_RECT_VERTEX_COUNT;
+                 vertex_index++) {
+                const size_t src_vertex_base =
+                    src_base + (vertex_index * stride);
+                const size_t dst_vertex_base =
+                    dst_base + (vertex_index * stride);
+                g_state.compact_vbo.scratch_vertices[dst_vertex_base + 0U] =
+                    g_state.vertex.vertices[src_vertex_base + 0U];
+                g_state.compact_vbo.scratch_vertices[dst_vertex_base + 1U] =
+                    g_state.vertex.vertices[src_vertex_base + 1U];
+                g_state.compact_vbo
+                    .scratch_vertices[dst_vertex_base + DB_GL_COLOR_R_OFFSET] =
+                    tile_color[0];
+                g_state.compact_vbo
+                    .scratch_vertices[dst_vertex_base + DB_GL_COLOR_G_OFFSET] =
+                    tile_color[1];
+                g_state.compact_vbo
+                    .scratch_vertices[dst_vertex_base + DB_GL_COLOR_B_OFFSET] =
+                    tile_color[2];
+                if (g_state.is_es_context != 0) {
+                    g_state.compact_vbo.scratch_vertices[dst_vertex_base +
+                                                         DB_GL_COLOR_A_OFFSET] =
+                        1.0F;
+                }
+            }
+            out_index++;
+        }
+    }
+
+    const size_t compact_vertex_count =
+        out_index * (size_t)DB_RECT_VERTEX_COUNT;
+    const size_t compact_bytes = compact_vertex_count * bytes_per_vertex;
+    if ((compact_bytes == 0U) ||
+        (compact_bytes > g_state.compact_vbo.vbo_capacity_bytes)) {
+        return 0;
+    }
+
+    if ((g_state.buffers.vbo != 0U) &&
+        (db_gl_upload_compact_prepared(&g_state.compact_vbo,
+                                       &g_state.vertex.upload,
+                                       compact_bytes) != 0)) {
+        db_gl1_draw_compact_scratch_vbo("snake_compact_first_vertex",
+                                        compact_vertex_count);
+        return 1;
+    }
+
+    db_gl1_draw_compact_scratch_client(compact_vertex_count);
+    return 1;
 }
 
 static void
-db_gl1_draw_gradient_dirty_rows_hybrid(const db_dirty_row_range_t *dirty_ranges,
-                                       size_t dirty_count, uint32_t head_row,
-                                       int direction_down, uint32_t cycle_index,
-                                       int viewport_w, int viewport_h) {
-    const int use_mesh = db_gl1_gradient_should_use_mesh(
-        dirty_ranges, dirty_count, DB_GL1_GRADIENT_MESH_ROW_THRESHOLD);
-    if (use_mesh != 0) {
-        db_gl1_draw_gradient_dirty_rows_mesh(
-            dirty_ranges, dirty_count, head_row, direction_down, cycle_index);
+db_gl1_draw_gradient_dirty_rows_mesh(const db_dirty_row_range_t *dirty_ranges,
+                                     size_t dirty_count, uint32_t head_row,
+                                     int direction_down, uint32_t cycle_index,
+                                     int viewport_w, int viewport_h) {
+    if ((viewport_w <= 0) || (viewport_h <= 0) ||
+        (g_state.compact_vbo.scratch_vertices == NULL)) {
         return;
     }
-    db_gl1_draw_gradient_dirty_rows_gpu(BACKEND_NAME, dirty_ranges, dirty_count,
-                                        head_row, direction_down, cycle_index,
-                                        viewport_w, viewport_h);
+
+    const size_t dirty_row_total =
+        db_gl1_gradient_dirty_row_total(dirty_ranges, dirty_count);
+    if (dirty_row_total == 0U) {
+        return;
+    }
+    const size_t stride = g_state.vertex.vertex_stride;
+    const size_t rect_float_count = (size_t)DB_RECT_VERTEX_COUNT * stride;
+    const size_t needed_float_count = dirty_row_total * rect_float_count;
+    if (needed_float_count > g_state.compact_vbo.scratch_float_capacity) {
+        return;
+    }
+    const size_t rect_count = db_gl1_build_gradient_compact_row_vertices(
+        dirty_ranges, dirty_count, head_row, direction_down, cycle_index,
+        viewport_w, viewport_h, g_state.compact_vbo.scratch_vertices,
+        g_state.compact_vbo.scratch_float_capacity);
+    if (rect_count == 0U) {
+        return;
+    }
+    const size_t draw_vertex_count = rect_count * (size_t)DB_RECT_VERTEX_COUNT;
+    const size_t compact_bytes = draw_vertex_count * stride * sizeof(float);
+
+    if (g_state.buffers.vbo != 0U) {
+        if (db_gl_upload_compact_prepared(&g_state.compact_vbo,
+                                          &g_state.vertex.upload,
+                                          compact_bytes) == 0) {
+            return;
+        }
+        db_gl1_draw_compact_scratch_vbo("gradient_compact_first_vertex",
+                                        draw_vertex_count);
+    } else {
+        db_gl1_draw_compact_scratch_client(draw_vertex_count);
+    }
+}
+
+static void db_gl1_draw_bands_compact(uint32_t cols, uint32_t band_count,
+                                      uint32_t frame_index, int viewport_w,
+                                      int viewport_h) {
+    if ((cols == 0U) || (band_count == 0U) || (viewport_w <= 0) ||
+        (viewport_h <= 0) || (g_state.compact_vbo.scratch_vertices == NULL)) {
+        return;
+    }
+    const size_t stride = g_state.vertex.vertex_stride;
+    const size_t rect_float_count = (size_t)DB_RECT_VERTEX_COUNT * stride;
+    if ((rect_float_count == 0U) ||
+        ((size_t)band_count >
+         (g_state.compact_vbo.scratch_float_capacity / rect_float_count))) {
+        return;
+    }
+
+    size_t rect_count = 0U;
+    for (uint32_t band = 0U; band < band_count; band++) {
+        const uint32_t tile_x0 = (uint32_t)(((uint64_t)band * (uint64_t)cols) /
+                                            (uint64_t)band_count);
+        const uint32_t tile_x1 =
+            (uint32_t)(((uint64_t)(band + 1U) * (uint64_t)cols) /
+                       (uint64_t)band_count);
+        int x0 =
+            (int)(((uint64_t)tile_x0 * (uint64_t)viewport_w) / (uint64_t)cols);
+        int x1 =
+            (int)(((uint64_t)tile_x1 * (uint64_t)viewport_w) / (uint64_t)cols);
+        if (band + 1U == band_count) {
+            x1 = viewport_w;
+        }
+        if (x0 < 0) {
+            x0 = 0;
+        }
+        if (x1 > viewport_w) {
+            x1 = viewport_w;
+        }
+        const int rect_w = x1 - x0;
+        if (rect_w <= 0) {
+            continue;
+        }
+
+        double color_r = 0.0;
+        double color_g = 0.0;
+        double color_b = 0.0;
+        db_band_color_rgb(band, band_count, frame_index, &color_r, &color_g,
+                          &color_b);
+        const float x0_ndc = db_gl1_ndc_from_pixel_coord(x0, viewport_w);
+        const float x1_ndc =
+            db_gl1_ndc_from_pixel_coord(x0 + rect_w, viewport_w);
+        const float y0_ndc = db_gl1_ndc_from_pixel_coord(0, viewport_h);
+        const float y1_ndc =
+            db_gl1_ndc_from_pixel_coord(viewport_h, viewport_h);
+        const size_t base = rect_count * rect_float_count;
+        float *const unit = &g_state.compact_vbo.scratch_vertices[base];
+        db_fill_rect_unit_pos(unit, x0_ndc, y0_ndc, x1_ndc, y1_ndc, stride);
+        db_set_rect_unit_rgb(unit, stride, DB_VERTEX_POSITION_FLOAT_COUNT,
+                             db_double_to_f32(color_r),
+                             db_double_to_f32(color_g),
+                             db_double_to_f32(color_b));
+        if (g_state.is_es_context != 0) {
+            db_set_rect_unit_alpha(unit, stride, DB_GL_COLOR_A_OFFSET, 1.0F);
+        }
+        rect_count++;
+    }
+    if (rect_count == 0U) {
+        return;
+    }
+
+    const size_t draw_vertex_count = rect_count * (size_t)DB_RECT_VERTEX_COUNT;
+    const size_t compact_bytes = draw_vertex_count * stride * sizeof(float);
+    if ((g_state.buffers.vbo != 0U) &&
+        (db_gl_upload_compact_prepared(&g_state.compact_vbo,
+                                       &g_state.vertex.upload,
+                                       compact_bytes) != 0)) {
+        db_gl1_draw_compact_scratch_vbo("bands_compact_first_vertex",
+                                        draw_vertex_count);
+        return;
+    }
+    db_gl1_draw_compact_scratch_client(draw_vertex_count);
 }
 
 static size_t
@@ -444,41 +862,10 @@ db_collect_gl1_damage_ranges(const db_snake_plan_t *plan, int force_full_upload,
 static size_t db_gl1_build_snake_upload_ranges(const db_snake_plan_t *plan,
                                                int force_full_upload,
                                                db_gl_upload_range_t *ranges,
-                                               size_t range_capacity,
-                                               int allow_overdraw_collapse) {
+                                               size_t range_capacity) {
     const size_t range_count = db_collect_gl1_damage_ranges(
         plan, force_full_upload, NULL, 0U, ranges, range_capacity);
-    return db_gl1_optimize_upload_ranges(ranges, range_count,
-                                         allow_overdraw_collapse,
-                                         DB_GL1_SNAKE_RANGE_COLLAPSE_THRESHOLD);
-}
-
-static int
-db_gl1_snake_should_use_scissor_for_settled(const db_gl_upload_range_t *ranges,
-                                            size_t range_count) {
-    if ((ranges == NULL) || (range_count == 0U)) {
-        return 0;
-    }
-    const uint32_t cols = db_grid_cols_effective();
-    if (cols == 0U) {
-        return 0;
-    }
-    const size_t row_bytes =
-        (size_t)cols * db_rect_tile_bytes(g_state.vertex.vertex_stride);
-    if (row_bytes == 0U) {
-        return 0;
-    }
-    size_t total_bytes = 0U;
-    for (size_t index = 0U; index < range_count; index++) {
-        if (ranges[index].size_bytes > (SIZE_MAX - total_bytes)) {
-            total_bytes = SIZE_MAX;
-            break;
-        }
-        total_bytes += ranges[index].size_bytes;
-    }
-    const size_t threshold_bytes =
-        row_bytes * DB_GL1_SNAKE_SCISSOR_ROW_THRESHOLD;
-    return total_bytes >= threshold_bytes;
+    return db_gl_optimize_upload_ranges(ranges, range_count, 0, 0U);
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_init(void) {
@@ -500,9 +887,17 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     g_state.snake_scratch.row_bounds = NULL;
     g_state.snake_scratch.row_bounds_capacity = 0U;
     g_state.snake_scratch.span_capacity = 0U;
+    g_state.snake_color_state = NULL;
+    g_state.snake_color_capacity = 0U;
     db_history_snake_backbuffer_state_reset(&g_state.snake_backbuffer_state, 0);
     g_state.runtime_flags = db_history_runtime_mode_flags(&g_state.runtime);
     if (g_state.runtime_flags.is_snake_history_texture != 0) {
+        g_state.snake_color_capacity = (size_t)g_state.runtime.work_unit_count *
+                                       DB_GL_COLOR_COMPONENT_COUNT;
+        g_state.snake_color_state = (float *)db_alloc_array_or_fail(
+            BACKEND_NAME, "snake_color_state", g_state.snake_color_capacity,
+            sizeof(float));
+        db_gl1_init_snake_color_state_from_vertices();
         const size_t scratch_capacity =
             db_snake_scratch_capacity_from_work_units(
                 g_state.runtime.work_unit_count);
@@ -543,10 +938,16 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     db_gl_set_client_state_color_array_enabled(1);
     g_state.client_arrays_configured = 0;
     g_state.vbo_arrays_configured = 0;
+    const size_t full_mesh_bytes = (size_t)g_state.vertex.draw_vertex_count *
+                                   g_state.vertex.vertex_stride * sizeof(float);
 
     if (db_gl_context_advertises_vbo() != 0) {
-        const size_t probe_bytes = (size_t)g_state.vertex.draw_vertex_count *
-                                   g_state.vertex.vertex_stride * sizeof(float);
+        const size_t probe_bytes = full_mesh_bytes;
+        const size_t total_vbo_bytes =
+            db_gl_compact_vbo_total_bytes(probe_bytes);
+        if (total_vbo_bytes == 0U) {
+            failf("GL1 VBO size overflow");
+        }
         unsigned int vbo_u32 = 0U;
         if (db_gl_vbo_create_or_zero(&vbo_u32) != 0) {
             g_state.buffers.vbo = vbo_u32;
@@ -560,9 +961,29 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
             }
         }
         if (g_state.buffers.vbo != 0U) {
+            if (db_gl_vbo_init_data(total_vbo_bytes, NULL, GL_DYNAMIC_DRAW) ==
+                0) {
+                db_gl_vbo_delete_if_valid(g_state.buffers.vbo);
+                g_state.buffers.vbo = 0U;
+            }
+        }
+        if (g_state.buffers.vbo != 0U) {
             db_gl_context_probe_upload_capabilities(
-                probe_bytes, g_state.vertex.vertices, &probe_result);
+                total_vbo_bytes, g_state.vertex.vertices, &probe_result);
             g_state.vertex.upload = probe_result;
+        }
+        if (g_state.buffers.vbo != 0U) {
+            const db_gl_upload_range_t full_base_range = {
+                .src_offset_bytes = 0U,
+                .dst_offset_bytes = 0U,
+                .size_bytes = probe_bytes,
+            };
+            db_gl_upload_vbo_damage_ranges(g_state.vertex.vertices, probe_bytes,
+                                           &g_state.vertex.upload,
+                                           &full_base_range, 1U);
+            db_gl_compact_vbo_init_or_fail(BACKEND_NAME, &g_state.compact_vbo,
+                                           probe_bytes,
+                                           g_state.vertex.vertex_stride);
             g_state.vbo_arrays_configured = 0;
             db_gl1_configure_vbo_arrays_if_needed();
             db_gl1_refresh_capability_mode();
@@ -572,77 +993,33 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         }
     }
 
+    if ((g_state.runtime_flags.is_snake_history_texture != 0) &&
+        (g_state.compact_vbo.scratch_vertices == NULL)) {
+        db_gl_compact_vbo_init_or_fail(BACKEND_NAME, &g_state.compact_vbo,
+                                       full_mesh_bytes,
+                                       g_state.vertex.vertex_stride);
+    }
+
     db_gl1_configure_client_arrays_if_needed();
     db_gl1_refresh_capability_mode();
     infof("using capability mode: %s",
           db_renderer_opengl_gl1_5_gles1_1_capability_mode());
 }
 
-static void db_gl1_render_snake_draw_pass(
-    const db_gl1_snake_frame_state_t *snake_frame, int allow_overdraw_collapse,
-    int dirty_backbuffer_mode, int viewport_w, int viewport_h) {
+static void
+db_gl1_render_snake_draw_pass(const db_gl1_snake_frame_state_t *snake_frame,
+                              int dirty_backbuffer_mode, int viewport_w,
+                              int viewport_h) {
+    (void)dirty_backbuffer_mode;
+    (void)viewport_w;
+    (void)viewport_h;
     if (snake_frame == NULL) {
         return;
     }
-    const db_snake_plan_t *plan = &snake_frame->plan;
-    const db_snake_region_t *snake_target_region = &snake_frame->target_region;
     db_gl_upload_range_t *range_storage = snake_frame->preview_ranges;
     size_t draw_range_count = snake_frame->preview_count;
-    const int is_grid_pattern = g_state.runtime_flags.is_snake_grid;
-    const int is_grid_or_rect =
-        (is_grid_pattern != 0) || (g_state.runtime_flags.is_snake_rect != 0);
-    const int snake_transition_frame =
-        (plan->phase_completed != 0) || (plan->phase_completed != 0) ||
-        (plan->active_cursor == DB_SNAKE_CURSOR_PRE_ENTRY) ||
-        (plan->next_cursor == DB_SNAKE_CURSOR_PRE_ENTRY);
-    const int settled_scissor_heuristic_ok =
-        (is_grid_pattern != 0) || db_gl1_snake_should_use_scissor_for_settled(
-                                      range_storage, draw_range_count);
-    const int has_span_scratch = (g_state.snake_scratch.spans != NULL) &&
-                                 (g_state.snake_scratch.span_capacity > 0U);
-    const int use_settled_scissor = db_history_should_use_snake_settled_scissor(
-        (g_state.buffers.vbo != 0U), is_grid_or_rect, snake_transition_frame,
-        snake_frame->force_full_upload, dirty_backbuffer_mode, has_span_scratch,
-        settled_scissor_heuristic_ok);
-    db_gl_upload_range_t active_ranges_local[BENCH_SNAKE_PHASE_WINDOW_TILES] = {
-        {0U, 0U, 0U}};
-    db_gl_upload_range_t *active_ranges = active_ranges_local;
-    size_t active_range_capacity = BENCH_SNAKE_PHASE_WINDOW_TILES;
-    if ((g_state.snake_replay.prev_upload_ranges != NULL) &&
-        (g_state.snake_scratch.span_capacity > 0U)) {
-        // Avoid truncation at high bench speed: use full scratch capacity.
-        active_ranges = g_state.snake_replay.prev_upload_ranges;
-        active_range_capacity = g_state.snake_scratch.span_capacity;
-    }
-    size_t active_range_count = 0U;
-    int scissor_applied = 0;
-    if (use_settled_scissor != 0) {
-        db_gl_set_scissor_enabled(1);
-        const size_t settled_span_count = db_snake_collect_damage_spans(
-            g_state.snake_scratch.spans, g_state.snake_scratch.span_capacity,
-            snake_target_region, plan->prev_start, plan->prev_count,
-            plan->active_cursor, 0U, NULL);
-        const db_gl1_scissor_fill_ctx_t scissor_ctx = {
-            .color_b = snake_frame->target_b,
-            .color_g = snake_frame->target_g,
-            .color_r = snake_frame->target_r,
-            .viewport_h = viewport_h,
-            .viewport_w = viewport_w,
-        };
-        const size_t applied_rect_count =
-            db_gl_for_each_span_scissor_rect_merged(
-                g_state.snake_scratch.spans, settled_span_count,
-                db_grid_cols_effective(), db_grid_rows_effective(), viewport_w,
-                viewport_h, db_gl1_apply_scissor_fill_rect,
-                (void *)&scissor_ctx);
-        if (applied_rect_count > 0U) {
-            scissor_applied = 1;
-        }
-        db_gl_set_scissor_enabled(0);
-        active_range_count = db_gl1_build_snake_upload_ranges(
-            plan, snake_frame->force_full_upload, active_ranges,
-            active_range_capacity, allow_overdraw_collapse);
-    }
+    const int has_vbo_path = (g_state.buffers.vbo != 0U) ? 1 : 0;
+
     const int allow_empty_dirty_draw = dirty_backbuffer_mode;
     if ((draw_range_count == 0U) && (allow_empty_dirty_draw == 0)) {
         const size_t upload_bytes = (size_t)g_state.vertex.draw_vertex_count *
@@ -663,50 +1040,45 @@ static void db_gl1_render_snake_draw_pass(
 
     if (draw_range_count == 0U) {
         // No damage this frame; preserve backbuffer contents.
-    } else if (draw_is_full_mesh != 0) {
-        if (g_state.buffers.vbo != 0U) {
-            db_gl1_upload_vbo_damage_ranges(
-                g_state.vertex.vertices, upload_bytes, &g_state.vertex.upload,
-                range_storage, draw_range_count);
-            db_gl1_configure_vbo_arrays_if_needed();
-        } else {
-            db_gl1_configure_client_arrays_if_needed();
-        }
-        db_gl_draw_arrays_triangles(
-            0, db_gl_draw_vertex_count_i32(BACKEND_NAME,
-                                           g_state.vertex.draw_vertex_count));
-        db_history_record_draw_stats(&g_state.frame.full_draw_frames,
-                                     &g_state.frame.dirty_draw_frames, 1, 0);
     } else {
-        // Preserved-backbuffer dirty redraw path: upload+draw changed ranges.
-        const db_gl_upload_range_t *mesh_ranges =
-            (use_settled_scissor != 0) ? active_ranges : range_storage;
-        const size_t mesh_range_count =
-            (use_settled_scissor != 0) ? active_range_count : draw_range_count;
-        if ((g_state.buffers.vbo != 0U) && (mesh_range_count > 0U)) {
-            db_gl1_upload_vbo_damage_ranges(
-                g_state.vertex.vertices, upload_bytes, &g_state.vertex.upload,
-                mesh_ranges, mesh_range_count);
-            db_gl1_configure_vbo_arrays_if_needed();
-            db_gl1_draw_dirty_ranges_common(BACKEND_NAME,
-                                            g_state.vertex.vertex_stride,
-                                            g_state.vertex.draw_vertex_count,
-                                            mesh_ranges, mesh_range_count);
-        } else if (mesh_range_count > 0U) {
-            db_gl1_configure_client_arrays_if_needed();
-            db_gl1_draw_dirty_ranges_common(BACKEND_NAME,
-                                            g_state.vertex.vertex_stride,
-                                            g_state.vertex.draw_vertex_count,
-                                            mesh_ranges, mesh_range_count);
+        // Preserved-backbuffer redraw path: generate compact geometry directly
+        // from tile-aligned damage ranges and snake color state.
+        db_gl_upload_range_t *mesh_ranges = range_storage;
+        size_t mesh_range_count = draw_range_count;
+        if (mesh_range_count > 0U) {
+            if (db_gl1_draw_compact_ranges_from_snake_colors_once(
+                    mesh_ranges, mesh_range_count) == 0) {
+                if ((has_vbo_path != 0) &&
+                    (db_gl1_draw_compact_ranges_once(
+                         mesh_ranges, mesh_range_count, upload_bytes) == 0)) {
+                    db_gl_upload_vbo_damage_ranges(
+                        g_state.vertex.vertices, upload_bytes,
+                        &g_state.vertex.upload, mesh_ranges, mesh_range_count);
+                    db_gl1_configure_vbo_arrays_if_needed();
+                    db_gl_draw_dirty_ranges_common(
+                        BACKEND_NAME, g_state.vertex.vertex_stride,
+                        g_state.vertex.draw_vertex_count, mesh_ranges,
+                        mesh_range_count);
+                } else if ((has_vbo_path == 0) &&
+                           (db_gl1_draw_compact_client_ranges_once(
+                                mesh_ranges, mesh_range_count, upload_bytes) ==
+                            0)) {
+                    db_gl1_configure_client_arrays_if_needed();
+                    db_gl_draw_dirty_ranges_common(
+                        BACKEND_NAME, g_state.vertex.vertex_stride,
+                        g_state.vertex.draw_vertex_count, mesh_ranges,
+                        mesh_range_count);
+                }
+            }
         }
-        if ((mesh_range_count > 0U) || (scissor_applied != 0)) {
+        if (mesh_range_count > 0U) {
+            const int counted_full = (draw_is_full_mesh != 0) ? 1 : 0;
+            const int counted_dirty = (draw_is_full_mesh != 0) ? 0 : 1;
             db_history_record_draw_stats(&g_state.frame.full_draw_frames,
-                                         &g_state.frame.dirty_draw_frames, 0,
-                                         1);
+                                         &g_state.frame.dirty_draw_frames,
+                                         counted_full, counted_dirty);
         }
     }
-    const int persist_full_mesh =
-        (draw_is_full_mesh != 0) || (g_state.runtime.backbuffer_draw_full != 0);
     const db_gl_upload_range_t force_replay_full_range =
         db_gl_upload_full_range(upload_bytes);
     const db_gl_upload_range_t *persist_draw_ranges = range_storage;
@@ -714,11 +1086,6 @@ static void db_gl1_render_snake_draw_pass(
     if (snake_frame->force_replay_full != 0) {
         persist_draw_ranges = &force_replay_full_range;
         persist_draw_count = 1U;
-    }
-    if ((snake_frame->force_replay_full == 0) && (persist_full_mesh == 0) &&
-        (use_settled_scissor != 0)) {
-        persist_draw_ranges = active_ranges;
-        persist_draw_count = active_range_count;
     }
     if ((persist_draw_count > 0U) &&
         (g_state.snake_replay.prev_upload_ranges != NULL) &&
@@ -739,8 +1106,7 @@ static void db_gl1_render_snake_draw_pass(
 static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
                                              int is_double_buffered,
                                              int dirty_backbuffer_mode,
-                                             int has_viewport,
-                                             int allow_overdraw_collapse) {
+                                             int has_viewport) {
     if (state == NULL) {
         return;
     }
@@ -781,7 +1147,7 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
     }
     state->preview_count = db_gl1_build_snake_upload_ranges(
         &state->plan, state->force_full_upload, state->preview_ranges,
-        state->preview_capacity, allow_overdraw_collapse);
+        state->preview_capacity);
     if ((g_state.runtime_flags.is_snake_grid != 0) &&
         (state->force_full_upload != 0) && dirty_backbuffer_mode &&
         has_viewport && (g_state.snake_scratch.spans != NULL)) {
@@ -796,7 +1162,6 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
             double base_b = 0.0;
             const int base_phase = (state->plan.phase_flag == 0) ? 1 : 0;
             db_grid_target_color_rgb(base_phase, &base_r, &base_g, &base_b);
-            db_gl_set_scissor_enabled(0);
             db_gl_clear_color_rgb(db_double_to_f32(base_r),
                                   db_double_to_f32(base_g),
                                   db_double_to_f32(base_b));
@@ -815,9 +1180,8 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
                 db_rect_tile_bytes(g_state.vertex.vertex_stride),
                 g_state.snake_scratch.spans, replay_span_count,
                 state->preview_ranges, state->preview_capacity);
-            state->preview_count = db_gl1_optimize_upload_ranges(
-                state->preview_ranges, state->preview_count, 0,
-                DB_GL1_SNAKE_RANGE_COLLAPSE_THRESHOLD);
+            state->preview_count = db_gl_coalesce_upload_ranges_in_place(
+                state->preview_ranges, state->preview_count);
             state->force_replay_full = 1;
         }
     }
@@ -839,24 +1203,40 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
         replay_draw_count = db_gl_coalesce_upload_ranges_in_place(
             g_state.snake_replay.prev_upload_ranges, replay_draw_count);
         if (replay_draw_count > 0U) {
-            if (g_state.buffers.vbo != 0U) {
-                db_gl1_upload_vbo_damage_ranges(
-                    g_state.vertex.vertices,
-                    (size_t)g_state.vertex.draw_vertex_count *
-                        g_state.vertex.vertex_stride * sizeof(float),
-                    &g_state.vertex.upload,
-                    g_state.snake_replay.prev_upload_ranges, replay_draw_count);
-                db_gl1_configure_vbo_arrays_if_needed();
-                db_gl1_draw_dirty_ranges_common(
-                    BACKEND_NAME, g_state.vertex.vertex_stride,
-                    g_state.vertex.draw_vertex_count,
-                    g_state.snake_replay.prev_upload_ranges, replay_draw_count);
-            } else {
-                db_gl1_configure_client_arrays_if_needed();
-                db_gl1_draw_dirty_ranges_common(
-                    BACKEND_NAME, g_state.vertex.vertex_stride,
-                    g_state.vertex.draw_vertex_count,
-                    g_state.snake_replay.prev_upload_ranges, replay_draw_count);
+            const size_t full_upload_bytes =
+                (size_t)g_state.vertex.draw_vertex_count *
+                g_state.vertex.vertex_stride * sizeof(float);
+            if (db_gl1_draw_compact_ranges_from_snake_colors_once(
+                    g_state.snake_replay.prev_upload_ranges,
+                    replay_draw_count) == 0) {
+                if (g_state.buffers.vbo != 0U) {
+                    if (db_gl1_draw_compact_ranges_once(
+                            g_state.snake_replay.prev_upload_ranges,
+                            replay_draw_count, full_upload_bytes) == 0) {
+                        db_gl_upload_vbo_damage_ranges(
+                            g_state.vertex.vertices, full_upload_bytes,
+                            &g_state.vertex.upload,
+                            g_state.snake_replay.prev_upload_ranges,
+                            replay_draw_count);
+                        db_gl1_configure_vbo_arrays_if_needed();
+                        db_gl_draw_dirty_ranges_common(
+                            BACKEND_NAME, g_state.vertex.vertex_stride,
+                            g_state.vertex.draw_vertex_count,
+                            g_state.snake_replay.prev_upload_ranges,
+                            replay_draw_count);
+                    }
+                } else {
+                    if (db_gl1_draw_compact_client_ranges_once(
+                            g_state.snake_replay.prev_upload_ranges,
+                            replay_draw_count, full_upload_bytes) == 0) {
+                        db_gl1_configure_client_arrays_if_needed();
+                        db_gl_draw_dirty_ranges_common(
+                            BACKEND_NAME, g_state.vertex.vertex_stride,
+                            g_state.vertex.draw_vertex_count,
+                            g_state.snake_replay.prev_upload_ranges,
+                            replay_draw_count);
+                    }
+                }
             }
         }
     }
@@ -895,7 +1275,10 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
     // When bench_speed_step > 1, the head can advance by multiple rows. Plan
     // dirty ranges cover the new sweep window, but traversed rows can be
     // skipped unless we repaint them as solid per-row colors.
-    db_dirty_row_range_t skipped_ranges[2] = {{0U, 0U}, {0U, 0U}};
+    db_dirty_row_range_t skipped_ranges[DB_GL1_GRADIENT_DIRTY_RANGE_CAP] = {
+        {0U, 0U},
+        {0U, 0U},
+    };
     size_t skipped_count = 0U;
 
     const uint32_t rows = db_grid_rows_effective();
@@ -956,10 +1339,13 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
     // framebuffer/backbuffer.
     if ((viewport_w > 0) && (viewport_h > 0) && (rows > 0U)) {
         if (g_state.runtime.backbuffer_draw_full != 0) {
-            db_dirty_row_range_t full_range[2] = {{0U, 0U}, {0U, 0U}};
+            db_dirty_row_range_t full_range[DB_GL1_GRADIENT_DIRTY_RANGE_CAP] = {
+                {0U, 0U},
+                {0U, 0U},
+            };
             const size_t full_count =
                 db_history_set_full_row_ranges(rows, full_range, 2U);
-            db_gl1_draw_gradient_dirty_rows_hybrid(
+            db_gl1_draw_gradient_dirty_rows_mesh(
                 full_range, full_count, gradient_render_head_row,
                 gradient_render_direction_down, gradient_render_cycle_index,
                 viewport_w, viewport_h);
@@ -997,7 +1383,7 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                 (void)db_history_apply_full_seed_rows_if_needed(
                     &g_state.backbuffer_valid, rows, curr_draw_ranges,
                     DB_GL1_GRADIENT_REPLAY_ROW_CAP, &curr_draw_count);
-                db_gl1_draw_gradient_dirty_rows_hybrid(
+                db_gl1_draw_gradient_dirty_rows_mesh(
                     curr_draw_ranges, curr_draw_count, gradient_render_head_row,
                     gradient_render_direction_down, gradient_render_cycle_index,
                     viewport_w, viewport_h);
@@ -1027,16 +1413,6 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                     replay_draw_ptr = replay_draw_ranges;
                 }
                 const int has_replay_draw = (replay_draw_count > 0U);
-                const int replay_uses_mesh =
-                    (has_replay_draw != 0) &&
-                    db_gl1_gradient_should_use_mesh(
-                        replay_draw_ptr, replay_draw_count,
-                        DB_GL1_GRADIENT_MESH_ROW_THRESHOLD);
-                const int current_uses_mesh =
-                    (has_current != 0) &&
-                    db_gl1_gradient_should_use_mesh(
-                        curr_draw_ranges, curr_draw_count,
-                        DB_GL1_GRADIENT_MESH_ROW_THRESHOLD);
                 if ((g_state.runtime_flags.is_gradient_sweep != 0) &&
                     (has_replay != 0) && (has_current == 0)) {
                     // At bottom bounce, sweep can be replay-only for one frame.
@@ -1045,49 +1421,20 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                     persist_state = g_state.gradient_prev_frame.state;
                 }
 
-                if ((has_replay_draw != 0) && (has_current != 0) &&
-                    (replay_uses_mesh == 0) && (current_uses_mesh == 0)) {
-                    db_gl1_draw_gradient_dirty_rows_gpu(
-                        BACKEND_NAME, replay_draw_ptr, replay_draw_count,
-                        g_state.gradient_prev_frame.state.head_row,
-                        g_state.gradient_prev_frame.state.direction_down,
-                        g_state.gradient_prev_frame.state.cycle_index,
-                        viewport_w, viewport_h);
-                    db_gl1_draw_gradient_dirty_rows_gpu(
-                        BACKEND_NAME, curr_draw_ranges, curr_draw_count,
-                        gradient_render_head_row,
-                        gradient_render_direction_down,
-                        gradient_render_cycle_index, viewport_w, viewport_h);
-                } else if ((has_replay_draw != 0) && (has_current != 0) &&
-                           (replay_uses_mesh != 0) &&
-                           (current_uses_mesh != 0)) {
+                if (has_replay_draw != 0) {
                     db_gl1_draw_gradient_dirty_rows_mesh(
                         replay_draw_ptr, replay_draw_count,
                         g_state.gradient_prev_frame.state.head_row,
                         g_state.gradient_prev_frame.state.direction_down,
-                        g_state.gradient_prev_frame.state.cycle_index);
+                        g_state.gradient_prev_frame.state.cycle_index,
+                        viewport_w, viewport_h);
+                }
+                if (has_current != 0) {
                     db_gl1_draw_gradient_dirty_rows_mesh(
                         curr_draw_ranges, curr_draw_count,
                         gradient_render_head_row,
                         gradient_render_direction_down,
-                        gradient_render_cycle_index);
-                } else {
-                    if (has_replay_draw != 0) {
-                        db_gl1_draw_gradient_dirty_rows_hybrid(
-                            replay_draw_ptr, replay_draw_count,
-                            g_state.gradient_prev_frame.state.head_row,
-                            g_state.gradient_prev_frame.state.direction_down,
-                            g_state.gradient_prev_frame.state.cycle_index,
-                            viewport_w, viewport_h);
-                    }
-                    if (has_current != 0) {
-                        db_gl1_draw_gradient_dirty_rows_hybrid(
-                            curr_draw_ranges, curr_draw_count,
-                            gradient_render_head_row,
-                            gradient_render_direction_down,
-                            gradient_render_cycle_index, viewport_w,
-                            viewport_h);
-                    }
+                        gradient_render_cycle_index, viewport_w, viewport_h);
                 }
                 db_history_record_draw_stats(&g_state.frame.full_draw_frames,
                                              &g_state.frame.dirty_draw_frames,
@@ -1140,6 +1487,8 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
         // Keep GL viewport in sync with drawable pixels (HiDPI-safe)
         // without querying GL state.
         db_gl_set_viewport_px(viewport_width_px, viewport_height_px);
+        db_gl1_refresh_tile_positions_for_viewport(viewport_width_px,
+                                                   viewport_height_px);
         db_history_invalidate_snake_backbuffer_on_resize(
             double_buffered, &g_state.backbuffer_valid,
             &g_state.snake_replay.prev_upload_count,
@@ -1156,34 +1505,24 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
     const int viewport_h = viewport_state.viewport_height_px;
     const int has_viewport = viewport_state.has_viewport;
     const int is_double_buffered = (double_buffered != 0);
-    const int allow_overdraw_collapse =
-        ((g_state.runtime_flags.is_snake_history_texture != 0) &&
-         (g_state.runtime_flags.is_snake_shapes == 0))
-            ? 1
-            : 0;
-
     if (g_state.runtime_flags.is_snake_history_texture != 0) {
         db_gl1_prepare_snake_frame_state(
             &snake_frame, is_double_buffered,
-            g_state.runtime_flags.uses_dirty_backbuffer_mode, has_viewport,
-            allow_overdraw_collapse);
+            g_state.runtime_flags.uses_dirty_backbuffer_mode, has_viewport);
     } else if (g_state.runtime_flags.is_gradient != 0) {
         db_gl1_render_gradient_frame(viewport_w, viewport_h,
                                      is_double_buffered);
     } else if (g_state.runtime_flags.is_bands != 0) {
-        // Bands are solid rect fills directly to the default framebuffer.
-        db_gl1_draw_bands_gpu(db_grid_cols_effective(), BENCH_BANDS,
-                              frame_index, viewport_width_px,
-                              viewport_height_px);
+        db_gl1_draw_bands_compact(db_grid_cols_effective(), BENCH_BANDS,
+                                  frame_index, viewport_w, viewport_h);
         db_history_record_draw_stats(&g_state.frame.full_draw_frames,
                                      &g_state.frame.dirty_draw_frames, 1, 0);
     }
 
     if (g_state.runtime_flags.is_snake_history_texture != 0) {
         db_gl1_render_snake_draw_pass(
-            &snake_frame, allow_overdraw_collapse,
-            g_state.runtime_flags.uses_dirty_backbuffer_mode, viewport_w,
-            viewport_h);
+            &snake_frame, g_state.runtime_flags.uses_dirty_backbuffer_mode,
+            viewport_w, viewport_h);
     }
     g_state.frame.state_hash = db_benchmark_runtime_state_hash_cross_renderer(
         &g_state.runtime, g_state.frame.frame_index, db_grid_cols_effective(),
@@ -1207,6 +1546,8 @@ void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
     free(g_state.snake_replay.prev_upload_ranges);
     free(g_state.snake_scratch.spans);
     free(g_state.snake_scratch.row_bounds);
+    free(g_state.snake_color_state);
+    db_gl_compact_vbo_free(&g_state.compact_vbo);
     free(g_state.vertex.vertices);
     g_state = (renderer_state_t){0};
 }

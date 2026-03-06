@@ -321,7 +321,8 @@ static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
         prior_rgb[base + 2U] = pb;
     }
 
-    if ((force_full_fill_on_phase_complete != 0) && (plan->phase_completed != 0)) {
+    if ((force_full_fill_on_phase_complete != 0) &&
+        (plan->phase_completed != 0)) {
         db_cpu_bo_fill_solid_rgb(bo, target_red, target_green, target_blue);
         return;
     }

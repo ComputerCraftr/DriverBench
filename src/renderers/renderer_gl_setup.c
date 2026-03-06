@@ -1,5 +1,6 @@
 #include "renderer_gl_api.h"
 #include "renderer_gl_common.h"
+#include "renderer_gl_upload_internal.h"
 
 #include <limits.h>
 #include <stddef.h>
@@ -92,8 +93,6 @@ typedef void (*db_gl_buffer_sub_data_fn_t)(GLenum target, GLintptr offset,
 typedef void (*db_gl_gen_buffers_fn_t)(GLsizei count, GLuint *buffers);
 typedef void (*db_gl_delete_buffers_fn_t)(GLsizei count, const GLuint *buffers);
 typedef void (*db_gl_gen_textures_fn_t)(GLsizei count, GLuint *textures);
-typedef void (*db_gl_scissor_fn_t)(GLint x_px, GLint y_px, GLsizei width,
-                                   GLsizei height);
 typedef void (*db_gl_tex_coord_pointer_fn_t)(GLint size, GLenum type,
                                              GLsizei stride,
                                              const void *pointer);
@@ -172,7 +171,6 @@ typedef struct {
     db_gl_get_uniform_location_fn_t get_uniform_location;
     db_gl_map_buffer_fn_t map_buffer;
     db_gl_map_buffer_range_fn_t map_buffer_range;
-    db_gl_scissor_fn_t scissor;
     db_gl_tex_coord_pointer_fn_t tex_coord_pointer;
     db_gl_tex_image_2d_fn_t tex_image_2d;
     db_gl_tex_parameteri_fn_t tex_parameteri;
@@ -212,7 +210,6 @@ static unsigned int g_bound_vertex_array = 0U;
 static int g_bound_vertex_array_valid = 0;
 static unsigned int g_current_program = 0U;
 static int g_current_program_valid = 0;
-static int g_scissor_enabled_state = -1;
 static unsigned int
     g_texture2d_binding_by_unit[DB_GL_TRACKED_TEXTURE_UNIT_COUNT] = {0U};
 static int g_texture2d_binding_valid_by_unit[DB_GL_TRACKED_TEXTURE_UNIT_COUNT] =
@@ -470,6 +467,23 @@ static GLenum db_gl_get_error_value(void) {
     return g_upload_proc_table.get_error();
 }
 
+void db_gl_internal_require_upload_ready(const char *func_name) {
+    db_gl_require_upload_proc_table_loaded(func_name);
+}
+
+db_gl_upload_ops_t db_gl_internal_get_upload_ops(void) {
+    return (db_gl_upload_ops_t){
+        .bind_buffer = g_upload_proc_table.bind_buffer,
+        .buffer_data = g_upload_proc_table.buffer_data,
+        .buffer_sub_data = g_upload_proc_table.buffer_sub_data,
+        .map_buffer = g_upload_proc_table.map_buffer,
+        .map_buffer_range = g_upload_proc_table.map_buffer_range,
+        .unmap_buffer = g_upload_proc_table.unmap_buffer,
+    };
+}
+
+GLenum db_gl_internal_get_error_value(void) { return db_gl_get_error_value(); }
+
 static const char *db_gl_get_string_value(GLenum name) {
     if (g_upload_proc_table.get_string == NULL) {
         return NULL;
@@ -523,11 +537,10 @@ void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver) {
     g_bound_vertex_array_valid = 0;
     g_current_program = 0U;
     g_current_program_valid = 0;
-    g_scissor_enabled_state = -1;
     g_texture2d_enabled_state = 0U;
     g_texture2d_enabled_state_valid = 0;
-    for (size_t unit_index = 0U;
-         unit_index < DB_GL_TRACKED_TEXTURE_UNIT_COUNT; unit_index++) {
+    for (size_t unit_index = 0U; unit_index < DB_GL_TRACKED_TEXTURE_UNIT_COUNT;
+         unit_index++) {
         g_texture2d_binding_by_unit[unit_index] = 0U;
         g_texture2d_binding_valid_by_unit[unit_index] = 0;
     }
@@ -723,8 +736,6 @@ static void db_gl_load_upload_proc_table(void) {
             "glGetUniformLocation"));
     g_upload_proc_table.link_program =
         (db_gl_link_program_fn_t)(db_gl_get_proc("glLinkProgram"));
-    g_upload_proc_table.scissor =
-        (db_gl_scissor_fn_t)(db_gl_get_proc("glScissor"));
     g_upload_proc_table.shader_source =
         (db_gl_shader_source_fn_t)(db_gl_get_proc("glShaderSource"));
     g_upload_proc_table.tex_coord_pointer =
@@ -1103,30 +1114,6 @@ void db_gl_set_depth_test_enabled(int enabled) {
         g_upload_proc_table.disable(GL_DEPTH_TEST);
     }
     g_depth_test_enabled_state = normalized_enabled;
-}
-
-void db_gl_set_scissor_enabled(int enabled) {
-    db_gl_load_upload_proc_table();
-    const int normalized_enabled = (enabled != 0) ? 1 : 0;
-    if ((g_scissor_enabled_state >= 0) &&
-        (g_scissor_enabled_state == normalized_enabled)) {
-        return;
-    }
-    if ((normalized_enabled != 0) && (g_upload_proc_table.enable != NULL)) {
-        g_upload_proc_table.enable(GL_SCISSOR_TEST);
-    }
-    if ((normalized_enabled == 0) && (g_upload_proc_table.disable != NULL)) {
-        g_upload_proc_table.disable(GL_SCISSOR_TEST);
-    }
-    g_scissor_enabled_state = normalized_enabled;
-}
-
-void db_gl_set_scissor_rect(int x_px, int y_px, int width, int height) {
-    db_gl_load_upload_proc_table();
-    if (g_upload_proc_table.scissor != NULL) {
-        g_upload_proc_table.scissor(x_px, y_px, (GLsizei)width,
-                                    (GLsizei)height);
-    }
 }
 
 void db_gl_set_pack_alignment_1(void) {
@@ -1709,6 +1696,9 @@ static int db_gl_context_probe_persistent_upload(size_t bytes,
         return 0;
     }
     const size_t probe_size = db_gl_upload_probe_size_bytes(bytes);
+    if ((probe_size == 0U) || (initial_vertices == NULL)) {
+        return 0;
+    }
     const GLbitfield storage_flags =
         GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 
@@ -1728,7 +1718,7 @@ static int db_gl_context_probe_persistent_upload(size_t bytes,
         return 0;
     }
 
-    db_copy_bytes(mapped, initial_vertices, bytes);
+    db_copy_bytes(mapped, initial_vertices, probe_size);
     if (!db_gl_verify_buffer_prefix((const uint8_t *)initial_vertices,
                                     probe_size)) {
         (void)g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER);
@@ -1847,8 +1837,10 @@ void db_gl_context_probe_upload_capabilities(size_t bytes,
     if (g_upload_proc_table.buffer_data == NULL) {
         return;
     }
-    g_upload_proc_table.buffer_data(GL_ARRAY_BUFFER, (GLsizeiptr)bytes,
-                                    initial_vertices, GL_DYNAMIC_DRAW);
+    // Intentionally pass NULL: this is a storage/orphan allocation step for
+    // the probe buffer, not the data-path validation itself.
+    g_upload_proc_table.buffer_data(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, NULL,
+                                    GL_DYNAMIC_DRAW);
     if (db_gl_get_error_value() != GL_NO_ERROR) {
         return;
     }
@@ -1866,119 +1858,4 @@ void db_gl_context_probe_upload_capabilities(size_t bytes,
 }
 
 // 5) Upload path helpers and range upload execution.
-static void *db_gl_upload_map_target_buffer_if_supported(GLenum target,
-                                                         size_t bytes,
-                                                         int try_map_range,
-                                                         int try_map_buffer) {
-    if ((try_map_range != 0) &&
-        (g_upload_proc_table.map_buffer_range != NULL)) {
-        return g_upload_proc_table.map_buffer_range(
-            target, 0, (GLsizeiptr)bytes,
-            GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
-                GL_MAP_UNSYNCHRONIZED_BIT);
-    }
-
-    if ((try_map_buffer != 0) && (g_upload_proc_table.map_buffer != NULL)) {
-        return g_upload_proc_table.map_buffer(target, GL_WRITE_ONLY);
-    }
-
-    return NULL;
-}
-
-static void
-db_gl_upload_ranges_subdata_target(GLenum target, const void *source_base,
-                                   const db_gl_upload_range_t *ranges,
-                                   size_t range_count) {
-    const uint8_t *src_base = (const uint8_t *)source_base;
-    for (size_t i = 0U; i < range_count; i++) {
-        const db_gl_upload_range_t *range = &ranges[i];
-        g_upload_proc_table.buffer_sub_data(
-            target, (GLintptr)range->dst_offset_bytes,
-            (GLsizeiptr)range->size_bytes, src_base + range->src_offset_bytes);
-    }
-}
-
-void db_gl_upload_ranges_target(
-    const void *source_base, size_t total_bytes,
-    const db_gl_upload_range_t *ranges, size_t range_count,
-    db_gl_upload_target_t target, unsigned int target_buffer,
-    int use_persistent_upload, void *persistent_mapped_ptr,
-    int use_map_range_upload, int use_map_buffer_upload) {
-    if ((source_base == NULL) || (ranges == NULL) || (range_count == 0U)) {
-        return;
-    }
-
-    const int is_vbo = (target == DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER) ? 1 : 0;
-    const GLenum gl_target = (target == DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER)
-                                 ? GL_PIXEL_UNPACK_BUFFER
-                                 : GL_ARRAY_BUFFER;
-
-    if ((is_vbo != 0) && (use_persistent_upload != 0) &&
-        (persistent_mapped_ptr != NULL)) {
-        uint8_t *dst_base = (uint8_t *)persistent_mapped_ptr;
-        const uint8_t *src_base = (const uint8_t *)source_base;
-        for (size_t i = 0; i < range_count; i++) {
-            const db_gl_upload_range_t *range = &ranges[i];
-            db_copy_bytes(dst_base + range->dst_offset_bytes,
-                          src_base + range->src_offset_bytes,
-                          range->size_bytes);
-        }
-        return;
-    }
-
-    db_gl_require_upload_proc_table_loaded("db_gl_upload_ranges_target");
-    if (g_upload_proc_table.buffer_sub_data == NULL) {
-        return;
-    }
-
-    if (is_vbo == 0) {
-        if ((target_buffer == 0U) ||
-            (g_upload_proc_table.bind_buffer == NULL) ||
-            (g_upload_proc_table.buffer_data == NULL) ||
-            (total_bytes > (size_t)PTRDIFF_MAX)) {
-            return;
-        }
-        g_upload_proc_table.bind_buffer(gl_target, (GLuint)target_buffer);
-        // PBO path: orphan storage each upload pass to avoid GPU/CPU stalls.
-        g_upload_proc_table.buffer_data(gl_target, (GLsizeiptr)total_bytes,
-                                        NULL, GL_STREAM_DRAW);
-    }
-
-    void *mapped_ptr = db_gl_upload_map_target_buffer_if_supported(
-        gl_target, total_bytes, use_map_range_upload, use_map_buffer_upload);
-    if ((mapped_ptr != NULL) && (g_upload_proc_table.unmap_buffer != NULL)) {
-        uint8_t *dst_base = (uint8_t *)mapped_ptr;
-        const uint8_t *src_base = (const uint8_t *)source_base;
-        for (size_t i = 0; i < range_count; i++) {
-            const db_gl_upload_range_t *range = &ranges[i];
-            db_copy_bytes(dst_base + range->dst_offset_bytes,
-                          src_base + range->src_offset_bytes,
-                          range->size_bytes);
-        }
-        if (g_upload_proc_table.unmap_buffer(gl_target) == GL_FALSE) {
-            db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
-                                               range_count);
-        }
-        return;
-    }
-
-    db_gl_upload_ranges_subdata_target(gl_target, source_base, ranges,
-                                       range_count);
-}
-
-void db_gl_upload_buffer(const void *source, size_t bytes,
-                         int use_persistent_upload, void *persistent_mapped_ptr,
-                         int use_map_range_upload, int use_map_buffer_upload) {
-    const db_gl_upload_range_t full_range = {0U, 0U, bytes};
-    db_gl_upload_ranges_target(source, bytes, &full_range, 1U,
-                               DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, 0U,
-                               use_persistent_upload, persistent_mapped_ptr,
-                               use_map_range_upload, use_map_buffer_upload);
-}
-
-void db_gl_unmap_current_array_buffer(void) {
-    db_gl_require_upload_proc_table_loaded("db_gl_unmap_current_array_buffer");
-    if (g_upload_proc_table.unmap_buffer != NULL) {
-        (void)g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER);
-    }
-}
+// Implemented in renderer_gl_upload.c.

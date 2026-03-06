@@ -502,28 +502,28 @@ void main() {
     const uint RENDER_MODE_GRADIENT_FILL = 3u;
     const uint RENDER_MODE_SNAKE_RECT = 4u;
     const uint RENDER_MODE_SNAKE_SHAPES = 5u;
-    uint render_mode = pc.render_mode;
+    uint render_mode_u = pc.render_mode;
     int row_i = 0;
     int col_i = 0;
     db_row_col_from_frag_coord(row_i, col_i);
 
-    if(render_mode == RENDER_MODE_BANDS) {
+    if(render_mode_u == RENDER_MODE_BANDS) {
         uint col_u = uint(max(col_i, 0));
         uint cols_u = max(pc.grid_cols, 1u);
         uint band_count_u = max(pc.band_count, 1u);
         out_color = db_rgba(db_band_color(db_band_index_from_col(col_u, cols_u, band_count_u), band_count_u, pc.frame_index));
         return;
     }
-    if((render_mode == RENDER_MODE_GRADIENT_SWEEP) ||
-        (render_mode == RENDER_MODE_GRADIENT_FILL)) {
-        bool is_sweep = (render_mode == RENDER_MODE_GRADIENT_SWEEP);
+    if((render_mode_u == RENDER_MODE_GRADIENT_SWEEP) ||
+        (render_mode_u == RENDER_MODE_GRADIENT_FILL)) {
+        bool is_sweep = (render_mode_u == RENDER_MODE_GRADIENT_SWEEP);
         bool direction_down = is_sweep ? (pc.gradient_direction_flag != 0) : true;
         out_color = db_gradient_color(row_i, pc.gradient_head_row, pc.palette_cycle, direction_down);
         return;
     }
-    if((render_mode == RENDER_MODE_SNAKE_GRID) ||
-        (render_mode == RENDER_MODE_SNAKE_RECT) ||
-        (render_mode == RENDER_MODE_SNAKE_SHAPES)) {
+    if((render_mode_u == RENDER_MODE_SNAKE_GRID) ||
+        (render_mode_u == RENDER_MODE_SNAKE_RECT) ||
+        (render_mode_u == RENDER_MODE_SNAKE_SHAPES)) {
         ivec2 history_coord = ivec2(gl_FragCoord.xy);
         vec3 prior_color = texelFetch(u_history_tex, history_coord, 0).rgb;
         uint row_u = uint(max(row_i, 0));
@@ -531,11 +531,11 @@ void main() {
         uint rows_u = max(pc.grid_rows, 1u);
         uint cols_u = max(pc.grid_cols, 1u);
         uint batch_size = pc.snake_batch_size;
-        if((render_mode == RENDER_MODE_SNAKE_RECT) ||
-            (render_mode == RENDER_MODE_SNAKE_SHAPES)) {
+        if((render_mode_u == RENDER_MODE_SNAKE_RECT) ||
+            (render_mode_u == RENDER_MODE_SNAKE_SHAPES)) {
             uint shape_kind = db_snake_shapes_kind(pc.pattern_seed, pc.snake_shape_index);
             db_snake_shape_desc_t shape_desc = db_snake_shape_desc(pc.pattern_seed, pc.snake_shape_index, rows_u, cols_u, shape_kind);
-            out_color = db_snake_color(shape_desc, (render_mode == RENDER_MODE_SNAKE_SHAPES), row_u, col_u, prior_color, shape_desc.region.color, pc.snake_cursor, batch_size, 0);
+            out_color = db_snake_color(shape_desc, (render_mode_u == RENDER_MODE_SNAKE_SHAPES), row_u, col_u, prior_color, shape_desc.region.color, pc.snake_cursor, batch_size, 0);
         } else {
             db_snake_shape_desc_t shape_desc;
             shape_desc.region = db_full_grid_region(rows_u, cols_u);

@@ -5,6 +5,7 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 #include "../renderer_benchmark_common.h"
+#include "db_embedded_shaders.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 
@@ -404,25 +405,24 @@ static void db_vk_init_phase_pipeline_resources(
         out_phase->history_render_pass, device_phase->device_group_mask,
         &out_phase->history_targets[1]);
 
-    size_t vsz = 0;
-    size_t fsz = 0;
-    uint8_t *vbin = db_read_file_or_fail(BACKEND_NAME, VERT_SPV_PATH, &vsz);
-    uint8_t *fbin = db_read_file_or_fail(BACKEND_NAME, FRAG_SPV_PATH, &fsz);
+    if (DB_EMBEDDED_VULKAN_SPV_AVAILABLE == 0) {
+        failf("Embedded Vulkan SPIR-V shaders are unavailable in this build");
+    }
 
     VkShaderModuleCreateInfo smci = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     VkShaderModule vs = VK_NULL_HANDLE;
     VkShaderModule fs = VK_NULL_HANDLE;
-    smci.codeSize = vsz;
-    smci.pCode = (const uint32_t *)vbin;
+    smci.codeSize =
+        db_shader_vulkan_1_2_rect_vert_spv_word_count * sizeof(uint32_t);
+    smci.pCode = db_shader_vulkan_1_2_rect_vert_spv;
     DB_VK_CHECK(BACKEND_NAME,
                 vkCreateShaderModule(device_phase->device, &smci, NULL, &vs));
-    smci.codeSize = fsz;
-    smci.pCode = (const uint32_t *)fbin;
+    smci.codeSize =
+        db_shader_vulkan_1_2_rect_frag_spv_word_count * sizeof(uint32_t);
+    smci.pCode = db_shader_vulkan_1_2_rect_frag_spv;
     DB_VK_CHECK(BACKEND_NAME,
                 vkCreateShaderModule(device_phase->device, &smci, NULL, &fs));
-    free(vbin);
-    free(fbin);
 
     VkPipelineShaderStageCreateInfo stages[2] = {0};
     stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

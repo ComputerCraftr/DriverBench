@@ -164,29 +164,9 @@ static inline int db_history_can_replay_previous_damage(
 }
 
 static inline int
-db_history_should_use_snake_history_scissor_pass(int uses_dirty_backbuffer_mode,
-                                                 int snake_plan_valid) {
+db_history_should_use_snake_dirty_history_pass(int uses_dirty_backbuffer_mode,
+                                               int snake_plan_valid) {
     return (uses_dirty_backbuffer_mode != 0) && (snake_plan_valid != 0);
-}
-
-static inline int db_history_should_use_snake_settled_scissor_base(
-    int has_vbo, int is_grid_or_rect, int snake_transition_frame,
-    int force_full_upload, int uses_dirty_backbuffer_mode,
-    int has_span_scratch) {
-    return (has_vbo != 0) && (is_grid_or_rect != 0) &&
-           (snake_transition_frame == 0) && (force_full_upload == 0) &&
-           (uses_dirty_backbuffer_mode != 0) && (has_span_scratch != 0);
-}
-
-static inline int db_history_should_use_snake_settled_scissor(
-    int has_vbo, int is_grid_or_rect, int snake_transition_frame,
-    int force_full_upload, int uses_dirty_backbuffer_mode, int has_span_scratch,
-    int heuristic_ok) {
-    return db_history_should_use_snake_settled_scissor_base(
-               has_vbo, is_grid_or_rect, snake_transition_frame,
-               force_full_upload, uses_dirty_backbuffer_mode,
-               has_span_scratch) &&
-           (heuristic_ok != 0);
 }
 
 static inline int db_history_should_reset_gradient_replay(db_pattern_t pattern,
@@ -709,7 +689,10 @@ static inline void db_history_invalidate_snake_backbuffer_on_resize(
         *io_previous_upload_count = 0U;
     }
     if (io_snake_backbuffer_state != NULL) {
+        io_snake_backbuffer_state->seed_frames_remaining =
+            db_history_seed_frame_count_for_swapchain(is_double_buffered);
         io_snake_backbuffer_state->backbuffer_valid = 0;
+        io_snake_backbuffer_state->initial_seed_done = 0;
         io_snake_backbuffer_state->resync_frames_remaining =
             db_history_seed_frame_count_for_swapchain(is_double_buffered);
     }

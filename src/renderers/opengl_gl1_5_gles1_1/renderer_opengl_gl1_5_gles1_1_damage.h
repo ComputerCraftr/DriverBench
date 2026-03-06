@@ -31,15 +31,4 @@ db_gl1_collect_pattern_damage_ranges(const db_gl1_damage_collect_ctx_t *ctx,
                                      db_gl_upload_range_t *range_storage,
                                      size_t range_capacity);
 
-void db_gl1_upload_vbo_damage_ranges(const float *vertices, size_t upload_bytes,
-                                     const db_gl_upload_probe_result_t *upload,
-                                     const db_gl_upload_range_t *range_storage,
-                                     size_t upload_range_count);
-
-void db_gl1_draw_dirty_ranges_common(const char *backend_name,
-                                     size_t vertex_stride,
-                                     uint32_t draw_vertex_count,
-                                     const db_gl_upload_range_t *ranges,
-                                     size_t range_count);
-
 #endif

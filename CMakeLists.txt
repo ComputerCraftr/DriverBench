@@ -464,15 +464,11 @@ endif()
 list(APPEND DB_DRIVERBENCH_SOURCES
   src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
   src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_damage.c
-  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_primitives.c
-  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_ranges.c
+  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_util.c
   src/renderers/opengl_gl3_3/renderer_opengl_gl3_3.c
   src/renderers/renderer_gl_common.c
   src/renderers/renderer_gl_setup.c
-)
-list(APPEND DB_DRIVERBENCH_DEFS
-  OPENGL_GL3_3_VERT_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert"
-  OPENGL_GL3_3_FRAG_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag"
+  src/renderers/renderer_gl_upload.c
 )
 
 if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND UNIX AND NOT APPLE)
@@ -649,34 +645,73 @@ if(DB_BUILD_VULKAN)
     list(APPEND DB_DRIVERBENCH_LIBS ${DB_VULKAN_LIB})
     list(APPEND DB_DRIVERBENCH_DEFS DB_HAS_VULKAN_API=1)
 
+    set(DB_VK_VERT_SPV
+      ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
+    )
+    set(DB_VK_FRAG_SPV
+      ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
+    )
+
     add_custom_command(
-      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
+      OUTPUT ${DB_VK_VERT_SPV}
       COMMAND ${GLSLC}
               ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.vert -o
-              ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
+              ${DB_VK_VERT_SPV}
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.vert
       VERBATIM
     )
 
     add_custom_command(
-      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
+      OUTPUT ${DB_VK_FRAG_SPV}
       COMMAND ${GLSLC}
               ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.frag -o
-              ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
+              ${DB_VK_FRAG_SPV}
       DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_vulkan_1_2_rect.frag
       VERBATIM
     )
 
     add_custom_target(driverbench_vulkan_shaders ALL
-      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv
-              ${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv
-    )
-    list(APPEND DB_DRIVERBENCH_DEFS
-      VERT_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.vert.spv"
-      FRAG_SPV_PATH="${CMAKE_CURRENT_BINARY_DIR}/shader_vulkan_1_2_rect.frag.spv"
+      DEPENDS ${DB_VK_VERT_SPV}
+              ${DB_VK_FRAG_SPV}
     )
   endif()
 endif()
+
+set(DB_GENERATED_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(DB_EMBEDDED_SHADERS_HEADER
+  ${DB_GENERATED_INCLUDE_DIR}/db_embedded_shaders.h
+)
+set(DB_EMBEDDED_SHADER_ARGS
+  -DOUT_HEADER=${DB_EMBEDDED_SHADERS_HEADER}
+  -DGL3_VERT=${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert
+  -DGL3_FRAG=${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag
+)
+set(DB_EMBEDDED_SHADER_DEPS
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.vert
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/shader_opengl_gl3_3_rect.frag
+  ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedShadersHeader.cmake
+)
+if(DEFINED DB_VK_VERT_SPV AND DEFINED DB_VK_FRAG_SPV)
+  list(APPEND DB_EMBEDDED_SHADER_ARGS
+    -DVK_VERT_SPV=${DB_VK_VERT_SPV}
+    -DVK_FRAG_SPV=${DB_VK_FRAG_SPV}
+  )
+  list(APPEND DB_EMBEDDED_SHADER_DEPS
+    ${DB_VK_VERT_SPV}
+    ${DB_VK_FRAG_SPV}
+  )
+endif()
+add_custom_command(
+  OUTPUT ${DB_EMBEDDED_SHADERS_HEADER}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${DB_GENERATED_INCLUDE_DIR}
+  COMMAND ${CMAKE_COMMAND} ${DB_EMBEDDED_SHADER_ARGS}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedShadersHeader.cmake
+  DEPENDS ${DB_EMBEDDED_SHADER_DEPS}
+  VERBATIM
+)
+add_custom_target(driverbench_embedded_shaders ALL
+  DEPENDS ${DB_EMBEDDED_SHADERS_HEADER}
+)
 
 set(DB_UNIFIED_TARGET driverbench)
 add_executable(${DB_UNIFIED_TARGET}
@@ -685,8 +720,12 @@ add_executable(${DB_UNIFIED_TARGET}
 db_apply_perf_options(${DB_UNIFIED_TARGET})
 target_compile_definitions(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_DEFS})
 target_link_libraries(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_LIBS})
+target_include_directories(${DB_UNIFIED_TARGET} PRIVATE ${DB_GENERATED_INCLUDE_DIR})
 if(TARGET driverbench_vulkan_shaders)
   add_dependencies(${DB_UNIFIED_TARGET} driverbench_vulkan_shaders)
+endif()
+if(TARGET driverbench_embedded_shaders)
+  add_dependencies(${DB_UNIFIED_TARGET} driverbench_embedded_shaders)
 endif()
 
 if(CMAKE_EXPORT_COMPILE_COMMANDS)

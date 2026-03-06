@@ -59,11 +59,6 @@ uint64_t db_now_ns_monotonic(void);
 void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
                          double fps_cap);
 
-// File helpers.
-uint8_t *db_read_file_or_fail(const char *backend, const char *path,
-                              size_t *out_sz);
-char *db_read_text_file_or_fail(const char *backend, const char *path);
-
 // Benchmark logging.
 void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
                                const char *backend_name, uint64_t frames,

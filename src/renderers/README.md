@@ -7,9 +7,9 @@ Current renderer modules:
 - `opengl_gl1_5_gles1_1/`
     - OpenGL 1.5 / GLES 1.1 fixed-function renderer logic.
 - `opengl_gl3_3/`
-    - OpenGL 3.3 shader renderer logic (GLSL loaded from files).
+    - OpenGL 3.3 shader renderer logic (GLSL embedded in binary).
 - `vulkan_1_2_multi_gpu/`
-    - Vulkan 1.2 multi-GPU renderer logic.
+    - Vulkan 1.2 multi-GPU renderer logic (SPIR-V embedded in binary).
 - `cpu_renderer/`
     - CPU BO renderer logic.
 

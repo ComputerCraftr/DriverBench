@@ -508,8 +508,8 @@ db_snake_plan_next_step(const db_snake_plan_request_t *request) {
         };
         return db_snake_plan_next_step_for_region(
             &grid_region, 0U, request->cursor, request->prev_start,
-            request->prev_count, request->phase_flag, request->speed_step,
-            1, 0);
+            request->prev_count, request->phase_flag, request->speed_step, 1,
+            0);
     }
 
     const db_snake_region_t region =
