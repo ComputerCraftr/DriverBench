@@ -377,6 +377,15 @@ db_vk_scheduler_mode_name(db_vk_execution_mode_t execution_mode) {
     return DB_CAP_MODE_VK_SCHED_SINGLE_GPU;
 }
 
+static inline const char *
+db_vk_scheduler_mode_name_effective(db_vk_execution_mode_t execution_mode,
+                                    uint32_t active_lane_count) {
+    if (active_lane_count <= 1U) {
+        return DB_CAP_MODE_VK_SCHED_SINGLE_GPU;
+    }
+    return db_vk_scheduler_mode_name(execution_mode);
+}
+
 static inline uint32_t db_vk_normalize_gpu_count(uint32_t gpu_count) {
     if (gpu_count == 0U) {
         return 1U;

@@ -21,6 +21,11 @@ typedef struct {
     int output_hash_enabled;
 } db_display_hash_settings_t;
 
+#define DB_DISPLAY_HASH_KEY_STATE "state_hash"
+#define DB_DISPLAY_HASH_KEY_FBO "fbo_hash"
+#define DB_DISPLAY_HASH_KEY_FRAMEBUFFER "framebuffer_hash"
+#define DB_DISPLAY_HASH_KEY_BO "bo_hash"
+
 static inline db_display_hash_settings_t
 db_display_resolve_hash_settings(int default_state_hash_enabled,
                                  int default_output_hash_enabled,

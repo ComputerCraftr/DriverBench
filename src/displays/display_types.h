@@ -18,4 +18,11 @@ typedef enum {
     DB_GL_RENDERER_GL3_3 = 1,
 } db_gl_renderer_t;
 
+#define DB_BACKEND_NAME_DISPLAY_OFFSCREEN "display_offscreen"
+#define DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO "display_offscreen_gl3_fbo"
+#define DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU                                \
+    "display_glfw_window_cpu_renderer"
+#define DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_GL "display_glfw_window_opengl"
+#define DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_VK "display_glfw_window_vulkan"
+
 #endif

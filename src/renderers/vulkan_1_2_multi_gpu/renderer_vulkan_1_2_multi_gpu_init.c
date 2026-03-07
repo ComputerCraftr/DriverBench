@@ -29,6 +29,7 @@ typedef struct {
     uint32_t device_group_mask;
     uint32_t gpu_count;
     int have_group;
+    int headless_offscreen;
     VkDevice device;
     VkPhysicalDevice present_phys;
     VkPresentModeKHR present_mode;
@@ -75,6 +76,40 @@ typedef enum {
     DB_VK_MULTI_DEVICE_POLICY_GROUP_ONLY = 1,
     DB_VK_MULTI_DEVICE_POLICY_INDEPENDENT_OK = 2,
 } db_vk_multi_device_policy_t;
+
+static int db_vk_wsi_is_headless(const db_vk_wsi_config_t *wsi_config) {
+    return ((wsi_config == NULL) || (wsi_config->window_handle == NULL) ||
+            (wsi_config->get_required_instance_extensions == NULL) ||
+            (wsi_config->create_window_surface == NULL) ||
+            (wsi_config->get_framebuffer_size == NULL))
+               ? 1
+               : 0;
+}
+
+static int db_vk_instance_extension_supported(const char *extension_name) {
+    uint32_t extension_count = 0U;
+    DB_VK_CHECK(BACKEND_NAME, vkEnumerateInstanceExtensionProperties(
+                                  NULL, &extension_count, NULL));
+    if ((extension_count == 0U) || (extension_name == NULL)) {
+        return 0;
+    }
+    VkExtensionProperties *extensions = (VkExtensionProperties *)calloc(
+        extension_count, sizeof(VkExtensionProperties));
+    if (extensions == NULL) {
+        failf("failed to allocate Vulkan instance extension property array");
+    }
+    DB_VK_CHECK(BACKEND_NAME, vkEnumerateInstanceExtensionProperties(
+                                  NULL, &extension_count, extensions));
+    int supported = 0;
+    for (uint32_t i = 0U; i < extension_count; i++) {
+        if (strcmp(extensions[i].extensionName, extension_name) == 0) {
+            supported = 1;
+            break;
+        }
+    }
+    free(extensions);
+    return supported;
+}
 
 static const char *db_vk_compose_capability_mode(db_pattern_t pattern) {
     const char *draw_mode = db_vk_capability_draw_mode_name(pattern);
@@ -179,7 +214,7 @@ static uint32_t db_vk_find_graphics_queue_family(VkPhysicalDevice phys) {
 static int db_vk_queue_family_supports_present(VkPhysicalDevice phys,
                                                uint32_t family_index,
                                                VkSurfaceKHR surface) {
-    if (family_index == UINT32_MAX) {
+    if ((family_index == UINT32_MAX) || (surface == VK_NULL_HANDLE)) {
         return 0;
     }
     VkBool32 supports_present = 0;
@@ -334,7 +369,8 @@ static void db_vk_log_execution_plan(const DeviceSelectionState *selection) {
     }
     infof("execution plan: mode=%s primary_lane=%u active_lanes=%u "
           "discovered_lanes=%u",
-          db_vk_scheduler_mode_name(selection->execution_mode),
+          db_vk_scheduler_mode_name_effective(selection->execution_mode,
+                                              selection->active_lane_count),
           selection->primary_lane_index, selection->active_lane_count,
           selection->lane_count);
     for (uint32_t i = 0U; i < selection->lane_count; i++) {
@@ -392,72 +428,76 @@ DeviceSelectionState db_vk_select_devices_and_group(VkInstance instance,
     selection.primary_phys_index =
         db_vk_choose_primary_physical_index(&selection);
 
-    uint32_t group_count = 0;
-    DB_VK_CHECK(BACKEND_NAME,
-                vkEnumeratePhysicalDeviceGroups(instance, &group_count, NULL));
-    selection.group_count = db_vk_capped_enumeration_count_or_log(
-        "physical device group", group_count, MAX_GPU_COUNT);
-    for (uint32_t i = 0; i < selection.group_count; i++) {
-        selection.groups[i].sType =
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GROUP_PROPERTIES;
-    }
-    VkResult enumerate_groups_result = vkEnumeratePhysicalDeviceGroups(
-        instance, &selection.group_count, selection.groups);
-    if ((enumerate_groups_result != VK_SUCCESS) &&
-        (enumerate_groups_result != VK_INCOMPLETE)) {
-        db_vk_fail(BACKEND_NAME, "vkEnumeratePhysicalDeviceGroups",
-                   enumerate_groups_result, __FILE__, __LINE__);
-    }
-
     DeviceGroupInfo best = {0};
-    uint64_t best_score = 0U;
-    for (uint32_t gi = 0; gi < selection.group_count; gi++) {
-        VkPhysicalDeviceGroupProperties *group_props = &selection.groups[gi];
-        if (group_props->physicalDeviceCount < 2) {
-            continue;
+    if (surface != VK_NULL_HANDLE) {
+        uint32_t group_count = 0;
+        DB_VK_CHECK(BACKEND_NAME, vkEnumeratePhysicalDeviceGroups(
+                                      instance, &group_count, NULL));
+        selection.group_count = db_vk_capped_enumeration_count_or_log(
+            "physical device group", group_count, MAX_GPU_COUNT);
+        for (uint32_t i = 0; i < selection.group_count; i++) {
+            selection.groups[i].sType =
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GROUP_PROPERTIES;
+        }
+        VkResult enumerate_groups_result = vkEnumeratePhysicalDeviceGroups(
+            instance, &selection.group_count, selection.groups);
+        if ((enumerate_groups_result != VK_SUCCESS) &&
+            (enumerate_groups_result != VK_INCOMPLETE)) {
+            db_vk_fail(BACKEND_NAME, "vkEnumeratePhysicalDeviceGroups",
+                       enumerate_groups_result, __FILE__, __LINE__);
         }
 
-        uint32_t mask = 0;
-        const uint32_t group_device_scan_count =
-            (group_props->physicalDeviceCount < MAX_GPU_COUNT)
-                ? group_props->physicalDeviceCount
-                : MAX_GPU_COUNT;
-        for (uint32_t di = 0; di < group_device_scan_count; di++) {
-            VkPhysicalDevice pd = group_props->physicalDevices[di];
-            uint32_t queue_count = 0;
-            vkGetPhysicalDeviceQueueFamilyProperties(pd, &queue_count, NULL);
-            VkQueueFamilyProperties *queue_props =
-                (VkQueueFamilyProperties *)calloc(
-                    queue_count, sizeof(VkQueueFamilyProperties));
-            vkGetPhysicalDeviceQueueFamilyProperties(pd, &queue_count,
-                                                     queue_props);
-
-            for (uint32_t qi = 0; qi < queue_count; qi++) {
-                VkBool32 supports_present = 0;
-                vkGetPhysicalDeviceSurfaceSupportKHR(pd, qi, surface,
-                                                     &supports_present);
-                if (supports_present &&
-                    (queue_props[qi].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-                    mask |= (MASK_GPU0 << di);
-                    break;
-                }
+        uint64_t best_score = 0U;
+        for (uint32_t gi = 0; gi < selection.group_count; gi++) {
+            VkPhysicalDeviceGroupProperties *group_props =
+                &selection.groups[gi];
+            if (group_props->physicalDeviceCount < 2) {
+                continue;
             }
-            free((void *)queue_props);
-        }
 
-        if (mask == 0U) {
-            continue;
-        }
-        selection.group_info[gi].grp = *group_props;
-        selection.group_info[gi].presentable_mask = mask;
+            uint32_t mask = 0;
+            const uint32_t group_device_scan_count =
+                (group_props->physicalDeviceCount < MAX_GPU_COUNT)
+                    ? group_props->physicalDeviceCount
+                    : MAX_GPU_COUNT;
+            for (uint32_t di = 0; di < group_device_scan_count; di++) {
+                VkPhysicalDevice pd = group_props->physicalDevices[di];
+                uint32_t queue_count = 0;
+                vkGetPhysicalDeviceQueueFamilyProperties(pd, &queue_count,
+                                                         NULL);
+                VkQueueFamilyProperties *queue_props =
+                    (VkQueueFamilyProperties *)calloc(
+                        queue_count, sizeof(VkQueueFamilyProperties));
+                vkGetPhysicalDeviceQueueFamilyProperties(pd, &queue_count,
+                                                         queue_props);
 
-        const uint64_t group_score =
-            db_vk_group_score(group_device_scan_count, mask);
-        if ((selection.have_group == 0) || (group_score > best_score)) {
-            best.grp = *group_props;
-            best.presentable_mask = mask;
-            best_score = group_score;
-            selection.have_group = 1;
+                for (uint32_t qi = 0; qi < queue_count; qi++) {
+                    VkBool32 supports_present = 0;
+                    vkGetPhysicalDeviceSurfaceSupportKHR(pd, qi, surface,
+                                                         &supports_present);
+                    if (supports_present &&
+                        (queue_props[qi].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+                        mask |= (MASK_GPU0 << di);
+                        break;
+                    }
+                }
+                free((void *)queue_props);
+            }
+
+            if (mask == 0U) {
+                continue;
+            }
+            selection.group_info[gi].grp = *group_props;
+            selection.group_info[gi].presentable_mask = mask;
+
+            const uint64_t group_score =
+                db_vk_group_score(group_device_scan_count, mask);
+            if ((selection.have_group == 0) || (group_score > best_score)) {
+                best.grp = *group_props;
+                best.presentable_mask = mask;
+                best_score = group_score;
+                selection.have_group = 1;
+            }
         }
     }
 
@@ -587,29 +627,34 @@ DeviceSelectionState db_vk_select_devices_and_group(VkInstance instance,
 static void db_vk_init_phase_instance_surface(
     const db_vk_wsi_config_t *wsi_config,
     db_vk_init_instance_surface_phase_t *out_phase) {
-    if ((wsi_config == NULL) || (out_phase == NULL) ||
-        (wsi_config->window_handle == NULL) ||
-        (wsi_config->get_required_instance_extensions == NULL) ||
-        (wsi_config->create_window_surface == NULL) ||
-        (wsi_config->get_framebuffer_size == NULL)) {
-        failf("Invalid Vulkan WSI config provided to renderer init");
-    }
-
-    uint32_t required_ext_count = 0;
-    const char *const *required_exts =
-        wsi_config->get_required_instance_extensions(&required_ext_count,
-                                                     wsi_config->user_data);
-    if ((required_ext_count == 0U) || (required_exts == NULL)) {
-        failf("Windowing backend did not provide Vulkan instance extensions");
+    if (out_phase == NULL) {
+        failf("Invalid Vulkan init phase output");
     }
 
     const char *inst_exts[MAX_INSTANCE_EXTS];
     uint32_t inst_ext_count = 0;
-    for (uint32_t i = 0; i < required_ext_count; i++) {
-        inst_exts[inst_ext_count++] = required_exts[i];
+    if (db_vk_wsi_is_headless(wsi_config) == 0) {
+        uint32_t required_ext_count = 0;
+        const char *const *required_exts =
+            wsi_config->get_required_instance_extensions(&required_ext_count,
+                                                         wsi_config->user_data);
+        if ((required_ext_count == 0U) || (required_exts == NULL)) {
+            failf(
+                "Windowing backend did not provide Vulkan instance extensions");
+        }
+        for (uint32_t i = 0; i < required_ext_count; i++) {
+            inst_exts[inst_ext_count++] = required_exts[i];
+        }
     }
     inst_exts[inst_ext_count++] =
         VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
+    VkInstanceCreateFlags instance_flags = 0U;
+    if (db_vk_instance_extension_supported(
+            VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) != 0) {
+        inst_exts[inst_ext_count++] =
+            VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+        instance_flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
 
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "multi_gpu_2d";
@@ -617,6 +662,7 @@ static void db_vk_init_phase_instance_surface(
 
     VkInstanceCreateInfo ici = {.sType =
                                     VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    ici.flags = instance_flags;
     ici.pApplicationInfo = &app;
     ici.enabledExtensionCount = inst_ext_count;
     ici.ppEnabledExtensionNames = inst_exts;
@@ -625,12 +671,15 @@ static void db_vk_init_phase_instance_surface(
     DB_VK_CHECK(BACKEND_NAME,
                 vkCreateInstance(&ici, NULL, &out_phase->instance));
 
-    VkResult create_surface_result = wsi_config->create_window_surface(
-        out_phase->instance, wsi_config->window_handle, &out_phase->surface,
-        wsi_config->user_data);
-    if (create_surface_result != VK_SUCCESS) {
-        db_vk_fail(BACKEND_NAME, "create_window_surface", create_surface_result,
-                   __FILE__, __LINE__);
+    out_phase->surface = VK_NULL_HANDLE;
+    if (db_vk_wsi_is_headless(wsi_config) == 0) {
+        VkResult create_surface_result = wsi_config->create_window_surface(
+            out_phase->instance, wsi_config->window_handle, &out_phase->surface,
+            wsi_config->user_data);
+        if (create_surface_result != VK_SUCCESS) {
+            db_vk_fail(BACKEND_NAME, "create_window_surface",
+                       create_surface_result, __FILE__, __LINE__);
+        }
     }
 }
 
@@ -642,6 +691,7 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
     }
 
     *out_phase = (db_vk_init_device_phase_t){0};
+    out_phase->headless_offscreen = (surface == VK_NULL_HANDLE) ? 1 : 0;
     out_phase->selection = db_vk_select_devices_and_group(instance, surface);
     out_phase->have_group = (out_phase->selection.execution_mode ==
                              DB_VK_EXECUTION_MODE_DEVICE_GROUP);
@@ -663,10 +713,10 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
 
     uint32_t gfx_qf = UINT32_MAX;
     for (uint32_t i = 0; i < qf_count; i++) {
-        VkBool32 supp = 0;
-        vkGetPhysicalDeviceSurfaceSupportKHR(out_phase->present_phys, i,
-                                             surface, &supp);
-        if (supp && (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        if (((qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0U) &&
+            ((surface == VK_NULL_HANDLE) ||
+             db_vk_queue_family_supports_present(out_phase->present_phys, i,
+                                                 surface) != 0)) {
             gfx_qf = i;
             break;
         }
@@ -691,7 +741,9 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
 
     const char *dev_exts[MAX_GPU_COUNT];
     uint32_t dev_ext_count = 0;
-    dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    if (surface != VK_NULL_HANDLE) {
+        dev_exts[dev_ext_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    }
 
     VkPhysicalDeviceFeatures feats = {0};
     VkDeviceGroupDeviceCreateInfo dgci = {
@@ -702,7 +754,7 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     dci.pQueueCreateInfos = &qci;
     dci.queueCreateInfoCount = 1;
-    dci.ppEnabledExtensionNames = dev_exts;
+    dci.ppEnabledExtensionNames = (dev_ext_count != 0U) ? dev_exts : NULL;
     dci.enabledExtensionCount = dev_ext_count;
     dci.pEnabledFeatures = &feats;
     if (out_phase->have_group) {
@@ -714,32 +766,49 @@ static void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
     vkGetDeviceQueue(out_phase->device, out_phase->queue_family_index, 0,
                      &out_phase->queue);
 
-    uint32_t fmt_count = 0;
-    DB_VK_CHECK(BACKEND_NAME,
-                vkGetPhysicalDeviceSurfaceFormatsKHR(
-                    out_phase->present_phys, surface, &fmt_count, NULL));
-    VkSurfaceFormatKHR *fmts =
-        (VkSurfaceFormatKHR *)calloc(fmt_count, sizeof(VkSurfaceFormatKHR));
-    DB_VK_CHECK(BACKEND_NAME,
-                vkGetPhysicalDeviceSurfaceFormatsKHR(
-                    out_phase->present_phys, surface, &fmt_count, fmts));
-    out_phase->surface_format = db_vk_choose_surface_format(fmts, fmt_count);
-    free(fmts);
-    out_phase->present_mode = db_vk_choose_present_mode(out_phase->present_phys,
-                                                        surface, vsync_enabled);
-    infof("present mode selected: %s (vsync=%d)",
-          db_vk_present_mode_name(out_phase->present_mode), vsync_enabled);
-    infof("scheduler pacing policy: blocking=%d frame_budget_ns=%llu "
-          "frame_safety_ns=%llu",
-          db_vk_present_mode_is_blocking(out_phase->present_mode),
-          (unsigned long long)db_vk_scheduler_frame_budget_ns(
-              out_phase->present_mode),
-          (unsigned long long)db_vk_scheduler_frame_safety_ns(
-              out_phase->present_mode));
-    if ((vsync_enabled == 0) &&
-        (out_phase->present_mode == VK_PRESENT_MODE_FIFO_KHR)) {
-        infof("non-blocking present mode unavailable on this surface/device; "
-              "runtime may be present-throttled");
+    if (surface != VK_NULL_HANDLE) {
+        uint32_t fmt_count = 0;
+        DB_VK_CHECK(BACKEND_NAME,
+                    vkGetPhysicalDeviceSurfaceFormatsKHR(
+                        out_phase->present_phys, surface, &fmt_count, NULL));
+        VkSurfaceFormatKHR *fmts =
+            (VkSurfaceFormatKHR *)calloc(fmt_count, sizeof(VkSurfaceFormatKHR));
+        DB_VK_CHECK(BACKEND_NAME,
+                    vkGetPhysicalDeviceSurfaceFormatsKHR(
+                        out_phase->present_phys, surface, &fmt_count, fmts));
+        out_phase->surface_format =
+            db_vk_choose_surface_format(fmts, fmt_count);
+        free(fmts);
+        out_phase->present_mode = db_vk_choose_present_mode(
+            out_phase->present_phys, surface, vsync_enabled);
+        infof("present mode selected: %s (vsync=%d)",
+              db_vk_present_mode_name(out_phase->present_mode), vsync_enabled);
+        infof("scheduler pacing policy: blocking=%d frame_budget_ns=%llu "
+              "frame_safety_ns=%llu",
+              db_vk_present_mode_is_blocking(out_phase->present_mode),
+              (unsigned long long)db_vk_scheduler_frame_budget_ns(
+                  out_phase->present_mode),
+              (unsigned long long)db_vk_scheduler_frame_safety_ns(
+                  out_phase->present_mode));
+        if ((vsync_enabled == 0) &&
+            (out_phase->present_mode == VK_PRESENT_MODE_FIFO_KHR)) {
+            infof(
+                "non-blocking present mode unavailable on this surface/device; "
+                "runtime may be present-throttled");
+        }
+    } else {
+        out_phase->surface_format.format = VK_FORMAT_B8G8R8A8_UNORM;
+        out_phase->surface_format.colorSpace =
+            VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+        out_phase->present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        infof("present mode selected: headless_offscreen");
+        infof("scheduler pacing policy: blocking=%d frame_budget_ns=%llu "
+              "frame_safety_ns=%llu",
+              0,
+              (unsigned long long)db_vk_scheduler_frame_budget_ns(
+                  out_phase->present_mode),
+              (unsigned long long)db_vk_scheduler_frame_safety_ns(
+                  out_phase->present_mode));
     }
 }
 
@@ -760,7 +829,9 @@ static void db_vk_init_phase_pipeline_resources(
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR};
+        .finalLayout = (surface != VK_NULL_HANDLE)
+                           ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                           : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
 
     VkAttachmentReference color_ref = {
         .attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
@@ -799,10 +870,16 @@ static void db_vk_init_phase_pipeline_resources(
                 vkCreateRenderPass(device_phase->device, &history_rpci, NULL,
                                    &out_phase->history_render_pass));
 
-    db_vk_create_swapchain_state(
-        wsi_config, device_phase->present_phys, device_phase->device, surface,
-        device_phase->surface_format, device_phase->present_mode,
-        out_phase->render_pass, &out_phase->swapchain_state);
+    if ((surface != VK_NULL_HANDLE) && (wsi_config != NULL)) {
+        db_vk_create_swapchain_state(
+            wsi_config, device_phase->present_phys, device_phase->device,
+            surface, device_phase->surface_format, device_phase->present_mode,
+            out_phase->render_pass, &out_phase->swapchain_state);
+    } else {
+        out_phase->swapchain_state.extent.width = BENCH_WINDOW_WIDTH_PX;
+        out_phase->swapchain_state.extent.height = BENCH_WINDOW_HEIGHT_PX;
+        out_phase->swapchain_state.image_count = 0U;
+    }
 
     db_vk_create_history_target(
         device_phase->present_phys, device_phase->device,
@@ -1098,17 +1175,21 @@ db_vk_init_phase_scheduler(const db_vk_init_device_phase_t *device_phase,
     (void)db_parse_bool_text(
         db_runtime_option_get(DB_RUNTIME_OPT_VK_NO_PRESENT),
         &no_present_requested);
-    out_phase->no_present_mode = (no_present_requested != 0);
+    out_phase->no_present_mode =
+        (no_present_requested != 0) || (device_phase->headless_offscreen != 0);
     out_phase->effective_gpu_count = device_phase->gpu_count;
     const int multi_gpu = out_phase->effective_gpu_count > 1U;
     out_phase->capability_mode = db_vk_compose_capability_mode(pattern);
     db_log_renderer_capability_mode(BACKEND_NAME, out_phase->capability_mode);
     (void)multi_gpu;
     db_log_renderer_scheduler_mode(
-        BACKEND_NAME,
-        db_vk_scheduler_mode_name(device_phase->selection.execution_mode));
+        BACKEND_NAME, db_vk_scheduler_mode_name_effective(
+                          device_phase->selection.execution_mode,
+                          device_phase->selection.active_lane_count));
     if (no_present_requested != 0) {
         infof("debug runtime: no-present mode enabled");
+    } else if (device_phase->headless_offscreen != 0) {
+        infof("headless offscreen mode enabled");
     }
     for (uint32_t g = 0; g < out_phase->effective_gpu_count; g++) {
         out_phase->ema_ms_per_work_unit[g] = DEFAULT_EMA_MS_PER_WORK_UNIT;

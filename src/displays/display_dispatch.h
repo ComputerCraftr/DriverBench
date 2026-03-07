@@ -52,6 +52,9 @@ db_dispatch_display_capabilities(db_display_t display) {
     if (display == DB_DISPLAY_OFFSCREEN) {
         caps.compiled = 1;
         caps.supports_cpu = 1;
+#ifdef DB_HAS_VULKAN_API
+        caps.supports_vulkan = 1;
+#endif
 #ifdef DB_HAS_GLFW
         caps.supports_opengl = 1;
         caps.supports_gl1 = 1;

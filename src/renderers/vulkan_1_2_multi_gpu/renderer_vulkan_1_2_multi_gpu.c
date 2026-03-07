@@ -13,7 +13,10 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
         return;
     }
     g_state.initialized = 1;
-    g_state.wsi_config = *ctx->wsi_config;
+    g_state.wsi_config = (db_vk_wsi_config_t){0};
+    if (ctx->wsi_config != NULL) {
+        g_state.wsi_config = *ctx->wsi_config;
+    }
     g_state.log_backend_name = BACKEND_NAME;
     if ((ctx->wsi_config != NULL) && (ctx->wsi_config->user_data != NULL)) {
         g_state.log_backend_name = (const char *)ctx->wsi_config->user_data;

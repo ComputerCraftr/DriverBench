@@ -181,8 +181,7 @@ static uint64_t db_vk_compute_output_hash_from_image(VkImage image,
 
 static inline db_vk_grid_row_block_draw_req_t db_vk_gradient_row_block_req(
     const db_dirty_row_range_t *range, uint32_t grid_cols, db_pattern_t pattern,
-    const db_gradient_state_t *state,
-    uint32_t frame_index) {
+    const db_gradient_state_t *state, uint32_t frame_index) {
     if ((range == NULL) || (state == NULL)) {
         return (db_vk_grid_row_block_draw_req_t){0};
     }
@@ -631,8 +630,8 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         const uint32_t full_units = db_checked_u64_to_u32(
             BACKEND_NAME, "bands_full_units", full_units_u64);
         const uint32_t owner = db_vk_select_owner_for_work(
-            active_gpu_count, full_units, scheduler_budget_ns,
-            frame_safety_ns, g_state.ema_ms_per_work_unit, frame_work_units);
+            active_gpu_count, full_units, scheduler_budget_ns, frame_safety_ns,
+            g_state.ema_ms_per_work_unit, frame_work_units);
         const db_vk_draw_dynamic_req_t draw_req = {
             .ndc_x0 = -1.0F,
             .ndc_y0 = -1.0F,
@@ -657,10 +656,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         if (have_group) {
             vkCmdSetDeviceMask(g_state.command_buffer, (MASK_GPU0 << owner));
         }
-        db_vk_owner_timing_begin(g_state.command_buffer,
-                                 g_state.gpu_timing_enabled,
-                                 g_state.timing_query_pool, owner,
-                                 frame_owner_used);
+        db_vk_owner_timing_begin(
+            g_state.command_buffer, g_state.gpu_timing_enabled,
+            g_state.timing_query_pool, owner, frame_owner_used);
         VkRect2D scissor = {0};
         scissor.offset.x = 0;
         scissor.offset.y = 0;
@@ -670,10 +668,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
         db_vk_push_constants_draw_dynamic(g_state.command_buffer,
                                           g_state.pipeline_layout, &draw_req);
         vkCmdDraw(g_state.command_buffer, DB_RECT_VERTEX_COUNT, 1, 0, 0);
-        db_vk_owner_timing_end(g_state.command_buffer,
-                               g_state.gpu_timing_enabled,
-                               g_state.timing_query_pool, owner,
-                               frame_owner_finished);
+        db_vk_owner_timing_end(
+            g_state.command_buffer, g_state.gpu_timing_enabled,
+            g_state.timing_query_pool, owner, frame_owner_finished);
         frame_work_units[owner] += full_units;
         grid_tiles_per_gpu[owner] += full_units;
         grid_tiles_drawn += full_units;
@@ -780,8 +777,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 const db_vk_grid_row_block_draw_req_t req =
                     db_vk_gradient_row_block_req(
                         &range, grid_cols, g_state.runtime.pattern,
-                        &plan.render_state,
-                        g_state.frame.frame_index);
+                        &plan.render_state, g_state.frame.frame_index);
                 db_vk_draw_owner_grid_row_block(&draw_ctx, &req);
             }
             if (seeded_full == 0) {
@@ -1026,14 +1022,27 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
             g_state.render_frame_samples_ms, g_state.render_frame_samples_count,
             DB_VK_PERCENTILE_P99);
     }
-    infof("metrics: render(frame_ema_ms=%.3f jitter_ema_ms=%.3f p50=%.3f "
-          "p95=%.3f p99=%.3f) present(frame_ema_ms=%.3f jitter_ema_ms=%.3f "
-          "p50=%.3f p95=%.3f p99=%.3f retries=%llu)",
-          g_state.frame_time_ema_ms, g_state.frame_jitter_ema_ms, render_p50_ms,
-          render_p95_ms, render_p99_ms, g_state.present_frame_ema_ms,
-          g_state.present_jitter_ema_ms, g_state.present_frame_p50_ms,
-          g_state.present_frame_p95_ms, g_state.present_frame_p99_ms,
-          (unsigned long long)g_state.present_retries);
+    if (g_state.no_present_mode != 0) {
+        infof("metrics: render(frame_ema_ms=%.3f jitter_ema_ms=%.3f p50=%.3f "
+              "p95=%.3f p99=%.3f) loop(frame_ema_ms=%.3f jitter_ema_ms=%.3f "
+              "p50=%.3f p95=%.3f p99=%.3f retries=%llu)",
+              g_state.frame_time_ema_ms, g_state.frame_jitter_ema_ms,
+              render_p50_ms, render_p95_ms, render_p99_ms,
+              g_state.present_frame_ema_ms, g_state.present_jitter_ema_ms,
+              g_state.present_frame_p50_ms, g_state.present_frame_p95_ms,
+              g_state.present_frame_p99_ms,
+              (unsigned long long)g_state.present_retries);
+    } else {
+        infof("metrics: render(frame_ema_ms=%.3f jitter_ema_ms=%.3f p50=%.3f "
+              "p95=%.3f p99=%.3f) present(frame_ema_ms=%.3f jitter_ema_ms=%.3f "
+              "p50=%.3f p95=%.3f p99=%.3f retries=%llu)",
+              g_state.frame_time_ema_ms, g_state.frame_jitter_ema_ms,
+              render_p50_ms, render_p95_ms, render_p99_ms,
+              g_state.present_frame_ema_ms, g_state.present_jitter_ema_ms,
+              g_state.present_frame_p50_ms, g_state.present_frame_p95_ms,
+              g_state.present_frame_p99_ms,
+              (unsigned long long)g_state.present_retries);
+    }
     const uint32_t gpu_count =
         db_vk_normalize_gpu_count(g_state.selection.lane_count);
     uint64_t total_work_units = 0U;
@@ -1050,20 +1059,21 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
         const double ema_ns_per_unit = ema_ms_per_unit * DB_NS_PER_MS;
         const double ema_units_per_ms =
             (ema_ms_per_unit > 0.0) ? (1.0 / ema_ms_per_unit) : 0.0;
-        const db_vk_device_lane_t *lane =
-            (g < g_state.selection.lane_count) ? &g_state.selection.lanes[g]
-                                               : NULL;
+        const db_vk_device_lane_t *lane = (g < g_state.selection.lane_count)
+                                              ? &g_state.selection.lanes[g]
+                                              : NULL;
         const char *lane_name = (lane != NULL) ? lane->name : "unknown";
         const char *lane_reason =
             ((lane != NULL) && (lane->inactive_reason[0] != '\0'))
                 ? lane->inactive_reason
                 : "active";
         infof("scheduler stats: lane[%u] name=%s active=%d reason=%s "
-              "work_units=%llu share=%.2f%% active_frames=%llu ema_ms_per_unit=%.9g "
+              "work_units=%llu share=%.2f%% active_frames=%llu "
+              "ema_ms_per_unit=%.9g "
               "ema_ns_per_unit=%.3f ema_units_per_ms=%.3f",
-              g, lane_name,
-              (lane != NULL) ? lane->active_for_scheduler : 0, lane_reason,
-              (unsigned long long)g_state.cumulative_work_units[g], share_pct,
+              g, lane_name, (lane != NULL) ? lane->active_for_scheduler : 0,
+              lane_reason, (unsigned long long)g_state.cumulative_work_units[g],
+              share_pct,
               (unsigned long long)g_state.cumulative_frames_with_work[g],
               ema_ms_per_unit, ema_ns_per_unit, ema_units_per_ms);
     }
