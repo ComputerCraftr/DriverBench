@@ -358,6 +358,11 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
         db_checked_mul_u32(BACKEND_NAME_CPU, "cpu_debug_clear_chunk_bytes",
                            row_bytes, DB_CPU_DEBUG_CLEAR_CHUNK_ROWS);
     const size_t chunk_bytes = (size_t)chunk_bytes_u32;
+    if (chunk_bytes == 0U) {
+        state->debug_clear_ready = 0;
+        db_display_cpu_upload_mark_force_full(&state->force_full_upload);
+        return;
+    }
 
     // If already prepared for this pixel width, nothing to do.
     if ((state->debug_clear_ready != 0) &&
@@ -785,7 +790,10 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
 
 static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
                                      const db_cli_config_t *cfg) {
-    const char *backend_name = BACKEND_NAME_GL;
+    const int offscreen_enabled =
+        ((cfg != NULL) && (cfg->offscreen_enabled != 0)) ? 1 : 0;
+    const char *backend_name =
+        (offscreen_enabled != 0) ? "display_offscreen" : BACKEND_NAME_GL;
     db_validate_runtime_environment(backend_name,
                                     DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
     db_install_signal_handlers();
@@ -811,14 +819,14 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
             BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
             context_policy.requested_gl_major,
             context_policy.requested_gl_minor, swap_interval, &context_is_gles,
-            (cfg != NULL) ? cfg->offscreen_enabled : 0);
+            offscreen_enabled);
     } else {
         window = db_glfw_create_opengl_window(
             backend_name, "OpenGL 3.3 Shader GLFW DriverBench",
             BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
             context_policy.requested_gl_major,
             context_policy.requested_gl_minor, 1, swap_interval,
-            (cfg != NULL) ? cfg->offscreen_enabled : 0);
+            offscreen_enabled);
     }
 
     (void)db_display_prepare_and_validate_gl_runtime(
@@ -1008,6 +1016,8 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
 
 int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer,
                        const db_cli_config_t *cfg) {
+    db_dispatch_validate_backend_or_fail(BACKEND_NAME_GL,
+                                         DB_DISPLAY_GLFW_WINDOW, api, renderer);
     if (api == DB_API_CPU) {
         return db_run_glfw_window_cpu(cfg);
     }

@@ -2,23 +2,21 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
-#include "../../renderers/renderer_gl_api.h"
-#include "../../renderers/renderer_gl_common.h"
 #include "../../renderers/renderer_identity.h"
 #include "../display_cpu_hash_common.h"
 #include "../display_dispatch.h"
 #include "../display_frame_loop_common.h"
 #include "../display_gl_hash_readback_common.h"
 #include "../display_gl_renderer_select_common.h"
-#include "../display_gl_runtime_common.h"
 #include "../display_hash_common.h"
 #include "../display_runtime_config_common.h"
 #include "../display_types.h"
 #ifdef DB_HAS_GLFW
+#include "../../renderers/renderer_gl_api.h"
+#include "../display_gl_runtime_common.h"
 #define GLFW_INCLUDE_NONE
 #include "../glfw_window/display_glfw_window_common.h"
 #include <GLFW/glfw3.h>
@@ -266,39 +264,28 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
 
 int db_run_offscreen(db_api_t api, db_gl_renderer_t renderer,
                      const db_cli_config_t *cfg) {
-    if (db_dispatch_display_supports_api(DB_DISPLAY_OFFSCREEN, api) == 0) {
-        db_failf(BACKEND_NAME,
-                 "requested offscreen/API combination is unavailable in this "
-                 "build (api=%d)",
-                 (int)api);
-    }
+    db_dispatch_validate_backend_or_fail(BACKEND_NAME, DB_DISPLAY_OFFSCREEN,
+                                         api, renderer);
 
     if (api == DB_API_CPU) {
         return db_run_offscreen_cpu(cfg);
     }
 
 #ifdef DB_HAS_GLFW
-    if ((api == DB_API_OPENGL) && (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)) {
+    const db_display_offscreen_gl_route_t gl_route =
+        db_dispatch_offscreen_gl_route(renderer);
+    if (gl_route == DB_DISPLAY_OFFSCREEN_GL_ROUTE_GLFW_HIDDEN) {
         return db_run_offscreen_glfw_gl1(cfg);
     }
-    if ((api == DB_API_OPENGL) && (renderer == DB_GL_RENDERER_GL3_3)) {
+    if (gl_route == DB_DISPLAY_OFFSCREEN_GL_ROUTE_GL3_FBO) {
         return db_run_offscreen_gl3_fbo(cfg);
     }
 #endif
 
-#ifdef DB_HAS_GLFW
-    const int renderer_supported =
-        (api == DB_API_OPENGL) && ((renderer == DB_GL_RENDERER_GL1_5_GLES1_1) ||
-                                   (renderer == DB_GL_RENDERER_GL3_3))
-            ? 1
-            : 0;
-#else
-    const int renderer_supported = 0;
-#endif
     db_failf(BACKEND_NAME,
              "unsupported offscreen configuration (api=%s, "
-             "renderer=%d, renderer_supported=%d); supported: CPU offscreen, "
+             "renderer=%s); supported: CPU offscreen, "
              "GL1 via GLFW hidden-window offscreen, GL3 via offscreen FBO",
-             db_dispatch_api_name(api), (int)renderer, renderer_supported);
+             db_dispatch_api_name(api), db_dispatch_gl_renderer_name(renderer));
     return EXIT_FAILURE;
 }

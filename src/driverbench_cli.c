@@ -54,6 +54,15 @@ static int db_string_is(const char *value, const char *expected) {
 
 static void db_usage(void) {
     const char *renderer_usage = "auto|gl1_5_gles1_1|gl3_3";
+    char offscreen_caps[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
+    char glfw_caps[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
+    char kms_caps[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
+    (void)db_dispatch_format_display_capabilities(
+        DB_DISPLAY_OFFSCREEN, offscreen_caps, sizeof(offscreen_caps));
+    (void)db_dispatch_format_display_capabilities(DB_DISPLAY_GLFW_WINDOW,
+                                                  glfw_caps, sizeof(glfw_caps));
+    (void)db_dispatch_format_display_capabilities(DB_DISPLAY_LINUX_KMS_ATOMIC,
+                                                  kms_caps, sizeof(kms_caps));
     fputs("Usage: driverbench [dispatch options] [runtime options]\n"
           "\nDispatch options:\n"
           "  --api <auto|cpu|opengl|vulkan>\n"
@@ -84,8 +93,16 @@ static void db_usage(void) {
           "  --vk-multi-device-policy <auto|group_only|independent_ok>\n"
           "  --vk-no-present <0|1>\n"
           "  --vsync <0|1|on|off|true|false>\n"
-          "  --help\n",
+          "  --help\n"
+          "\nDisplay capability summary:\n"
+          "  offscreen: ",
           stderr);
+    fputs(offscreen_caps, stderr);
+    fputs("\n  glfw_window: ", stderr);
+    fputs(glfw_caps, stderr);
+    fputs("\n  linux_kms_atomic: ", stderr);
+    fputs(kms_caps, stderr);
+    fputs("\n", stderr);
 }
 
 static const char *db_cli_mode_normalized_or_null(const char *value) {
@@ -472,14 +489,21 @@ db_cli_validate_compiled_support_or_exit(const db_cli_config_t *cfg) {
     }
 
     if (db_dispatch_display_is_compiled(cfg->display) == 0) {
+        char caps_text[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
+        (void)db_dispatch_format_display_capabilities(cfg->display, caps_text,
+                                                      sizeof(caps_text));
         db_failf("driverbench_cli",
-                 "requested display is unavailable in this build");
+                 "requested display is unavailable in this build (%s)",
+                 caps_text);
     }
 
     if (cfg->api_is_auto != 0) {
         if (db_dispatch_display_has_any_api(cfg->display) == 0) {
+            char caps_text[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
+            (void)db_dispatch_format_display_capabilities(
+                cfg->display, caps_text, sizeof(caps_text));
             db_failf("driverbench_cli",
-                     "requested display has no compatible API");
+                     "requested display has no compatible API (%s)", caps_text);
         }
         return;
     }
@@ -490,9 +514,13 @@ db_cli_validate_compiled_support_or_exit(const db_cli_config_t *cfg) {
     }
 
     if (db_dispatch_display_supports_api(cfg->display, cfg->api) == 0) {
+        char caps_text[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
+        (void)db_dispatch_format_display_capabilities(cfg->display, caps_text,
+                                                      sizeof(caps_text));
         db_failf("driverbench_cli",
                  "requested display/API combination is unavailable in this "
-                 "build");
+                 "build (%s)",
+                 caps_text);
     }
 }
 
@@ -501,17 +529,14 @@ db_cli_resolve_effective_api_or_exit(const db_cli_config_t *cfg) {
     if (cfg->api_is_auto == 0) {
         return cfg->api;
     }
-    if (db_dispatch_display_supports_api(cfg->display, DB_API_VULKAN) != 0) {
-        return DB_API_VULKAN;
+    if (db_dispatch_display_has_any_api(cfg->display) == 0) {
+        char caps_text[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
+        (void)db_dispatch_format_display_capabilities(cfg->display, caps_text,
+                                                      sizeof(caps_text));
+        db_failf("driverbench_cli",
+                 "requested display has no compatible API (%s)", caps_text);
     }
-    if (db_dispatch_display_supports_api(cfg->display, DB_API_OPENGL) != 0) {
-        return DB_API_OPENGL;
-    }
-    if (db_dispatch_display_supports_api(cfg->display, DB_API_CPU) != 0) {
-        return DB_API_CPU;
-    }
-    db_failf("driverbench_cli", "requested display has no compatible API");
-    return DB_API_CPU;
+    return db_dispatch_display_preferred_auto_api(cfg->display);
 }
 
 static void
@@ -532,9 +557,11 @@ db_cli_validate_renderer_selection_or_exit(const db_cli_config_t *cfg) {
                  db_dispatch_api_name(effective_api));
     }
 
-    if (db_dispatch_display_supports_api(cfg->display, DB_API_OPENGL) == 0) {
+    if (db_dispatch_display_supports_backend(cfg->display, DB_API_OPENGL,
+                                             cfg->renderer) == 0) {
         db_failf("driverbench_cli",
-                 "--renderer requires OpenGL support for selected display");
+                 "--renderer %s is unavailable for selected display/backend",
+                 db_dispatch_gl_renderer_name(cfg->renderer));
     }
 }
 

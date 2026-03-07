@@ -1,6 +1,5 @@
 #include "display_linux_kms_atomic_common.h"
 
-#include "../../core/db_core.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/renderer_identity.h"
 #include "../display_dispatch.h"
@@ -21,16 +20,12 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
                             const char *card_path, const db_cli_config_t *cfg) {
     const char *card = (card_path != NULL) ? card_path : "/dev/dri/card0";
 
+    db_dispatch_validate_backend_or_fail(
+        BACKEND_NAME_GL, DB_DISPLAY_LINUX_KMS_ATOMIC, api, renderer);
+
     if (api == DB_API_CPU) {
         return db_kms_atomic_run_cpu(BACKEND_NAME_CPU, db_renderer_name_cpu(),
                                      card, api, cfg);
-    }
-
-    if (api != DB_API_OPENGL) {
-        db_failf("display_linux_kms_atomic",
-                 "requested linux_kms_atomic display is incompatible with "
-                 "api=%d in this build",
-                 (int)api);
     }
 
     const db_display_gl_renderer_ops_t renderer_ops =
