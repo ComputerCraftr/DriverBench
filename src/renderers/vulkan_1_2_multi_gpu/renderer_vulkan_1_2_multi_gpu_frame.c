@@ -36,21 +36,6 @@ typedef struct {
     db_vk_draw_payload_cache_t *payload_cache;
 } db_vk_grid_draw_ctx_t;
 
-typedef struct {
-    uint32_t row;
-    uint32_t col_start;
-    uint32_t col_end;
-    db_vk_draw_dynamic_req_t dynamic;
-} db_vk_grid_span_draw_cmd_t;
-
-typedef struct {
-    uint32_t row_start;
-    uint32_t row_end;
-    uint32_t col_start;
-    uint32_t col_end;
-    db_vk_draw_dynamic_req_t dynamic;
-} db_vk_grid_row_block_draw_cmd_t;
-
 #define DB_VK_SNAKE_ROW_BLOCK_MIN_ROWS 2U
 
 static const VkShaderStageFlags db_pc_stages =
@@ -554,18 +539,19 @@ static void db_vk_pixel_bounds_ndc(uint32_t x0_px, uint32_t y0_px,
     *y1 = db_double_to_f32((2.0 * (double)y1_px * inv_h) - 1.0);
 }
 
-static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx,
-                                 const db_vk_grid_span_draw_cmd_t *req) {
-    if ((ctx == NULL) || (req == NULL) || (ctx->grid_rows == 0U) ||
-        (ctx->grid_cols == 0U) || (req->col_end <= req->col_start) ||
-        (req->row >= ctx->grid_rows)) {
+static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx, uint32_t row,
+                                 uint32_t col_start, uint32_t col_end,
+                                 const db_vk_draw_payload_t *payload) {
+    if ((ctx == NULL) || (payload == NULL) || (ctx->grid_rows == 0U) ||
+        (ctx->grid_cols == 0U) || (col_end <= col_start) ||
+        (row >= ctx->grid_rows)) {
         return;
     }
 
-    uint32_t x0 = (ctx->extent.width * req->col_start) / ctx->grid_cols;
-    uint32_t x1 = (ctx->extent.width * req->col_end) / ctx->grid_cols;
-    uint32_t y0 = (ctx->extent.height * req->row) / ctx->grid_rows;
-    uint32_t y1 = (ctx->extent.height * (req->row + 1U)) / ctx->grid_rows;
+    uint32_t x0 = (ctx->extent.width * col_start) / ctx->grid_cols;
+    uint32_t x1 = (ctx->extent.width * col_end) / ctx->grid_cols;
+    uint32_t y0 = (ctx->extent.height * row) / ctx->grid_rows;
+    uint32_t y1 = (ctx->extent.height * (row + 1U)) / ctx->grid_rows;
     if ((x1 <= x0) || (y1 <= y0)) {
         return;
     }
@@ -584,49 +570,49 @@ static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx,
     db_vk_pixel_bounds_ndc(x0, y0, x1, y1, ctx->extent, &ndc_x0, &ndc_y0,
                            &ndc_x1, &ndc_y1);
 
-    db_vk_grid_span_draw_cmd_t local_req = *req;
-    local_req.dynamic.ndc_x0 = ndc_x0;
-    local_req.dynamic.ndc_y0 = ndc_y0;
-    local_req.dynamic.ndc_x1 = ndc_x1;
-    local_req.dynamic.ndc_y1 = ndc_y1;
+    db_vk_draw_dynamic_req_t dynamic = {
+        .ndc_x0 = ndc_x0,
+        .ndc_y0 = ndc_y0,
+        .ndc_x1 = ndc_x1,
+        .ndc_y1 = ndc_y1,
+        .payload = *payload,
+    };
     if ((ctx->payload_cache == NULL) ||
         (db_vk_draw_payload_cache_matches(ctx->payload_cache,
-                                          &local_req.dynamic.payload) == 0)) {
-        db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout,
-                                          &local_req.dynamic);
-        db_vk_draw_payload_cache_store(ctx->payload_cache,
-                                       &local_req.dynamic.payload);
+                                          &dynamic.payload) == 0)) {
+        db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout, &dynamic);
+        db_vk_draw_payload_cache_store(ctx->payload_cache, &dynamic.payload);
     } else {
-        db_vk_push_constants_draw_geometry(
-            ctx->cmd, ctx->layout, local_req.dynamic.ndc_x0,
-            local_req.dynamic.ndc_y0, local_req.dynamic.ndc_x1,
-            local_req.dynamic.ndc_y1);
+        db_vk_push_constants_draw_geometry(ctx->cmd, ctx->layout,
+                                           dynamic.ndc_x0, dynamic.ndc_y0,
+                                           dynamic.ndc_x1, dynamic.ndc_y1);
     }
     vkCmdDraw(ctx->cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
 
-static void
-db_vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
-                          const db_vk_grid_row_block_draw_cmd_t *req) {
-    if ((ctx == NULL) || (req == NULL) || (req->row_end <= req->row_start) ||
-        (req->row_start >= ctx->grid_rows) || (ctx->grid_rows == 0U) ||
-        (ctx->grid_cols == 0U) || (req->col_end <= req->col_start) ||
-        (req->col_start >= ctx->grid_cols)) {
+static void db_vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
+                                      uint32_t row_start, uint32_t row_end,
+                                      uint32_t col_start, uint32_t col_end,
+                                      const db_vk_draw_payload_t *payload) {
+    if ((ctx == NULL) || (payload == NULL) || (row_end <= row_start) ||
+        (row_start >= ctx->grid_rows) || (ctx->grid_rows == 0U) ||
+        (ctx->grid_cols == 0U) || (col_end <= col_start) ||
+        (col_start >= ctx->grid_cols)) {
         return;
     }
-    uint32_t row_end = req->row_end;
-    if (row_end > ctx->grid_rows) {
-        row_end = ctx->grid_rows;
+    uint32_t row_end_clamped = row_end;
+    if (row_end_clamped > ctx->grid_rows) {
+        row_end_clamped = ctx->grid_rows;
     }
-    uint32_t col_end = req->col_end;
-    if (col_end > ctx->grid_cols) {
-        col_end = ctx->grid_cols;
+    uint32_t col_end_clamped = col_end;
+    if (col_end_clamped > ctx->grid_cols) {
+        col_end_clamped = ctx->grid_cols;
     }
 
-    const uint32_t x0 = (ctx->extent.width * req->col_start) / ctx->grid_cols;
-    const uint32_t x1 = (ctx->extent.width * col_end) / ctx->grid_cols;
-    const uint32_t y0 = (ctx->extent.height * req->row_start) / ctx->grid_rows;
-    const uint32_t y1 = (ctx->extent.height * row_end) / ctx->grid_rows;
+    const uint32_t x0 = (ctx->extent.width * col_start) / ctx->grid_cols;
+    const uint32_t x1 = (ctx->extent.width * col_end_clamped) / ctx->grid_cols;
+    const uint32_t y0 = (ctx->extent.height * row_start) / ctx->grid_rows;
+    const uint32_t y1 = (ctx->extent.height * row_end_clamped) / ctx->grid_rows;
     if ((x1 <= x0) || (y1 <= y0)) {
         return;
     }
@@ -643,23 +629,22 @@ db_vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
     float ndc_y1 = 0.0F;
     db_vk_pixel_bounds_ndc(x0, y0, x1, y1, ctx->extent, &ndc_x0, &ndc_y0,
                            &ndc_x1, &ndc_y1);
-    db_vk_grid_row_block_draw_cmd_t local_req = *req;
-    local_req.dynamic.ndc_x0 = ndc_x0;
-    local_req.dynamic.ndc_y0 = ndc_y0;
-    local_req.dynamic.ndc_x1 = ndc_x1;
-    local_req.dynamic.ndc_y1 = ndc_y1;
+    db_vk_draw_dynamic_req_t dynamic = {
+        .ndc_x0 = ndc_x0,
+        .ndc_y0 = ndc_y0,
+        .ndc_x1 = ndc_x1,
+        .ndc_y1 = ndc_y1,
+        .payload = *payload,
+    };
     if ((ctx->payload_cache == NULL) ||
         (db_vk_draw_payload_cache_matches(ctx->payload_cache,
-                                          &local_req.dynamic.payload) == 0)) {
-        db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout,
-                                          &local_req.dynamic);
-        db_vk_draw_payload_cache_store(ctx->payload_cache,
-                                       &local_req.dynamic.payload);
+                                          &dynamic.payload) == 0)) {
+        db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout, &dynamic);
+        db_vk_draw_payload_cache_store(ctx->payload_cache, &dynamic.payload);
     } else {
-        db_vk_push_constants_draw_geometry(
-            ctx->cmd, ctx->layout, local_req.dynamic.ndc_x0,
-            local_req.dynamic.ndc_y0, local_req.dynamic.ndc_x1,
-            local_req.dynamic.ndc_y1);
+        db_vk_push_constants_draw_geometry(ctx->cmd, ctx->layout,
+                                           dynamic.ndc_x0, dynamic.ndc_y0,
+                                           dynamic.ndc_x1, dynamic.ndc_y1);
     }
     vkCmdDraw(ctx->cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
 }
@@ -724,20 +709,8 @@ static void db_vk_draw_owner_grid_span(const db_vk_owner_draw_ctx_t *ctx,
         .grid_cols = ctx->grid_cols,
         .payload_cache = ctx->payload_cache,
     };
-    const db_vk_grid_span_draw_cmd_t draw_req = {
-        .row = req->row,
-        .col_start = req->col_start,
-        .col_end = req->col_end,
-        .dynamic =
-            {
-                .ndc_x0 = 0.0F,
-                .ndc_y0 = 0.0F,
-                .ndc_x1 = 0.0F,
-                .ndc_y1 = 0.0F,
-                .payload = req->payload,
-            },
-    };
-    db_vk_draw_grid_span(&draw_ctx, &draw_req);
+    db_vk_draw_grid_span(&draw_ctx, req->row, req->col_start, req->col_end,
+                         &req->payload);
     db_vk_owner_timing_end(ctx->cmd, ctx->timing_enabled,
                            ctx->timing_query_pool, owner,
                            ctx->frame_owner_finished);
@@ -778,34 +751,21 @@ void db_vk_draw_owner_grid_row_block(
         .grid_cols = ctx->grid_cols,
         .payload_cache = ctx->payload_cache,
     };
-    const db_vk_grid_row_block_draw_cmd_t draw_req = {
-        .row_start = req->row_start,
-        .row_end = req->row_end,
-        .col_start = req->col_start,
-        .col_end = req->col_end,
-        .dynamic =
-            {
-                .ndc_x0 = 0.0F,
-                .ndc_y0 = 0.0F,
-                .ndc_x1 = 0.0F,
-                .ndc_y1 = 0.0F,
-                .payload = req->payload,
-            },
-    };
-    db_vk_draw_grid_row_block(&draw_ctx, &draw_req);
+    db_vk_draw_grid_row_block(&draw_ctx, req->row_start, req->row_end,
+                              req->col_start, req->col_end, &req->payload);
     db_vk_owner_timing_end(ctx->cmd, ctx->timing_enabled,
                            ctx->timing_query_pool, owner,
                            ctx->frame_owner_finished);
     ctx->frame_work_units[owner] += req->span_units;
 }
 
-static void db_vk_draw_snake_spans_coalesced(
-    const db_vk_owner_draw_ctx_t *ctx, const db_snake_col_span_t *spans,
-    size_t span_count, const float color[3], uint32_t render_mode,
+static void db_vk_draw_snake_compact_blocks(
+    const db_vk_owner_draw_ctx_t *ctx, const db_damage_block_t *blocks,
+    size_t block_count, const float color[3], uint32_t render_mode,
     uint32_t snake_shape_index, uint32_t active_cursor, int snake_phase_flag,
     uint32_t batch_size, int phase_completed) {
-    if ((ctx == NULL) || (spans == NULL) || (span_count == 0U) ||
-        (ctx->grid_cols == 0U) || (ctx->grid_rows == 0U)) {
+    if ((ctx == NULL) || (blocks == NULL) || (block_count == 0U) ||
+        (ctx->grid_cols == 0U) || (ctx->grid_rows == 0U) || (color == NULL)) {
         return;
     }
     const db_vk_draw_payload_t payload_base = {
@@ -822,82 +782,36 @@ static void db_vk_draw_snake_spans_coalesced(
         .frame_index = 0U,
         .band_count = 0U,
     };
-
-    size_t span_cursor = 0U;
-    while (span_cursor < span_count) {
-        const uint32_t row = spans[span_cursor].row;
-        const size_t row_start = span_cursor;
-        size_t row_end = row_start + 1U;
-        while ((row_end < span_count) && (spans[row_end].row == row)) {
-            row_end++;
+    for (size_t block_index = 0U; block_index < block_count; block_index++) {
+        const db_damage_block_t *block = &blocks[block_index];
+        const uint32_t col_end = block->col_start + block->col_count;
+        if (block->row_count >= DB_VK_SNAKE_ROW_BLOCK_MIN_ROWS) {
+            const uint32_t row_units = col_end - block->col_start;
+            const uint64_t span_units_u64 =
+                (uint64_t)block->row_count * (uint64_t)row_units;
+            const db_vk_grid_row_block_draw_req_t req = {
+                .span_units = db_checked_u64_to_u32(
+                    BACKEND_NAME, "snake_row_block_units", span_units_u64),
+                .row_start = block->row_start,
+                .row_end = block->row_start + block->row_count,
+                .col_start = block->col_start,
+                .col_end = col_end,
+                .payload = payload_base,
+            };
+            db_vk_draw_owner_grid_row_block(ctx, &req);
+            continue;
         }
-
-        if ((row_end - row_start) == 1U) {
-            const db_snake_col_span_t base = spans[row_start];
-            if (base.col_end > base.col_start) {
-                size_t run_end = row_end;
-                uint32_t run_rows = 1U;
-                while (run_end < span_count) {
-                    const uint32_t next_row = base.row + run_rows;
-                    const size_t next_row_start = run_end;
-                    if (spans[next_row_start].row != next_row) {
-                        break;
-                    }
-                    size_t next_row_end = next_row_start + 1U;
-                    while ((next_row_end < span_count) &&
-                           (spans[next_row_end].row == next_row)) {
-                        next_row_end++;
-                    }
-                    if ((next_row_end - next_row_start) != 1U) {
-                        break;
-                    }
-                    const db_snake_col_span_t next = spans[next_row_start];
-                    if ((next.col_start != base.col_start) ||
-                        (next.col_end != base.col_end)) {
-                        break;
-                    }
-                    run_rows++;
-                    run_end = next_row_end;
-                }
-
-                if (run_rows >= DB_VK_SNAKE_ROW_BLOCK_MIN_ROWS) {
-                    const uint32_t row_units = base.col_end - base.col_start;
-                    const uint64_t span_units_u64 =
-                        (uint64_t)run_rows * (uint64_t)row_units;
-                    const uint32_t span_units = db_checked_u64_to_u32(
-                        BACKEND_NAME, "snake_row_block_units", span_units_u64);
-                    const db_vk_grid_row_block_draw_req_t req = {
-                        .span_units = span_units,
-                        .row_start = base.row,
-                        .row_end = base.row + run_rows,
-                        .col_start = base.col_start,
-                        .col_end = base.col_end,
-                        .payload = payload_base,
-                    };
-                    db_vk_draw_owner_grid_row_block(ctx, &req);
-                    span_cursor = run_end;
-                    continue;
-                }
-            }
-        }
-
-        for (size_t span_index = row_start; span_index < row_end;
-             span_index++) {
-            const db_snake_col_span_t span = spans[span_index];
-            const uint32_t span_units = span.col_end - span.col_start;
-            if (span_units == 0U) {
-                continue;
-            }
+        for (uint32_t row = block->row_start;
+             row < (block->row_start + block->row_count); row++) {
             const db_vk_grid_span_draw_req_t req = {
-                .span_units = span_units,
-                .row = span.row,
-                .col_start = span.col_start,
-                .col_end = span.col_end,
+                .span_units = col_end - block->col_start,
+                .row = row,
+                .col_start = block->col_start,
+                .col_end = col_end,
                 .payload = payload_base,
             };
             db_vk_draw_owner_grid_span(ctx, &req);
         }
-        span_cursor = row_end;
     }
 }
 
@@ -916,21 +830,22 @@ void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
         .color_g = 0.0,
         .color_b = 0.0,
     };
-    const size_t max_spans = db_snake_plan_span_capacity_needed(plan);
-    if (max_spans == 0U) {
+    if ((plan->prev_count == 0U) && (plan->batch_size == 0U)) {
         return;
     }
-    if (max_spans > g_state.snake_scratch.span_capacity) {
-        failf("Vulkan snake grid scratch overflow (required=%zu capacity=%zu)",
-              max_spans, g_state.snake_scratch.span_capacity);
+    const db_damage_block_t *blocks = NULL;
+    size_t block_count = 0U;
+    if ((g_state.snake_scratch.damage.blocks == NULL) ||
+        (db_snake_collect_damage_blocks_for_plan(
+             &grid_region, plan, NULL, g_state.snake_scratch.damage.blocks,
+             g_state.snake_scratch.damage.capacity, &block_count) == 0)) {
+        failf("Vulkan snake grid damage block collection failed");
     }
-    db_snake_col_span_t *spans = g_state.snake_scratch.spans;
-    const size_t span_count = db_snake_collect_damage_spans_for_plan(
-        spans, max_spans, &grid_region, plan, NULL);
-    db_vk_draw_snake_spans_coalesced(ctx, spans, span_count, color,
-                                     DB_PATTERN_SNAKE_GRID, 0U,
-                                     plan->active_cursor, plan->phase_flag,
-                                     plan->batch_size, plan->phase_completed);
+    blocks = g_state.snake_scratch.damage.blocks;
+    db_vk_draw_snake_compact_blocks(ctx, blocks, block_count, color,
+                                    DB_PATTERN_SNAKE_GRID, 0U,
+                                    plan->active_cursor, plan->phase_flag,
+                                    plan->batch_size, plan->phase_completed);
 }
 
 void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
@@ -943,46 +858,51 @@ void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
     const db_snake_region_t region =
         db_snake_region_from_index(pattern_seed, plan->active_shape_index);
 
-    const size_t max_spans =
-        db_snake_span_capacity_needed(snake_prev_count, plan->batch_size);
-    if (max_spans == 0U) {
+    if ((snake_prev_count == 0U) && (plan->batch_size == 0U)) {
         return;
     }
-    if (max_spans > g_state.snake_scratch.span_capacity) {
-        failf("Vulkan snake scratch overflow (required=%zu capacity=%zu)",
-              max_spans, g_state.snake_scratch.span_capacity);
-    }
-    db_snake_col_span_t *spans = g_state.snake_scratch.spans;
     db_snake_shape_cache_t shape_cache = {0};
     const db_snake_shape_cache_t *shape_cache_ptr = NULL;
     if (render_mode == DB_PATTERN_SNAKE_SHAPES) {
-        if (g_state.snake_scratch.row_bounds != NULL) {
+        if (g_state.snake_scratch.shape.row_bounds != NULL) {
             const db_snake_shape_kind_t shape_kind =
                 db_snake_shapes_kind_from_index(pattern_seed,
                                                 plan->active_shape_index,
                                                 DB_U32_SALT_PALETTE);
             if (db_snake_shape_cache_init_from_index(
-                    &shape_cache, g_state.snake_scratch.row_bounds,
-                    g_state.snake_scratch.row_bounds_capacity, pattern_seed,
-                    plan->active_shape_index, DB_U32_SALT_PALETTE, &region,
-                    shape_kind) != 0) {
+                    &shape_cache, g_state.snake_scratch.shape.row_bounds,
+                    g_state.snake_scratch.shape.row_bounds_capacity,
+                    pattern_seed, plan->active_shape_index, DB_U32_SALT_PALETTE,
+                    &region, shape_kind) != 0) {
                 shape_cache_ptr = &shape_cache;
             }
         }
     }
-    size_t span_count = db_snake_collect_damage_spans(
-        spans, max_spans, &region, snake_prev_start, snake_prev_count,
-        plan->active_cursor, plan->batch_size, shape_cache_ptr);
-    if ((span_count == 0U) && (shape_cache_ptr != NULL) &&
+    const db_damage_block_t *blocks = NULL;
+    size_t block_count = 0U;
+    if (((g_state.snake_scratch.damage.blocks == NULL) ||
+         (db_snake_collect_damage_blocks(
+              &region, snake_prev_start, snake_prev_count, plan->active_cursor,
+              plan->batch_size, shape_cache_ptr,
+              g_state.snake_scratch.damage.blocks,
+              g_state.snake_scratch.damage.capacity, &block_count) == 0)) &&
+        (shape_cache_ptr != NULL) &&
         ((snake_prev_count > 0U) || (plan->batch_size > 0U))) {
-        // Fallback: if shape-cache filtering degenerates to empty coverage,
-        // fall back to region spans so frames do not stall/blank.
-        span_count = db_snake_collect_damage_spans(
-            spans, max_spans, &region, snake_prev_start, snake_prev_count,
-            plan->active_cursor, plan->batch_size, NULL);
+        if ((g_state.snake_scratch.damage.blocks == NULL) ||
+            (db_snake_collect_damage_blocks(
+                 &region, snake_prev_start, snake_prev_count,
+                 plan->active_cursor, plan->batch_size, NULL,
+                 g_state.snake_scratch.damage.blocks,
+                 g_state.snake_scratch.damage.capacity, &block_count) == 0)) {
+            failf("Vulkan snake damage block collection failed");
+        }
+    } else if (block_count == 0U &&
+               ((snake_prev_count > 0U) || (plan->batch_size > 0U))) {
+        failf("Vulkan snake damage block collection failed");
     }
-    db_vk_draw_snake_spans_coalesced(
-        ctx, spans, span_count, color, render_mode, plan->active_shape_index,
+    blocks = g_state.snake_scratch.damage.blocks;
+    db_vk_draw_snake_compact_blocks(
+        ctx, blocks, block_count, color, render_mode, plan->active_shape_index,
         plan->active_cursor, 0, plan->batch_size, plan->phase_completed);
 }
 

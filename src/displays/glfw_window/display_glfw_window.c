@@ -20,7 +20,6 @@
 #endif
 #include "../../config/benchmark_config.h"
 #include "../display_cpu_hash_common.h"
-#include "../display_cpu_upload_policy_common.h"
 #include "../display_dispatch.h"
 #include "../display_frame_loop_common.h"
 #include "../display_gl_hash_readback_common.h"
@@ -65,10 +64,6 @@ typedef struct {
     float vertices[8];
     int last_viewport_w;
     int last_viewport_h;
-    // Scratch buffer for upload ranges (damage row -> byte range conversion).
-    // Allocated once (or on rare resize), never allocated in the hot path.
-    db_gl_upload_range_t *upload_ranges_buf;
-    size_t upload_ranges_cap;
     // Debug-only scratch buffer used to clear the CPU present texture without
     // allocating in the hot path. Sized for chunked row uploads.
     uint8_t *debug_clear_buf;
@@ -79,14 +74,6 @@ typedef struct {
     uint8_t debug_clear_rgba[4];
     int debug_clear_ready;
 } db_cpu_present_gl_state_t;
-
-typedef struct {
-    db_cpu_present_gl_state_t *state;
-    const uint8_t *pixels_rgba8;
-    const uint16_t *pixels_rgba16f;
-    uint32_t pixel_width;
-    int use_pbo;
-} db_cpu_upload_apply_ctx_t;
 
 typedef struct {
     const char *api_name;
@@ -185,7 +172,7 @@ static void db_present_cpu_texture_resize(db_cpu_present_gl_state_t *state,
                      "failed to resize CPU present texture");
         }
     }
-    db_display_cpu_upload_mark_force_full(&state->force_full_upload);
+    state->force_full_upload = 1;
 }
 
 static void db_present_cpu_init_state(db_cpu_present_gl_state_t *state,
@@ -194,7 +181,7 @@ static void db_present_cpu_init_state(db_cpu_present_gl_state_t *state,
         return;
     }
     state->texture = 0U;
-    db_display_cpu_upload_mark_force_full(&state->force_full_upload);
+    state->force_full_upload = 1;
     if ((enable_pbo_probe != 0) &&
         (db_gl_context_has_pbo_upload_procs() != 0)) {
         state->pbo = db_gl_pbo_create_or_zero();
@@ -217,8 +204,8 @@ static void db_present_cpu_init_state(db_cpu_present_gl_state_t *state,
 }
 
 static void db_present_cpu_upload_rows(db_cpu_present_gl_state_t *state,
-                                       uint32_t pixel_width, uint32_t row_start,
-                                       uint32_t row_count,
+                                       uint32_t col_start, uint32_t pixel_width,
+                                       uint32_t row_start, uint32_t row_count,
                                        const void *pixel_data,
                                        int allow_null_data) {
     if ((state == NULL) || (pixel_width == 0U) || (row_count == 0U) ||
@@ -227,7 +214,8 @@ static void db_present_cpu_upload_rows(db_cpu_present_gl_state_t *state,
     }
     if (state->use_hdr_float_bo != 0) {
         db_gl_texture_sub_image_2d_rgba16f(
-            0,
+            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                                  "cpu_upload_x", col_start),
             db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
                                   "cpu_upload_y", row_start),
             db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
@@ -237,7 +225,8 @@ static void db_present_cpu_upload_rows(db_cpu_present_gl_state_t *state,
             pixel_data);
     } else {
         db_gl_texture_sub_image_2d_rgba(
-            0,
+            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                                  "cpu_upload_x", col_start),
             db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
                                   "cpu_upload_y", row_start),
             db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
@@ -259,10 +248,6 @@ static void db_present_cpu_shutdown_state(db_cpu_present_gl_state_t *state) {
     if (state->texture != 0U) {
         db_gl_texture_delete_if_valid(&state->texture);
     }
-    if (state->upload_ranges_buf != NULL) {
-        db_display_cpu_upload_ranges_release((void **)&state->upload_ranges_buf,
-                                             &state->upload_ranges_cap);
-    }
     if (state->debug_clear_buf != NULL) {
         free(state->debug_clear_buf);
         state->debug_clear_buf = NULL;
@@ -271,38 +256,12 @@ static void db_present_cpu_shutdown_state(db_cpu_present_gl_state_t *state) {
     }
 }
 
-static void db_apply_cpu_upload_span(const db_gl_upload_row_span_t *span,
-                                     void *user_data) {
-    db_cpu_upload_apply_ctx_t *ctx = (db_cpu_upload_apply_ctx_t *)user_data;
-    if ((ctx == NULL) || (span == NULL)) {
-        return;
-    }
-    if (ctx->use_pbo != 0) {
-        const void *pbo_offset =
-            db_gl_vbo_offset_ptr(span->range.dst_offset_bytes);
-        db_present_cpu_upload_rows(ctx->state, ctx->pixel_width,
-                                   span->rows.row_start, span->rows.row_count,
-                                   pbo_offset, 1);
-    } else {
-        const void *pixels_ptr =
-            (ctx->state->use_hdr_float_bo != 0)
-                ? (const void *)(ctx->pixels_rgba16f +
-                                 (span->range.src_offset_bytes /
-                                  DB_CPU_RGBA16F_BYTES_PER_PIXEL))
-                : (const void *)(ctx->pixels_rgba8 +
-                                 span->range.src_offset_bytes);
-        db_present_cpu_upload_rows(ctx->state, ctx->pixel_width,
-                                   span->rows.row_start, span->rows.row_count,
-                                   pixels_ptr, 0);
-    }
-}
-
-static void db_present_cpu_upload_spans(
+static void db_present_cpu_upload_damage_blocks(
     db_cpu_present_gl_state_t *state, const uint8_t *pixels_rgba8,
     const uint16_t *pixels_rgba16f, uint32_t pixel_width, uint32_t pixel_height,
-    const db_gl_upload_range_t *ranges, size_t span_count) {
+    const db_damage_block_t *blocks, size_t block_count) {
     if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U) ||
-        (ranges == NULL) || (span_count == 0U)) {
+        (blocks == NULL) || (block_count == 0U)) {
         return;
     }
     if ((state->use_hdr_float_bo != 0) && (pixels_rgba16f == NULL)) {
@@ -326,27 +285,65 @@ static void db_present_cpu_upload_spans(
     }
     const int use_pbo = (state->has_pbo != 0) && (state->pbo != 0U) &&
                         (db_gl_context_has_pbo_upload_procs() != 0);
-    if (use_pbo != 0) {
-        const void *source_base = (state->use_hdr_float_bo != 0)
-                                      ? (const void *)pixels_rgba16f
-                                      : (const void *)pixels_rgba8;
-        db_gl_upload_ranges_target(source_base, total_bytes, ranges, span_count,
-                                   DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
-                                   state->pbo, 0, NULL, 0, 0);
-    }
-    db_cpu_upload_apply_ctx_t apply_ctx = {
-        .state = state,
-        .pixels_rgba8 = pixels_rgba8,
-        .pixels_rgba16f = pixels_rgba16f,
-        .pixel_width = pixel_width,
-        .use_pbo = use_pbo,
-    };
-    (void)db_gl_for_each_upload_row_span(
-        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+    const uint32_t row_bytes =
         db_checked_mul_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                           "cpu_row_unit_width", pixel_width,
-                           pixel_bytes / DB_CPU_RGBA8_BYTES_PER_PIXEL),
-        ranges, span_count, db_apply_cpu_upload_span, &apply_ctx);
+                           "cpu_upload_row_bytes", pixel_width, pixel_bytes);
+    for (size_t i = 0U; i < block_count; i++) {
+        const db_damage_block_t block = blocks[i];
+        if ((block.row_count == 0U) || (block.col_count == 0U)) {
+            continue;
+        }
+        const uint32_t row_end = db_u32_min(
+            pixel_height,
+            db_checked_add_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                               "cpu_upload_row_end", block.row_start,
+                               block.row_count));
+        const uint32_t col_end = db_u32_min(
+            pixel_width,
+            db_checked_add_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                               "cpu_upload_col_end", block.col_start,
+                               block.col_count));
+        if ((row_end <= block.row_start) || (col_end <= block.col_start)) {
+            continue;
+        }
+        const uint32_t row_count = row_end - block.row_start;
+        const uint32_t col_count = col_end - block.col_start;
+        const uint32_t block_row_bytes = db_checked_mul_u32(
+            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+            "cpu_upload_block_row_bytes", col_count, pixel_bytes);
+        for (uint32_t row_offset = 0U; row_offset < row_count; row_offset++) {
+            const uint32_t row = block.row_start + row_offset;
+            const size_t src_offset_bytes =
+                ((size_t)row * (size_t)row_bytes) +
+                ((size_t)block.col_start * (size_t)pixel_bytes);
+            if (use_pbo != 0) {
+                const db_gl_upload_range_t upload_range = {
+                    .src_offset_bytes = src_offset_bytes,
+                    .dst_offset_bytes = 0U,
+                    .size_bytes = (size_t)block_row_bytes,
+                };
+                const void *source_base = (state->use_hdr_float_bo != 0)
+                                              ? (const void *)pixels_rgba16f
+                                              : (const void *)pixels_rgba8;
+                db_gl_upload_ranges_target(
+                    source_base, total_bytes, &upload_range, 1U,
+                    DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER, state->pbo, 0, NULL,
+                    0, 0);
+                db_present_cpu_upload_rows(
+                    state, block.col_start, col_count, row, 1U,
+                    db_gl_vbo_offset_ptr(upload_range.dst_offset_bytes), 1);
+            } else {
+                const void *pixels_ptr =
+                    (state->use_hdr_float_bo != 0)
+                        ? (const void *)(pixels_rgba16f +
+                                         (src_offset_bytes /
+                                          DB_CPU_RGBA16F_BYTES_PER_PIXEL))
+                        : (const void *)(pixels_rgba8 + src_offset_bytes);
+                db_present_cpu_upload_rows(state, block.col_start, col_count,
+                                           row, 1U, pixels_ptr, 0);
+            }
+        }
+    }
     if (use_pbo != 0) {
         db_gl_pbo_unbind_unpack();
     }
@@ -369,7 +366,7 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
     const size_t chunk_bytes = (size_t)chunk_bytes_u32;
     if (chunk_bytes == 0U) {
         state->debug_clear_ready = 0;
-        db_display_cpu_upload_mark_force_full(&state->force_full_upload);
+        state->force_full_upload = 1;
         return;
     }
 
@@ -397,7 +394,7 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
             // Allocation failure: disable debug clear buffer and force full
             // upload as a safe fallback.
             state->debug_clear_ready = 0;
-            db_display_cpu_upload_mark_force_full(&state->force_full_upload);
+            state->force_full_upload = 1;
             return;
         }
     }
@@ -438,7 +435,7 @@ static void db_present_cpu_clear_texture_debug(db_cpu_present_gl_state_t *state,
         (state->debug_clear_pixel_width != pixel_width) ||
         (state->debug_clear_row_bytes == 0U) ||
         (state->debug_clear_chunk_rows == 0U)) {
-        db_display_cpu_upload_mark_force_full(&state->force_full_upload);
+        state->force_full_upload = 1;
         return;
     }
 
@@ -479,13 +476,6 @@ db_present_cpu_prepare_resources(db_cpu_present_gl_state_t *state,
         (target_height != state->texture_height)) {
         db_present_cpu_texture_resize(state, pixel_width, pixel_height);
     }
-    if (state->upload_ranges_cap < (size_t)pixel_height) {
-        db_display_cpu_upload_ranges_ensure_capacity(
-            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "upload_ranges_buf",
-            (void **)&state->upload_ranges_buf, &state->upload_ranges_cap,
-            pixel_height, sizeof(db_gl_upload_range_t));
-    }
-
     if ((debug_clear_default_framebuffer != 0) &&
         (state->use_hdr_float_bo == 0)) {
         db_present_cpu_debug_clear_prepare(state, pixel_width);
@@ -494,8 +484,8 @@ db_present_cpu_prepare_resources(db_cpu_present_gl_state_t *state,
 
 static void db_present_cpu_framebuffer(GLFWwindow *window,
                                        db_cpu_present_gl_state_t *state,
-                                       const db_dirty_row_range_t *ranges,
-                                       size_t range_count,
+                                       const db_damage_block_t *blocks,
+                                       size_t block_count,
                                        int debug_clear_default_framebuffer) {
     uint32_t pixel_width = 0U;
     uint32_t pixel_height = 0U;
@@ -559,32 +549,22 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
     }
 
     // Direct row-based uploading, no pattern planner.
-    const uint32_t pixel_bytes = (state->use_hdr_float_bo != 0)
-                                     ? (uint32_t)DB_CPU_RGBA16F_BYTES_PER_PIXEL
-                                     : DB_CPU_RGBA8_BYTES_PER_PIXEL;
-    const uint32_t row_bytes =
-        db_checked_mul_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                           "cpu_upload_row_bytes", pixel_width, pixel_bytes);
-    if (db_display_cpu_upload_should_force_full(
-            state->force_full_upload, state->upload_ranges_buf,
-            state->upload_ranges_cap, pixel_height) != 0) {
-        const size_t full_bytes = (size_t)db_checked_mul_u32(
-            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "cpu_upload_full_bytes",
-            row_bytes, pixel_height);
-        const db_gl_upload_range_t full = db_gl_upload_full_range(full_bytes);
-        db_present_cpu_upload_spans(state, (const uint8_t *)pixels_rgba8,
-                                    pixels_rgba16f, pixel_width, pixel_height,
-                                    &full, 1U);
+    if (state->force_full_upload != 0) {
+        const db_damage_block_t full = {
+            .row_start = 0U,
+            .row_count = pixel_height,
+            .col_start = 0U,
+            .col_count = pixel_width,
+        };
+        db_present_cpu_upload_damage_blocks(
+            state, (const uint8_t *)pixels_rgba8, pixels_rgba16f, pixel_width,
+            pixel_height, &full, 1U);
         state->force_full_upload = 0;
     } else {
-        db_gl_upload_range_t *upload_ranges = state->upload_ranges_buf;
-        const size_t upload_span_count = db_gl_collect_row_upload_ranges(
-            pixel_width, pixel_height, pixel_bytes, ranges, range_count, NULL,
-            upload_ranges, state->upload_ranges_cap);
-        if ((upload_span_count > 0U) && (upload_ranges != NULL)) {
-            db_present_cpu_upload_spans(
+        if ((blocks != NULL) && (block_count > 0U)) {
+            db_present_cpu_upload_damage_blocks(
                 state, (const uint8_t *)pixels_rgba8, pixels_rgba16f,
-                pixel_width, pixel_height, upload_ranges, upload_span_count);
+                pixel_width, pixel_height, blocks, block_count);
         }
     }
 
@@ -613,13 +593,13 @@ static uint64_t db_glfw_cpu_renderer_bo_hash_or_fail(void) {
 }
 
 static void
-db_glfw_cpu_present_damage_cb(const db_dirty_row_range_t *damage_ranges,
+db_glfw_cpu_present_damage_cb(const db_damage_block_t *damage_blocks,
                               size_t damage_count, void *user_data) {
     db_glfw_cpu_loop_ctx_t *ctx = (db_glfw_cpu_loop_ctx_t *)user_data;
     if (ctx == NULL) {
         return;
     }
-    db_present_cpu_framebuffer(ctx->window, ctx->present, damage_ranges,
+    db_present_cpu_framebuffer(ctx->window, ctx->present, damage_blocks,
                                damage_count,
                                ctx->debug_clear_default_framebuffer);
 }

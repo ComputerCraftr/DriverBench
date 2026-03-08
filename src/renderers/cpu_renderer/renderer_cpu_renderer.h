@@ -17,8 +17,8 @@ const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
                                                       uint32_t *out_height);
 const uint16_t *db_renderer_cpu_renderer_pixels_rgba16f(uint32_t *out_width,
                                                         uint32_t *out_height);
-const db_dirty_row_range_t *
-db_renderer_cpu_renderer_damage_rows(size_t *out_count);
+const db_damage_block_t *
+db_renderer_cpu_renderer_damage_blocks(size_t *out_count);
 uint64_t db_renderer_cpu_renderer_state_hash(void);
 
 #endif

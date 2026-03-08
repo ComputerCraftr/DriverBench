@@ -52,10 +52,65 @@ typedef struct {
 } db_snake_plan_request_t;
 
 typedef struct {
-    uint32_t row;
+    uint32_t row_start;
+    uint32_t row_count;
     uint32_t col_start;
-    uint32_t col_end;
-} db_snake_col_span_t;
+    uint32_t col_count;
+    uint32_t color_r_bits;
+    uint32_t color_g_bits;
+    uint32_t color_b_bits;
+} db_snake_compact_block_t;
+
+typedef struct {
+    db_damage_block_t *out_blocks;
+    size_t out_capacity;
+    size_t *out_count;
+    db_damage_block_t open_block;
+    int open_block_valid;
+} db_snake_damage_block_collect_ctx_t;
+
+typedef int (*db_snake_emit_row_segment_cb_t)(uint32_t row, uint32_t col_start,
+                                              uint32_t col_end,
+                                              void *user_data);
+
+typedef void (*db_snake_get_color_bits_cb_t)(uint32_t row, uint32_t col,
+                                             void *user_data,
+                                             uint32_t *color_r_bits,
+                                             uint32_t *color_g_bits,
+                                             uint32_t *color_b_bits);
+
+typedef int (*db_snake_emit_color_run_cb_t)(
+    uint32_t row, uint32_t col_start, uint32_t col_count, uint32_t color_r_bits,
+    uint32_t color_g_bits, uint32_t color_b_bits, void *user_data);
+
+typedef struct {
+    db_snake_compact_block_t *out_blocks;
+    size_t out_capacity;
+    size_t *out_count;
+    db_snake_compact_block_t *open_block;
+    int *open_block_valid;
+} db_snake_compact_block_collect_ctx_t;
+
+typedef struct {
+    uint32_t cols;
+    uint32_t rows;
+    db_snake_get_color_bits_cb_t get_color_bits;
+    void *color_user_data;
+    db_snake_compact_block_t *out_blocks;
+    size_t out_capacity;
+    size_t *out_count;
+    db_snake_compact_block_t open_block;
+    int open_block_valid;
+} db_snake_compact_block_row_segment_collect_ctx_t;
+
+typedef struct {
+    db_snake_emit_row_segment_cb_t emit;
+    void *user_data;
+    uint32_t open_row;
+    uint32_t open_col_start;
+    uint32_t open_col_end;
+    int open_valid;
+} db_snake_row_segment_emit_state_t;
 
 typedef struct {
     db_snake_region_t region;
@@ -123,8 +178,9 @@ db_snake_plan_request_make(int is_grid_mode, uint32_t seed,
     return request;
 }
 
-static inline size_t db_snake_span_capacity_needed(uint32_t settled_count,
-                                                   uint32_t active_count) {
+static inline size_t
+db_snake_upload_range_capacity_needed(uint32_t settled_count,
+                                      uint32_t active_count) {
     return (size_t)settled_count + (size_t)active_count;
 }
 
@@ -162,57 +218,12 @@ db_snake_shape_profile_to_f32(const db_snake_shape_profile_t *profile,
 }
 
 static inline size_t
-db_snake_plan_span_capacity_needed(const db_snake_plan_t *plan) {
+db_snake_plan_upload_range_capacity_needed(const db_snake_plan_t *plan) {
     if (plan == NULL) {
         return 0U;
     }
-    return db_snake_span_capacity_needed(plan->prev_count, plan->batch_size);
-}
-
-static inline int
-db_snake_try_merge_adjacent_span(db_snake_col_span_t *existing,
-                                 const db_snake_col_span_t *candidate) {
-    if ((existing == NULL) || (candidate == NULL) ||
-        (existing->row != candidate->row)) {
-        return 0;
-    }
-    if (candidate->col_start > candidate->col_end) {
-        return 0;
-    }
-    // Merge contiguous or overlapping spans. Traversal order can be either
-    // direction within a row (snake), so handle both forward and reverse
-    // adjacency.
-    const int overlaps_or_adjacent =
-        (candidate->col_start <= existing->col_end) &&
-        (existing->col_start <= candidate->col_end);
-    if (overlaps_or_adjacent == 0) {
-        return 0;
-    }
-    existing->col_start = db_u32_min(existing->col_start, candidate->col_start);
-    existing->col_end = db_u32_max(existing->col_end, candidate->col_end);
-    return (existing->col_end > existing->col_start) ? 1 : 0;
-}
-
-static inline size_t db_snake_filter_spans_for_shape_cache(
-    db_snake_col_span_t *spans, size_t span_count,
-    const db_snake_shape_cache_t *shape_cache) {
-    if ((spans == NULL) || (shape_cache == NULL) || (span_count == 0U)) {
-        return span_count;
-    }
-    size_t out_count = 0U;
-    for (size_t i = 0U; i < span_count; i++) {
-        uint32_t clipped_start = spans[i].col_start;
-        uint32_t clipped_end = spans[i].col_end;
-        if (db_snake_shape_cache_clip_row_span(
-                shape_cache, spans[i].row, &clipped_start, &clipped_end) == 0) {
-            continue;
-        }
-        spans[out_count] = spans[i];
-        spans[out_count].col_start = clipped_start;
-        spans[out_count].col_end = clipped_end;
-        out_count++;
-    }
-    return out_count;
+    return db_snake_upload_range_capacity_needed(plan->prev_count,
+                                                 plan->batch_size);
 }
 
 static inline uint32_t db_snake_grid_rows_effective(void) {
@@ -221,6 +232,137 @@ static inline uint32_t db_snake_grid_rows_effective(void) {
 
 static inline uint32_t db_snake_grid_cols_effective(void) {
     return (uint32_t)BENCH_WINDOW_WIDTH_PX;
+}
+
+static inline int db_snake_for_each_color_run_in_row_segment(
+    uint32_t row, uint32_t segment_col_start, uint32_t segment_col_end,
+    db_snake_get_color_bits_cb_t get_color_bits, void *get_color_user_data,
+    db_snake_emit_color_run_cb_t emit_color_run, void *emit_user_data) {
+    if ((segment_col_start >= segment_col_end) || (get_color_bits == NULL) ||
+        (emit_color_run == NULL)) {
+        return 1;
+    }
+
+    uint32_t run_col_start = segment_col_start;
+    uint32_t run_r_bits = 0U;
+    uint32_t run_g_bits = 0U;
+    uint32_t run_b_bits = 0U;
+    get_color_bits(row, segment_col_start, get_color_user_data, &run_r_bits,
+                   &run_g_bits, &run_b_bits);
+    for (uint32_t col = segment_col_start + 1U; col < segment_col_end; col++) {
+        uint32_t color_r_bits = 0U;
+        uint32_t color_g_bits = 0U;
+        uint32_t color_b_bits = 0U;
+        get_color_bits(row, col, get_color_user_data, &color_r_bits,
+                       &color_g_bits, &color_b_bits);
+        if ((color_r_bits == run_r_bits) && (color_g_bits == run_g_bits) &&
+            (color_b_bits == run_b_bits)) {
+            continue;
+        }
+        if (emit_color_run(row, run_col_start, col - run_col_start, run_r_bits,
+                           run_g_bits, run_b_bits, emit_user_data) == 0) {
+            return 0;
+        }
+        run_col_start = col;
+        run_r_bits = color_r_bits;
+        run_g_bits = color_g_bits;
+        run_b_bits = color_b_bits;
+    }
+    return emit_color_run(row, run_col_start, segment_col_end - run_col_start,
+                          run_r_bits, run_g_bits, run_b_bits, emit_user_data);
+}
+
+static inline int
+db_snake_append_open_compact_block(db_snake_compact_block_t *out_blocks,
+                                   size_t out_capacity, size_t *out_count,
+                                   const db_snake_compact_block_t *open_block,
+                                   int open_block_valid) {
+    if ((out_blocks == NULL) || (out_count == NULL) || (open_block == NULL) ||
+        (open_block_valid == 0)) {
+        return 0;
+    }
+    if (*out_count >= out_capacity) {
+        return 0;
+    }
+    out_blocks[*out_count] = *open_block;
+    (*out_count)++;
+    return 1;
+}
+
+static inline int db_snake_emit_compact_block_color_run(
+    uint32_t row, uint32_t col_start, uint32_t col_count, uint32_t color_r_bits,
+    uint32_t color_g_bits, uint32_t color_b_bits, void *user_data) {
+    db_snake_compact_block_collect_ctx_t *ctx =
+        (db_snake_compact_block_collect_ctx_t *)user_data;
+    const int can_extend_open =
+        (ctx != NULL) && (ctx->open_block != NULL) &&
+        (ctx->open_block_valid != NULL) && (*ctx->open_block_valid != 0) &&
+        ((ctx->open_block->row_start + ctx->open_block->row_count) == row) &&
+        (ctx->open_block->col_start == col_start) &&
+        (ctx->open_block->col_count == col_count) &&
+        (ctx->open_block->color_r_bits == color_r_bits) &&
+        (ctx->open_block->color_g_bits == color_g_bits) &&
+        (ctx->open_block->color_b_bits == color_b_bits);
+    if (ctx == NULL) {
+        return 0;
+    }
+    if (can_extend_open != 0) {
+        ctx->open_block->row_count++;
+        return 1;
+    }
+    if ((ctx->open_block != NULL) && (ctx->open_block_valid != NULL) &&
+        (*ctx->open_block_valid != 0) &&
+        (db_snake_append_open_compact_block(ctx->out_blocks, ctx->out_capacity,
+                                            ctx->out_count, ctx->open_block,
+                                            *ctx->open_block_valid) == 0)) {
+        return 0;
+    }
+    *ctx->open_block = (db_snake_compact_block_t){
+        .row_start = row,
+        .row_count = 1U,
+        .col_start = col_start,
+        .col_count = col_count,
+        .color_r_bits = color_r_bits,
+        .color_g_bits = color_g_bits,
+        .color_b_bits = color_b_bits,
+    };
+    *ctx->open_block_valid = 1;
+    return 1;
+}
+
+static inline int db_snake_collect_compact_blocks_from_row_segment(
+    uint32_t row, uint32_t segment_col_start, uint32_t segment_col_end,
+    db_snake_get_color_bits_cb_t get_color_bits, void *color_user_data,
+    db_snake_compact_block_t *out_blocks, size_t out_capacity,
+    size_t *out_count, db_snake_compact_block_t *open_block,
+    int *open_block_valid) {
+    db_snake_compact_block_collect_ctx_t collect_ctx = {
+        .out_blocks = out_blocks,
+        .out_capacity = out_capacity,
+        .out_count = out_count,
+        .open_block = open_block,
+        .open_block_valid = open_block_valid,
+    };
+    return db_snake_for_each_color_run_in_row_segment(
+        row, segment_col_start, segment_col_end, get_color_bits,
+        color_user_data, db_snake_emit_compact_block_color_run, &collect_ctx);
+}
+
+static inline int db_snake_collect_compact_blocks_row_segment_cb(
+    uint32_t row, uint32_t col_start, uint32_t col_end, void *user_data) {
+    db_snake_compact_block_row_segment_collect_ctx_t *ctx =
+        (db_snake_compact_block_row_segment_collect_ctx_t *)user_data;
+    if ((ctx == NULL) || (ctx->get_color_bits == NULL) ||
+        (ctx->out_blocks == NULL) || (ctx->out_count == NULL)) {
+        return 0;
+    }
+    if ((row >= ctx->rows) || (col_end <= col_start) || (col_end > ctx->cols)) {
+        return 1;
+    }
+    return db_snake_collect_compact_blocks_from_row_segment(
+        row, col_start, col_end, ctx->get_color_bits, ctx->color_user_data,
+        ctx->out_blocks, ctx->out_capacity, ctx->out_count, &ctx->open_block,
+        &ctx->open_block_valid);
 }
 
 static inline double db_snake_color_channel(uint32_t seed) {
@@ -376,13 +518,60 @@ static inline int db_snake_plan_resolve_prev_tile(
                                       out_tile);
 }
 
-static inline void db_snake_append_step_spans_for_region(
-    db_snake_col_span_t *spans, size_t max_spans, size_t *inout_span_count,
-    uint32_t region_x, uint32_t region_y, uint32_t region_cols,
-    uint32_t region_rows, uint32_t step_start, uint32_t step_count) {
-    if ((spans == NULL) || (inout_span_count == NULL) || (region_cols == 0U) ||
-        (region_rows == 0U) || (step_count == 0U)) {
-        return;
+static inline int
+db_snake_flush_open_row_segment(db_snake_row_segment_emit_state_t *state) {
+    if ((state == NULL) || (state->open_valid == 0) || (state->emit == NULL)) {
+        return 1;
+    }
+    if (state->emit(state->open_row, state->open_col_start, state->open_col_end,
+                    state->user_data) == 0) {
+        return 0;
+    }
+    state->open_valid = 0;
+    return 1;
+}
+
+static inline int db_snake_accumulate_row_segment(
+    db_snake_row_segment_emit_state_t *state, uint32_t row, uint32_t col_start,
+    uint32_t col_end, const db_snake_shape_cache_t *shape_cache) {
+    if ((state == NULL) || (col_end <= col_start)) {
+        return 1;
+    }
+    if (shape_cache != NULL) {
+        if (db_snake_shape_cache_clip_row_span(shape_cache, row, &col_start,
+                                               &col_end) == 0) {
+            return 1;
+        }
+    }
+    if (state->open_valid != 0) {
+        const int same_row = (state->open_row == row);
+        const int overlaps_or_adjacent = (col_start <= state->open_col_end) &&
+                                         (state->open_col_start <= col_end);
+        if ((same_row != 0) && (overlaps_or_adjacent != 0)) {
+            state->open_col_start =
+                db_u32_min(state->open_col_start, col_start);
+            state->open_col_end = db_u32_max(state->open_col_end, col_end);
+            return 1;
+        }
+        if (db_snake_flush_open_row_segment(state) == 0) {
+            return 0;
+        }
+    }
+    state->open_row = row;
+    state->open_col_start = col_start;
+    state->open_col_end = col_end;
+    state->open_valid = 1;
+    return 1;
+}
+
+static inline int db_snake_emit_step_segments_for_region(
+    db_snake_row_segment_emit_state_t *state, uint32_t region_x,
+    uint32_t region_y, uint32_t region_cols, uint32_t region_rows,
+    uint32_t step_start, uint32_t step_count,
+    const db_snake_shape_cache_t *shape_cache) {
+    if ((state == NULL) || (region_cols == 0U) || (region_rows == 0U) ||
+        (step_count == 0U)) {
+        return 1;
     }
 
     uint32_t remaining = step_count;
@@ -390,7 +579,7 @@ static inline void db_snake_append_step_spans_for_region(
     while (remaining > 0U) {
         const uint32_t local_row = step_cursor / region_cols;
         if (local_row >= region_rows) {
-            return;
+            return 1;
         }
         const uint32_t local_col_step = step_cursor % region_cols;
         const uint32_t steps_left_in_row = region_cols - local_col_step;
@@ -403,90 +592,184 @@ static inline void db_snake_append_step_spans_for_region(
                 (region_cols - 1U) - (local_col_step + chunk_steps - 1U);
         }
 
-        if (*inout_span_count >= max_spans) {
-            return;
-        }
-        const db_snake_col_span_t candidate = (db_snake_col_span_t){
-            .row = region_y + local_row,
-            .col_start = region_x + first_local_col,
-            .col_end = region_x + first_local_col + chunk_steps,
-        };
-        if ((*inout_span_count > 0U) &&
-            (db_snake_try_merge_adjacent_span(&spans[*inout_span_count - 1U],
-                                              &candidate) != 0)) {
-            // Merged with previous span; do not append a new entry.
-        } else {
-            spans[*inout_span_count] = candidate;
-            (*inout_span_count)++;
+        if (db_snake_accumulate_row_segment(
+                state, region_y + local_row, region_x + first_local_col,
+                region_x + first_local_col + chunk_steps, shape_cache) == 0) {
+            return 0;
         }
         step_cursor += chunk_steps;
         remaining -= chunk_steps;
     }
+    return 1;
 }
 
-static inline size_t
-db_snake_collect_damage_spans(db_snake_col_span_t *spans, size_t max_spans,
-                              const db_snake_region_t *region,
-                              uint32_t settled_start, uint32_t settled_count,
-                              uint32_t active_start, uint32_t active_count,
-                              const db_snake_shape_cache_t *shape_cache) {
-    if ((spans == NULL) || (region == NULL) || (max_spans == 0U) ||
-        (region->width == 0U) || (region->height == 0U)) {
-        return 0U;
+static inline int db_snake_for_each_damage_row_segment(
+    const db_snake_region_t *region, uint32_t settled_start,
+    uint32_t settled_count, uint32_t active_start, uint32_t active_count,
+    const db_snake_shape_cache_t *shape_cache,
+    db_snake_emit_row_segment_cb_t emit, void *user_data) {
+    if ((region == NULL) || (emit == NULL) || (region->width == 0U) ||
+        (region->height == 0U)) {
+        return 0;
     }
-    size_t span_count = 0U;
-    db_snake_append_step_spans_for_region(
-        spans, max_spans, &span_count, region->x, region->y, region->width,
-        region->height, settled_start, settled_count);
-    db_snake_append_step_spans_for_region(
-        spans, max_spans, &span_count, region->x, region->y, region->width,
-        region->height, active_start, active_count);
-    if (shape_cache != NULL) {
-        span_count = db_snake_filter_spans_for_shape_cache(spans, span_count,
-                                                           shape_cache);
+    db_snake_row_segment_emit_state_t state = {
+        .emit = emit,
+        .user_data = user_data,
+        .open_row = 0U,
+        .open_col_start = 0U,
+        .open_col_end = 0U,
+        .open_valid = 0,
+    };
+    if (db_snake_emit_step_segments_for_region(
+            &state, region->x, region->y, region->width, region->height,
+            settled_start, settled_count, shape_cache) == 0) {
+        return 0;
     }
-    return span_count;
+    if (db_snake_emit_step_segments_for_region(
+            &state, region->x, region->y, region->width, region->height,
+            active_start, active_count, shape_cache) == 0) {
+        return 0;
+    }
+    return db_snake_flush_open_row_segment(&state);
 }
 
-static inline size_t db_snake_collect_damage_spans_for_plan(
-    db_snake_col_span_t *spans, size_t max_spans,
+static inline int db_snake_collect_compact_blocks(
+    const db_snake_region_t *region, uint32_t settled_start,
+    uint32_t settled_count, uint32_t active_start, uint32_t active_count,
+    const db_snake_shape_cache_t *shape_cache, uint32_t cols, uint32_t rows,
+    db_snake_get_color_bits_cb_t get_color_bits, void *color_user_data,
+    db_snake_compact_block_t *out_blocks, size_t out_capacity,
+    size_t *out_count) {
+    if ((region == NULL) || (out_blocks == NULL) || (out_count == NULL) ||
+        (get_color_bits == NULL)) {
+        return 0;
+    }
+    *out_count = 0U;
+    db_snake_compact_block_row_segment_collect_ctx_t ctx = {
+        .cols = cols,
+        .rows = rows,
+        .get_color_bits = get_color_bits,
+        .color_user_data = color_user_data,
+        .out_blocks = out_blocks,
+        .out_capacity = out_capacity,
+        .out_count = out_count,
+        .open_block = {0},
+        .open_block_valid = 0,
+    };
+    if (db_snake_for_each_damage_row_segment(
+            region, settled_start, settled_count, active_start, active_count,
+            shape_cache, db_snake_collect_compact_blocks_row_segment_cb,
+            &ctx) == 0) {
+        return 0;
+    }
+    if ((ctx.open_block_valid != 0) &&
+        (db_snake_append_open_compact_block(out_blocks, out_capacity, out_count,
+                                            &ctx.open_block,
+                                            ctx.open_block_valid) == 0)) {
+        return 0;
+    }
+    return 1;
+}
+
+static inline int db_snake_collect_compact_blocks_for_plan(
     const db_snake_region_t *region, const db_snake_plan_t *plan,
-    const db_snake_shape_cache_t *shape_cache) {
+    const db_snake_shape_cache_t *shape_cache, uint32_t cols, uint32_t rows,
+    db_snake_get_color_bits_cb_t get_color_bits, void *color_user_data,
+    db_snake_compact_block_t *out_blocks, size_t out_capacity,
+    size_t *out_count) {
     if (plan == NULL) {
-        return 0U;
+        return 0;
     }
-    return db_snake_collect_damage_spans(
-        spans, max_spans, region, plan->prev_start, plan->prev_count,
-        plan->active_cursor, plan->batch_size, shape_cache);
+    return db_snake_collect_compact_blocks(
+        region, plan->prev_start, plan->prev_count, plan->active_cursor,
+        plan->batch_size, shape_cache, cols, rows, get_color_bits,
+        color_user_data, out_blocks, out_capacity, out_count);
 }
 
-static inline int db_snake_span_row_bounds(const db_snake_col_span_t *spans,
-                                           size_t span_count, uint32_t max_rows,
-                                           uint32_t *out_row_start,
-                                           uint32_t *out_row_count) {
-    if ((spans == NULL) || (max_rows == 0U) || (out_row_start == NULL) ||
-        (out_row_count == NULL)) {
+static inline int db_snake_append_open_damage_block(
+    db_damage_block_t *out_blocks, size_t out_capacity, size_t *out_count,
+    const db_damage_block_t *open_block, int open_block_valid) {
+    if (open_block_valid == 0) {
+        return 1;
+    }
+    if ((out_blocks == NULL) || (out_count == NULL) || (open_block == NULL) ||
+        (*out_count >= out_capacity)) {
         return 0;
     }
-    if (span_count == 0U) {
+    out_blocks[*out_count] = *open_block;
+    (*out_count)++;
+    return 1;
+}
+
+static inline int db_snake_collect_damage_blocks_row_segment_cb(
+    uint32_t row, uint32_t col_start, uint32_t col_end, void *user_data) {
+    db_snake_damage_block_collect_ctx_t *ctx =
+        (db_snake_damage_block_collect_ctx_t *)user_data;
+    if ((ctx == NULL) || (ctx->out_blocks == NULL) ||
+        (ctx->out_count == NULL) || (col_start >= col_end)) {
         return 0;
     }
-    // Spans are generated in monotonic row order and shape filtering compacts
-    // out invalid entries, so row bounds are the first and last span rows.
-    const db_snake_col_span_t first_span = spans[0U];
-    const db_snake_col_span_t last_span = spans[span_count - 1U];
-    if ((first_span.col_end <= first_span.col_start) ||
-        (last_span.col_end <= last_span.col_start)) {
+    const uint32_t col_count = col_end - col_start;
+    if ((ctx->open_block_valid != 0) &&
+        ((ctx->open_block.row_start + ctx->open_block.row_count) == row) &&
+        (ctx->open_block.col_start == col_start) &&
+        (ctx->open_block.col_count == col_count)) {
+        ctx->open_block.row_count++;
+        return 1;
+    }
+    if ((ctx->open_block_valid != 0) &&
+        (db_snake_append_open_damage_block(ctx->out_blocks, ctx->out_capacity,
+                                           ctx->out_count, &ctx->open_block,
+                                           ctx->open_block_valid) == 0)) {
         return 0;
     }
-    const uint32_t row_start = first_span.row;
-    const uint32_t row_end_exclusive = last_span.row + 1U;
-    if ((row_end_exclusive <= row_start) || (row_start >= max_rows)) {
+    ctx->open_block = (db_damage_block_t){
+        .row_start = row,
+        .row_count = 1U,
+        .col_start = col_start,
+        .col_count = col_count,
+    };
+    ctx->open_block_valid = 1;
+    return 1;
+}
+
+static inline int db_snake_collect_damage_blocks(
+    const db_snake_region_t *region, uint32_t settled_start,
+    uint32_t settled_count, uint32_t active_start, uint32_t active_count,
+    const db_snake_shape_cache_t *shape_cache, db_damage_block_t *out_blocks,
+    size_t out_capacity, size_t *out_count) {
+    if ((region == NULL) || (out_blocks == NULL) || (out_count == NULL)) {
         return 0;
     }
-    *out_row_start = row_start;
-    *out_row_count = row_end_exclusive - row_start;
-    return (*out_row_count != 0U) ? 1 : 0;
+    *out_count = 0U;
+    db_snake_damage_block_collect_ctx_t ctx = {
+        .out_blocks = out_blocks,
+        .out_capacity = out_capacity,
+        .out_count = out_count,
+        .open_block = {0U, 0U, 0U, 0U},
+        .open_block_valid = 0,
+    };
+    if (db_snake_for_each_damage_row_segment(
+            region, settled_start, settled_count, active_start, active_count,
+            shape_cache, db_snake_collect_damage_blocks_row_segment_cb,
+            &ctx) == 0) {
+        return 0;
+    }
+    return db_snake_append_open_damage_block(out_blocks, out_capacity,
+                                             out_count, &ctx.open_block,
+                                             ctx.open_block_valid);
+}
+
+static inline int db_snake_collect_damage_blocks_for_plan(
+    const db_snake_region_t *region, const db_snake_plan_t *plan,
+    const db_snake_shape_cache_t *shape_cache, db_damage_block_t *out_blocks,
+    size_t out_capacity, size_t *out_count) {
+    if (plan == NULL) {
+        return 0;
+    }
+    return db_snake_collect_damage_blocks(
+        region, plan->prev_start, plan->prev_count, plan->active_cursor,
+        plan->batch_size, shape_cache, out_blocks, out_capacity, out_count);
 }
 
 static inline db_snake_plan_t db_snake_plan_next_step_for_region(

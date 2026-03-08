@@ -67,10 +67,8 @@ typedef struct {
     size_t unit_stride_bytes;
     size_t total_bytes;
     int force_full_upload;
-    const db_dirty_row_range_t *dirty_rows;
-    size_t dirty_row_count;
-    const db_snake_col_span_t *spans;
-    size_t span_count;
+    const db_damage_block_t *dirty_blocks;
+    size_t dirty_block_count;
 } db_gl_damage_upload_plan_t;
 
 typedef struct {
@@ -85,18 +83,23 @@ typedef struct {
     uint32_t snake_prev_count;
     uint32_t pattern_seed;
     const db_history_snake_scratch_t *snake_scratch;
-    const db_dirty_row_range_t *damage_row_ranges;
-    size_t damage_row_count;
-    int use_damage_row_ranges;
+    const db_damage_block_t *damage_blocks;
+    size_t damage_block_count;
+    int use_damage_blocks;
 } db_gl_pattern_upload_collect_t;
 
 typedef struct {
     db_gl_upload_range_t range;
-    db_dirty_row_range_t rows;
-} db_gl_upload_row_span_t;
+    db_damage_block_t block;
+} db_gl_upload_block_span_t;
 
-typedef void (*db_gl_upload_row_span_apply_fn_t)(
-    const db_gl_upload_row_span_t *span, void *user_data);
+typedef int (*db_gl_upload_row_segment_apply_fn_t)(uint32_t row,
+                                                   uint32_t col_start,
+                                                   uint32_t col_end,
+                                                   void *user_data);
+
+typedef void (*db_gl_upload_block_span_apply_fn_t)(
+    const db_gl_upload_block_span_t *span, void *user_data);
 
 typedef enum {
     DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER = 0,
@@ -313,29 +316,31 @@ void db_gl_draw_dirty_ranges_common(const char *backend_name,
                                     const db_gl_upload_range_t *ranges,
                                     size_t range_count);
 void db_gl_unmap_current_array_buffer(void);
-size_t db_gl_collect_row_upload_ranges(
+size_t db_gl_collect_block_upload_ranges(
     uint32_t row_unit_width, uint32_t row_count_total, size_t unit_stride_bytes,
-    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
-    db_dirty_row_range_t *out_rows, db_gl_upload_range_t *out_ranges,
+    const db_damage_block_t *dirty_blocks, size_t dirty_block_count,
+    db_damage_block_t *out_blocks, db_gl_upload_range_t *out_ranges,
     size_t out_capacity);
-size_t db_gl_collect_span_upload_ranges(
-    uint32_t row_unit_width, size_t dst_unit_stride_bytes,
-    size_t src_unit_stride_bytes, const db_snake_col_span_t *spans,
-    size_t span_count, db_gl_upload_range_t *out_ranges, size_t out_capacity);
-size_t
-db_gl_collect_damage_upload_ranges(const db_gl_damage_upload_plan_t *plan,
-                                   db_gl_upload_range_t *out_ranges,
-                                   size_t out_capacity);
 size_t
 db_gl_collect_pattern_upload_ranges(const db_gl_pattern_upload_collect_t *ctx,
                                     db_gl_upload_range_t *out_ranges,
                                     size_t out_capacity);
-size_t db_gl_for_each_upload_row_span(const char *backend_name,
-                                      uint32_t row_unit_width,
-                                      const db_gl_upload_range_t *ranges,
-                                      size_t range_count,
-                                      db_gl_upload_row_span_apply_fn_t apply_fn,
-                                      void *user_data);
+int db_gl_for_each_upload_row_segment(
+    uint32_t row_unit_width, uint32_t row_count_total,
+    size_t src_unit_stride_bytes, size_t dst_unit_stride_bytes,
+    const db_gl_upload_range_t *ranges, size_t range_count,
+    db_gl_upload_row_segment_apply_fn_t apply, void *user_data);
+int db_gl_collect_snake_compact_blocks_from_upload_ranges(
+    uint32_t row_unit_width, uint32_t row_count_total,
+    size_t src_unit_stride_bytes, size_t dst_unit_stride_bytes,
+    const db_gl_upload_range_t *ranges, size_t range_count,
+    db_snake_get_color_bits_cb_t get_color_bits, void *get_color_user_data,
+    db_snake_compact_block_t *out_blocks, size_t out_capacity,
+    size_t *out_count);
+size_t db_gl_for_each_upload_block_span(
+    const char *backend_name, uint32_t row_unit_width,
+    const db_gl_upload_range_t *ranges, size_t range_count,
+    db_gl_upload_block_span_apply_fn_t apply_fn, void *user_data);
 size_t db_gl_copy_upload_ranges(const db_gl_upload_range_t *source_ranges,
                                 size_t source_count,
                                 db_gl_upload_range_t *out_ranges,

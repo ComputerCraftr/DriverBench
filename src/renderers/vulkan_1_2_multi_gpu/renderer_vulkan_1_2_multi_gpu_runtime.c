@@ -180,17 +180,17 @@ static uint64_t db_vk_compute_output_hash_from_image(VkImage image,
 }
 
 static inline db_vk_grid_row_block_draw_req_t db_vk_gradient_row_block_req(
-    const db_dirty_row_range_t *range, uint32_t grid_cols, db_pattern_t pattern,
+    const db_damage_block_t *block, db_pattern_t pattern,
     const db_gradient_state_t *state, uint32_t frame_index) {
-    if ((range == NULL) || (state == NULL)) {
+    if ((block == NULL) || (state == NULL)) {
         return (db_vk_grid_row_block_draw_req_t){0};
     }
     return (db_vk_grid_row_block_draw_req_t){
-        .span_units = range->row_count * grid_cols,
-        .row_start = range->row_start,
-        .row_end = range->row_start + range->row_count,
-        .col_start = 0U,
-        .col_end = grid_cols,
+        .span_units = block->row_count * block->col_count,
+        .row_start = block->row_start,
+        .row_end = block->row_start + block->row_count,
+        .col_start = block->col_start,
+        .col_end = block->col_start + block->col_count,
         .payload =
             {
                 .color = db_vk_shader_ignored_color_rgb,
@@ -738,31 +738,41 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 .grid_cols = grid_cols,
                 .payload_cache = &draw_payload_cache,
             };
-            db_dirty_row_range_t curr_ranges[2] = {{0U, 0U}, {0U, 0U}};
-            size_t curr_count = db_gradient_collect_dirty_ranges_clamped(
-                &plan, grid_rows, curr_ranges, 2U);
-            const int seeded_full = db_history_apply_full_seed_rows_if_needed(
-                &g_state.history_pair.is_valid, grid_rows, curr_ranges, 2U,
-                &curr_count);
+            db_damage_block_t curr_blocks[2] = {
+                {0U, 0U, 0U, 0U},
+                {0U, 0U, 0U, 0U},
+            };
+            size_t curr_count = db_gradient_collect_dirty_blocks(
+                &plan, grid_rows, grid_cols, curr_blocks, 2U);
+            const int seeded_full =
+                (g_state.history_pair.is_valid == 0) ? 1 : 0;
             if (seeded_full != 0) {
+                curr_blocks[0] = (db_damage_block_t){
+                    .row_start = 0U,
+                    .row_count = grid_rows,
+                    .col_start = 0U,
+                    .col_count = grid_cols,
+                };
+                curr_count = 1U;
+                g_state.history_pair.is_valid = 1;
                 frame_full_draw = 1;
             } else if (g_state.gradient_prev_frame.draw_count > 0U) {
-                db_dirty_row_range_t replay_ranges[2] = {{0U, 0U}, {0U, 0U}};
-                const size_t replay_base_count =
-                    (g_state.gradient_prev_frame.draw_count < 2U)
-                        ? g_state.gradient_prev_frame.draw_count
-                        : 2U;
-                size_t replay_count = db_gradient_subtract_replay_ranges(
-                    g_state.gradient_prev_frame.draw_rows, replay_base_count,
-                    curr_ranges, curr_count, replay_ranges, 2U);
+                db_damage_block_t replay_blocks[2] = {
+                    {0U, 0U, 0U, 0U},
+                    {0U, 0U, 0U, 0U},
+                };
+                size_t replay_count = db_gradient_subtract_replay_blocks(
+                    g_state.gradient_prev_frame.draw_blocks,
+                    g_state.gradient_prev_frame.draw_count, curr_blocks,
+                    curr_count, replay_blocks, 2U);
                 for (size_t i = 0U; i < replay_count; i++) {
-                    const db_dirty_row_range_t replay = replay_ranges[i];
+                    const db_damage_block_t replay = replay_blocks[i];
                     if (replay.row_count == 0U) {
                         continue;
                     }
                     const db_vk_grid_row_block_draw_req_t replay_req =
                         db_vk_gradient_row_block_req(
-                            &replay, grid_cols, g_state.runtime.pattern,
+                            &replay, g_state.runtime.pattern,
                             &g_state.gradient_prev_frame.state,
                             g_state.frame.frame_index);
                     db_vk_draw_owner_grid_row_block(&draw_ctx, &replay_req);
@@ -770,13 +780,13 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             }
 
             for (size_t i = 0U; i < curr_count; i++) {
-                const db_dirty_row_range_t range = curr_ranges[i];
-                if (range.row_count == 0U) {
+                const db_damage_block_t block = curr_blocks[i];
+                if (block.row_count == 0U) {
                     continue;
                 }
                 const db_vk_grid_row_block_draw_req_t req =
                     db_vk_gradient_row_block_req(
-                        &range, grid_cols, g_state.runtime.pattern,
+                        &block, g_state.runtime.pattern,
                         &plan.render_state, g_state.frame.frame_index);
                 db_vk_draw_owner_grid_row_block(&draw_ctx, &req);
             }
@@ -784,9 +794,9 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 frame_dirty_draw = 1;
             }
 
-            db_history_gradient_replay_state_store(&g_state.gradient_prev_frame,
-                                                   curr_ranges, curr_count,
-                                                   &plan.render_state);
+            db_history_gradient_replay_state_store(
+                &g_state.gradient_prev_frame, curr_blocks, curr_count,
+                grid_cols, &plan.render_state);
         }
         db_gradient_apply_step_to_runtime(&g_state.runtime, &plan);
     }
@@ -1102,8 +1112,9 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
         .surface = g_state.surface,
     };
     db_vk_cleanup_runtime(&cleanup);
-    free(g_state.snake_scratch.spans);
-    free(g_state.snake_scratch.row_bounds);
+    free(g_state.snake_scratch.damage.blocks);
+    free(g_state.snake_scratch.compact.blocks);
+    free(g_state.snake_scratch.shape.row_bounds);
     free(g_state.render_frame_samples_ms);
     g_state = (renderer_state_t){0};
 }

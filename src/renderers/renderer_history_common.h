@@ -25,14 +25,28 @@ typedef struct {
 } db_history_pair_state_t;
 
 typedef struct {
-    db_snake_col_span_t *spans;
-    size_t span_capacity;
+    db_damage_block_t *blocks;
+    size_t capacity;
+} db_history_snake_damage_block_scratch_t;
+
+typedef struct {
+    db_snake_compact_block_t *blocks;
+    size_t capacity;
+} db_history_snake_compact_block_scratch_t;
+
+typedef struct {
     db_snake_shape_row_bounds_t *row_bounds;
     size_t row_bounds_capacity;
     uint32_t *active_tile_indices;
     uint8_t *active_tile_valid;
     double *active_prior_rgb;
     uint32_t active_tile_capacity;
+} db_history_snake_shape_scratch_t;
+
+typedef struct {
+    db_history_snake_damage_block_scratch_t damage;
+    db_history_snake_compact_block_scratch_t compact;
+    db_history_snake_shape_scratch_t shape;
 } db_history_snake_scratch_t;
 
 typedef struct {
@@ -88,6 +102,13 @@ typedef struct {
     int should_force_full_upload;
 } db_history_snake_backbuffer_action_t;
 
+typedef struct {
+    db_damage_block_t *blocks;
+    size_t block_capacity;
+    size_t block_count;
+    int overflowed;
+} db_history_damage_block_accumulator_t;
+
 static inline db_history_pair_state_t
 db_history_pair_state_make(int is_valid, int read_index) {
     return (db_history_pair_state_t){
@@ -111,17 +132,19 @@ db_history_snake_active_cache_init(db_history_snake_scratch_t *scratch,
         (prior_rgb_components == 0U)) {
         return;
     }
-    scratch->active_tile_indices = (uint32_t *)db_alloc_aligned_array_or_fail(
-        backend, "snake_active_tile_indices", (size_t)tile_capacity,
-        sizeof(uint32_t), DB_CACHELINE_ALIGNMENT_BYTES);
-    scratch->active_tile_valid = (uint8_t *)db_alloc_aligned_array_or_fail(
-        backend, "snake_active_tile_valid", (size_t)tile_capacity,
-        sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES);
-    scratch->active_prior_rgb = (double *)db_alloc_aligned_array_or_fail(
+    scratch->shape.active_tile_indices =
+        (uint32_t *)db_alloc_aligned_array_or_fail(
+            backend, "snake_active_tile_indices", (size_t)tile_capacity,
+            sizeof(uint32_t), DB_CACHELINE_ALIGNMENT_BYTES);
+    scratch->shape.active_tile_valid =
+        (uint8_t *)db_alloc_aligned_array_or_fail(
+            backend, "snake_active_tile_valid", (size_t)tile_capacity,
+            sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES);
+    scratch->shape.active_prior_rgb = (double *)db_alloc_aligned_array_or_fail(
         backend, "snake_active_prior_rgb",
         (size_t)tile_capacity * (size_t)prior_rgb_components, sizeof(double),
         DB_CACHELINE_ALIGNMENT_BYTES);
-    scratch->active_tile_capacity = tile_capacity;
+    scratch->shape.active_tile_capacity = tile_capacity;
 }
 
 static inline void
@@ -129,13 +152,13 @@ db_history_snake_active_cache_free(db_history_snake_scratch_t *scratch) {
     if (scratch == NULL) {
         return;
     }
-    free(scratch->active_tile_indices);
-    free(scratch->active_tile_valid);
-    free(scratch->active_prior_rgb);
-    scratch->active_tile_indices = NULL;
-    scratch->active_tile_valid = NULL;
-    scratch->active_prior_rgb = NULL;
-    scratch->active_tile_capacity = 0U;
+    free(scratch->shape.active_tile_indices);
+    free(scratch->shape.active_tile_valid);
+    free(scratch->shape.active_prior_rgb);
+    scratch->shape.active_tile_indices = NULL;
+    scratch->shape.active_tile_valid = NULL;
+    scratch->shape.active_prior_rgb = NULL;
+    scratch->shape.active_tile_capacity = 0U;
 }
 
 static inline void
@@ -351,28 +374,42 @@ db_history_seed_background_rgba8(const db_benchmark_runtime_init_t *runtime,
                          &out_rgba[1], &out_rgba[2], &out_rgba[3]);
 }
 
-static inline void
-db_history_dirty_row_ranges_clear(db_dirty_row_range_t *ranges,
-                                  size_t range_capacity) {
-    if ((ranges == NULL) || (range_capacity == 0U)) {
-        return;
-    }
-    for (size_t i = 0U; i < range_capacity; i++) {
-        ranges[i] = (db_dirty_row_range_t){0U, 0U};
-    }
-}
-
-static inline size_t db_history_dirty_row_ranges_copy_trunc(
-    db_dirty_row_range_t *dst_ranges, size_t dst_capacity,
-    const db_dirty_row_range_t *src_ranges, size_t src_count) {
-    if ((dst_ranges == NULL) || (dst_capacity == 0U)) {
+static inline size_t
+db_history_damage_blocks_reset_counted(db_damage_block_t *blocks,
+                                       size_t block_capacity) {
+    if ((blocks == NULL) || (block_capacity == 0U)) {
         return 0U;
     }
-    const size_t available = (src_ranges != NULL) ? src_count : 0U;
+    blocks[0] = (db_damage_block_t){0U, 0U, 0U, 0U};
+    return 0U;
+}
+
+static inline size_t db_history_damage_blocks_store_single(
+    db_damage_block_t *blocks, size_t block_capacity, uint32_t row_start,
+    uint32_t row_count, uint32_t full_width_cols) {
+    if ((blocks == NULL) || (block_capacity == 0U) || (row_count == 0U)) {
+        return 0U;
+    }
+    blocks[0] = (db_damage_block_t){
+        .row_start = row_start,
+        .row_count = row_count,
+        .col_start = 0U,
+        .col_count = full_width_cols,
+    };
+    return 1U;
+}
+
+static inline size_t db_history_damage_blocks_copy_trunc(
+    db_damage_block_t *dst_blocks, size_t dst_capacity,
+    const db_damage_block_t *src_blocks, size_t src_count) {
+    if ((dst_blocks == NULL) || (dst_capacity == 0U)) {
+        return 0U;
+    }
+    const size_t available = (src_blocks != NULL) ? src_count : 0U;
     const size_t copied = (available < dst_capacity) ? available : dst_capacity;
     if (copied > 0U) {
-        db_copy_bytes(dst_ranges, src_ranges,
-                      copied * sizeof(db_dirty_row_range_t));
+        db_copy_bytes(dst_blocks, src_blocks,
+                      copied * sizeof(db_damage_block_t));
     }
     return copied;
 }
@@ -382,10 +419,8 @@ static inline void db_history_gradient_replay_state_reset(
     if (state == NULL) {
         return;
     }
-    const size_t draw_rows_capacity =
-        sizeof(state->draw_rows) / sizeof(state->draw_rows[0]);
-    db_history_dirty_row_ranges_clear(state->draw_rows, draw_rows_capacity);
     state->draw_count = 0U;
+    state->draw_blocks[0] = (db_damage_block_t){0U, 0U, 0U, 0U};
     state->state.head_row = 0U;
     state->state.direction_down = 1;
     state->state.cycle_index = 0U;
@@ -393,16 +428,16 @@ static inline void db_history_gradient_replay_state_reset(
 
 static inline void db_history_gradient_replay_state_store(
     db_gradient_backbuffer_replay_state_t *state,
-    const db_dirty_row_range_t *draw_ranges, size_t draw_count,
-    const db_gradient_state_t *render_state) {
+    const db_damage_block_t *draw_blocks, size_t draw_count,
+    uint32_t full_width_cols, const db_gradient_state_t *render_state) {
     if (state == NULL) {
         return;
     }
-    const size_t draw_rows_capacity =
-        sizeof(state->draw_rows) / sizeof(state->draw_rows[0]);
-    db_history_dirty_row_ranges_clear(state->draw_rows, draw_rows_capacity);
-    state->draw_count = db_history_dirty_row_ranges_copy_trunc(
-        state->draw_rows, draw_rows_capacity, draw_ranges, draw_count);
+    (void)full_width_cols;
+    state->draw_count = db_history_damage_blocks_copy_trunc(
+        state->draw_blocks,
+        sizeof(state->draw_blocks) / sizeof(state->draw_blocks[0]), draw_blocks,
+        draw_count);
     if (render_state != NULL) {
         state->state = *render_state;
     }
@@ -513,42 +548,6 @@ db_history_finalize_frame(db_renderer_frame_stats_t *frame,
     frame->frame_index++;
 }
 
-static inline void db_history_convert_rgba16f_staging_dirty_rows(
-    uint32_t *dst_rgba8, size_t dst_stride_pixels, const uint16_t *src_rgba16f,
-    size_t src_stride_f16, uint32_t width_pixels, uint32_t total_rows,
-    const db_dirty_row_range_t *dirty_ranges, size_t dirty_count,
-    uint32_t alpha_u8) {
-    if ((dst_rgba8 == NULL) || (src_rgba16f == NULL) ||
-        (dst_stride_pixels == 0U) || (src_stride_f16 == 0U) ||
-        (width_pixels == 0U) || (total_rows == 0U) || (dirty_ranges == NULL) ||
-        (dirty_count == 0U)) {
-        return;
-    }
-    for (size_t range_index = 0U; range_index < dirty_count; range_index++) {
-        const db_dirty_row_range_t range = dirty_ranges[range_index];
-        if ((range.row_count == 0U) || (range.row_start >= total_rows)) {
-            continue;
-        }
-        const uint32_t row_end = db_u32_min(
-            total_rows,
-            db_checked_add_u32("renderer_history_common", "staging_row_end",
-                               range.row_start, range.row_count));
-        const uint32_t row_count =
-            db_checked_sub_u32("renderer_history_common", "staging_row_count",
-                               row_end, range.row_start);
-        if (row_count == 0U) {
-            continue;
-        }
-        uint32_t *dst_row =
-            dst_rgba8 + ((size_t)range.row_start * dst_stride_pixels);
-        const uint16_t *src_row =
-            src_rgba16f + ((size_t)range.row_start * src_stride_f16);
-        db_convert_rgba16f_to_rgba8888_rows(dst_row, dst_stride_pixels, src_row,
-                                            src_stride_f16, width_pixels,
-                                            row_count, alpha_u8);
-    }
-}
-
 static inline db_history_pattern_mode_flags_t
 db_history_runtime_mode_flags(const db_benchmark_runtime_init_t *runtime) {
     if (runtime == NULL) {
@@ -636,34 +635,46 @@ static inline int db_history_should_seed_full_on_invalid(int history_valid) {
     return history_valid == 0;
 }
 
-static inline int db_history_apply_full_seed_rows_if_needed(
-    int *io_history_valid, uint32_t total_rows, db_dirty_row_range_t *io_ranges,
-    size_t range_capacity, size_t *io_range_count) {
-    if ((io_history_valid == NULL) || (io_ranges == NULL) ||
-        (io_range_count == NULL) || (range_capacity == 0U) ||
+static inline int db_history_apply_full_seed_blocks_if_needed(
+    int *io_history_valid, uint32_t total_rows, uint32_t full_width_cols,
+    db_damage_block_t *io_blocks, size_t block_capacity,
+    size_t *io_block_count) {
+    if ((io_history_valid == NULL) || (io_blocks == NULL) ||
+        (io_block_count == NULL) || (block_capacity == 0U) ||
         (total_rows == 0U)) {
         return 0;
     }
     if (db_history_should_seed_full_on_invalid(*io_history_valid) == 0) {
         return 0;
     }
-    db_history_dirty_row_ranges_clear(io_ranges, range_capacity);
-    io_ranges[0] = (db_dirty_row_range_t){0U, total_rows};
-    *io_range_count = 1U;
+    *io_block_count = db_history_damage_blocks_store_single(
+        io_blocks, block_capacity, 0U, total_rows, full_width_cols);
     *io_history_valid = 1;
     return 1;
 }
 
-static inline size_t
-db_history_set_full_row_ranges(uint32_t total_rows,
-                               db_dirty_row_range_t *out_ranges,
-                               size_t range_capacity) {
-    if ((out_ranges == NULL) || (range_capacity == 0U) || (total_rows == 0U)) {
-        return 0U;
+static inline void db_history_damage_block_accumulator_append(
+    db_history_damage_block_accumulator_t *acc, uint32_t row_start,
+    uint32_t row_count) {
+    if ((acc == NULL) || (row_count == 0U) || (acc->overflowed != 0)) {
+        return;
     }
-    db_history_dirty_row_ranges_clear(out_ranges, range_capacity);
-    out_ranges[0] = (db_dirty_row_range_t){0U, total_rows};
-    return 1U;
+    if ((acc->block_count > 0U) &&
+        ((acc->blocks[acc->block_count - 1U].row_start +
+          acc->blocks[acc->block_count - 1U].row_count) == row_start)) {
+        acc->blocks[acc->block_count - 1U].row_count += row_count;
+        return;
+    }
+    if (acc->block_count >= acc->block_capacity) {
+        acc->overflowed = 1;
+        return;
+    }
+    acc->blocks[acc->block_count++] = (db_damage_block_t){
+        .row_start = row_start,
+        .row_count = row_count,
+        .col_start = 0U,
+        .col_count = db_grid_cols_effective(),
+    };
 }
 
 static inline int db_history_pair_other_index(int index) {
@@ -778,6 +789,7 @@ db_history_eval_snake_backbuffer_action(
             uses_dirty_backbuffer_mode, state->initial_seed_done,
             state->backbuffer_valid, state->seed_frames_remaining) != 0) {
         action.should_seed_now = 1;
+        action.should_force_full_upload = 1;
         state->backbuffer_valid = 1;
         if (state->seed_frames_remaining > 0U) {
             state->seed_frames_remaining--;

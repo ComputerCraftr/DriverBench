@@ -29,17 +29,12 @@ db_gl1_collect_pattern_damage_ranges(const db_gl1_damage_collect_ctx_t *ctx,
             (ctx->snake_plan != NULL) ? ctx->snake_plan->prev_count : 0U,
         .pattern_seed = ctx->pattern_seed,
         .snake_scratch = ctx->snake_scratch,
-        .damage_row_ranges = ctx->damage_row_ranges,
-        .damage_row_count = ctx->damage_row_count,
+        .damage_blocks = NULL,
+        .damage_block_count = 0U,
     };
     db_gl_upload_range_t *local_range_storage = upload_ranges;
     size_t local_range_capacity = BENCH_SNAKE_PHASE_WINDOW_TILES;
-    if (ctx->is_snake_history_texture_pattern != 0) {
-        local_range_storage = ctx->default_history_range_storage;
-        local_range_capacity = (ctx->snake_scratch != NULL)
-                                   ? ctx->snake_scratch->span_capacity
-                                   : 0U;
-    } else if (ctx->is_gradient_pattern != 0) {
+    if (ctx->is_gradient_pattern != 0) {
         local_range_capacity = ctx->gradient_dirty_range_cap;
     } else {
         local_range_capacity = 1U;

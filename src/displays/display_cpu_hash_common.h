@@ -7,6 +7,7 @@
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
 #include "../renderers/cpu_renderer/renderer_cpu_renderer.h"
+#include "../renderers/renderer_benchmark_common.h"
 #include "display_runtime_config_common.h"
 
 static inline uint64_t
@@ -35,7 +36,7 @@ db_display_cpu_renderer_bo_hash_or_fail(const char *backend) {
 }
 
 typedef void (*db_display_cpu_present_damage_cb_t)(
-    const db_dirty_row_range_t *damage_ranges, size_t damage_count,
+    const db_damage_block_t *damage_blocks, size_t damage_count,
     void *user_data);
 
 static inline void db_display_cpu_render_present_and_hash(
@@ -47,10 +48,10 @@ static inline void db_display_cpu_render_present_and_hash(
     }
     db_renderer_cpu_renderer_render_frame(frame_index);
     size_t damage_count = 0U;
-    const db_dirty_row_range_t *damage_ranges =
-        db_renderer_cpu_renderer_damage_rows(&damage_count);
+    const db_damage_block_t *damage_blocks =
+        db_renderer_cpu_renderer_damage_blocks(&damage_count);
     if (present_cb != NULL) {
-        present_cb(damage_ranges, damage_count, present_user_data);
+        present_cb(damage_blocks, damage_count, present_user_data);
     }
     db_display_cpu_frame_step(frame_step, frame_index, elapsed_ms,
                               db_renderer_cpu_renderer_state_hash,

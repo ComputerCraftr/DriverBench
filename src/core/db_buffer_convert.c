@@ -179,34 +179,24 @@ void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count, uint16_t red,
     }
 }
 
-void db_copy_rows_u8(uint8_t *dst, size_t dst_stride_bytes, const uint8_t *src,
-                     size_t src_stride_bytes, size_t row_bytes,
-                     uint32_t row_count) {
-    if ((dst == NULL) || (src == NULL) || (row_bytes == 0U) ||
-        (row_count == 0U)) {
+// Public block/subrect pixel format conversion entry points.
+void db_convert_rgba8_to_xrgb8888_block(uint32_t *dst, size_t dst_stride_pixels,
+                                        const uint32_t *src,
+                                        size_t src_stride_pixels,
+                                        uint32_t row_start, uint32_t row_count,
+                                        uint32_t col_start,
+                                        uint32_t col_count) {
+    if ((dst == NULL) || (src == NULL) || (row_count == 0U) ||
+        (col_count == 0U)) {
         return;
     }
+
     for (uint32_t row = 0U; row < row_count; row++) {
-        db_copy_bytes(dst + ((size_t)row * dst_stride_bytes),
-                      src + ((size_t)row * src_stride_bytes), row_bytes);
-    }
-}
-
-// Public pixel format conversion entry points.
-void db_convert_rgba8_to_xrgb8888_rows(uint32_t *dst, size_t dst_stride_pixels,
-                                       const uint32_t *src,
-                                       size_t src_stride_pixels,
-                                       uint32_t width_pixels,
-                                       uint32_t height_rows) {
-    if ((dst == NULL) || (src == NULL) || (width_pixels == 0U) ||
-        (height_rows == 0U)) {
-        return;
-    }
-
-    for (uint32_t row = 0U; row < height_rows; row++) {
-        const uint32_t *src_row = src + ((size_t)row * src_stride_pixels);
-        uint32_t *dst_row = dst + ((size_t)row * dst_stride_pixels);
-        for (uint32_t col = 0U; col < width_pixels; col++) {
+        const uint32_t *src_row =
+            src + (((size_t)(row_start + row) * src_stride_pixels) + col_start);
+        uint32_t *dst_row =
+            dst + (((size_t)(row_start + row) * dst_stride_pixels) + col_start);
+        for (uint32_t col = 0U; col < col_count; col++) {
             const uint32_t rgba = src_row[col];
             const uint32_t red = (rgba & DB_CONVERT_RGBA8_RED_MASK);
             const uint32_t green = (rgba & DB_CONVERT_RGBA8_GREEN_MASK);
@@ -217,20 +207,25 @@ void db_convert_rgba8_to_xrgb8888_rows(uint32_t *dst, size_t dst_stride_pixels,
     }
 }
 
-void db_convert_rgba16f_to_xrgb8888_rows(
+void db_convert_rgba16f_to_xrgb8888_block(
     uint32_t *dst, size_t dst_stride_pixels, const uint16_t *src,
-    size_t src_stride_pixels, uint32_t width_pixels, uint32_t height_rows) {
-    if ((dst == NULL) || (src == NULL) || (width_pixels == 0U) ||
-        (height_rows == 0U)) {
+    size_t src_stride_pixels, uint32_t row_start, uint32_t row_count,
+    uint32_t col_start, uint32_t col_count) {
+    if ((dst == NULL) || (src == NULL) || (row_count == 0U) ||
+        (col_count == 0U)) {
         return;
     }
     db_f16_to_u8_lut_init_once();
 
-    for (uint32_t row = 0U; row < height_rows; row++) {
-        const uint16_t *src_row = src + ((size_t)row * src_stride_pixels);
-        uint32_t *dst_row = dst + ((size_t)row * dst_stride_pixels);
+    for (uint32_t row = 0U; row < row_count; row++) {
+        const uint16_t *src_row =
+            src +
+            ((((size_t)(row_start + row) * src_stride_pixels) + col_start) *
+             DB_CONVERT_RGBA16F_PIXEL_STRIDE);
+        uint32_t *dst_row =
+            dst + (((size_t)(row_start + row) * dst_stride_pixels) + col_start);
         uint32_t col = 0U;
-        for (; (col + (DB_PIXEL_ILP_LANES - 1U)) < width_pixels;
+        for (; (col + (DB_PIXEL_ILP_LANES - 1U)) < col_count;
              col += DB_PIXEL_ILP_LANES) {
             const size_t src_base0 =
                 (size_t)col * DB_CONVERT_RGBA16F_PIXEL_STRIDE;
@@ -265,7 +260,7 @@ void db_convert_rgba16f_to_xrgb8888_rows(
             dst_row[col + DB_PIXEL_ILP_INDEX_7] =
                 db_pack_xrgb8888_from_rgb16f3_lut(&src_row[src_base7]);
         }
-        for (; col < width_pixels; col++) {
+        for (; col < col_count; col++) {
             const size_t src_base =
                 (size_t)col * DB_CONVERT_RGBA16F_PIXEL_STRIDE;
             dst_row[col] =
@@ -274,21 +269,25 @@ void db_convert_rgba16f_to_xrgb8888_rows(
     }
 }
 
-void db_convert_rgba16f_to_rgba8888_rows(
+void db_convert_rgba16f_to_rgba8888_block(
     uint32_t *dst, size_t dst_stride_pixels, const uint16_t *src,
-    size_t src_stride_pixels, uint32_t width_pixels, uint32_t height_rows,
-    uint32_t alpha_u8) {
-    if ((dst == NULL) || (src == NULL) || (width_pixels == 0U) ||
-        (height_rows == 0U)) {
+    size_t src_stride_pixels, uint32_t row_start, uint32_t row_count,
+    uint32_t col_start, uint32_t col_count, uint32_t alpha_u8) {
+    if ((dst == NULL) || (src == NULL) || (row_count == 0U) ||
+        (col_count == 0U)) {
         return;
     }
     db_f16_to_u8_lut_init_once();
 
-    for (uint32_t row = 0U; row < height_rows; row++) {
-        const uint16_t *src_row = src + ((size_t)row * src_stride_pixels);
-        uint32_t *dst_row = dst + ((size_t)row * dst_stride_pixels);
+    for (uint32_t row = 0U; row < row_count; row++) {
+        const uint16_t *src_row =
+            src +
+            ((((size_t)(row_start + row) * src_stride_pixels) + col_start) *
+             DB_CONVERT_RGBA16F_PIXEL_STRIDE);
+        uint32_t *dst_row =
+            dst + (((size_t)(row_start + row) * dst_stride_pixels) + col_start);
         uint32_t col = 0U;
-        for (; (col + (DB_PIXEL_ILP_LANES - 1U)) < width_pixels;
+        for (; (col + (DB_PIXEL_ILP_LANES - 1U)) < col_count;
              col += DB_PIXEL_ILP_LANES) {
             const size_t src_base0 =
                 (size_t)col * DB_CONVERT_RGBA16F_PIXEL_STRIDE;
@@ -331,7 +330,7 @@ void db_convert_rgba16f_to_rgba8888_rows(
                 db_pack_rgba8888_from_rgb16f3_lut(&src_row[src_base7],
                                                   alpha_u8);
         }
-        for (; col < width_pixels; col++) {
+        for (; col < col_count; col++) {
             const size_t src_base =
                 (size_t)col * DB_CONVERT_RGBA16F_PIXEL_STRIDE;
             dst_row[col] =

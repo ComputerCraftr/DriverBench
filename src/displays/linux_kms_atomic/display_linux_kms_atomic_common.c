@@ -881,18 +881,18 @@ static struct fb *db_cpu_create_fb_from_framebuffer(
             gbm_bo_destroy(bo);
             diex("cpu hdr framebuffer is NULL");
         }
-        db_convert_rgba16f_to_xrgb8888_rows((uint32_t *)map_ptr,
-                                            dst_stride_pixels, pixels_rgba16f,
-                                            (size_t)width * 4U, width, height);
+        db_convert_rgba16f_to_xrgb8888_block(
+            (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba16f,
+            (size_t)width, 0U, height, 0U, width);
     } else {
         if (pixels_rgba8 == NULL) {
             gbm_bo_unmap(bo, map_data);
             gbm_bo_destroy(bo);
             diex("cpu rgba8 framebuffer is NULL");
         }
-        db_convert_rgba8_to_xrgb8888_rows((uint32_t *)map_ptr,
-                                          dst_stride_pixels, pixels_rgba8,
-                                          (size_t)width, width, height);
+        db_convert_rgba8_to_xrgb8888_block(
+            (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba8, (size_t)width,
+            0U, height, 0U, width);
     }
     gbm_bo_unmap(bo, map_data);
 

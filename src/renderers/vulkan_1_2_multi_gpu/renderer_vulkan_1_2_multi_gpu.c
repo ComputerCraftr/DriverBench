@@ -88,25 +88,36 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.runtime.snake.shape_index = 0U;
     g_state.runtime.snake.prev_start = 0U;
     g_state.runtime.snake.prev_count = 0U;
-    g_state.snake_scratch.spans = NULL;
-    g_state.snake_scratch.row_bounds = NULL;
-    g_state.snake_scratch.row_bounds_capacity = 0U;
-    g_state.snake_scratch.span_capacity = 0U;
+    g_state.snake_scratch.damage.blocks = NULL;
+    g_state.snake_scratch.damage.capacity = 0U;
+    g_state.snake_scratch.compact.blocks = NULL;
+    g_state.snake_scratch.shape.row_bounds = NULL;
+    g_state.snake_scratch.shape.row_bounds_capacity = 0U;
+    g_state.snake_scratch.compact.capacity = 0U;
     if (g_state.runtime_flags.is_snake_history_texture != 0) {
-        const size_t scratch_capacity =
+        const size_t snake_compact_block_capacity =
             db_snake_scratch_capacity_from_work_units(
                 g_state.runtime.work_unit_count);
-        g_state.snake_scratch.spans =
-            (db_snake_col_span_t *)db_alloc_array_or_fail(
-                BACKEND_NAME, "snake_spans", scratch_capacity,
-                sizeof(*g_state.snake_scratch.spans));
-        g_state.snake_scratch.row_bounds =
+        g_state.snake_scratch.shape.row_bounds =
             (db_snake_shape_row_bounds_t *)db_alloc_array_or_fail(
                 BACKEND_NAME, "snake_row_bounds", db_grid_rows_effective(),
-                sizeof(*g_state.snake_scratch.row_bounds));
-        g_state.snake_scratch.row_bounds_capacity =
+                sizeof(*g_state.snake_scratch.shape.row_bounds));
+        g_state.snake_scratch.damage.blocks =
+            (db_damage_block_t *)db_alloc_array_or_fail(
+                BACKEND_NAME, "snake_damage_blocks",
+                snake_compact_block_capacity,
+                sizeof(*g_state.snake_scratch.damage.blocks));
+        g_state.snake_scratch.compact.blocks =
+            (db_snake_compact_block_t *)db_alloc_array_or_fail(
+                BACKEND_NAME, "snake_compact_blocks",
+                snake_compact_block_capacity,
+                sizeof(*g_state.snake_scratch.compact.blocks));
+        g_state.snake_scratch.shape.row_bounds_capacity =
             (size_t)db_grid_rows_effective();
-        g_state.snake_scratch.span_capacity = scratch_capacity;
+        g_state.snake_scratch.damage.capacity =
+            snake_compact_block_capacity;
+        g_state.snake_scratch.compact.capacity =
+            snake_compact_block_capacity;
     }
     g_state.gradient_window_rows = db_gradient_window_rows_effective();
     db_history_gradient_replay_state_reset(&g_state.gradient_prev_frame);
