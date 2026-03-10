@@ -98,7 +98,7 @@ typedef struct {
 
 typedef void (*db_gradient_row_block_color_apply_fn_t)(uint32_t row_start,
                                                        uint32_t row_count,
-                                                       const double row_rgb[3],
+                                                       const double *row_rgb,
                                                        void *user_data);
 
 static inline uint64_t db_benchmark_runtime_state_hash_cross_renderer(
@@ -128,11 +128,11 @@ static inline uint64_t db_benchmark_runtime_state_hash_cross_renderer(
 }
 
 static inline uint32_t db_grid_rows_effective(void) {
-    return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
+    return BENCH_WINDOW_HEIGHT_PX;
 }
 
 static inline uint32_t db_grid_cols_effective(void) {
-    return (uint32_t)BENCH_WINDOW_WIDTH_PX;
+    return BENCH_WINDOW_WIDTH_PX;
 }
 
 static inline int
@@ -196,7 +196,7 @@ static inline uint32_t db_gradient_window_rows_effective(void) {
 }
 
 static inline void db_benchmark_seed_background_color_rgb3(
-    const db_benchmark_runtime_init_t *runtime, double out_rgb[3]) {
+    const db_benchmark_runtime_init_t *runtime, double *out_rgb) {
     if (out_rgb == NULL) {
         return;
     }
@@ -436,28 +436,6 @@ db_init_benchmark_runtime_common(const char *backend_name,
     return 1;
 }
 
-static inline uint32_t db_grid_tile_index_from_step(uint32_t step) {
-    const uint32_t cols = db_grid_cols_effective();
-    const uint32_t row = step / cols;
-    const uint32_t col_step = step % cols;
-    const uint32_t col = ((row & 1U) == 0U) ? col_step : (cols - 1U - col_step);
-    return (row * cols) + col;
-}
-
-static inline void
-db_rect_pixels_to_ndc_bounds(int x0_px, int y0_px, int x1_px, int y1_px,
-                             int viewport_w_px, int viewport_h_px,
-                             float *x0_ndc_out, float *y0_ndc_out,
-                             float *x1_ndc_out, float *y1_ndc_out) {
-    const double inv_w = 1.0 / (double)viewport_w_px;
-    const double inv_h = 1.0 / (double)viewport_h_px;
-
-    *x0_ndc_out = db_double_to_f32((2.0 * (double)x0_px * inv_w) - 1.0);
-    *x1_ndc_out = db_double_to_f32((2.0 * (double)x1_px * inv_w) - 1.0);
-    *y0_ndc_out = db_double_to_f32((2.0 * (double)y0_px * inv_h) - 1.0);
-    *y1_ndc_out = db_double_to_f32((2.0 * (double)y1_px * inv_h) - 1.0);
-}
-
 static inline void db_grid_tile_bounds_ndc(uint32_t tile_index, float *x0,
                                            float *y0, float *x1, float *y1) {
     const uint32_t cols = db_grid_cols_effective();
@@ -495,7 +473,7 @@ static inline void db_fill_rect_unit_pos(float *unit_base, float x0, float y0,
 
 static inline void db_set_rect_unit_rgb(float *unit_base, size_t stride_floats,
                                         size_t color_offset_floats,
-                                        const float rgb[3]) {
+                                        const float *rgb) {
     if ((unit_base == NULL) || (rgb == NULL)) {
         return;
     }
@@ -509,7 +487,7 @@ static inline void db_set_rect_unit_rgb(float *unit_base, size_t stride_floats,
 static inline void
 db_set_rect_tile_range_rgb(float *vertices, uint32_t first_tile_index,
                            uint32_t tile_count, size_t stride_floats,
-                           size_t color_offset_floats, const float rgb[3]) {
+                           size_t color_offset_floats, const float *rgb) {
     if ((vertices == NULL) || (tile_count == 0U) || (rgb == NULL)) {
         return;
     }
@@ -539,13 +517,13 @@ static inline void db_fill_grid_all_rgb_stride(float *vertices,
                                                uint32_t tile_count,
                                                size_t stride_floats,
                                                size_t color_offset_floats,
-                                               const float rgb[3]) {
+                                               const float *rgb) {
     db_set_rect_tile_range_rgb(vertices, 0U, tile_count, stride_floats,
                                color_offset_floats, rgb);
 }
 
 static inline void db_band_color_rgb3(uint32_t band_index, uint32_t band_count,
-                                      uint32_t frame_index, double out_rgb[3]) {
+                                      uint32_t frame_index, double *out_rgb) {
     if (out_rgb == NULL) {
         return;
     }
@@ -569,7 +547,7 @@ static inline double db_color_channel(uint32_t seed) {
 }
 
 static inline void db_palette_cycle_color_rgb3(uint32_t cycle_index,
-                                               double out_rgb[3]) {
+                                               double *out_rgb) {
     if (out_rgb == NULL) {
         return;
     }
@@ -997,7 +975,7 @@ static inline void db_gradient_row_color_rgb3(uint32_t row_index,
                                               uint32_t head_row,
                                               int direction_down,
                                               uint32_t cycle_index,
-                                              double out_rgb[3]) {
+                                              double *out_rgb) {
     if (out_rgb == NULL) {
         return;
     }

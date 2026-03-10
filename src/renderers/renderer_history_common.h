@@ -71,7 +71,7 @@ typedef struct {
     int is_shapes_mode;
 } db_history_snake_step_eval_t;
 
-typedef void (*db_history_seed_clear_f32_cb_t)(const float rgba[4],
+typedef void (*db_history_seed_clear_f32_cb_t)(const float *rgba,
                                                void *user_data);
 
 typedef struct {
@@ -101,13 +101,6 @@ typedef struct {
     int should_seed_now;
     int should_force_full_upload;
 } db_history_snake_backbuffer_action_t;
-
-typedef struct {
-    db_damage_block_t *blocks;
-    size_t block_capacity;
-    size_t block_count;
-    int overflowed;
-} db_history_damage_block_accumulator_t;
 
 static inline db_history_pair_state_t
 db_history_pair_state_make(int is_valid, int read_index) {
@@ -182,11 +175,6 @@ static inline int db_runtime_backbuffer_replay_enabled(
         (runtime->pattern == DB_PATTERN_SNAKE_SHAPES);
     return (runtime->backbuffer_draw_full == 0) &&
            ((is_gradient != 0) || (is_snake_history_texture != 0));
-}
-
-static inline int db_runtime_uses_dirty_backbuffer_mode(
-    const db_benchmark_runtime_init_t *runtime) {
-    return (runtime != NULL) && (runtime->backbuffer_draw_full == 0);
 }
 
 static inline uint32_t db_history_seed_frame_count_for_swapchain(
@@ -311,7 +299,7 @@ static inline void db_history_apply_snake_step_to_runtime(
 
 static inline void
 db_history_seed_background_rgba_f32(const db_benchmark_runtime_init_t *runtime,
-                                    float out_rgba[4]) {
+                                    float *out_rgba) {
     if (out_rgba == NULL) {
         return;
     }
@@ -335,38 +323,13 @@ static inline int db_history_run_seed_clear_if_needed(
 
 static inline void
 db_history_seed_background_rgba8(const db_benchmark_runtime_init_t *runtime,
-                                 uint8_t out_rgba[4]) {
+                                 uint8_t *out_rgba) {
     if (out_rgba == NULL) {
         return;
     }
     double clear_rgba[4] = {0.0, 0.0, 0.0, 1.0};
     db_benchmark_seed_background_color_rgb3(runtime, clear_rgba);
     db_rgba01_to_u8_rgba4(clear_rgba, out_rgba);
-}
-
-static inline size_t
-db_history_damage_blocks_reset_counted(db_damage_block_t *blocks,
-                                       size_t block_capacity) {
-    if ((blocks == NULL) || (block_capacity == 0U)) {
-        return 0U;
-    }
-    blocks[0] = (db_damage_block_t){0U, 0U, 0U, 0U};
-    return 0U;
-}
-
-static inline size_t db_history_damage_blocks_store_single(
-    db_damage_block_t *blocks, size_t block_capacity, uint32_t row_start,
-    uint32_t row_count, uint32_t full_width_cols) {
-    if ((blocks == NULL) || (block_capacity == 0U) || (row_count == 0U)) {
-        return 0U;
-    }
-    blocks[0] = (db_damage_block_t){
-        .row_start = row_start,
-        .row_count = row_count,
-        .col_start = 0U,
-        .col_count = full_width_cols,
-    };
-    return 1U;
 }
 
 static inline size_t db_history_damage_blocks_copy_trunc(
@@ -399,11 +362,10 @@ static inline void db_history_gradient_replay_state_reset(
 static inline void db_history_gradient_replay_state_store(
     db_gradient_backbuffer_replay_state_t *state,
     const db_damage_block_t *draw_blocks, size_t draw_count,
-    uint32_t full_width_cols, const db_gradient_state_t *render_state) {
+    const db_gradient_state_t *render_state) {
     if (state == NULL) {
         return;
     }
-    (void)full_width_cols;
     state->draw_count = db_history_damage_blocks_copy_trunc(
         state->draw_blocks,
         sizeof(state->draw_blocks) / sizeof(state->draw_blocks[0]), draw_blocks,
@@ -595,56 +557,8 @@ static inline void db_history_apply_resize_preserve_policy(
     history_pair->is_valid = policy->history_valid_after_resize;
 }
 
-static inline int
-db_history_should_seed_targets_after_resize(int uses_history_pipeline,
-                                            int preserved) {
-    return (uses_history_pipeline != 0) && (preserved == 0);
-}
-
 static inline int db_history_should_seed_full_on_invalid(int history_valid) {
     return history_valid == 0;
-}
-
-static inline int db_history_apply_full_seed_blocks_if_needed(
-    int *io_history_valid, uint32_t total_rows, uint32_t full_width_cols,
-    db_damage_block_t *io_blocks, size_t block_capacity,
-    size_t *io_block_count) {
-    if ((io_history_valid == NULL) || (io_blocks == NULL) ||
-        (io_block_count == NULL) || (block_capacity == 0U) ||
-        (total_rows == 0U)) {
-        return 0;
-    }
-    if (db_history_should_seed_full_on_invalid(*io_history_valid) == 0) {
-        return 0;
-    }
-    *io_block_count = db_history_damage_blocks_store_single(
-        io_blocks, block_capacity, 0U, total_rows, full_width_cols);
-    *io_history_valid = 1;
-    return 1;
-}
-
-static inline void db_history_damage_block_accumulator_append(
-    db_history_damage_block_accumulator_t *acc, uint32_t row_start,
-    uint32_t row_count) {
-    if ((acc == NULL) || (row_count == 0U) || (acc->overflowed != 0)) {
-        return;
-    }
-    if ((acc->block_count > 0U) &&
-        ((acc->blocks[acc->block_count - 1U].row_start +
-          acc->blocks[acc->block_count - 1U].row_count) == row_start)) {
-        acc->blocks[acc->block_count - 1U].row_count += row_count;
-        return;
-    }
-    if (acc->block_count >= acc->block_capacity) {
-        acc->overflowed = 1;
-        return;
-    }
-    acc->blocks[acc->block_count++] = (db_damage_block_t){
-        .row_start = row_start,
-        .row_count = row_count,
-        .col_start = 0U,
-        .col_count = db_grid_cols_effective(),
-    };
 }
 
 static inline int db_history_pair_other_index(int index) {

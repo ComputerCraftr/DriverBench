@@ -786,17 +786,17 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 }
                 const db_vk_grid_row_block_draw_req_t req =
                     db_vk_gradient_row_block_req(
-                        &block, g_state.runtime.pattern,
-                        &plan.render_state, g_state.frame.frame_index);
+                        &block, g_state.runtime.pattern, &plan.render_state,
+                        g_state.frame.frame_index);
                 db_vk_draw_owner_grid_row_block(&draw_ctx, &req);
             }
             if (seeded_full == 0) {
                 frame_dirty_draw = 1;
             }
 
-            db_history_gradient_replay_state_store(
-                &g_state.gradient_prev_frame, curr_blocks, curr_count,
-                grid_cols, &plan.render_state);
+            db_history_gradient_replay_state_store(&g_state.gradient_prev_frame,
+                                                   curr_blocks, curr_count,
+                                                   &plan.render_state);
         }
         db_gradient_apply_step_to_runtime(&g_state.runtime, &plan);
     }

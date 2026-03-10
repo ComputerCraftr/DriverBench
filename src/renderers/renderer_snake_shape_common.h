@@ -617,13 +617,4 @@ db_snake_shape_cache_clip_row_span(const db_snake_shape_cache_t *shape_cache,
     return 1;
 }
 
-static inline int
-db_snake_shape_cache_row_has_coverage(const db_snake_shape_cache_t *shape_cache,
-                                      uint32_t row) {
-    uint32_t unused_start = 0U;
-    uint32_t unused_end = 0U;
-    return db_snake_shape_cache_get_row_span(shape_cache, row, &unused_start,
-                                             &unused_end);
-}
-
 #endif

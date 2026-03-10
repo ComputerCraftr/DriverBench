@@ -74,11 +74,11 @@ typedef int (*db_snake_emit_row_segment_cb_t)(uint32_t row, uint32_t col_start,
 
 typedef void (*db_snake_get_color_bits_cb_t)(uint32_t row, uint32_t col,
                                              void *user_data,
-                                             uint32_t color_bits[3]);
+                                             uint32_t *color_bits);
 
 typedef int (*db_snake_emit_color_run_cb_t)(uint32_t row, uint32_t col_start,
                                             uint32_t col_count,
-                                            const uint32_t color_bits[3],
+                                            const uint32_t *color_bits,
                                             void *user_data);
 
 typedef struct {
@@ -223,11 +223,11 @@ db_snake_plan_upload_range_capacity_needed(const db_snake_plan_t *plan) {
 }
 
 static inline uint32_t db_snake_grid_rows_effective(void) {
-    return (uint32_t)BENCH_WINDOW_HEIGHT_PX;
+    return BENCH_WINDOW_HEIGHT_PX;
 }
 
 static inline uint32_t db_snake_grid_cols_effective(void) {
-    return (uint32_t)BENCH_WINDOW_WIDTH_PX;
+    return BENCH_WINDOW_WIDTH_PX;
 }
 
 static inline int db_snake_for_each_color_run_in_row_segment(
@@ -278,7 +278,7 @@ db_snake_append_open_compact_block(db_snake_compact_block_t *out_blocks,
 
 static inline int db_snake_emit_compact_block_color_run(
     uint32_t row, uint32_t col_start, uint32_t col_count,
-    const uint32_t color_bits[3], void *user_data) {
+    const uint32_t *color_bits, void *user_data) {
     db_snake_compact_block_collect_ctx_t *ctx =
         (db_snake_compact_block_collect_ctx_t *)user_data;
     const int can_extend_open =
@@ -873,17 +873,14 @@ static inline double db_window_blend_factor(uint32_t window_index,
     return ((double)((span - 1U) - window_index)) / (double)(span - 1U);
 }
 
-static inline void db_grid_target_color_rgb3(int phase_flag,
-                                             double out_rgb[3]) {
+static inline void db_grid_target_color_rgb3(int phase_flag, double *out_rgb) {
     if (out_rgb == NULL) {
         return;
     }
-    static const double phase0_rgb[3] = {(double)BENCH_GRID_PHASE0_R,
-                                         (double)BENCH_GRID_PHASE0_G,
-                                         (double)BENCH_GRID_PHASE0_B};
-    static const double phase1_rgb[3] = {(double)BENCH_GRID_PHASE1_R,
-                                         (double)BENCH_GRID_PHASE1_G,
-                                         (double)BENCH_GRID_PHASE1_B};
+    static const double phase0_rgb[3] = {
+        BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B};
+    static const double phase1_rgb[3] = {
+        BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G, BENCH_GRID_PHASE1_B};
     if (phase_flag != 0) {
         db_copy_f64_rgb3(out_rgb, phase0_rgb);
         return;

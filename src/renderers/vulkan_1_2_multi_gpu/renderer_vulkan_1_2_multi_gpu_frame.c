@@ -746,7 +746,7 @@ void db_vk_draw_owner_grid_row_block(
 
 static void db_vk_draw_snake_compact_blocks(
     const db_vk_owner_draw_ctx_t *ctx, const db_damage_block_t *blocks,
-    size_t block_count, const float color[3], uint32_t render_mode,
+    size_t block_count, const float *color, uint32_t render_mode,
     uint32_t snake_shape_index, uint32_t active_cursor, int snake_phase_flag,
     uint32_t batch_size, int phase_completed) {
     if ((ctx == NULL) || (blocks == NULL) || (block_count == 0U) ||
@@ -802,7 +802,7 @@ static void db_vk_draw_snake_compact_blocks(
 
 void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
                                 const db_snake_plan_t *plan,
-                                const float color[3]) {
+                                const float *color) {
     if ((ctx == NULL) || (plan == NULL) || (color == NULL)) {
         return;
     }
@@ -836,7 +836,7 @@ void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
                                   uint32_t pattern_seed,
                                   uint32_t snake_prev_start,
                                   uint32_t snake_prev_count,
-                                  const float color[3]) {
+                                  const float *color) {
     const uint32_t render_mode = (uint32_t)g_state.runtime.pattern;
     const db_snake_region_t region =
         db_snake_region_from_index(pattern_seed, plan->active_shape_index);

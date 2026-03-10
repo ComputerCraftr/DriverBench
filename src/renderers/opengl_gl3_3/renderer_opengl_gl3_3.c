@@ -109,7 +109,7 @@ static void db_gl3_bind_main_vbo_layout(void) {
         DB_VERTEX_POSITION_FLOAT_COUNT * sizeof(float));
 }
 
-static void db_gl3_seed_history_targets_clear_cb(const float rgba[4],
+static void db_gl3_seed_history_targets_clear_cb(const float *rgba,
                                                  void *user_data) {
     const db_gl3_seed_history_targets_ctx_t *ctx =
         (const db_gl3_seed_history_targets_ctx_t *)user_data;

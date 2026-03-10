@@ -166,8 +166,8 @@ static inline uint8_t db_double01_to_u8_clamped(double value01) {
     return (uint8_t)scaled;
 }
 
-static inline void db_rgba01_to_u8_rgba4(const double rgba01[4],
-                                         uint8_t rgba_u8_out[4]) {
+static inline void db_rgba01_to_u8_rgba4(const double *rgba01,
+                                         uint8_t *rgba_u8_out) {
     if ((rgba01 == NULL) || (rgba_u8_out == NULL)) {
         return;
     }
@@ -177,8 +177,7 @@ static inline void db_rgba01_to_u8_rgba4(const double rgba01[4],
     rgba_u8_out[3] = db_double01_to_u8_clamped(rgba01[3]);
 }
 
-static inline void db_rgb_f64_to_f32_rgb3(const double rgb[3],
-                                          float rgb_out[3]) {
+static inline void db_rgb_f64_to_f32_rgb3(const double *rgb, float *rgb_out) {
     if ((rgb == NULL) || (rgb_out == NULL)) {
         return;
     }
@@ -187,8 +186,7 @@ static inline void db_rgb_f64_to_f32_rgb3(const double rgb[3],
     rgb_out[2] = db_double_to_f32(rgb[2]);
 }
 
-static inline void db_rgb_f32_to_f64_rgb3(const float rgb[3],
-                                          double rgb_out[3]) {
+static inline void db_rgb_f32_to_f64_rgb3(const float *rgb, double *rgb_out) {
     if ((rgb == NULL) || (rgb_out == NULL)) {
         return;
     }
@@ -197,8 +195,8 @@ static inline void db_rgb_f32_to_f64_rgb3(const float rgb[3],
     rgb_out[2] = db_f32_to_double(rgb[2]);
 }
 
-static inline void db_f32_rgb_to_bits_u32_rgb3(const float rgb[3],
-                                               uint32_t bits_out[3]) {
+static inline void db_f32_rgb_to_bits_u32_rgb3(const float *rgb,
+                                               uint32_t *bits_out) {
     if ((rgb == NULL) || (bits_out == NULL)) {
         return;
     }
@@ -207,15 +205,14 @@ static inline void db_f32_rgb_to_bits_u32_rgb3(const float rgb[3],
     bits_out[2] = db_f32_to_bits_u32(rgb[2]);
 }
 
-static inline int db_equal_f32_rgb3(const float lhs[3], const float rhs[3]) {
+static inline int db_equal_f32_rgb3(const float *lhs, const float *rhs) {
     if ((lhs == NULL) || (rhs == NULL)) {
         return 0;
     }
     return (lhs[0] == rhs[0]) && (lhs[1] == rhs[1]) && (lhs[2] == rhs[2]);
 }
 
-static inline int db_equal_u32_rgb3(const uint32_t lhs[3],
-                                    const uint32_t rhs[3]) {
+static inline int db_equal_u32_rgb3(const uint32_t *lhs, const uint32_t *rhs) {
     if ((lhs == NULL) || (rhs == NULL)) {
         return 0;
     }
@@ -229,14 +226,6 @@ static inline uint32_t db_pack_xrgb8888_from_rgb_u8(uint32_t red_u8,
     return (red_u8 << DB_PACKED_RGB_SHIFT_RED) |
            (green_u8 << DB_PACKED_RGB_SHIFT_GREEN) |
            (blue_u8 << DB_PACKED_RGB_SHIFT_BLUE);
-}
-
-static inline uint32_t db_pack_xrgb8888_from_rgb01(double red, double green,
-                                                   double blue) {
-    const uint8_t red_u8 = db_double01_to_u8_clamped(red);
-    const uint8_t green_u8 = db_double01_to_u8_clamped(green);
-    const uint8_t blue_u8 = db_double01_to_u8_clamped(blue);
-    return db_pack_xrgb8888_from_rgb_u8(red_u8, green_u8, blue_u8);
 }
 
 static inline uint32_t db_pack_rgba8888_from_rgb_u8(uint32_t red_u8,
@@ -352,8 +341,8 @@ static inline double db_f16_to_double(uint16_t value) {
     return (sign != 0U) ? -normal : normal;
 }
 
-static inline void db_rgb_f16_to_f64_rgb3(const uint16_t rgb_f16[3],
-                                          double rgb_out[3]) {
+static inline void db_rgb_f16_to_f64_rgb3(const uint16_t *rgb_f16,
+                                          double *rgb_out) {
     if ((rgb_f16 == NULL) || (rgb_out == NULL)) {
         return;
     }
@@ -362,9 +351,9 @@ static inline void db_rgb_f16_to_f64_rgb3(const uint16_t rgb_f16[3],
     rgb_out[2] = db_f16_to_double(rgb_f16[2]);
 }
 
-static inline void db_blend_rgb3(const double prior_rgb[3],
-                                 const double target_rgb[3],
-                                 double blend_factor, double out_rgb[3]) {
+static inline void db_blend_rgb3(const double *prior_rgb,
+                                 const double *target_rgb, double blend_factor,
+                                 double *out_rgb) {
     if ((prior_rgb == NULL) || (target_rgb == NULL) || (out_rgb == NULL)) {
         return;
     }

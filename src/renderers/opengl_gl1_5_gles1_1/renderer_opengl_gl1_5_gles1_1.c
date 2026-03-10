@@ -126,7 +126,7 @@ static void db_gl1_log_compact_reject(const char *path, const char *reason,
 
 static void db_gl1_emit_gradient_row_block(uint32_t row_start,
                                            uint32_t row_count,
-                                           const double row_rgb[3],
+                                           const double *row_rgb,
                                            void *user_data) {
     db_gl1_gradient_rect_emit_ctx_t *ctx =
         (db_gl1_gradient_rect_emit_ctx_t *)user_data;
@@ -217,8 +217,7 @@ static void db_gl1_emit_snake_compact_rect(float *dst_unit, size_t stride,
 }
 
 static void db_gl1_get_snake_color_bits(uint32_t row, uint32_t col,
-                                        void *user_data,
-                                        uint32_t color_bits[3]) {
+                                        void *user_data, uint32_t *color_bits) {
     const size_t cols = (size_t)db_grid_cols_effective();
     const size_t tile_index = ((size_t)row * cols) + (size_t)col;
     const float *tile_color =
@@ -413,7 +412,7 @@ static void db_gl1_refresh_bands_x_cache(uint32_t cols, uint32_t band_count,
     g_state.bands_x_cache_count = band_count;
 }
 
-static void db_gl1_seed_backbuffer_clear_cb(const float rgba[4],
+static void db_gl1_seed_backbuffer_clear_cb(const float *rgba,
                                             void *user_data) {
     (void)user_data;
     if (rgba == NULL) {
@@ -455,8 +454,7 @@ static int db_init_vertices_for_mode(size_t vertex_stride) {
 static void db_render_snake_step(const db_snake_plan_t *plan,
                                  const db_snake_region_t *region,
                                  uint32_t shape_kind, uint32_t pattern_seed,
-                                 uint32_t shape_index,
-                                 const double target_rgb[3],
+                                 uint32_t shape_index, const double *target_rgb,
                                  int force_full_fill_on_phase_complete) {
     if ((plan == NULL) || (region == NULL) || (target_rgb == NULL)) {
         return;
@@ -1434,7 +1432,7 @@ db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
                 const db_snake_shape_cache_t *shape_cache_ptr = NULL;
                 if ((g_state.runtime_flags.is_snake_shapes != 0) &&
                     (g_state.snake_scratch.shape.row_bounds != NULL)) {
-                    const db_snake_shape_kind_t shape_kind =
+                    const db_snake_shape_kind_t active_shape_kind =
                         db_snake_shapes_kind_from_index(
                             g_state.runtime.pattern_seed,
                             state->plan.active_shape_index,
@@ -1445,7 +1443,7 @@ db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
                             g_state.snake_scratch.shape.row_bounds_capacity,
                             g_state.runtime.pattern_seed,
                             state->plan.active_shape_index, DB_U32_SALT_PALETTE,
-                            &state->target.region, shape_kind) != 0) {
+                            &state->target.region, active_shape_kind) != 0) {
                         shape_cache_ptr = &shape_cache;
                     }
                 }
@@ -1663,9 +1661,9 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                 .cycle_index = gradient_render_cycle_index,
                 .direction_down = gradient_render_direction_down,
             };
-            db_history_gradient_replay_state_store(
-                &g_state.gradient_prev_frame, full_blocks, full_count,
-                full_width_cols, &render_state);
+            db_history_gradient_replay_state_store(&g_state.gradient_prev_frame,
+                                                   full_blocks, full_count,
+                                                   &render_state);
             db_history_record_draw_stats_for_work(
                 &g_state.frame.full_draw_frames,
                 &g_state.frame.dirty_draw_frames, 1, 0, 1U);
@@ -1769,7 +1767,7 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
             }
             db_history_gradient_replay_state_store(
                 &g_state.gradient_prev_frame, persist_blocks,
-                persist_count_limited, full_width_cols, &persist_state);
+                persist_count_limited, &persist_state);
         }
     }
 

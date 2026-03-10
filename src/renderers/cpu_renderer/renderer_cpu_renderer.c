@@ -67,7 +67,7 @@ static int db_cpu_hdr_enabled_from_runtime(void) {
 }
 
 static void db_cpu_bo_write_rgb_index(db_cpu_bo_t *bo, size_t idx,
-                                      const double rgb[3]) {
+                                      const double *rgb) {
     if ((bo == NULL) || (rgb == NULL)) {
         return;
     }
@@ -84,7 +84,7 @@ static void db_cpu_bo_write_rgb_index(db_cpu_bo_t *bo, size_t idx,
 }
 
 static void db_cpu_bo_read_rgb_index(const db_cpu_bo_t *bo, size_t idx,
-                                     double out_rgb[3]) {
+                                     double *out_rgb) {
     if (out_rgb == NULL) {
         return;
     }
@@ -96,7 +96,7 @@ static void db_cpu_bo_read_rgb_index(const db_cpu_bo_t *bo, size_t idx,
     db_unpack_rgba8888_rgb01(bo->pixels_rgba8[idx], out_rgb);
 }
 
-static void db_cpu_bo_fill_solid_rgb(db_cpu_bo_t *bo, const double rgb[3]) {
+static void db_cpu_bo_fill_solid_rgb(db_cpu_bo_t *bo, const double *rgb) {
     if ((bo == NULL) || (rgb == NULL) || (bo->width == 0U) ||
         (bo->height == 0U)) {
         return;
@@ -127,7 +127,7 @@ static void db_cpu_bo_fill_damage_block_rgb(db_cpu_bo_t *bo, uint32_t row_start,
                                             uint32_t row_count,
                                             uint32_t col_start,
                                             uint32_t col_count,
-                                            const double rgb[3]) {
+                                            const double *rgb) {
     if ((bo == NULL) || (rgb == NULL) || (row_start >= bo->height) ||
         (row_count == 0U) || (col_count == 0U)) {
         return;
@@ -183,7 +183,7 @@ db_cpu_snapshot_prior_if_valid(const db_cpu_bo_t *bo, uint32_t update_index,
 static inline void db_cpu_blend_write_if_valid(
     db_cpu_bo_t *bo, uint32_t update_index, uint32_t batch_size,
     const uint32_t *active_tile_indices, const uint8_t *active_tile_valid,
-    const double *prior_rgb, const double target_rgb[3]) {
+    const double *prior_rgb, const double *target_rgb) {
     if (active_tile_valid[update_index] == 0U) {
         return;
     }
@@ -276,7 +276,7 @@ static void db_cpu_publish_damage_blocks(const db_damage_block_t *blocks,
 
 static void db_cpu_apply_gradient_color_block(uint32_t row_start,
                                               uint32_t row_count,
-                                              const double row_rgb[3],
+                                              const double *row_rgb,
                                               void *user_data) {
     db_cpu_gradient_block_apply_ctx_t *ctx =
         (db_cpu_gradient_block_apply_ctx_t *)user_data;
@@ -349,7 +349,7 @@ static void db_render_bands(db_cpu_bo_t *bo, uint32_t frame_index) {
 static void db_render_snake_step(db_cpu_bo_t *bo, const db_snake_plan_t *plan,
                                  const db_snake_region_t *region,
                                  const db_snake_shape_cache_t *shape_cache_ptr,
-                                 const double target_rgb[3],
+                                 const double *target_rgb,
                                  int force_full_fill_on_phase_complete) {
     if ((plan == NULL) || (region == NULL) || (target_rgb == NULL)) {
         return;

@@ -13,8 +13,4 @@ static inline const char *db_renderer_name_opengl_gl3_3(void) {
     return "renderer_opengl_gl3_3";
 }
 
-static inline const char *db_renderer_name_vulkan_1_2_multi_gpu(void) {
-    return "renderer_vulkan_1_2_multi_gpu";
-}
-
 #endif

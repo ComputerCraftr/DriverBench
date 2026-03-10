@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)
 
 # Prefer Clang for better default LTO support when no compiler is specified.
 if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
@@ -21,6 +21,31 @@ set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+set(DB_COMPILER_IS_CLANG OFF)
+if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
+  set(DB_COMPILER_IS_CLANG ON)
+endif()
+
+set(DB_COMPILER_IS_GNU OFF)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  set(DB_COMPILER_IS_GNU ON)
+endif()
+
+set(DB_COMPILER_IS_GNU_LIKE OFF)
+if(DB_COMPILER_IS_CLANG OR DB_COMPILER_IS_GNU)
+  set(DB_COMPILER_IS_GNU_LIKE ON)
+endif()
+
+set(DB_PLATFORM_IS_APPLE OFF)
+if(APPLE)
+  set(DB_PLATFORM_IS_APPLE ON)
+endif()
+
+set(DB_PLATFORM_IS_NON_APPLE_UNIX OFF)
+if(UNIX AND NOT APPLE)
+  set(DB_PLATFORM_IS_NON_APPLE_UNIX ON)
+endif()
 
 set(DB_CORE_SOURCES
   src/core/db_buffer_convert.c
@@ -64,7 +89,7 @@ if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LTO)
       "RelWithDebInfo build: disabling LTO by default to preserve profiler symbols "
       "(set DB_ENABLE_LTO_RELWITHDEBINFO=ON to override)."
     )
-  elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+  elseif(DB_COMPILER_IS_CLANG)
     set(DB_EFFECTIVE_LTO ON)
   else()
     message(WARNING
@@ -88,10 +113,17 @@ add_compile_definitions(DB_HAVE_STDCKDINT=${DB_HAVE_STDCKDINT})
 message(STATUS "C23 stdckdint support: ${DB_HAVE_STDCKDINT}")
 
 set(DB_USE_LLD OFF)
-if(DB_EFFECTIVE_LTO AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
-  find_program(DB_LLD_PROGRAM NAMES ld.lld lld)
-  if(DB_LLD_PROGRAM)
-    set(DB_USE_LLD ON)
+if(DB_EFFECTIVE_LTO AND DB_COMPILER_IS_CLANG)
+  if(DB_PLATFORM_IS_APPLE)
+    message(STATUS
+      "Apple build with LTO: keeping the platform linker; skipping ld.lld "
+      "to avoid known ld64.lld crashes on macOS arm64."
+    )
+  else()
+    find_program(DB_LLD_PROGRAM NAMES ld.lld lld)
+    if(DB_LLD_PROGRAM)
+      set(DB_USE_LLD ON)
+    endif()
   endif()
 endif()
 
@@ -99,7 +131,7 @@ set(DB_CROSS_COMPILE_FLAGS "")
 set(DB_CROSS_LINK_FLAGS "")
 
 if(DB_TARGET_LINUX_MUSL)
-  if(NOT UNIX OR APPLE)
+  if(NOT DB_PLATFORM_IS_NON_APPLE_UNIX)
     message(FATAL_ERROR
       "DB_TARGET_LINUX_MUSL is only supported for non-Apple UNIX builds."
     )
@@ -119,7 +151,7 @@ if(DB_TARGET_LINUX_MUSL)
     endif()
   endif()
 
-  if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$")
+  if(DB_COMPILER_IS_CLANG)
     list(APPEND DB_CROSS_COMPILE_FLAGS
       "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}"
     )
@@ -134,7 +166,7 @@ if(DB_TARGET_LINUX_MUSL)
         "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
       )
     endif()
-  elseif(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  elseif(DB_COMPILER_IS_GNU)
     message(STATUS
       "DB_TARGET_LINUX_MUSL is ON with GCC; ensure a musl-targeted GCC toolchain "
       "(e.g. musl-gcc or <triple>-gcc) is selected."
@@ -197,7 +229,7 @@ if(DB_TARGET_LINUX_MUSL)
 endif()
 
 if(DB_TARGET_LINUX_32BIT)
-  if(NOT UNIX OR APPLE)
+  if(NOT DB_PLATFORM_IS_NON_APPLE_UNIX)
     message(FATAL_ERROR
       "DB_TARGET_LINUX_32BIT is only supported for non-Apple UNIX builds."
     )
@@ -229,7 +261,7 @@ if(DB_TARGET_LINUX_MUSL AND DB_TARGET_LINUX_32BIT AND
 endif()
 
 if(DB_TARGET_LINUX_MUSL AND DB_TARGET_LINUX_32BIT)
-  if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$" AND
+  if(DB_COMPILER_IS_CLANG AND
      DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
     message(FATAL_ERROR
       "32-bit musl target requires a musl i686 sysroot when using clang. "
@@ -244,56 +276,64 @@ function(db_apply_perf_options target_name)
     return()
   endif()
 
+  if(DB_COMPILER_IS_CLANG)
+    target_compile_options(${target_name} PRIVATE
+      -Wall
+      -Wextra
+      -Wunreachable-code
+      -Wunused-function
+      -Wunused-parameter
+      -Wunused-variable
+      -Wshadow
+    )
+  endif()
+
   if(DB_CROSS_COMPILE_FLAGS)
     target_compile_options(${target_name} PRIVATE ${DB_CROSS_COMPILE_FLAGS})
   endif()
-  if(DB_CROSS_LINK_FLAGS AND COMMAND target_link_options)
+  if(DB_CROSS_LINK_FLAGS)
     target_link_options(${target_name} PRIVATE ${DB_CROSS_LINK_FLAGS})
   endif()
 
-  if(UNIX AND NOT APPLE)
+  if(DB_PLATFORM_IS_NON_APPLE_UNIX)
     target_compile_definitions(${target_name} PRIVATE _POSIX_C_SOURCE=200809L)
   endif()
 
   if(DB_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang|GNU)$")
+    if(DB_COMPILER_IS_GNU_LIKE)
       set(DB_SANITIZER_FLAGS -fsanitize=address,undefined)
-      if(NOT APPLE)
+      if(NOT DB_PLATFORM_IS_APPLE)
         list(APPEND DB_SANITIZER_FLAGS -fsanitize=leak)
       endif()
       target_compile_options(${target_name} PRIVATE
         -fno-omit-frame-pointer
         ${DB_SANITIZER_FLAGS}
       )
-      if(COMMAND target_link_options)
-        target_link_options(${target_name} PRIVATE ${DB_SANITIZER_FLAGS})
-      endif()
+      target_link_options(${target_name} PRIVATE ${DB_SANITIZER_FLAGS})
     endif()
   endif()
 
   if(DB_IS_RELEASE_LIKE AND DB_ENABLE_AGGRESSIVE_OPT)
-    if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang|GNU)$")
+    if(DB_COMPILER_IS_GNU_LIKE)
       target_compile_options(${target_name} PRIVATE -O3)
     endif()
   endif()
 
   if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LOOP_HINTS)
-    if(CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang|GNU)$")
+    if(DB_COMPILER_IS_GNU_LIKE)
       target_compile_options(${target_name} PRIVATE -funroll-loops)
     endif()
   endif()
 
   if(DB_EFFECTIVE_LTO)
     target_compile_options(${target_name} PRIVATE -flto)
-    if(COMMAND target_link_options)
-      target_link_options(${target_name} PRIVATE -flto)
-      if(DB_USE_LLD)
-        target_link_options(${target_name} PRIVATE -fuse-ld=lld)
-      endif()
+    target_link_options(${target_name} PRIVATE -flto)
+    if(DB_USE_LLD)
+      target_link_options(${target_name} PRIVATE -fuse-ld=lld)
     endif()
   endif()
 
-  if(APPLE AND DB_ENABLE_DSYM)
+  if(DB_PLATFORM_IS_APPLE AND DB_ENABLE_DSYM)
     if(CMAKE_BUILD_TYPE MATCHES "^(Debug|RelWithDebInfo)$")
       find_program(DB_DSYMUTIL_PROGRAM NAMES dsymutil xcrun)
       if(DB_DSYMUTIL_PROGRAM)
@@ -449,7 +489,7 @@ if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_LINK_LIB)
     )
   endif()
   if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL) AND
-     (CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$"))
+     DB_COMPILER_IS_CLANG)
     set_source_files_properties(
       src/displays/glfw_window/display_glfw_window.c
       src/displays/glfw_window/display_glfw_window_common.c
@@ -471,7 +511,7 @@ list(APPEND DB_DRIVERBENCH_SOURCES
   src/renderers/renderer_gl_upload.c
 )
 
-if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND UNIX AND NOT APPLE)
+if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND DB_PLATFORM_IS_NON_APPLE_UNIX)
   find_package(PkgConfig QUIET)
   if(PKG_CONFIG_FOUND)
     pkg_check_modules(GBM QUIET gbm)
@@ -568,7 +608,7 @@ if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND UNIX AND NOT APPLE)
           )
         endif()
         if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL) AND
-           (CMAKE_C_COMPILER_ID MATCHES "^(Clang|AppleClang)$"))
+           DB_COMPILER_IS_CLANG)
           set_source_files_properties(
             src/displays/linux_kms_atomic/display_linux_kms_atomic_common.c
             src/displays/linux_kms_atomic/display_linux_kms_atomic.c

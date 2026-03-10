@@ -101,23 +101,23 @@ void db_move_bytes(void *dst, const void *src, size_t byte_count) {
     memmove(dst, src, byte_count);
 }
 
-void db_copy_f32_vec2(float dst[2], const float src[2]) {
+void db_copy_f32_vec2(float *dst, const float *src) {
     db_copy_bytes(dst, src, 2U * sizeof(float));
 }
 
-void db_copy_f32_rgb3(float dst[3], const float src[3]) {
+void db_copy_f32_rgb3(float *dst, const float *src) {
     db_copy_bytes(dst, src, 3U * sizeof(float));
 }
 
-void db_copy_f32_rgba4(float dst[4], const float src[4]) {
+void db_copy_f32_rgba4(float *dst, const float *src) {
     db_copy_bytes(dst, src, 4U * sizeof(float));
 }
 
-void db_copy_f64_rgb3(double dst[3], const double src[3]) {
+void db_copy_f64_rgb3(double *dst, const double *src) {
     db_copy_bytes(dst, src, 3U * sizeof(double));
 }
 
-void db_copy_u32_rgb3(uint32_t dst[3], const uint32_t src[3]) {
+void db_copy_u32_rgb3(uint32_t *dst, const uint32_t *src) {
     db_copy_u32_buffer(dst, src, 3U);
 }
 
@@ -150,7 +150,7 @@ void db_fill_u32_buffer(uint32_t *dst, uint32_t element_count,
 }
 
 void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count,
-                                const uint8_t rgba_u8[4]) {
+                                const uint8_t *rgba_u8) {
     if ((dst == NULL) || (rgba_u8 == NULL) || (pixel_count == 0U)) {
         return;
     }
@@ -176,7 +176,7 @@ void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count,
 }
 
 void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count,
-                            const uint16_t rgba_f16[4]) {
+                            const uint16_t *rgba_f16) {
     if ((dst == NULL) || (rgba_f16 == NULL) || (pixel_count == 0U)) {
         return;
     }
@@ -201,7 +201,7 @@ void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count,
     }
 }
 
-void db_unpack_rgba8888_rgb_u8(uint32_t packed_rgba, uint32_t rgb_u8_out[3]) {
+void db_unpack_rgba8888_rgb_u8(uint32_t packed_rgba, uint32_t *rgb_u8_out) {
     if (rgb_u8_out == NULL) {
         return;
     }
@@ -210,7 +210,7 @@ void db_unpack_rgba8888_rgb_u8(uint32_t packed_rgba, uint32_t rgb_u8_out[3]) {
     rgb_u8_out[2] = (packed_rgba >> DB_PACKED_RGB_SHIFT_RED) & UINT8_MAX;
 }
 
-void db_unpack_rgba8888_rgb01(uint32_t packed_rgba, double rgb01_out[3]) {
+void db_unpack_rgba8888_rgb01(uint32_t packed_rgba, double *rgb01_out) {
     if (rgb01_out == NULL) {
         return;
     }
