@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/errno.h>
-#include <sys/select.h>
+#include <sys/select.h> // NOLINT(misc-include-cleaner)
 #include <unistd.h>
 
 #include "../../config/benchmark_config.h"

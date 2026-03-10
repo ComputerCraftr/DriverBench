@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 
 typedef enum {
     DB_VK_FRAME_OK = 0,

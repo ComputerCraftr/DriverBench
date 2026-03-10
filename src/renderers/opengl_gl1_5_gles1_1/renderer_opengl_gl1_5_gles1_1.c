@@ -962,27 +962,51 @@ static int db_gl1_draw_compact_blocks_from_snake_colors_once(
     return 1;
 }
 
-static void db_gl1_draw_ranges_best_effort(const db_gl_upload_range_t *ranges,
-                                           size_t range_count,
-                                           size_t upload_bytes) {
+static int db_gl1_draw_ranges_best_effort(const db_gl_upload_range_t *ranges,
+                                          size_t range_count,
+                                          size_t upload_bytes) {
     if ((ranges == NULL) || (range_count == 0U)) {
-        return;
+        return 0;
     }
     if (db_gl1_draw_compact_ranges_from_snake_colors_once(ranges,
                                                           range_count) != 0) {
-        return;
+        return 1;
     }
     if (g_state.runtime_flags.is_snake_grid == 0) {
         if (db_gl1_draw_compact_ranges_once(ranges, range_count,
                                             upload_bytes) != 0) {
-            return;
+            return 1;
         }
         if ((g_state.buffers.vbo == 0U) &&
             (db_gl1_draw_compact_client_ranges_once(ranges, range_count,
                                                     upload_bytes) != 0)) {
-            return;
+            return 1;
         }
     }
+    return 0;
+}
+
+static void db_gl1_draw_full_authoritative_mesh(void) {
+    if (g_state.buffers.vbo != 0U) {
+        db_gl1_configure_vbo_arrays_if_needed();
+    } else {
+        db_gl1_configure_client_arrays_if_needed();
+    }
+    db_gl_draw_arrays_triangles(
+        0, db_gl_draw_vertex_count_i32(BACKEND_NAME,
+                                       g_state.vertex.draw_vertex_count));
+}
+
+static int db_gl1_draw_full_mesh_from_authoritative_state(size_t upload_bytes) {
+    db_gl1_sync_vertices_from_snake_color_state();
+    if (g_state.buffers.vbo != 0U) {
+        const db_gl_upload_range_t full_range =
+            db_gl_upload_full_range(upload_bytes);
+        db_gl_upload_vbo_damage_ranges(g_state.vertex.vertices, upload_bytes,
+                                       &g_state.vertex.upload, &full_range, 1U);
+    }
+    db_gl1_draw_full_authoritative_mesh();
+    return 1;
 }
 
 static void
@@ -1290,27 +1314,27 @@ db_gl1_render_snake_draw_pass(const db_gl1_snake_frame_state_t *snake_frame,
     const int draw_is_full_mesh = (draw_range_count == 1U) &&
                                   (range_storage[0].src_offset_bytes == 0U) &&
                                   (range_storage[0].size_bytes == upload_bytes);
-    if (draw_is_full_mesh != 0) {
-        db_gl1_sync_vertices_from_snake_color_state();
-    }
 
     if (draw_range_count == 0U) {
         // No damage this frame; preserve backbuffer contents.
     } else {
         db_gl_upload_range_t *mesh_ranges = range_storage;
         const size_t mesh_range_count = draw_range_count;
-        int drew_compact_spans = 0;
+        int drew_frame = 0;
         if ((draw_is_full_mesh == 0) && (snake_frame->draw_blocks != NULL) &&
             (snake_frame->draw_block_count > 0U)) {
-            drew_compact_spans =
-                db_gl1_draw_compact_blocks_from_snake_colors_once(
-                    snake_frame->draw_blocks, snake_frame->draw_block_count);
+            drew_frame = db_gl1_draw_compact_blocks_from_snake_colors_once(
+                snake_frame->draw_blocks, snake_frame->draw_block_count);
         }
-        if (drew_compact_spans == 0) {
-            db_gl1_draw_ranges_best_effort(mesh_ranges, mesh_range_count,
-                                           upload_bytes);
+        if (drew_frame == 0) {
+            drew_frame = db_gl1_draw_ranges_best_effort(
+                mesh_ranges, mesh_range_count, upload_bytes);
         }
-        if (draw_range_count > 0U) {
+        if ((drew_frame == 0) && (draw_is_full_mesh != 0)) {
+            drew_frame =
+                db_gl1_draw_full_mesh_from_authoritative_state(upload_bytes);
+        }
+        if ((draw_range_count > 0U) && (drew_frame != 0)) {
             db_history_record_mesh_draw_stats(&g_state.frame.full_draw_frames,
                                               &g_state.frame.dirty_draw_frames,
                                               draw_is_full_mesh, 1U);

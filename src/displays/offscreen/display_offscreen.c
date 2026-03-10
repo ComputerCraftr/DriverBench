@@ -172,8 +172,12 @@ db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
     db_gl_bind_framebuffer(GL_FRAMEBUFFER, ctx->offscreen_fbo);
     db_gl_set_viewport_px(ctx->framebuffer_width_px,
                           ctx->framebuffer_height_px);
-    ctx->renderer_ops->render_frame_glfw(frame_index, ctx->framebuffer_width_px,
-                                         ctx->framebuffer_height_px, 2);
+    db_display_gl_render_frame(
+        ctx->renderer_ops->renderer, frame_index, ctx->framebuffer_width_px,
+        ctx->framebuffer_height_px,
+        db_display_gl_default_preserved_framebuffer_count(
+            ctx->renderer_ops->renderer),
+        0);
     const db_display_gl_hash_rgba16f_cb_ctx_t output_hash_ctx = {
         .backend_name = ctx->backend_name,
         .framebuffer_width_px = ctx->framebuffer_width_px,

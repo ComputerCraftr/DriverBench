@@ -9,7 +9,6 @@
 
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
-#include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
@@ -944,9 +943,9 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
         ctx->debug_clear_default_framebuffer);
 
     const db_display_gl_renderer_ops_t *renderer_ops = &ctx->renderer_ops;
-    renderer_ops->render_frame_glfw(frame_index, framebuffer_width_px,
-                                    framebuffer_height_px,
-                                    ctx->renderer_preserved_framebuffer_count);
+    db_display_gl_render_frame(renderer_ops->renderer, frame_index,
+                               framebuffer_width_px, framebuffer_height_px,
+                               ctx->renderer_preserved_framebuffer_count, 0);
 
     const db_display_gl_hash_rgba8_cb_ctx_t framebuffer_hash_ctx = {
         .backend_name = ctx->backend_name,
@@ -980,21 +979,21 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         db_display_gl_select_renderer_ops(renderer);
     const db_display_gl_context_policy_t context_policy =
         db_display_gl_context_policy_for_renderer(renderer);
-    uint32_t renderer_preserved_framebuffer_count = 2U;
-    if (offscreen_enabled != 0) {
-        renderer_preserved_framebuffer_count =
-            (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) ? 2U : 0U;
-    }
+    uint32_t renderer_preserved_framebuffer_count =
+        db_display_gl_default_preserved_framebuffer_count(renderer);
 
 #ifdef __linux__
-    if (offscreen_enabled == 0) {
+    if ((offscreen_enabled == 0) &&
+        (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)) {
         const db_glfw_default_fb_probe_result_t probe_result =
             db_glfw_probe_and_log_default_framebuffer_behavior(
                 backend_name, renderer, &context_policy, swap_interval);
-        if ((renderer == DB_GL_RENDERER_GL1_5_GLES1_1) &&
-            (effective_cfg.backbuffer_draw_full == 0) &&
+        const int probe_is_stable =
+            db_glfw_default_framebuffer_probe_is_stable(&probe_result);
+        renderer_preserved_framebuffer_count = (probe_is_stable != 0) ? 2U : 0U;
+        if ((effective_cfg.backbuffer_draw_full == 0) &&
             (effective_cfg.backbuffer_draw_mode_explicit == 0) &&
-            (db_glfw_default_framebuffer_probe_is_stable(&probe_result) == 0)) {
+            (probe_is_stable == 0)) {
             effective_cfg.backbuffer_draw_full = 1;
             renderer_preserved_framebuffer_count = 0U;
             db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "full");

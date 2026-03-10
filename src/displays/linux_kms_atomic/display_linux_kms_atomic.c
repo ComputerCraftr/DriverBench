@@ -1,5 +1,7 @@
 #include "display_linux_kms_atomic_common.h"
 
+#include <stdint.h>
+
 #include "../../driverbench_config.h"
 #include "../../renderers/renderer_identity.h"
 #include "../display_dispatch.h"
@@ -15,6 +17,18 @@ typedef struct {
     db_kms_atomic_renderer_vtable_t vtable;
     const db_display_gl_renderer_ops_t renderer_ops;
 } db_kms_gl_renderer_config_t;
+
+static void db_kms_render_frame_gl1(uint32_t frame_index,
+                                    uint32_t preserved_framebuffer_count) {
+    db_display_gl_render_frame_kms(DB_GL_RENDERER_GL1_5_GLES1_1, frame_index,
+                                   preserved_framebuffer_count);
+}
+
+static void db_kms_render_frame_gl3(uint32_t frame_index,
+                                    uint32_t preserved_framebuffer_count) {
+    db_display_gl_render_frame_kms(DB_GL_RENDERER_GL3_3, frame_index,
+                                   preserved_framebuffer_count);
+}
 
 int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
                             const char *card_path, const db_cli_config_t *cfg) {
@@ -41,7 +55,9 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
                 .capability_mode = renderer_ops.runtime_capability_mode,
                 .draw_stats = renderer_ops.draw_stats,
                 .init = renderer_ops.init,
-                .render_frame = renderer_ops.render_frame_kms,
+                .render_frame = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
+                                    ? db_kms_render_frame_gl1
+                                    : db_kms_render_frame_gl3,
                 .shutdown = renderer_ops.shutdown,
                 .work_unit_count = renderer_ops.work_unit_count,
             },
