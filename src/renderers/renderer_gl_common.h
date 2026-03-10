@@ -216,7 +216,6 @@ void db_gl_texture_sub_image_2d_rgba(int x_px, int y_px, int width, int height,
 void db_gl_texture_sub_image_2d_rgba16f(int x_px, int y_px, int width,
                                         int height, const void *pixels);
 void db_gl_clear_color_rgba(float red, float green, float blue, float alpha);
-void db_gl_clear_color_rgb(float red, float green, float blue);
 void db_gl_clear_color_buffer(void);
 void db_gl_set_blend_enabled(int enabled);
 void db_gl_set_cull_face_enabled(int enabled);

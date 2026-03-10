@@ -179,10 +179,8 @@ static void db_gl3_upload_snake_shape_uniforms(
         db_gl_uniform1ui(g_state.u_snake_region_y, region->y);
     }
     if (g_state.u_snake_region_color >= 0) {
-        const double region_rgb[3] = {region->color_r, region->color_g,
-                                      region->color_b};
         float region_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
-        db_rgb_f64_to_f32_rgb3(region_rgb, region_rgb_f32);
+        db_rgb_f64_to_f32_rgb3(region->color_rgb, region_rgb_f32);
         db_gl_uniform3f(g_state.u_snake_region_color, region_rgb_f32[0],
                         region_rgb_f32[1], region_rgb_f32[2]);
     }

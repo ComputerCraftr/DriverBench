@@ -281,9 +281,7 @@ db_gl_collect_pattern_upload_ranges(const db_gl_pattern_upload_collect_t *ctx,
                       .y = 0U,
                       .width = ctx->cols,
                       .height = ctx->rows,
-                      .color_r = 0.0,
-                      .color_g = 0.0,
-                      .color_b = 0.0,
+                      .color_rgb = {0.0, 0.0, 0.0},
                   }
                 : db_snake_region_from_index(ctx->pattern_seed,
                                              plan->active_shape_index);
@@ -715,10 +713,10 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * vertex_stride;
         float *unit = &vertices[base];
         db_fill_rect_unit_pos(unit, x0, y0, x1, y1, vertex_stride);
-        db_set_rect_unit_rgb(unit, vertex_stride,
-                             DB_VERTEX_POSITION_FLOAT_COUNT,
-                             BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F,
-                             BENCH_GRID_PHASE0_B_F);
+        db_set_rect_unit_rgb(
+            unit, vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
+            (const float[3]){BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F,
+                             BENCH_GRID_PHASE0_B_F});
         if (vertex_stride == DB_ES_VERTEX_FLOAT_STRIDE) {
             db_set_rect_unit_alpha(unit, vertex_stride,
                                    DB_VERTEX_POSITION_FLOAT_COUNT +
@@ -779,13 +777,8 @@ void db_update_grid_vertices_for_bands_rgb_stride(
         if ((col_end <= col_start) || (col_start >= cols)) {
             continue;
         }
-        double color_r_value = 0.0;
-        double color_g_value = 0.0;
-        double color_b_value = 0.0;
-        db_band_color_rgb(band, band_count, frame_index, &color_r_value,
-                          &color_g_value, &color_b_value);
-        const double color_rgb[3] = {color_r_value, color_g_value,
-                                     color_b_value};
+        double color_rgb[3] = {0.0, 0.0, 0.0};
+        db_band_color_rgb3(band, band_count, frame_index, color_rgb);
         float color_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
         db_rgb_f64_to_f32_rgb3(color_rgb, color_rgb_f32);
 
@@ -793,8 +786,7 @@ void db_update_grid_vertices_for_bands_rgb_stride(
             const uint32_t first_tile = (row * cols) + col_start;
             db_set_rect_tile_range_rgb(verts, first_tile, col_end - col_start,
                                        stride_floats, color_offset_floats,
-                                       color_rgb_f32[0], color_rgb_f32[1],
-                                       color_rgb_f32[2]);
+                                       color_rgb_f32);
         }
     }
 }

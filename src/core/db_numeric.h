@@ -102,26 +102,17 @@ static inline double db_u8_to_unit_f64(uint32_t value_u8) {
     return (double)(value_u8 & UINT8_MAX) / DB_U8_MAX;
 }
 
-// Narrowing policy group (determinism-sensitive):
-// - f64 -> f32: IEEE-754 round-to-nearest, ties-to-even (via cast + default FP
-//   environment).
-// - f64 in [0, 1] -> u8: clamp + round-half-up.
-// - f64 -> f16: explicit conversion with ties-to-even in mantissa rounding
-//   paths.
-// - Triplet helpers centralize RGB narrowing so call sites do not do ad-hoc
-//   per-channel casts/conversions in hot paths.
-//
-// Canonicalization contract for narrowing/conversion helpers:
-// - f64 -> f32 canonicalizes zero to +0 and NaN to +qNaN.
-// - f64 in [0, 1] -> u8 treats NaN as 0 before clamp + round-half-up.
-// - f64 <-> f16 canonicalizes zero to +0 and NaN to +qNaN in both
-//   directions.
+// Deterministic narrowing/conversion policy:
+// - f64 -> f32: default IEEE cast, then canonicalize NaN and zero.
+// - f32 -> f64: widen, then canonicalize NaN and zero.
+// - f64 in [0, 1] -> u8: treat NaN as 0, clamp, then round-half-up.
+// - f64 <-> f16: canonicalize NaN and zero in both directions.
 // - Sign is preserved only for finite non-zero values and infinities where the
 //   destination format can represent sign.
 //
-// Rationale: these rules remove representation-only variation (-0, signed NaN)
+// These rules remove representation-only variation (-0, signed NaN payloads)
 // from deterministic state/pixel processing while preserving meaningful sign
-// for finite non-zero values and infinities.
+// where it is representable.
 static inline float db_double_to_f32(double value) {
     if (isnan(value) != 0) {
         return nanf("");
@@ -130,6 +121,16 @@ static inline float db_double_to_f32(double value) {
         return 0.0F;
     }
     return (float)value;
+}
+
+static inline double db_f32_to_double(float value) {
+    if (isnan(value) != 0) {
+        return nan("");
+    }
+    if (value == 0.0F) {
+        return 0.0;
+    }
+    return (double)value;
 }
 
 static inline float db_u32_to_f32(uint32_t value) {
@@ -186,13 +187,39 @@ static inline void db_rgb_f64_to_f32_rgb3(const double rgb[3],
     rgb_out[2] = db_double_to_f32(rgb[2]);
 }
 
-static inline void db_copy_f32_rgb3(float dst[3], const float src[3]) {
-    if ((dst == NULL) || (src == NULL)) {
+static inline void db_rgb_f32_to_f64_rgb3(const float rgb[3],
+                                          double rgb_out[3]) {
+    if ((rgb == NULL) || (rgb_out == NULL)) {
         return;
     }
-    dst[0] = src[0];
-    dst[1] = src[1];
-    dst[2] = src[2];
+    rgb_out[0] = db_f32_to_double(rgb[0]);
+    rgb_out[1] = db_f32_to_double(rgb[1]);
+    rgb_out[2] = db_f32_to_double(rgb[2]);
+}
+
+static inline void db_f32_rgb_to_bits_u32_rgb3(const float rgb[3],
+                                               uint32_t bits_out[3]) {
+    if ((rgb == NULL) || (bits_out == NULL)) {
+        return;
+    }
+    bits_out[0] = db_f32_to_bits_u32(rgb[0]);
+    bits_out[1] = db_f32_to_bits_u32(rgb[1]);
+    bits_out[2] = db_f32_to_bits_u32(rgb[2]);
+}
+
+static inline int db_equal_f32_rgb3(const float lhs[3], const float rhs[3]) {
+    if ((lhs == NULL) || (rhs == NULL)) {
+        return 0;
+    }
+    return (lhs[0] == rhs[0]) && (lhs[1] == rhs[1]) && (lhs[2] == rhs[2]);
+}
+
+static inline int db_equal_u32_rgb3(const uint32_t lhs[3],
+                                    const uint32_t rhs[3]) {
+    if ((lhs == NULL) || (rhs == NULL)) {
+        return 0;
+    }
+    return (lhs[0] == rhs[0]) && (lhs[1] == rhs[1]) && (lhs[2] == rhs[2]);
 }
 
 // Deterministic pack/unpack helpers built on narrowing policy functions.
@@ -242,10 +269,9 @@ static inline uint32_t db_round_positive_to_u32_ties_even(double value) {
     return rounded;
 }
 
-// f16 normalization policy:
-// - Canonicalize zeros to +0.
-// - Canonicalize NaN to +qNaN.
-// - Preserve sign for finite non-zero values and infinities.
+// f16-specific conversion details:
+// - Mantissa rounding uses ties-to-even.
+// - Subnormal overflow during rounding carries into the smallest normal value.
 static inline uint16_t db_double_to_f16(double value) {
     const uint32_t sign =
         (signbit(value) != 0) ? (1U << DB_F16_SIGN_SHIFT) : 0U;
@@ -324,6 +350,16 @@ static inline double db_f16_to_double(uint16_t value) {
         1.0 + ((double)mant / (double)(1U << DB_F16_MANT_BITS));
     const double normal = ldexp(significand, exp_unbiased);
     return (sign != 0U) ? -normal : normal;
+}
+
+static inline void db_rgb_f16_to_f64_rgb3(const uint16_t rgb_f16[3],
+                                          double rgb_out[3]) {
+    if ((rgb_f16 == NULL) || (rgb_out == NULL)) {
+        return;
+    }
+    rgb_out[0] = db_f16_to_double(rgb_f16[0]);
+    rgb_out[1] = db_f16_to_double(rgb_f16[1]);
+    rgb_out[2] = db_f16_to_double(rgb_f16[2]);
 }
 
 static inline void db_blend_rgb3(const double prior_rgb[3],

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "../../config/benchmark_config.h"
+#include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
@@ -124,13 +125,13 @@ static void db_gl1_log_compact_reject(const char *path, const char *reason,
 }
 
 static void db_gl1_emit_gradient_row_block(uint32_t row_start,
-                                           uint32_t row_count, double row_r,
-                                           double row_g, double row_b,
+                                           uint32_t row_count,
+                                           const double row_rgb[3],
                                            void *user_data) {
     db_gl1_gradient_rect_emit_ctx_t *ctx =
         (db_gl1_gradient_rect_emit_ctx_t *)user_data;
     if ((ctx == NULL) || (row_count == 0U) ||
-        (ctx->rect_count >= ctx->rect_capacity)) {
+        (ctx->rect_count >= ctx->rect_capacity) || (row_rgb == NULL)) {
         return;
     }
     const uint32_t row_end = row_start + row_count;
@@ -150,14 +151,13 @@ static void db_gl1_emit_gradient_row_block(uint32_t row_start,
                       (int)(((uint64_t)row_start * (uint64_t)ctx->viewport_h) /
                             (uint64_t)ctx->rows),
                   ctx->viewport_h);
-    const double row_rgb[3] = {row_r, row_g, row_b};
     float row_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
     db_rgb_f64_to_f32_rgb3(row_rgb, row_rgb_f32);
     const size_t base = ctx->rect_count * ctx->rect_float_count;
     float *const unit = &ctx->dst_vertices[base];
     db_fill_rect_unit_pos(unit, -1.0F, y0, 1.0F, y1, ctx->stride);
     db_set_rect_unit_rgb(unit, ctx->stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-                         row_rgb_f32[0], row_rgb_f32[1], row_rgb_f32[2]);
+                         row_rgb_f32);
     if (g_state.is_es_context != 0) {
         db_set_rect_unit_alpha(unit, ctx->stride, DB_GL_COLOR_A_OFFSET, 1.0F);
     }
@@ -210,29 +210,22 @@ static void db_gl1_emit_snake_compact_rect(float *dst_unit, size_t stride,
     db_fill_rect_unit_pos(dst_unit, left_bounds.x0, bottom_bounds.y0,
                           right_bounds.x1, left_bounds.y1, stride);
     db_set_rect_unit_rgb(dst_unit, stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-                         tile_color[0], tile_color[1], tile_color[2]);
+                         tile_color);
     if (g_state.is_es_context != 0) {
         db_set_rect_unit_alpha(dst_unit, stride, DB_GL_COLOR_A_OFFSET, 1.0F);
     }
 }
 
 static void db_gl1_get_snake_color_bits(uint32_t row, uint32_t col,
-                                        void *user_data, uint32_t *color_r_bits,
-                                        uint32_t *color_g_bits,
-                                        uint32_t *color_b_bits) {
+                                        void *user_data,
+                                        uint32_t color_bits[3]) {
     const size_t cols = (size_t)db_grid_cols_effective();
     const size_t tile_index = ((size_t)row * cols) + (size_t)col;
     const float *tile_color =
         &g_state.snake_color_state[tile_index * DB_GL_COLOR_COMPONENT_COUNT];
     (void)user_data;
-    if (color_r_bits != NULL) {
-        *color_r_bits = db_f32_to_bits_u32(tile_color[0]);
-    }
-    if (color_g_bits != NULL) {
-        *color_g_bits = db_f32_to_bits_u32(tile_color[1]);
-    }
-    if (color_b_bits != NULL) {
-        *color_b_bits = db_f32_to_bits_u32(tile_color[2]);
+    if (color_bits != NULL) {
+        db_f32_rgb_to_bits_u32_rgb3(tile_color, color_bits);
     }
 }
 
@@ -303,9 +296,7 @@ static void db_gl1_sync_vertices_from_snake_color_state(void) {
             &g_state.snake_color_state[(size_t)tile_index *
                                        DB_GL_COLOR_COMPONENT_COUNT];
         db_set_rect_unit_rgb(unit, stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-                             tile_color[DB_GL_COLOR_R_INDEX],
-                             tile_color[DB_GL_COLOR_G_INDEX],
-                             tile_color[DB_GL_COLOR_B_INDEX]);
+                             tile_color);
     }
 }
 
@@ -428,7 +419,7 @@ static void db_gl1_seed_backbuffer_clear_cb(const float rgba[4],
     if (rgba == NULL) {
         return;
     }
-    db_gl_clear_color_rgb(rgba[0], rgba[1], rgba[2]);
+    db_gl_clear_color_rgba(rgba[0], rgba[1], rgba[2], 1.0F);
     db_gl_clear_color_buffer();
 }
 
@@ -464,10 +455,10 @@ static int db_init_vertices_for_mode(size_t vertex_stride) {
 static void db_render_snake_step(const db_snake_plan_t *plan,
                                  const db_snake_region_t *region,
                                  uint32_t shape_kind, uint32_t pattern_seed,
-                                 uint32_t shape_index, double target_r,
-                                 double target_g, double target_b,
+                                 uint32_t shape_index,
+                                 const double target_rgb[3],
                                  int force_full_fill_on_phase_complete) {
-    if ((plan == NULL) || (region == NULL)) {
+    if ((plan == NULL) || (region == NULL) || (target_rgb == NULL)) {
         return;
     }
     if (plan->batch_size > BENCH_SNAKE_PHASE_WINDOW_TILES) {
@@ -479,7 +470,6 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
     }
     if ((force_full_fill_on_phase_complete != 0) &&
         (plan->phase_completed != 0)) {
-        const double target_rgb[3] = {target_r, target_g, target_b};
         float target_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
         db_rgb_f64_to_f32_rgb3(target_rgb, target_rgb_f32);
         if (db_gl1_has_snake_color_state() != 0) {
@@ -495,7 +485,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
             db_fill_grid_all_rgb_stride(
                 g_state.vertex.vertices, g_state.runtime.work_unit_count,
                 g_state.vertex.vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-                target_rgb_f32[0], target_rgb_f32[1], target_rgb_f32[2]);
+                target_rgb_f32);
         }
         return;
     }
@@ -513,7 +503,6 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
     }
     const uint32_t cols = db_grid_cols_effective();
     const uint32_t rows = db_grid_rows_effective();
-    const double target_rgb[3] = {target_r, target_g, target_b};
     float target_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
     db_rgb_f64_to_f32_rgb3(target_rgb, target_rgb_f32);
     const uint32_t batch_limit =
@@ -552,20 +541,11 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
                                          g_state.vertex.vertex_stride;
         float *tile_color = db_gl1_snake_tile_color_ptr(tile_index);
         if (tile_color != NULL) {
-            prior_rgb[prior_base + DB_GL_COLOR_R_INDEX] =
-                tile_color[DB_GL_COLOR_R_INDEX];
-            prior_rgb[prior_base + DB_GL_COLOR_G_INDEX] =
-                tile_color[DB_GL_COLOR_G_INDEX];
-            prior_rgb[prior_base + DB_GL_COLOR_B_INDEX] =
-                tile_color[DB_GL_COLOR_B_INDEX];
+            db_rgb_f32_to_f64_rgb3(tile_color, &prior_rgb[prior_base]);
         } else {
             float *unit = &g_state.vertex.vertices[tile_float_offset];
-            prior_rgb[prior_base + DB_GL_COLOR_R_INDEX] =
-                unit[DB_GL_COLOR_R_OFFSET];
-            prior_rgb[prior_base + DB_GL_COLOR_G_INDEX] =
-                unit[DB_GL_COLOR_G_OFFSET];
-            prior_rgb[prior_base + DB_GL_COLOR_B_INDEX] =
-                unit[DB_GL_COLOR_B_OFFSET];
+            db_rgb_f32_to_f64_rgb3(&unit[DB_GL_COLOR_R_OFFSET],
+                                   &prior_rgb[prior_base]);
         }
     }
 
@@ -588,8 +568,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
             float *unit = &g_state.vertex.vertices[tile_float_offset];
             db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
                                  DB_VERTEX_POSITION_FLOAT_COUNT,
-                                 target_rgb_f32[0], target_rgb_f32[1],
-                                 target_rgb_f32[2]);
+                                 target_rgb_f32);
         }
     }
 
@@ -607,7 +586,6 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
 
         const size_t prior_base =
             (size_t)update_index * DB_GL_COLOR_COMPONENT_COUNT;
-        const double target_rgb[3] = {target_r, target_g, target_b};
         double out_rgb[3] = {0.0, 0.0, 0.0};
         float out_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
         db_blend_rgb3(&prior_rgb[prior_base], target_rgb, blend_factor,
@@ -619,8 +597,7 @@ static void db_render_snake_step(const db_snake_plan_t *plan,
         } else {
             float *unit = &g_state.vertex.vertices[tile_float_offset];
             db_set_rect_unit_rgb(unit, g_state.vertex.vertex_stride,
-                                 DB_VERTEX_POSITION_FLOAT_COUNT, out_rgb_f32[0],
-                                 out_rgb_f32[1], out_rgb_f32[2]);
+                                 DB_VERTEX_POSITION_FLOAT_COUNT, out_rgb_f32);
         }
     }
 }
@@ -1110,20 +1087,15 @@ static void db_gl1_draw_bands_compact(uint32_t cols, uint32_t band_count,
             continue;
         }
 
-        double color_r = 0.0;
-        double color_g = 0.0;
-        double color_b = 0.0;
-        db_band_color_rgb(band, band_count, frame_index, &color_r, &color_g,
-                          &color_b);
+        double color_rgb[3] = {0.0, 0.0, 0.0};
+        db_band_color_rgb3(band, band_count, frame_index, color_rgb);
         const size_t base = rect_count * rect_float_count;
         float *const unit = &g_state.compact_vbo.scratch_vertices[base];
-        const double color_rgb[3] = {color_r, color_g, color_b};
         float color_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
         db_rgb_f64_to_f32_rgb3(color_rgb, color_rgb_f32);
         db_fill_rect_unit_pos(unit, x0_ndc, y0_ndc, x1_ndc, y1_ndc, stride);
         db_set_rect_unit_rgb(unit, stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-                             color_rgb_f32[0], color_rgb_f32[1],
-                             color_rgb_f32[2]);
+                             color_rgb_f32);
         if (g_state.is_es_context != 0) {
             db_set_rect_unit_alpha(unit, stride, DB_GL_COLOR_A_OFFSET, 1.0F);
         }
@@ -1436,9 +1408,7 @@ db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
                 .y = 0U,
                 .width = db_grid_cols_effective(),
                 .height = db_grid_rows_effective(),
-                .color_r = 0.0,
-                .color_g = 0.0,
-                .color_b = 0.0,
+                .color_rgb = {0.0, 0.0, 0.0},
             };
             if ((state->plan.prev_count > 0U) ||
                 (state->plan.batch_size > 0U)) {
@@ -1504,16 +1474,13 @@ db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
         // Grid fast-path on invalid backbuffer: clear to the pre-step base
         // phase, then redraw the full non-base set (settled + active).
         if (state->preview_capacity > 0U) {
-            double base_r = 0.0;
-            double base_g = 0.0;
-            double base_b = 0.0;
             const int base_phase = (state->plan.phase_flag == 0) ? 1 : 0;
-            db_grid_target_color_rgb(base_phase, &base_r, &base_g, &base_b);
-            const double base_rgb[3] = {base_r, base_g, base_b};
+            double base_rgb[3] = {0.0, 0.0, 0.0};
+            db_grid_target_color_rgb3(base_phase, base_rgb);
             float base_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
             db_rgb_f64_to_f32_rgb3(base_rgb, base_rgb_f32);
-            db_gl_clear_color_rgb(base_rgb_f32[0], base_rgb_f32[1],
-                                  base_rgb_f32[2]);
+            db_gl_clear_color_rgba(base_rgb_f32[0], base_rgb_f32[1],
+                                   base_rgb_f32[2], 1.0F);
             db_gl_clear_color_buffer();
             db_history_record_draw_stats_for_work(
                 &g_state.frame.full_draw_frames,
@@ -1570,8 +1537,8 @@ db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
 
     db_render_snake_step(&state->plan, &state->target.region, shape_kind,
                          g_state.runtime.pattern_seed,
-                         state->plan.active_shape_index, state->target.target_r,
-                         state->target.target_g, state->target.target_b,
+                         state->plan.active_shape_index,
+                         state->target.target_rgb,
                          state->target.force_full_fill_on_phase_complete);
     db_history_apply_snake_step_to_runtime(&g_state.runtime, &eval);
 }

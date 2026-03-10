@@ -101,6 +101,26 @@ void db_move_bytes(void *dst, const void *src, size_t byte_count) {
     memmove(dst, src, byte_count);
 }
 
+void db_copy_f32_vec2(float dst[2], const float src[2]) {
+    db_copy_bytes(dst, src, 2U * sizeof(float));
+}
+
+void db_copy_f32_rgb3(float dst[3], const float src[3]) {
+    db_copy_bytes(dst, src, 3U * sizeof(float));
+}
+
+void db_copy_f32_rgba4(float dst[4], const float src[4]) {
+    db_copy_bytes(dst, src, 4U * sizeof(float));
+}
+
+void db_copy_f64_rgb3(double dst[3], const double src[3]) {
+    db_copy_bytes(dst, src, 3U * sizeof(double));
+}
+
+void db_copy_u32_rgb3(uint32_t dst[3], const uint32_t src[3]) {
+    db_copy_u32_buffer(dst, src, 3U);
+}
+
 void db_copy_u32_buffer(uint32_t *dst, const uint32_t *src,
                         size_t element_count) {
     db_copy_bytes(dst, src, element_count * sizeof(uint32_t));
@@ -129,9 +149,9 @@ void db_fill_u32_buffer(uint32_t *dst, uint32_t element_count,
     }
 }
 
-void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count, uint8_t red,
-                                uint8_t green, uint8_t blue, uint8_t alpha) {
-    if ((dst == NULL) || (pixel_count == 0U)) {
+void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count,
+                                const uint8_t rgba_u8[4]) {
+    if ((dst == NULL) || (rgba_u8 == NULL) || (pixel_count == 0U)) {
         return;
     }
     uint32_t pixel = 0U;
@@ -140,24 +160,24 @@ void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count, uint8_t red,
         for (uint32_t lane = 0U; lane < DB_PIXEL_ILP_LANES; lane++) {
             const size_t base =
                 ((size_t)(pixel + lane) * DB_CONVERT_RGBA8_PIXEL_STRIDE);
-            dst[base + DB_CONVERT_CHANNEL_R] = red;
-            dst[base + DB_CONVERT_CHANNEL_G] = green;
-            dst[base + DB_CONVERT_CHANNEL_B] = blue;
-            dst[base + DB_CONVERT_CHANNEL_A] = alpha;
+            dst[base + DB_CONVERT_CHANNEL_R] = rgba_u8[DB_CONVERT_CHANNEL_R];
+            dst[base + DB_CONVERT_CHANNEL_G] = rgba_u8[DB_CONVERT_CHANNEL_G];
+            dst[base + DB_CONVERT_CHANNEL_B] = rgba_u8[DB_CONVERT_CHANNEL_B];
+            dst[base + DB_CONVERT_CHANNEL_A] = rgba_u8[DB_CONVERT_CHANNEL_A];
         }
     }
     for (; pixel < pixel_count; pixel++) {
         const size_t base = ((size_t)pixel * DB_CONVERT_RGBA8_PIXEL_STRIDE);
-        dst[base + DB_CONVERT_CHANNEL_R] = red;
-        dst[base + DB_CONVERT_CHANNEL_G] = green;
-        dst[base + DB_CONVERT_CHANNEL_B] = blue;
-        dst[base + DB_CONVERT_CHANNEL_A] = alpha;
+        dst[base + DB_CONVERT_CHANNEL_R] = rgba_u8[DB_CONVERT_CHANNEL_R];
+        dst[base + DB_CONVERT_CHANNEL_G] = rgba_u8[DB_CONVERT_CHANNEL_G];
+        dst[base + DB_CONVERT_CHANNEL_B] = rgba_u8[DB_CONVERT_CHANNEL_B];
+        dst[base + DB_CONVERT_CHANNEL_A] = rgba_u8[DB_CONVERT_CHANNEL_A];
     }
 }
 
-void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count, uint16_t red,
-                            uint16_t green, uint16_t blue, uint16_t alpha) {
-    if ((dst == NULL) || (pixel_count == 0U)) {
+void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count,
+                            const uint16_t rgba_f16[4]) {
+    if ((dst == NULL) || (rgba_f16 == NULL) || (pixel_count == 0U)) {
         return;
     }
     uint32_t pixel = 0U;
@@ -166,54 +186,53 @@ void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count, uint16_t red,
         for (uint32_t lane = 0U; lane < DB_PIXEL_ILP_LANES; lane++) {
             const size_t base =
                 ((size_t)(pixel + lane) * DB_CONVERT_RGBA16F_PIXEL_STRIDE);
-            dst[base + DB_CONVERT_CHANNEL_R] = red;
-            dst[base + DB_CONVERT_CHANNEL_G] = green;
-            dst[base + DB_CONVERT_CHANNEL_B] = blue;
-            dst[base + DB_CONVERT_CHANNEL_A] = alpha;
+            dst[base + DB_CONVERT_CHANNEL_R] = rgba_f16[DB_CONVERT_CHANNEL_R];
+            dst[base + DB_CONVERT_CHANNEL_G] = rgba_f16[DB_CONVERT_CHANNEL_G];
+            dst[base + DB_CONVERT_CHANNEL_B] = rgba_f16[DB_CONVERT_CHANNEL_B];
+            dst[base + DB_CONVERT_CHANNEL_A] = rgba_f16[DB_CONVERT_CHANNEL_A];
         }
     }
     for (; pixel < pixel_count; pixel++) {
         const size_t base = ((size_t)pixel * DB_CONVERT_RGBA16F_PIXEL_STRIDE);
-        dst[base + DB_CONVERT_CHANNEL_R] = red;
-        dst[base + DB_CONVERT_CHANNEL_G] = green;
-        dst[base + DB_CONVERT_CHANNEL_B] = blue;
-        dst[base + DB_CONVERT_CHANNEL_A] = alpha;
+        dst[base + DB_CONVERT_CHANNEL_R] = rgba_f16[DB_CONVERT_CHANNEL_R];
+        dst[base + DB_CONVERT_CHANNEL_G] = rgba_f16[DB_CONVERT_CHANNEL_G];
+        dst[base + DB_CONVERT_CHANNEL_B] = rgba_f16[DB_CONVERT_CHANNEL_B];
+        dst[base + DB_CONVERT_CHANNEL_A] = rgba_f16[DB_CONVERT_CHANNEL_A];
     }
-}
-
-uint32_t db_unpack_rgba8888_channel_u8(uint32_t packed_rgba,
-                                       uint32_t channel_shift) {
-    return (packed_rgba >> channel_shift) & UINT8_MAX;
 }
 
 void db_unpack_rgba8888_rgb_u8(uint32_t packed_rgba, uint32_t rgb_u8_out[3]) {
     if (rgb_u8_out == NULL) {
         return;
     }
-    rgb_u8_out[0] =
-        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_BLUE);
-    rgb_u8_out[1] =
-        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_GREEN);
-    rgb_u8_out[2] =
-        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_RED);
+    rgb_u8_out[0] = (packed_rgba >> DB_PACKED_RGB_SHIFT_BLUE) & UINT8_MAX;
+    rgb_u8_out[1] = (packed_rgba >> DB_PACKED_RGB_SHIFT_GREEN) & UINT8_MAX;
+    rgb_u8_out[2] = (packed_rgba >> DB_PACKED_RGB_SHIFT_RED) & UINT8_MAX;
 }
 
 void db_unpack_rgba8888_rgb01(uint32_t packed_rgba, double rgb01_out[3]) {
     if (rgb01_out == NULL) {
         return;
     }
-    rgb01_out[0] = db_u8_to_unit_f64(
-        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_BLUE));
+    rgb01_out[0] = db_u8_to_unit_f64((packed_rgba >> DB_PACKED_RGB_SHIFT_BLUE) &
+                                     UINT8_MAX);
     rgb01_out[1] = db_u8_to_unit_f64(
-        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_GREEN));
-    rgb01_out[2] = db_u8_to_unit_f64(
-        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_RED));
+        (packed_rgba >> DB_PACKED_RGB_SHIFT_GREEN) & UINT8_MAX);
+    rgb01_out[2] =
+        db_u8_to_unit_f64((packed_rgba >> DB_PACKED_RGB_SHIFT_RED) & UINT8_MAX);
 }
 
 uint32_t db_pack_xrgb8888_from_rgba8888(uint32_t packed_rgba) {
-    uint32_t rgb_u8[3] = {0U, 0U, 0U};
-    db_unpack_rgba8888_rgb_u8(packed_rgba, rgb_u8);
-    return db_pack_xrgb8888_from_rgb_u8(rgb_u8[0], rgb_u8[1], rgb_u8[2]);
+    const uint32_t red_bits =
+        ((packed_rgba >> DB_PACKED_RGB_SHIFT_BLUE) & UINT8_MAX)
+        << DB_PACKED_RGB_SHIFT_RED;
+    const uint32_t green_bits =
+        ((packed_rgba >> DB_PACKED_RGB_SHIFT_GREEN) & UINT8_MAX)
+        << DB_PACKED_RGB_SHIFT_GREEN;
+    const uint32_t blue_bits =
+        ((packed_rgba >> DB_PACKED_RGB_SHIFT_RED) & UINT8_MAX)
+        << DB_PACKED_RGB_SHIFT_BLUE;
+    return red_bits | green_bits | blue_bits;
 }
 
 // Public block/subrect pixel format conversion entry points.

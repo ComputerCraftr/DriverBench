@@ -77,9 +77,7 @@ typedef struct {
     uint32_t y;
     uint32_t width;
     uint32_t height;
-    double color_r;
-    double color_g;
-    double color_b;
+    double color_rgb[3];
 } db_snake_region_t;
 
 typedef struct {

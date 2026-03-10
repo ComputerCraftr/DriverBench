@@ -1060,10 +1060,6 @@ void db_gl_clear_color_rgba(float red, float green, float blue, float alpha) {
     }
 }
 
-void db_gl_clear_color_rgb(float red, float green, float blue) {
-    db_gl_clear_color_rgba(red, green, blue, 1.0F);
-}
-
 void db_gl_clear_color_buffer(void) {
     db_gl_load_upload_proc_table();
     if (g_upload_proc_table.clear != NULL) {

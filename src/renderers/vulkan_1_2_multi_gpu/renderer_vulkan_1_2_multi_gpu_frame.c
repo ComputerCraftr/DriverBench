@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "../../config/benchmark_config.h"
+#include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
 #include "../renderer_benchmark_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
@@ -75,17 +76,13 @@ void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
                        sizeof(extent.width), &extent.width);
 }
 
-static void db_vk_payload_color_values(const db_vk_draw_payload_t *payload,
-                                       float out_color[3]) {
+static const float *
+db_vk_payload_color_ptr(const db_vk_draw_payload_t *payload) {
+    static const float zero_color[3] = {0.0F, 0.0F, 0.0F};
     if ((payload == NULL) || (payload->color == NULL)) {
-        out_color[0] = 0.0F;
-        out_color[1] = 0.0F;
-        out_color[2] = 0.0F;
-        return;
+        return zero_color;
     }
-    out_color[0] = payload->color[0];
-    out_color[1] = payload->color[1];
-    out_color[2] = payload->color[2];
+    return payload->color;
 }
 
 static int
@@ -94,8 +91,7 @@ db_vk_draw_payload_cache_matches(const db_vk_draw_payload_cache_t *cache,
     if ((cache == NULL) || (payload == NULL) || (cache->valid == 0)) {
         return 0;
     }
-    float color[3] = {0.0F, 0.0F, 0.0F};
-    db_vk_payload_color_values(payload, color);
+    const float *const color = db_vk_payload_color_ptr(payload);
     return (cache->payload.render_mode == payload->render_mode) &&
            (cache->payload.gradient_head_row == payload->gradient_head_row) &&
            (cache->payload.gradient_direction_flag ==
@@ -109,8 +105,7 @@ db_vk_draw_payload_cache_matches(const db_vk_draw_payload_cache_t *cache,
            (cache->payload.palette_cycle == payload->palette_cycle) &&
            (cache->payload.frame_index == payload->frame_index) &&
            (cache->payload.band_count == payload->band_count) &&
-           (cache->color[0] == color[0]) && (cache->color[1] == color[1]) &&
-           (cache->color[2] == color[2]);
+           (db_equal_f32_rgb3(cache->color, color) != 0);
 }
 
 static void
@@ -120,7 +115,7 @@ db_vk_draw_payload_cache_store(db_vk_draw_payload_cache_t *cache,
         return;
     }
     cache->payload = *payload;
-    db_vk_payload_color_values(payload, cache->color);
+    db_copy_f32_rgb3(cache->color, db_vk_payload_color_ptr(payload));
     cache->valid = 1;
 }
 
@@ -145,15 +140,12 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
         return;
     }
     PushConstants pc = {0};
-    pc.offset_ndc[0] = req->ndc_x0;
-    pc.offset_ndc[1] = req->ndc_y0;
-    pc.scale_ndc[0] = (req->ndc_x1 - req->ndc_x0);
-    pc.scale_ndc[1] = (req->ndc_y1 - req->ndc_y0);
-    float payload_color[3] = {0.0F, 0.0F, 0.0F};
-    db_vk_payload_color_values(&req->payload, payload_color);
-    pc.color[0] = payload_color[0];
-    pc.color[1] = payload_color[1];
-    pc.color[2] = payload_color[2];
+    const float offset_ndc[2] = {req->ndc_x0, req->ndc_y0};
+    const float scale_ndc[2] = {(req->ndc_x1 - req->ndc_x0),
+                                (req->ndc_y1 - req->ndc_y0)};
+    db_copy_f32_vec2(pc.offset_ndc, offset_ndc);
+    db_copy_f32_vec2(pc.scale_ndc, scale_ndc);
+    db_copy_f32_rgb3(pc.color, db_vk_payload_color_ptr(&req->payload));
     pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
     pc.render_mode = req->payload.render_mode;
     pc.gradient_head_row = req->payload.gradient_head_row;
@@ -191,10 +183,9 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
             cache->snake_region_width = region.width;
             cache->snake_region_x = region.x;
             cache->snake_region_y = region.y;
-            const double region_rgb[3] = {region.color_r, region.color_g,
-                                          region.color_b};
-            db_rgb_f64_to_f32_rgb3(region_rgb, cache->snake_region_color);
-            cache->snake_region_color[3] = 1.0F;
+            float region_rgba[4] = {0.0F, 0.0F, 0.0F, 1.0F};
+            db_rgb_f64_to_f32_rgb3(region.color_rgb, region_rgba);
+            db_copy_f32_rgba4(cache->snake_region_color, region_rgba);
             if (is_shapes_mode != 0) {
                 const db_snake_shape_profile_t profile =
                     db_snake_shape_profile_from_index(pattern_seed, shape_index,
@@ -202,43 +193,38 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
                                                       shape_kind);
                 db_snake_shape_profile_f32_t profile_f32 = {0};
                 db_snake_shape_profile_to_f32(&profile, &profile_f32);
+                const float snake_profile0[4] = {
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_X],
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_Y],
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_DIAMOND_RADIUS],
+                    profile_f32
+                        .values[DB_SNAKE_PROFILE_VAL_TRIANGLE_BOTTOM_WIDTH],
+                };
+                const float snake_profile1[4] = {
+                    profile_f32
+                        .values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_TOP_WIDTH],
+                    profile_f32
+                        .values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_BOTTOM_WIDTH],
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_WIDTH],
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_HEIGHT],
+                };
+                const float snake_profile2[4] = {
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_X],
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_Y],
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_COS],
+                    profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_SIN],
+                };
                 cache->snake_shape_kind = (uint32_t)shape_kind;
-                cache->snake_profile0[0] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_X];
-                cache->snake_profile0[1] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_Y];
-                cache->snake_profile0[2] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_DIAMOND_RADIUS];
-                cache->snake_profile0[3] =
-                    profile_f32
-                        .values[DB_SNAKE_PROFILE_VAL_TRIANGLE_BOTTOM_WIDTH];
-                cache->snake_profile1[0] =
-                    profile_f32
-                        .values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_TOP_WIDTH];
-                cache->snake_profile1[1] =
-                    profile_f32
-                        .values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_BOTTOM_WIDTH];
-                cache->snake_profile1[2] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_WIDTH];
-                cache->snake_profile1[3] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_HEIGHT];
-                cache->snake_profile2[0] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_X];
-                cache->snake_profile2[1] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_Y];
-                cache->snake_profile2[2] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_COS];
-                cache->snake_profile2[3] =
-                    profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_SIN];
+                db_copy_f32_rgba4(cache->snake_profile0, snake_profile0);
+                db_copy_f32_rgba4(cache->snake_profile1, snake_profile1);
+                db_copy_f32_rgba4(cache->snake_profile2, snake_profile2);
                 cache->snake_triangle_variant = profile_f32.triangle_variant;
             } else {
+                static const float zero_profile[4] = {0.0F, 0.0F, 0.0F, 0.0F};
                 cache->snake_shape_kind = 0U;
-                for (size_t profile_index = 0U; profile_index < 4U;
-                     profile_index++) {
-                    cache->snake_profile0[profile_index] = 0.0F;
-                    cache->snake_profile1[profile_index] = 0.0F;
-                    cache->snake_profile2[profile_index] = 0.0F;
-                }
+                db_copy_f32_rgba4(cache->snake_profile0, zero_profile);
+                db_copy_f32_rgba4(cache->snake_profile1, zero_profile);
+                db_copy_f32_rgba4(cache->snake_profile2, zero_profile);
                 cache->snake_triangle_variant = 0U;
             }
             cache->valid = 1;
@@ -825,9 +811,7 @@ void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
         .y = 0U,
         .width = ctx->grid_cols,
         .height = ctx->grid_rows,
-        .color_r = 0.0,
-        .color_g = 0.0,
-        .color_b = 0.0,
+        .color_rgb = {0.0, 0.0, 0.0},
     };
     if ((plan->prev_count == 0U) && (plan->batch_size == 0U)) {
         return;

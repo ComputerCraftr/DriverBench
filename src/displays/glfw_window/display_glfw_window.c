@@ -585,10 +585,9 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
     db_rgba01_to_u8_rgba4(debug_clear_rgba01, state->debug_clear_rgba);
 
     // Fill the buffer once via shared conversion helper.
-    db_fill_rgba8_byte_pattern(
-        state->debug_clear_buf, chunk_bytes_u32 / DB_CPU_RGBA8_BYTES_PER_PIXEL,
-        state->debug_clear_rgba[0], state->debug_clear_rgba[1],
-        state->debug_clear_rgba[2], state->debug_clear_rgba[3]);
+    db_fill_rgba8_byte_pattern(state->debug_clear_buf,
+                               chunk_bytes_u32 / DB_CPU_RGBA8_BYTES_PER_PIXEL,
+                               state->debug_clear_rgba);
 
     state->debug_clear_ready = 1;
 }

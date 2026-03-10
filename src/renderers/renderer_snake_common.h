@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "../config/benchmark_config.h"
+#include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
 #include "../core/db_numeric.h"
@@ -56,9 +57,7 @@ typedef struct {
     uint32_t row_count;
     uint32_t col_start;
     uint32_t col_count;
-    uint32_t color_r_bits;
-    uint32_t color_g_bits;
-    uint32_t color_b_bits;
+    uint32_t color_bits[3];
 } db_snake_compact_block_t;
 
 typedef struct {
@@ -75,13 +74,12 @@ typedef int (*db_snake_emit_row_segment_cb_t)(uint32_t row, uint32_t col_start,
 
 typedef void (*db_snake_get_color_bits_cb_t)(uint32_t row, uint32_t col,
                                              void *user_data,
-                                             uint32_t *color_r_bits,
-                                             uint32_t *color_g_bits,
-                                             uint32_t *color_b_bits);
+                                             uint32_t color_bits[3]);
 
-typedef int (*db_snake_emit_color_run_cb_t)(
-    uint32_t row, uint32_t col_start, uint32_t col_count, uint32_t color_r_bits,
-    uint32_t color_g_bits, uint32_t color_b_bits, void *user_data);
+typedef int (*db_snake_emit_color_run_cb_t)(uint32_t row, uint32_t col_start,
+                                            uint32_t col_count,
+                                            const uint32_t color_bits[3],
+                                            void *user_data);
 
 typedef struct {
     db_snake_compact_block_t *out_blocks;
@@ -114,9 +112,7 @@ typedef struct {
 
 typedef struct {
     db_snake_region_t region;
-    double target_r;
-    double target_g;
-    double target_b;
+    double target_rgb[3];
     int force_full_fill_on_phase_complete;
     int has_next_phase_flag;
     int next_phase_flag;
@@ -244,32 +240,23 @@ static inline int db_snake_for_each_color_run_in_row_segment(
     }
 
     uint32_t run_col_start = segment_col_start;
-    uint32_t run_r_bits = 0U;
-    uint32_t run_g_bits = 0U;
-    uint32_t run_b_bits = 0U;
-    get_color_bits(row, segment_col_start, get_color_user_data, &run_r_bits,
-                   &run_g_bits, &run_b_bits);
+    uint32_t run_color_bits[3] = {0U, 0U, 0U};
+    get_color_bits(row, segment_col_start, get_color_user_data, run_color_bits);
     for (uint32_t col = segment_col_start + 1U; col < segment_col_end; col++) {
-        uint32_t color_r_bits = 0U;
-        uint32_t color_g_bits = 0U;
-        uint32_t color_b_bits = 0U;
-        get_color_bits(row, col, get_color_user_data, &color_r_bits,
-                       &color_g_bits, &color_b_bits);
-        if ((color_r_bits == run_r_bits) && (color_g_bits == run_g_bits) &&
-            (color_b_bits == run_b_bits)) {
+        uint32_t color_bits[3] = {0U, 0U, 0U};
+        get_color_bits(row, col, get_color_user_data, color_bits);
+        if (db_equal_u32_rgb3(color_bits, run_color_bits) != 0) {
             continue;
         }
-        if (emit_color_run(row, run_col_start, col - run_col_start, run_r_bits,
-                           run_g_bits, run_b_bits, emit_user_data) == 0) {
+        if (emit_color_run(row, run_col_start, col - run_col_start,
+                           run_color_bits, emit_user_data) == 0) {
             return 0;
         }
         run_col_start = col;
-        run_r_bits = color_r_bits;
-        run_g_bits = color_g_bits;
-        run_b_bits = color_b_bits;
+        db_copy_u32_rgb3(run_color_bits, color_bits);
     }
     return emit_color_run(row, run_col_start, segment_col_end - run_col_start,
-                          run_r_bits, run_g_bits, run_b_bits, emit_user_data);
+                          run_color_bits, emit_user_data);
 }
 
 static inline int
@@ -290,8 +277,8 @@ db_snake_append_open_compact_block(db_snake_compact_block_t *out_blocks,
 }
 
 static inline int db_snake_emit_compact_block_color_run(
-    uint32_t row, uint32_t col_start, uint32_t col_count, uint32_t color_r_bits,
-    uint32_t color_g_bits, uint32_t color_b_bits, void *user_data) {
+    uint32_t row, uint32_t col_start, uint32_t col_count,
+    const uint32_t color_bits[3], void *user_data) {
     db_snake_compact_block_collect_ctx_t *ctx =
         (db_snake_compact_block_collect_ctx_t *)user_data;
     const int can_extend_open =
@@ -300,10 +287,8 @@ static inline int db_snake_emit_compact_block_color_run(
         ((ctx->open_block->row_start + ctx->open_block->row_count) == row) &&
         (ctx->open_block->col_start == col_start) &&
         (ctx->open_block->col_count == col_count) &&
-        (ctx->open_block->color_r_bits == color_r_bits) &&
-        (ctx->open_block->color_g_bits == color_g_bits) &&
-        (ctx->open_block->color_b_bits == color_b_bits);
-    if (ctx == NULL) {
+        (db_equal_u32_rgb3(ctx->open_block->color_bits, color_bits) != 0);
+    if ((ctx == NULL) || (color_bits == NULL)) {
         return 0;
     }
     if (can_extend_open != 0) {
@@ -322,9 +307,7 @@ static inline int db_snake_emit_compact_block_color_run(
         .row_count = 1U,
         .col_start = col_start,
         .col_count = col_count,
-        .color_r_bits = color_r_bits,
-        .color_g_bits = color_g_bits,
-        .color_b_bits = color_b_bits,
+        .color_bits = {color_bits[0], color_bits[1], color_bits[2]},
     };
     *ctx->open_block_valid = 1;
     return 1;
@@ -426,12 +409,12 @@ db_snake_region_from_index(uint32_t seed, uint32_t shape_index) {
         db_mix_u32(seed_base ^ DB_SNAKE_REGION_SALT_ORIGIN_X), 0U, max_x);
     region.y = db_u32_range(
         db_mix_u32(seed_base ^ DB_SNAKE_REGION_SALT_ORIGIN_Y), 0U, max_y);
-    region.color_r =
-        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_R));
-    region.color_g =
-        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_G));
-    region.color_b =
-        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_B));
+    const double region_color_rgb[3] = {
+        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_R)),
+        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_G)),
+        db_snake_color_channel(db_mix_u32(seed_base ^ DB_U32_SALT_COLOR_B)),
+    };
+    db_copy_f64_rgb3(region.color_rgb, region_color_rgb);
     return region;
 }
 
@@ -866,9 +849,7 @@ db_snake_plan_next_step(const db_snake_plan_request_t *request) {
             .y = 0U,
             .width = db_snake_grid_cols_effective(),
             .height = db_snake_grid_rows_effective(),
-            .color_r = 0.0,
-            .color_g = 0.0,
-            .color_b = 0.0,
+            .color_rgb = {0.0, 0.0, 0.0},
         };
         return db_snake_plan_next_step_for_region(
             &grid_region, 0U, request->cursor, request->prev_start,
@@ -892,17 +873,22 @@ static inline double db_window_blend_factor(uint32_t window_index,
     return ((double)((span - 1U) - window_index)) / (double)(span - 1U);
 }
 
-static inline void db_grid_target_color_rgb(int phase_flag, double *out_r,
-                                            double *out_g, double *out_b) {
-    if (phase_flag != 0) {
-        *out_r = (double)BENCH_GRID_PHASE0_R;
-        *out_g = (double)BENCH_GRID_PHASE0_G;
-        *out_b = (double)BENCH_GRID_PHASE0_B;
+static inline void db_grid_target_color_rgb3(int phase_flag,
+                                             double out_rgb[3]) {
+    if (out_rgb == NULL) {
         return;
     }
-    *out_r = (double)BENCH_GRID_PHASE1_R;
-    *out_g = (double)BENCH_GRID_PHASE1_G;
-    *out_b = (double)BENCH_GRID_PHASE1_B;
+    static const double phase0_rgb[3] = {(double)BENCH_GRID_PHASE0_R,
+                                         (double)BENCH_GRID_PHASE0_G,
+                                         (double)BENCH_GRID_PHASE0_B};
+    static const double phase1_rgb[3] = {(double)BENCH_GRID_PHASE1_R,
+                                         (double)BENCH_GRID_PHASE1_G,
+                                         (double)BENCH_GRID_PHASE1_B};
+    if (phase_flag != 0) {
+        db_copy_f64_rgb3(out_rgb, phase0_rgb);
+        return;
+    }
+    db_copy_f64_rgb3(out_rgb, phase1_rgb);
 }
 
 static inline db_snake_step_target_t
@@ -918,12 +904,11 @@ db_snake_step_target_from_plan(int is_grid_mode, uint32_t pattern_seed,
             .y = 0U,
             .width = db_snake_grid_cols_effective(),
             .height = db_snake_grid_rows_effective(),
-            .color_r = 0.0,
-            .color_g = 0.0,
-            .color_b = 0.0,
+            .color_rgb = {0.0, 0.0, 0.0},
         };
-        db_grid_target_color_rgb(plan->phase_flag, &result.target_r,
-                                 &result.target_g, &result.target_b);
+        double target_rgb[3] = {0.0, 0.0, 0.0};
+        db_grid_target_color_rgb3(plan->phase_flag, target_rgb);
+        db_copy_f64_rgb3(result.target_rgb, target_rgb);
         result.force_full_fill_on_phase_complete = 1;
         result.has_next_phase_flag = 1;
         result.next_phase_flag = plan->next_phase_flag;
@@ -932,9 +917,7 @@ db_snake_step_target_from_plan(int is_grid_mode, uint32_t pattern_seed,
 
     result.region =
         db_snake_region_from_index(pattern_seed, plan->active_shape_index);
-    result.target_r = result.region.color_r;
-    result.target_g = result.region.color_g;
-    result.target_b = result.region.color_b;
+    db_copy_f64_rgb3(result.target_rgb, result.region.color_rgb);
     result.shape_kind = db_snake_shapes_kind_from_index(
         pattern_seed, plan->active_shape_index, DB_U32_SALT_PALETTE);
     result.has_next_shape_index = 1;
