@@ -190,6 +190,14 @@ db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
 static int db_run_offscreen_glfw_gl1(const db_cli_config_t *cfg) {
     db_cli_config_t glfw_cfg = (cfg != NULL) ? *cfg : (db_cli_config_t){0};
     glfw_cfg.offscreen_enabled = 1;
+#ifdef __linux__
+    if (glfw_cfg.backbuffer_draw_mode_explicit == 0) {
+        // Hidden GLFW offscreen is used as a deterministic harness, not as a
+        // preserved-default-framebuffer presentation path.
+        glfw_cfg.backbuffer_draw_full = 1;
+        db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "full");
+    }
+#endif
     return db_run_glfw_window(DB_API_OPENGL, DB_GL_RENDERER_GL1_5_GLES1_1,
                               &glfw_cfg);
 }

@@ -855,7 +855,10 @@ if(BUILD_TESTING)
   set(DB_DETERMINISM_PIXEL_FINAL_ARGS "--hash pixel --hash-report final")
   set(DB_DETERMINISM_FRAME_LIMIT "--frame-limit 600")
   set(DB_DETERMINISM_SNAKE_ARGS "--bench-speed 1024 --frame-limit 240")
-  set(DB_DETERMINISM_GL1_GOLDEN_HASH_CHECKS
+  set(DB_DETERMINISM_GL1_OFFSCREEN_FULL_GOLDEN_HASH_CHECKS
+    "state_hash_aggregate=0xa84f5f681a12809d,framebuffer_hash_aggregate=0x79eb8f40449b6b6e"
+  )
+  set(DB_DETERMINISM_GL1_OFFSCREEN_DIRTY_GOLDEN_HASH_CHECKS
     "state_hash_aggregate=0xa84f5f681a12809d,framebuffer_hash_aggregate=0xcfdc8a8fbe23ed20"
   )
 
@@ -917,11 +920,19 @@ if(BUILD_TESTING)
       snake_shapes
       0x90f208d3f4e2b13f
     )
-    db_add_determinism_test(
-      determinism_offscreen_gl1_5
-      "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS}"
-      "${DB_DETERMINISM_GL1_GOLDEN_HASH_CHECKS}"
-    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      db_add_determinism_test(
+        determinism_offscreen_gl1_5
+        "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS} --backbuffer-draw-mode full"
+        "${DB_DETERMINISM_GL1_OFFSCREEN_FULL_GOLDEN_HASH_CHECKS}"
+      )
+    else()
+      db_add_determinism_test(
+        determinism_offscreen_gl1_5
+        "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS}"
+        "${DB_DETERMINISM_GL1_OFFSCREEN_DIRTY_GOLDEN_HASH_CHECKS}"
+      )
+    endif()
     db_add_determinism_test(
       determinism_offscreen_gl3_3_fbo
       "${DB_DETERMINISM_GL3_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS}"
@@ -931,7 +942,7 @@ if(BUILD_TESTING)
       db_add_determinism_test(
         determinism_offscreen_gl1_5_dirty_macos
         "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS} --backbuffer-draw-mode dirty"
-        "${DB_DETERMINISM_GL1_GOLDEN_HASH_CHECKS}"
+        "${DB_DETERMINISM_GL1_OFFSCREEN_DIRTY_GOLDEN_HASH_CHECKS}"
       )
     endif()
   endif()

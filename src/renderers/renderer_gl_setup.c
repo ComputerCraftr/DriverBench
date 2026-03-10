@@ -202,6 +202,7 @@ static int g_client_state_texcoord_array_enabled = -1;
 static int g_client_state_vertex_array_enabled = -1;
 static int g_cull_face_enabled_state = -1;
 static int g_depth_test_enabled_state = -1;
+static int g_dither_enabled_state = -1;
 static unsigned int g_bound_draw_framebuffer = 0U;
 static int g_bound_draw_framebuffer_valid = 0;
 static unsigned int g_bound_read_framebuffer = 0U;
@@ -529,6 +530,7 @@ void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver) {
     g_client_state_vertex_array_enabled = -1;
     g_cull_face_enabled_state = -1;
     g_depth_test_enabled_state = -1;
+    g_dither_enabled_state = -1;
     g_bound_draw_framebuffer = 0U;
     g_bound_draw_framebuffer_valid = 0;
     g_bound_read_framebuffer = 0U;
@@ -1110,6 +1112,21 @@ void db_gl_set_depth_test_enabled(int enabled) {
         g_upload_proc_table.disable(GL_DEPTH_TEST);
     }
     g_depth_test_enabled_state = normalized_enabled;
+}
+
+void db_gl_set_dither_enabled(int enabled) {
+    db_gl_load_upload_proc_table();
+    const int normalized_enabled = (enabled != 0) ? 1 : 0;
+    if (g_dither_enabled_state == normalized_enabled) {
+        return;
+    }
+    if ((normalized_enabled != 0) && (g_upload_proc_table.enable != NULL)) {
+        g_upload_proc_table.enable(GL_DITHER);
+    }
+    if ((normalized_enabled == 0) && (g_upload_proc_table.disable != NULL)) {
+        g_upload_proc_table.disable(GL_DITHER);
+    }
+    g_dither_enabled_state = normalized_enabled;
 }
 
 void db_gl_set_pack_alignment_1(void) {

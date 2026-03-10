@@ -220,6 +220,7 @@ void db_gl_clear_color_buffer(void);
 void db_gl_set_blend_enabled(int enabled);
 void db_gl_set_cull_face_enabled(int enabled);
 void db_gl_set_depth_test_enabled(int enabled);
+void db_gl_set_dither_enabled(int enabled);
 void db_gl_set_pack_alignment_1(void);
 void db_gl_read_pixels_rgba8(int x_px, int y_px, int width, int height,
                              void *pixels);

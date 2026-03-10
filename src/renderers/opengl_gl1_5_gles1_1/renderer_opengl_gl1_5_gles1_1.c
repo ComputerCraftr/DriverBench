@@ -1119,6 +1119,7 @@ static void db_gl1_draw_bands_compact(uint32_t cols, uint32_t band_count,
 void db_renderer_opengl_gl1_5_gles1_1_init(void) {
     db_gl_set_depth_test_enabled(0);
     db_gl_set_cull_face_enabled(0);
+    db_gl_set_dither_enabled(0);
 
     g_state.is_es_context = db_gl_is_es_context(db_gl_get_version_string());
     g_state.vertex.vertex_stride = (g_state.is_es_context != 0)
