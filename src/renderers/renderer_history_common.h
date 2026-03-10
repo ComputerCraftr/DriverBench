@@ -310,42 +310,14 @@ static inline void db_history_apply_snake_step_to_runtime(
 }
 
 static inline void
-db_history_seed_background_rgb_d(const db_benchmark_runtime_init_t *runtime,
-                                 double *out_r, double *out_g, double *out_b) {
-    double clear_r = 0.0;
-    double clear_g = 0.0;
-    double clear_b = 0.0;
-    db_benchmark_seed_background_color_rgb(runtime, &clear_r, &clear_g,
-                                           &clear_b);
-    if (out_r != NULL) {
-        *out_r = clear_r;
-    }
-    if (out_g != NULL) {
-        *out_g = clear_g;
-    }
-    if (out_b != NULL) {
-        *out_b = clear_b;
-    }
-}
-
-static inline void
-db_history_seed_background_rgb_f32(const db_benchmark_runtime_init_t *runtime,
-                                   float *out_r, float *out_g, float *out_b) {
-    double clear_r = 0.0;
-    double clear_g = 0.0;
-    double clear_b = 0.0;
-    db_history_seed_background_rgb_d(runtime, &clear_r, &clear_g, &clear_b);
-    db_rgb_f64_to_f32_triplet(clear_r, clear_g, clear_b, out_r, out_g, out_b);
-}
-
-static inline void
 db_history_seed_background_rgba_f32(const db_benchmark_runtime_init_t *runtime,
                                     float out_rgba[4]) {
     if (out_rgba == NULL) {
         return;
     }
-    db_history_seed_background_rgb_f32(runtime, &out_rgba[0], &out_rgba[1],
-                                       &out_rgba[2]);
+    double clear_rgb[3] = {0.0, 0.0, 0.0};
+    db_benchmark_seed_background_color_rgb3(runtime, clear_rgb);
+    db_rgb_f64_to_f32_rgb3(clear_rgb, out_rgba);
     out_rgba[3] = db_double_to_f32(1.0);
 }
 
@@ -367,12 +339,9 @@ db_history_seed_background_rgba8(const db_benchmark_runtime_init_t *runtime,
     if (out_rgba == NULL) {
         return;
     }
-    double clear_r = 0.0;
-    double clear_g = 0.0;
-    double clear_b = 0.0;
-    db_history_seed_background_rgb_d(runtime, &clear_r, &clear_g, &clear_b);
-    db_rgba01_to_u8_quad(clear_r, clear_g, clear_b, 1.0, &out_rgba[0],
-                         &out_rgba[1], &out_rgba[2], &out_rgba[3]);
+    double clear_rgba[4] = {0.0, 0.0, 0.0, 1.0};
+    db_benchmark_seed_background_color_rgb3(runtime, clear_rgba);
+    db_rgba01_to_u8_rgba4(clear_rgba, out_rgba);
 }
 
 static inline size_t

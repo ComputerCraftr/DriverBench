@@ -14,12 +14,6 @@
 #define DB_CONVERT_F16_LUT_SIZE (UINT16_MAX + 1U)
 #define DB_CONVERT_RGBA16F_PIXEL_STRIDE 4U
 #define DB_CONVERT_RGBA8_PIXEL_STRIDE 4U
-#define DB_CONVERT_RGBA8_RED_MASK 0x000000FFU
-#define DB_CONVERT_RGBA8_GREEN_MASK 0x0000FF00U
-#define DB_CONVERT_RGBA8_BLUE_MASK 0x00FF0000U
-#define DB_CONVERT_RGBA8_BLUE_SHIFT 16U
-#define DB_CONVERT_XRGB_RED_SHIFT 16U
-
 enum {
     DB_PIXEL_ILP_LANES = 8U,
     DB_PIXEL_ILP_INDEX_0 = 0U,
@@ -80,6 +74,14 @@ db_pack_rgba8888_from_rgb16f3_lut(const uint16_t *rgb16f3, uint32_t alpha_u8) {
     const uint32_t blue_u8 =
         db_f16_to_u8_lut_value(rgb16f3[DB_CONVERT_CHANNEL_B]);
     return db_pack_rgba8888_from_rgb_u8(red_u8, green_u8, blue_u8, alpha_u8);
+}
+
+uint32_t db_pack_xrgb8888_from_rgb16f3(const uint16_t *rgb16f3) {
+    if (rgb16f3 == NULL) {
+        return 0U;
+    }
+    db_f16_to_u8_lut_init_once();
+    return db_pack_xrgb8888_from_rgb16f3_lut(rgb16f3);
 }
 
 // Low-level copy/move primitives.
@@ -179,6 +181,41 @@ void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count, uint16_t red,
     }
 }
 
+uint32_t db_unpack_rgba8888_channel_u8(uint32_t packed_rgba,
+                                       uint32_t channel_shift) {
+    return (packed_rgba >> channel_shift) & UINT8_MAX;
+}
+
+void db_unpack_rgba8888_rgb_u8(uint32_t packed_rgba, uint32_t rgb_u8_out[3]) {
+    if (rgb_u8_out == NULL) {
+        return;
+    }
+    rgb_u8_out[0] =
+        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_BLUE);
+    rgb_u8_out[1] =
+        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_GREEN);
+    rgb_u8_out[2] =
+        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_RED);
+}
+
+void db_unpack_rgba8888_rgb01(uint32_t packed_rgba, double rgb01_out[3]) {
+    if (rgb01_out == NULL) {
+        return;
+    }
+    rgb01_out[0] = db_u8_to_unit_f64(
+        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_BLUE));
+    rgb01_out[1] = db_u8_to_unit_f64(
+        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_GREEN));
+    rgb01_out[2] = db_u8_to_unit_f64(
+        db_unpack_rgba8888_channel_u8(packed_rgba, DB_PACKED_RGB_SHIFT_RED));
+}
+
+uint32_t db_pack_xrgb8888_from_rgba8888(uint32_t packed_rgba) {
+    uint32_t rgb_u8[3] = {0U, 0U, 0U};
+    db_unpack_rgba8888_rgb_u8(packed_rgba, rgb_u8);
+    return db_pack_xrgb8888_from_rgb_u8(rgb_u8[0], rgb_u8[1], rgb_u8[2]);
+}
+
 // Public block/subrect pixel format conversion entry points.
 void db_convert_rgba8_to_xrgb8888_block(uint32_t *dst, size_t dst_stride_pixels,
                                         const uint32_t *src,
@@ -197,12 +234,7 @@ void db_convert_rgba8_to_xrgb8888_block(uint32_t *dst, size_t dst_stride_pixels,
         uint32_t *dst_row =
             dst + (((size_t)(row_start + row) * dst_stride_pixels) + col_start);
         for (uint32_t col = 0U; col < col_count; col++) {
-            const uint32_t rgba = src_row[col];
-            const uint32_t red = (rgba & DB_CONVERT_RGBA8_RED_MASK);
-            const uint32_t green = (rgba & DB_CONVERT_RGBA8_GREEN_MASK);
-            const uint32_t blue = (rgba & DB_CONVERT_RGBA8_BLUE_MASK);
-            dst_row[col] = (red << DB_CONVERT_XRGB_RED_SHIFT) | green |
-                           (blue >> DB_CONVERT_RGBA8_BLUE_SHIFT);
+            dst_row[col] = db_pack_xrgb8888_from_rgba8888(src_row[col]);
         }
     }
 }

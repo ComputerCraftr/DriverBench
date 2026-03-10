@@ -191,10 +191,9 @@ void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
             cache->snake_region_width = region.width;
             cache->snake_region_x = region.x;
             cache->snake_region_y = region.y;
-            db_rgb_f64_to_f32_triplet(
-                region.color_r, region.color_g, region.color_b,
-                &cache->snake_region_color[0], &cache->snake_region_color[1],
-                &cache->snake_region_color[2]);
+            const double region_rgb[3] = {region.color_r, region.color_g,
+                                          region.color_b};
+            db_rgb_f64_to_f32_rgb3(region_rgb, cache->snake_region_color);
             cache->snake_region_color[3] = 1.0F;
             if (is_shapes_mode != 0) {
                 const db_snake_shape_profile_t profile =

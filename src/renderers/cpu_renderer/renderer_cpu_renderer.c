@@ -81,17 +81,18 @@ static void db_cpu_bo_write_rgb_index(db_cpu_bo_t *bo, size_t idx, double red,
 }
 
 static void db_cpu_bo_read_rgb_index(const db_cpu_bo_t *bo, size_t idx,
-                                     double *out_red, double *out_green,
-                                     double *out_blue) {
-    if (bo->is_hdr_float_bo != 0) {
-        const size_t base = idx * DB_FLOAT_CHANNELS_PER_PIXEL;
-        *out_red = db_f16_to_double(bo->pixels_rgba16f[base + 0U]);
-        *out_green = db_f16_to_double(bo->pixels_rgba16f[base + 1U]);
-        *out_blue = db_f16_to_double(bo->pixels_rgba16f[base + 2U]);
+                                     double out_rgb[3]) {
+    if (out_rgb == NULL) {
         return;
     }
-    const uint32_t rgba = bo->pixels_rgba8[idx];
-    db_unpack_rgba8888_rgb01(rgba, out_red, out_green, out_blue);
+    if (bo->is_hdr_float_bo != 0) {
+        const size_t base = idx * DB_FLOAT_CHANNELS_PER_PIXEL;
+        out_rgb[0] = db_f16_to_double(bo->pixels_rgba16f[base + 0U]);
+        out_rgb[1] = db_f16_to_double(bo->pixels_rgba16f[base + 1U]);
+        out_rgb[2] = db_f16_to_double(bo->pixels_rgba16f[base + 2U]);
+        return;
+    }
+    db_unpack_rgba8888_rgb01(bo->pixels_rgba8[idx], out_rgb);
 }
 
 static void db_cpu_bo_fill_solid_rgb(db_cpu_bo_t *bo, double red, double green,
@@ -176,14 +177,8 @@ db_cpu_snapshot_prior_if_valid(const db_cpu_bo_t *bo, uint32_t update_index,
         return;
     }
     const size_t idx = (size_t)active_tile_indices[update_index];
-    double pr = 0.0;
-    double pg = 0.0;
-    double pb = 0.0;
-    db_cpu_bo_read_rgb_index(bo, idx, &pr, &pg, &pb);
     const size_t base = (size_t)update_index * 3U;
-    prior_rgb[base + 0U] = pr;
-    prior_rgb[base + 1U] = pg;
-    prior_rgb[base + 2U] = pb;
+    db_cpu_bo_read_rgb_index(bo, idx, &prior_rgb[base]);
 }
 
 static inline void db_cpu_blend_write_if_valid(
@@ -196,16 +191,11 @@ static inline void db_cpu_blend_write_if_valid(
     }
     const size_t idx = (size_t)active_tile_indices[update_index];
     const size_t prior_base = (size_t)update_index * 3U;
-    const double prior_red = prior_rgb[prior_base + 0U];
-    const double prior_green = prior_rgb[prior_base + 1U];
-    const double prior_blue = prior_rgb[prior_base + 2U];
     const double blend = db_window_blend_factor(update_index, batch_size);
-    double out_red = 0.0;
-    double out_green = 0.0;
-    double out_blue = 0.0;
-    db_blend_rgb(prior_red, prior_green, prior_blue, target_red, target_green,
-                 target_blue, blend, &out_red, &out_green, &out_blue);
-    db_cpu_bo_write_rgb_index(bo, idx, out_red, out_green, out_blue);
+    const double target_rgb[3] = {target_red, target_green, target_blue};
+    double out_rgb[3] = {0.0, 0.0, 0.0};
+    db_blend_rgb3(&prior_rgb[prior_base], target_rgb, blend, out_rgb);
+    db_cpu_bo_write_rgb_index(bo, idx, out_rgb[0], out_rgb[1], out_rgb[2]);
 }
 
 static inline void
@@ -494,12 +484,9 @@ void db_renderer_cpu_renderer_init(void) {
             BACKEND_NAME, "pixels_rgba8", (size_t)pixel_count, sizeof(uint32_t),
             DB_CACHELINE_ALIGNMENT_BYTES);
     }
-    double seed_r = 0.0;
-    double seed_g = 0.0;
-    double seed_b = 0.0;
-    db_benchmark_seed_background_color_rgb(&init_state, &seed_r, &seed_g,
-                                           &seed_b);
-    db_cpu_bo_fill_solid_rgb(&bo, seed_r, seed_g, seed_b);
+    double seed_rgb[3] = {0.0, 0.0, 0.0};
+    db_benchmark_seed_background_color_rgb3(&init_state, seed_rgb);
+    db_cpu_bo_fill_solid_rgb(&bo, seed_rgb[0], seed_rgb[1], seed_rgb[2]);
     db_snake_shape_row_bounds_t *snake_row_bounds = NULL;
     size_t snake_row_bounds_capacity = 0U;
     db_damage_block_t *snake_damage_blocks = NULL;

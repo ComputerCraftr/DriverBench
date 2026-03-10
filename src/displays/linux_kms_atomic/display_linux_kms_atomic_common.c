@@ -968,8 +968,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
 
 static struct fb *db_cpu_create_fb_from_framebuffer(
     struct gbm_device *gbm, int fd, const uint32_t *pixels_rgba8,
-    const uint16_t *pixels_rgba16f, int use_hdr_float_bo, uint32_t width,
-    uint32_t height) {
+    const uint16_t *pixels_rgba16f, uint32_t src_width, uint32_t src_height,
+    int use_hdr_float_bo, uint32_t width, uint32_t height) {
     uint32_t bo_flags = GBM_BO_USE_SCANOUT;
 #ifdef GBM_BO_USE_WRITE
     bo_flags |= GBM_BO_USE_WRITE;
@@ -1000,18 +1000,54 @@ static struct fb *db_cpu_create_fb_from_framebuffer(
             gbm_bo_destroy(bo);
             diex("cpu hdr framebuffer is NULL");
         }
-        db_convert_rgba16f_to_xrgb8888_block(
-            (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba16f,
-            (size_t)width, 0U, height, 0U, width);
+        if ((src_width == width) && (src_height == height)) {
+            db_convert_rgba16f_to_xrgb8888_block(
+                (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba16f,
+                (size_t)src_width, 0U, height, 0U, width);
+        } else {
+            for (uint32_t row = 0U; row < height; row++) {
+                const uint32_t src_row =
+                    ((uint64_t)row * (uint64_t)src_height) / (uint64_t)height;
+                uint32_t *dst_row =
+                    ((uint32_t *)map_ptr) + ((size_t)row * dst_stride_pixels);
+                for (uint32_t col = 0U; col < width; col++) {
+                    const uint32_t src_col =
+                        ((uint64_t)col * (uint64_t)src_width) / (uint64_t)width;
+                    const size_t src_base =
+                        (((size_t)src_row * (size_t)src_width) +
+                         (size_t)src_col) *
+                        4U;
+                    dst_row[col] = db_pack_xrgb8888_from_rgb16f3(
+                        &pixels_rgba16f[src_base]);
+                }
+            }
+        }
     } else {
         if (pixels_rgba8 == NULL) {
             gbm_bo_unmap(bo, map_data);
             gbm_bo_destroy(bo);
             diex("cpu rgba8 framebuffer is NULL");
         }
-        db_convert_rgba8_to_xrgb8888_block(
-            (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba8, (size_t)width,
-            0U, height, 0U, width);
+        if ((src_width == width) && (src_height == height)) {
+            db_convert_rgba8_to_xrgb8888_block(
+                (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba8,
+                (size_t)src_width, 0U, height, 0U, width);
+        } else {
+            for (uint32_t row = 0U; row < height; row++) {
+                const uint32_t src_row =
+                    ((uint64_t)row * (uint64_t)src_height) / (uint64_t)height;
+                uint32_t *dst_row =
+                    ((uint32_t *)map_ptr) + ((size_t)row * dst_stride_pixels);
+                for (uint32_t col = 0U; col < width; col++) {
+                    const uint32_t src_col =
+                        ((uint64_t)col * (uint64_t)src_width) / (uint64_t)width;
+                    const size_t src_index =
+                        ((size_t)src_row * (size_t)src_width) + (size_t)src_col;
+                    const uint32_t rgba = pixels_rgba8[src_index];
+                    dst_row[col] = db_pack_xrgb8888_from_rgba8888(rgba);
+                }
+            }
+        }
     }
     gbm_bo_unmap(bo, map_data);
 
@@ -1026,10 +1062,14 @@ static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
     const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
     const uint32_t *pixels_rgba8 = NULL;
     const uint16_t *pixels_rgba16f = NULL;
+    uint32_t src_width = 0U;
+    uint32_t src_height = 0U;
     if (use_hdr_float_bo != 0) {
-        pixels_rgba16f = db_renderer_cpu_renderer_pixels_rgba16f(NULL, NULL);
+        pixels_rgba16f =
+            db_renderer_cpu_renderer_pixels_rgba16f(&src_width, &src_height);
     } else {
-        pixels_rgba8 = db_renderer_cpu_renderer_pixels_rgba8(NULL, NULL);
+        pixels_rgba8 =
+            db_renderer_cpu_renderer_pixels_rgba8(&src_width, &src_height);
     }
     if (((use_hdr_float_bo != 0) && (pixels_rgba16f == NULL)) ||
         ((use_hdr_float_bo == 0) && (pixels_rgba8 == NULL))) {
@@ -1037,7 +1077,8 @@ static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
     }
     return db_cpu_create_fb_from_framebuffer(
         producer->gbm, producer->kms_fd, pixels_rgba8, pixels_rgba16f,
-        use_hdr_float_bo, producer->width, producer->height);
+        src_width, src_height, use_hdr_float_bo, producer->width,
+        producer->height);
 }
 
 int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,

@@ -576,11 +576,13 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
     state->debug_clear_buf_bytes = chunk_bytes;
 
     // Cache clear color bytes.
-    db_rgba01_to_u8_quad(
-        BENCH_CLEAR_COLOR_R, BENCH_CLEAR_COLOR_G, BENCH_CLEAR_COLOR_B,
-        BENCH_CLEAR_COLOR_A, &state->debug_clear_rgba[0],
-        &state->debug_clear_rgba[1], &state->debug_clear_rgba[2],
-        &state->debug_clear_rgba[3]);
+    const double debug_clear_rgba01[4] = {
+        BENCH_CLEAR_COLOR_R,
+        BENCH_CLEAR_COLOR_G,
+        BENCH_CLEAR_COLOR_B,
+        BENCH_CLEAR_COLOR_A,
+    };
+    db_rgba01_to_u8_rgba4(debug_clear_rgba01, state->debug_clear_rgba);
 
     // Fill the buffer once via shared conversion helper.
     db_fill_rgba8_byte_pattern(

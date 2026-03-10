@@ -784,17 +784,17 @@ void db_update_grid_vertices_for_bands_rgb_stride(
         double color_b_value = 0.0;
         db_band_color_rgb(band, band_count, frame_index, &color_r_value,
                           &color_g_value, &color_b_value);
-        float color_r = 0.0F;
-        float color_g = 0.0F;
-        float color_b = 0.0F;
-        db_rgb_f64_to_f32_triplet(color_r_value, color_g_value, color_b_value,
-                                  &color_r, &color_g, &color_b);
+        const double color_rgb[3] = {color_r_value, color_g_value,
+                                     color_b_value};
+        float color_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
+        db_rgb_f64_to_f32_rgb3(color_rgb, color_rgb_f32);
 
         for (uint32_t row = 0U; row < rows; row++) {
             const uint32_t first_tile = (row * cols) + col_start;
             db_set_rect_tile_range_rgb(verts, first_tile, col_end - col_start,
                                        stride_floats, color_offset_floats,
-                                       color_r, color_g, color_b);
+                                       color_rgb_f32[0], color_rgb_f32[1],
+                                       color_rgb_f32[2]);
         }
     }
 }

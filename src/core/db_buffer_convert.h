@@ -14,6 +14,12 @@ void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count, uint8_t red,
                                 uint8_t green, uint8_t blue, uint8_t alpha);
 void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count, uint16_t red,
                             uint16_t green, uint16_t blue, uint16_t alpha);
+uint32_t db_unpack_rgba8888_channel_u8(uint32_t packed_rgba,
+                                       uint32_t channel_shift);
+void db_unpack_rgba8888_rgb_u8(uint32_t packed_rgba, uint32_t rgb_u8_out[3]);
+void db_unpack_rgba8888_rgb01(uint32_t packed_rgba, double rgb01_out[3]);
+uint32_t db_pack_xrgb8888_from_rgba8888(uint32_t packed_rgba);
+uint32_t db_pack_xrgb8888_from_rgb16f3(const uint16_t *rgb16f3);
 void db_convert_rgba8_to_xrgb8888_block(uint32_t *dst, size_t dst_stride_pixels,
                                         const uint32_t *src,
                                         size_t src_stride_pixels,

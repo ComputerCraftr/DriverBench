@@ -111,14 +111,26 @@ static inline double db_u8_to_unit_f64(uint32_t value_u8) {
 // - Triplet helpers centralize RGB narrowing so call sites do not do ad-hoc
 //   per-channel casts/conversions in hot paths.
 //
-// Canonicalization contract for f16 conversions:
-// - Zero is canonicalized to +0 in both directions.
-// - NaN is canonicalized to +qNaN in both directions.
-// - Sign is preserved only for finite non-zero values and infinities.
+// Canonicalization contract for narrowing/conversion helpers:
+// - f64 -> f32 canonicalizes zero to +0 and NaN to +qNaN.
+// - f64 in [0, 1] -> u8 treats NaN as 0 before clamp + round-half-up.
+// - f64 <-> f16 canonicalizes zero to +0 and NaN to +qNaN in both
+//   directions.
+// - Sign is preserved only for finite non-zero values and infinities where the
+//   destination format can represent sign.
 //
 // Rationale: these rules remove representation-only variation (-0, signed NaN)
-// from deterministic state/pixel processing while preserving meaningful sign.
-static inline float db_double_to_f32(double value) { return (float)value; }
+// from deterministic state/pixel processing while preserving meaningful sign
+// for finite non-zero values and infinities.
+static inline float db_double_to_f32(double value) {
+    if (isnan(value) != 0) {
+        return nanf("");
+    }
+    if (value == 0.0) {
+        return 0.0F;
+    }
+    return (float)value;
+}
 
 static inline float db_u32_to_f32(uint32_t value) {
     return db_double_to_f32((double)value);
@@ -141,7 +153,7 @@ static inline uint32_t db_f32_to_bits_u32(float value) {
 
 static inline uint8_t db_double01_to_u8_clamped(double value01) {
     double clamped = value01;
-    if (clamped < 0.0) {
+    if (isnan(clamped) || (clamped < 0.0)) {
         clamped = 0.0;
     } else if (clamped > 1.0) {
         clamped = 1.0;
@@ -153,48 +165,34 @@ static inline uint8_t db_double01_to_u8_clamped(double value01) {
     return (uint8_t)scaled;
 }
 
-static inline void db_rgb01_to_u8_triplet(double red, double green, double blue,
-                                          uint8_t *red_u8_out,
-                                          uint8_t *green_u8_out,
-                                          uint8_t *blue_u8_out) {
-    if (red_u8_out != NULL) {
-        *red_u8_out = db_double01_to_u8_clamped(red);
+static inline void db_rgba01_to_u8_rgba4(const double rgba01[4],
+                                         uint8_t rgba_u8_out[4]) {
+    if ((rgba01 == NULL) || (rgba_u8_out == NULL)) {
+        return;
     }
-    if (green_u8_out != NULL) {
-        *green_u8_out = db_double01_to_u8_clamped(green);
-    }
-    if (blue_u8_out != NULL) {
-        *blue_u8_out = db_double01_to_u8_clamped(blue);
-    }
+    rgba_u8_out[0] = db_double01_to_u8_clamped(rgba01[0]);
+    rgba_u8_out[1] = db_double01_to_u8_clamped(rgba01[1]);
+    rgba_u8_out[2] = db_double01_to_u8_clamped(rgba01[2]);
+    rgba_u8_out[3] = db_double01_to_u8_clamped(rgba01[3]);
 }
 
-static inline void db_rgba01_to_u8_quad(double red, double green, double blue,
-                                        double alpha, uint8_t *red_u8_out,
-                                        uint8_t *green_u8_out,
-                                        uint8_t *blue_u8_out,
-                                        uint8_t *alpha_u8_out) {
-    db_rgb01_to_u8_triplet(red, green, blue, red_u8_out, green_u8_out,
-                           blue_u8_out);
-    if (alpha_u8_out != NULL) {
-        *alpha_u8_out = db_double01_to_u8_clamped(alpha);
+static inline void db_rgb_f64_to_f32_rgb3(const double rgb[3],
+                                          float rgb_out[3]) {
+    if ((rgb == NULL) || (rgb_out == NULL)) {
+        return;
     }
+    rgb_out[0] = db_double_to_f32(rgb[0]);
+    rgb_out[1] = db_double_to_f32(rgb[1]);
+    rgb_out[2] = db_double_to_f32(rgb[2]);
 }
 
-static inline void db_rgb_f64_to_f32_triplet(double red, double green,
-                                             double blue, float *red_out,
-                                             float *green_out,
-                                             float *blue_out) {
-    // Intentional immediate narrowing at the API boundary: internal math stays
-    // f64; output buffers/uniform payloads use f32.
-    if (red_out != NULL) {
-        *red_out = db_double_to_f32(red);
+static inline void db_copy_f32_rgb3(float dst[3], const float src[3]) {
+    if ((dst == NULL) || (src == NULL)) {
+        return;
     }
-    if (green_out != NULL) {
-        *green_out = db_double_to_f32(green);
-    }
-    if (blue_out != NULL) {
-        *blue_out = db_double_to_f32(blue);
-    }
+    dst[0] = src[0];
+    dst[1] = src[1];
+    dst[2] = src[2];
 }
 
 // Deterministic pack/unpack helpers built on narrowing policy functions.
@@ -208,10 +206,9 @@ static inline uint32_t db_pack_xrgb8888_from_rgb_u8(uint32_t red_u8,
 
 static inline uint32_t db_pack_xrgb8888_from_rgb01(double red, double green,
                                                    double blue) {
-    uint8_t red_u8 = 0U;
-    uint8_t green_u8 = 0U;
-    uint8_t blue_u8 = 0U;
-    db_rgb01_to_u8_triplet(red, green, blue, &red_u8, &green_u8, &blue_u8);
+    const uint8_t red_u8 = db_double01_to_u8_clamped(red);
+    const uint8_t green_u8 = db_double01_to_u8_clamped(green);
+    const uint8_t blue_u8 = db_double01_to_u8_clamped(blue);
     return db_pack_xrgb8888_from_rgb_u8(red_u8, green_u8, blue_u8);
 }
 
@@ -228,32 +225,10 @@ static inline uint32_t db_pack_rgba8888_from_rgb_u8(uint32_t red_u8,
 static inline uint32_t db_pack_rgba8888_from_rgb01(double red, double green,
                                                    double blue,
                                                    uint32_t alpha_u8) {
-    uint8_t red_u8 = 0U;
-    uint8_t green_u8 = 0U;
-    uint8_t blue_u8 = 0U;
-    db_rgb01_to_u8_triplet(red, green, blue, &red_u8, &green_u8, &blue_u8);
+    const uint8_t red_u8 = db_double01_to_u8_clamped(red);
+    const uint8_t green_u8 = db_double01_to_u8_clamped(green);
+    const uint8_t blue_u8 = db_double01_to_u8_clamped(blue);
     return db_pack_rgba8888_from_rgb_u8(red_u8, green_u8, blue_u8, alpha_u8);
-}
-
-static inline uint32_t db_unpack_rgba8888_channel_u8(uint32_t packed_rgba,
-                                                     uint32_t channel_shift) {
-    return (packed_rgba >> channel_shift) & UINT8_MAX;
-}
-
-static inline void db_unpack_rgba8888_rgb01(uint32_t packed_rgba, double *red,
-                                            double *green, double *blue) {
-    if (red != NULL) {
-        *red = db_u8_to_unit_f64(db_unpack_rgba8888_channel_u8(
-            packed_rgba, DB_PACKED_RGB_SHIFT_BLUE));
-    }
-    if (green != NULL) {
-        *green = db_u8_to_unit_f64(db_unpack_rgba8888_channel_u8(
-            packed_rgba, DB_PACKED_RGB_SHIFT_GREEN));
-    }
-    if (blue != NULL) {
-        *blue = db_u8_to_unit_f64(db_unpack_rgba8888_channel_u8(
-            packed_rgba, DB_PACKED_RGB_SHIFT_RED));
-    }
 }
 
 static inline uint32_t db_round_positive_to_u32_ties_even(double value) {
@@ -332,7 +307,7 @@ static inline double db_f16_to_double(uint16_t value) {
         if (mant == 0U) {
             return (sign != 0U) ? -INFINITY : INFINITY;
         }
-        return NAN;
+        return nan("");
     }
 
     if (exp == 0U) {
@@ -351,25 +326,27 @@ static inline double db_f16_to_double(uint16_t value) {
     return (sign != 0U) ? -normal : normal;
 }
 
-static inline void db_blend_rgb(double prior_r, double prior_g, double prior_b,
-                                double target_r, double target_g,
-                                double target_b, double blend_factor,
-                                double *out_r, double *out_g, double *out_b) {
+static inline void db_blend_rgb3(const double prior_rgb[3],
+                                 const double target_rgb[3],
+                                 double blend_factor, double out_rgb[3]) {
+    if ((prior_rgb == NULL) || (target_rgb == NULL) || (out_rgb == NULL)) {
+        return;
+    }
     if (blend_factor <= 0.0) {
-        *out_r = prior_r;
-        *out_g = prior_g;
-        *out_b = prior_b;
+        out_rgb[0] = prior_rgb[0];
+        out_rgb[1] = prior_rgb[1];
+        out_rgb[2] = prior_rgb[2];
         return;
     }
     if (blend_factor >= 1.0) {
-        *out_r = target_r;
-        *out_g = target_g;
-        *out_b = target_b;
+        out_rgb[0] = target_rgb[0];
+        out_rgb[1] = target_rgb[1];
+        out_rgb[2] = target_rgb[2];
         return;
     }
-    *out_r = prior_r + ((target_r - prior_r) * blend_factor);
-    *out_g = prior_g + ((target_g - prior_g) * blend_factor);
-    *out_b = prior_b + ((target_b - prior_b) * blend_factor);
+    out_rgb[0] = prior_rgb[0] + ((target_rgb[0] - prior_rgb[0]) * blend_factor);
+    out_rgb[1] = prior_rgb[1] + ((target_rgb[1] - prior_rgb[1]) * blend_factor);
+    out_rgb[2] = prior_rgb[2] + ((target_rgb[2] - prior_rgb[2]) * blend_factor);
 }
 
 #endif

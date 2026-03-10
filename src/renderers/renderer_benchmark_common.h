@@ -196,10 +196,9 @@ static inline uint32_t db_gradient_window_rows_effective(void) {
     return rows;
 }
 
-static inline void db_benchmark_seed_background_color_rgb(
-    const db_benchmark_runtime_init_t *runtime, double *out_r, double *out_g,
-    double *out_b) {
-    if ((out_r == NULL) || (out_g == NULL) || (out_b == NULL)) {
+static inline void db_benchmark_seed_background_color_rgb3(
+    const db_benchmark_runtime_init_t *runtime, double out_rgb[3]) {
+    if (out_rgb == NULL) {
         return;
     }
 
@@ -207,21 +206,21 @@ static inline void db_benchmark_seed_background_color_rgb(
         // Snake grid alternates between two stable full-grid phases. Seed to
         // the current base phase so the first dirty update composes correctly.
         if (runtime->snake.grid_phase_flag == 0) {
-            *out_r = BENCH_GRID_PHASE0_R;
-            *out_g = BENCH_GRID_PHASE0_G;
-            *out_b = BENCH_GRID_PHASE0_B;
+            out_rgb[0] = BENCH_GRID_PHASE0_R;
+            out_rgb[1] = BENCH_GRID_PHASE0_G;
+            out_rgb[2] = BENCH_GRID_PHASE0_B;
         } else {
-            *out_r = BENCH_GRID_PHASE1_R;
-            *out_g = BENCH_GRID_PHASE1_G;
-            *out_b = BENCH_GRID_PHASE1_B;
+            out_rgb[0] = BENCH_GRID_PHASE1_R;
+            out_rgb[1] = BENCH_GRID_PHASE1_G;
+            out_rgb[2] = BENCH_GRID_PHASE1_B;
         }
         return;
     }
 
     // Keep non-snake seed behavior stable.
-    *out_r = BENCH_GRID_PHASE0_R;
-    *out_g = BENCH_GRID_PHASE0_G;
-    *out_b = BENCH_GRID_PHASE0_B;
+    out_rgb[0] = BENCH_GRID_PHASE0_R;
+    out_rgb[1] = BENCH_GRID_PHASE0_G;
+    out_rgb[2] = BENCH_GRID_PHASE0_B;
 }
 
 static inline uint32_t db_pattern_seed_from_time(void) {
