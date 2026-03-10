@@ -189,9 +189,9 @@ static inline int db_runtime_uses_dirty_backbuffer_mode(
     return (runtime != NULL) && (runtime->backbuffer_draw_full == 0);
 }
 
-static inline uint32_t
-db_history_seed_frame_count_for_swapchain(int is_double_buffered) {
-    return (is_double_buffered != 0) ? 2U : 1U;
+static inline uint32_t db_history_seed_frame_count_for_swapchain(
+    uint32_t preserved_framebuffer_count) {
+    return preserved_framebuffer_count;
 }
 
 static inline int db_history_should_seed_backbuffer_now(
@@ -220,10 +220,11 @@ db_history_should_force_full_upload_resync(int uses_dirty_backbuffer_mode,
 }
 
 static inline int db_history_can_replay_previous_damage(
-    int is_double_buffered, int uses_dirty_backbuffer_mode,
+    uint32_t preserved_framebuffer_count, int uses_dirty_backbuffer_mode,
     int backbuffer_valid, size_t previous_upload_count) {
-    return (is_double_buffered != 0) && (uses_dirty_backbuffer_mode != 0) &&
-           (backbuffer_valid != 0) && (previous_upload_count > 0U);
+    return (preserved_framebuffer_count >= 2) &&
+           (uses_dirty_backbuffer_mode != 0) && (backbuffer_valid != 0) &&
+           (previous_upload_count > 0U);
 }
 
 static inline int
@@ -741,13 +742,15 @@ db_history_snake_backbuffer_state_load(uint32_t seed_frames_remaining,
 }
 
 static inline void db_history_snake_backbuffer_state_reset(
-    db_history_snake_backbuffer_state_t *state, int is_double_buffered) {
+    db_history_snake_backbuffer_state_t *state,
+    uint32_t preserved_framebuffer_count) {
     if (state == NULL) {
         return;
     }
     *state = db_history_snake_backbuffer_state_load(
-        0U, db_history_seed_frame_count_for_swapchain(is_double_buffered), 0,
-        0);
+        0U,
+        db_history_seed_frame_count_for_swapchain(preserved_framebuffer_count),
+        0, 0);
 }
 
 static inline void db_history_snake_backbuffer_state_store(
@@ -773,7 +776,7 @@ static inline void db_history_snake_backbuffer_state_store(
 
 static inline db_history_snake_backbuffer_action_t
 db_history_eval_snake_backbuffer_action(
-    int uses_dirty_backbuffer_mode, int is_double_buffered,
+    int uses_dirty_backbuffer_mode, uint32_t preserved_framebuffer_count,
     db_history_snake_backbuffer_state_t *state) {
     db_history_snake_backbuffer_action_t action = {0};
     if (state == NULL) {
@@ -783,7 +786,8 @@ db_history_eval_snake_backbuffer_action(
             uses_dirty_backbuffer_mode, state->initial_seed_done,
             state->backbuffer_valid, state->seed_frames_remaining) != 0) {
         state->seed_frames_remaining =
-            db_history_seed_frame_count_for_swapchain(is_double_buffered);
+            db_history_seed_frame_count_for_swapchain(
+                preserved_framebuffer_count);
     }
     if (db_history_should_seed_backbuffer_now(
             uses_dirty_backbuffer_mode, state->initial_seed_done,
@@ -813,7 +817,7 @@ db_history_eval_snake_backbuffer_action(
 
 static inline db_history_snake_backbuffer_action_t
 db_history_eval_snake_backbuffer_action_io(int uses_dirty_backbuffer_mode,
-                                           int is_double_buffered,
+                                           uint32_t preserved_framebuffer_count,
                                            uint32_t *io_seed_frames_remaining,
                                            uint32_t *io_resync_frames_remaining,
                                            int *io_initial_seed_done,
@@ -826,8 +830,8 @@ db_history_eval_snake_backbuffer_action_io(int uses_dirty_backbuffer_mode,
             (io_initial_seed_done != NULL) ? *io_initial_seed_done : 0,
             (io_backbuffer_valid != NULL) ? *io_backbuffer_valid : 0);
     const db_history_snake_backbuffer_action_t action =
-        db_history_eval_snake_backbuffer_action(uses_dirty_backbuffer_mode,
-                                                is_double_buffered, &state);
+        db_history_eval_snake_backbuffer_action(
+            uses_dirty_backbuffer_mode, preserved_framebuffer_count, &state);
     db_history_snake_backbuffer_state_store(
         &state, io_seed_frames_remaining, io_resync_frames_remaining,
         io_initial_seed_done, io_backbuffer_valid);
@@ -835,7 +839,7 @@ db_history_eval_snake_backbuffer_action_io(int uses_dirty_backbuffer_mode,
 }
 
 static inline void db_history_invalidate_snake_backbuffer_on_resize(
-    int is_double_buffered, int *io_backbuffer_valid,
+    uint32_t preserved_framebuffer_count, int *io_backbuffer_valid,
     size_t *io_previous_upload_count,
     db_history_snake_backbuffer_state_t *io_snake_backbuffer_state) {
     if (io_backbuffer_valid != NULL) {
@@ -846,11 +850,13 @@ static inline void db_history_invalidate_snake_backbuffer_on_resize(
     }
     if (io_snake_backbuffer_state != NULL) {
         io_snake_backbuffer_state->seed_frames_remaining =
-            db_history_seed_frame_count_for_swapchain(is_double_buffered);
+            db_history_seed_frame_count_for_swapchain(
+                preserved_framebuffer_count);
         io_snake_backbuffer_state->backbuffer_valid = 0;
         io_snake_backbuffer_state->initial_seed_done = 0;
         io_snake_backbuffer_state->resync_frames_remaining =
-            db_history_seed_frame_count_for_swapchain(is_double_buffered);
+            db_history_seed_frame_count_for_swapchain(
+                preserved_framebuffer_count);
     }
 }
 

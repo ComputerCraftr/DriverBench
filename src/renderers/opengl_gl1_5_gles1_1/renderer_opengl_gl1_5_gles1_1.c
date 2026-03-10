@@ -1388,10 +1388,10 @@ db_gl1_render_snake_draw_pass(const db_gl1_snake_frame_state_t *snake_frame,
     g_state.snake_backbuffer_state.backbuffer_valid = 1;
 }
 
-static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
-                                             int is_double_buffered,
-                                             int dirty_backbuffer_mode,
-                                             int has_viewport) {
+static void
+db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
+                                 uint32_t preserved_framebuffer_count,
+                                 int dirty_backbuffer_mode, int has_viewport) {
     if (state == NULL) {
         return;
     }
@@ -1404,7 +1404,7 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
 
     const db_history_snake_backbuffer_action_t history_action =
         db_history_eval_snake_backbuffer_action_io(
-            dirty_backbuffer_mode, is_double_buffered,
+            dirty_backbuffer_mode, preserved_framebuffer_count,
             &g_state.snake_backbuffer_state.seed_frames_remaining,
             &g_state.snake_backbuffer_state.resync_frames_remaining,
             &g_state.snake_backbuffer_state.initial_seed_done,
@@ -1563,7 +1563,7 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
         }
     }
     const int can_replay_snake = db_history_can_replay_previous_damage(
-        is_double_buffered, dirty_backbuffer_mode,
+        preserved_framebuffer_count, dirty_backbuffer_mode,
         g_state.snake_backbuffer_state.backbuffer_valid,
         g_state.snake_replay.prev_upload_count);
     if (can_replay_snake != 0) {
@@ -1597,7 +1597,7 @@ static void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
 }
 
 static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
-                                         int is_double_buffered) {
+                                         uint32_t preserved_framebuffer_count) {
     const db_gradient_damage_plan_t gradient_plan =
         db_history_eval_gradient_step_from_runtime(&g_state.runtime);
 
@@ -1761,7 +1761,7 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                     &g_state.frame.dirty_draw_frames, 1, 0, 1U);
             } else {
                 const int has_replay =
-                    (is_double_buffered != 0) &&
+                    (preserved_framebuffer_count >= 2) &&
                     (g_state.gradient_prev_frame.draw_count > 0U);
                 const int has_current = (curr_draw_count > 0U);
                 db_damage_block_t replay_draw_blocks[4] = {{0U, 0U, 0U, 0U},
@@ -1830,10 +1830,9 @@ static void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
     db_history_apply_gradient_step_to_runtime(&g_state.runtime, &gradient_plan);
 }
 
-void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
-                                                   int viewport_width_px,
-                                                   int viewport_height_px,
-                                                   int double_buffered) {
+void db_renderer_opengl_gl1_5_gles1_1_render_frame(
+    uint32_t frame_index, int viewport_width_px, int viewport_height_px,
+    uint32_t preserved_framebuffer_count) {
     const db_renderer_viewport_state_t viewport_state =
         db_renderer_resolve_viewport_state(BACKEND_NAME, &viewport_width_px,
                                            &viewport_height_px,
@@ -1848,13 +1847,15 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
                                                    viewport_height_px);
         db_gl1_refresh_gradient_row_ndc_cache(viewport_height_px);
         db_history_invalidate_snake_backbuffer_on_resize(
-            double_buffered, &g_state.backbuffer_valid,
+            preserved_framebuffer_count, &g_state.backbuffer_valid,
             &g_state.snake_replay.prev_upload_count,
             &g_state.snake_backbuffer_state);
     }
 
-    // Preserved-backbuffer assumption for snake paths: dirty draws operate
-    // directly on the default framebuffer.
+    // When the display path advertises preserved backbuffer behavior, snake
+    // dirty draws operate directly on the default framebuffer. Display-side
+    // fallback can pass `preserved_framebuffer_count=0` to disable that
+    // assumption.
 
     // Use a known viewport size without querying GL state.
     // Pixel-space ops must use drawable pixels; tile math stays on grid
@@ -1862,7 +1863,6 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
     const int viewport_w = viewport_state.viewport_width_px;
     const int viewport_h = viewport_state.viewport_height_px;
     const int has_viewport = viewport_state.has_viewport;
-    const int is_double_buffered = (double_buffered != 0);
     if (g_state.runtime_flags.is_snake_history_texture != 0) {
         db_gl1_snake_frame_state_t snake_frame = {0};
         db_gl_upload_range_t
@@ -1870,14 +1870,14 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
         snake_frame.preview_ranges = snake_preview_local;
         snake_frame.preview_capacity = BENCH_SNAKE_PHASE_WINDOW_TILES;
         db_gl1_prepare_snake_frame_state(
-            &snake_frame, is_double_buffered,
+            &snake_frame, preserved_framebuffer_count,
             g_state.runtime_flags.uses_dirty_backbuffer_mode, has_viewport);
         db_gl1_render_snake_draw_pass(
             &snake_frame, g_state.runtime_flags.uses_dirty_backbuffer_mode,
             viewport_w, viewport_h);
     } else if (g_state.runtime_flags.is_gradient != 0) {
         db_gl1_render_gradient_frame(viewport_w, viewport_h,
-                                     is_double_buffered);
+                                     preserved_framebuffer_count);
     } else if (g_state.runtime_flags.is_bands != 0) {
         db_gl1_draw_bands_compact(db_grid_cols_effective(), BENCH_BANDS,
                                   frame_index, viewport_w, viewport_h);

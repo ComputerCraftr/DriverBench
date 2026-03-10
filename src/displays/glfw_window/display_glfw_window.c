@@ -9,6 +9,7 @@
 
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
+#include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
@@ -103,9 +104,179 @@ typedef struct {
     int state_hash_enabled;
     int output_hash_enabled;
     int debug_clear_default_framebuffer;
+    uint32_t renderer_preserved_framebuffer_count;
     uint32_t work_unit_count;
     GLFWwindow *window;
 } db_glfw_opengl_loop_ctx_t;
+
+#ifdef __linux__
+typedef struct {
+    int observed_any_match;
+    int preserves_immediately;
+    int first_reuse_distance;
+    int max_reuse_distance;
+} db_glfw_default_fb_probe_result_t;
+#endif
+
+static GLFWwindow *db_glfw_create_renderer_window(
+    const char *backend_name, const db_display_gl_context_policy_t *policy,
+    int swap_interval, int offscreen_enabled, int *out_context_is_gles) {
+    if (policy == NULL) {
+        return NULL;
+    }
+    if (policy->allow_gles1_1_fallback != 0) {
+        return db_glfw_create_gl1_5_or_gles1_1_window(
+            backend_name, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
+            BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
+            policy->requested_gl_major, policy->requested_gl_minor,
+            swap_interval, out_context_is_gles, offscreen_enabled);
+    }
+    if (out_context_is_gles != NULL) {
+        *out_context_is_gles = 0;
+    }
+    return db_glfw_create_opengl_window(
+        backend_name, "OpenGL 3.3 Shader GLFW DriverBench",
+        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
+        policy->requested_gl_major, policy->requested_gl_minor, 1,
+        swap_interval, offscreen_enabled);
+}
+
+#ifdef __linux__
+static uint64_t db_glfw_probe_read_default_fb_hash_or_fail(
+    const char *backend_name, int framebuffer_width_px,
+    int framebuffer_height_px, db_gl_framebuffer_hash_scratch_t *scratch) {
+    const uint8_t *pixels = db_gl_read_framebuffer_rgba8_or_fail(
+        backend_name, framebuffer_width_px, framebuffer_height_px, scratch);
+    return db_hash_rgba8_pixels_canonical(
+        pixels,
+        db_checked_int_to_u32(backend_name, "probe_fb_w", framebuffer_width_px),
+        db_checked_int_to_u32(backend_name, "probe_fb_h",
+                              framebuffer_height_px),
+        (size_t)db_checked_int_to_u32(backend_name, "probe_fb_row_bytes",
+                                      framebuffer_width_px) *
+            4U,
+        1);
+}
+
+static db_glfw_default_fb_probe_result_t
+db_glfw_probe_default_framebuffer_reuse(const char *backend_name,
+                                        GLFWwindow *window) {
+    static const float probe_colors[8][4] = {
+        {1.0F, 0.0F, 0.0F, 1.0F},   {0.0F, 1.0F, 0.0F, 1.0F},
+        {0.0F, 0.0F, 1.0F, 1.0F},   {1.0F, 1.0F, 0.0F, 1.0F},
+        {1.0F, 0.0F, 1.0F, 1.0F},   {0.0F, 1.0F, 1.0F, 1.0F},
+        {0.5F, 0.25F, 0.75F, 1.0F}, {0.75F, 0.5F, 0.25F, 1.0F},
+    };
+    db_glfw_default_fb_probe_result_t result = {
+        .observed_any_match = 0,
+        .preserves_immediately = 0,
+        .first_reuse_distance = 0,
+        .max_reuse_distance = 0,
+    };
+    if ((backend_name == NULL) || (window == NULL)) {
+        return result;
+    }
+
+    int framebuffer_width_px = 0;
+    int framebuffer_height_px = 0;
+    glfwGetFramebufferSize(window, &framebuffer_width_px,
+                           &framebuffer_height_px);
+    if ((framebuffer_width_px <= 0) || (framebuffer_height_px <= 0)) {
+        return result;
+    }
+    db_gl_set_viewport_px(framebuffer_width_px, framebuffer_height_px);
+
+    db_gl_framebuffer_hash_scratch_t scratch = {0};
+    uint64_t pre_swap_hashes[8] = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
+    for (size_t frame_index = 0U; frame_index < 8U; frame_index++) {
+        const float *const rgba = probe_colors[frame_index];
+        db_gl_clear_color_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+        db_gl_clear_color_buffer();
+        pre_swap_hashes[frame_index] =
+            db_glfw_probe_read_default_fb_hash_or_fail(
+                backend_name, framebuffer_width_px, framebuffer_height_px,
+                &scratch);
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+        const uint64_t post_swap_hash =
+            db_glfw_probe_read_default_fb_hash_or_fail(
+                backend_name, framebuffer_width_px, framebuffer_height_px,
+                &scratch);
+        for (size_t prior_index = 0U; prior_index <= frame_index;
+             prior_index++) {
+            if (post_swap_hash != pre_swap_hashes[prior_index]) {
+                continue;
+            }
+            result.observed_any_match = 1;
+            const int reuse_distance = (int)((frame_index - prior_index) + 1U);
+            if (prior_index == frame_index) {
+                result.preserves_immediately = 1;
+            }
+            if ((result.first_reuse_distance == 0) ||
+                (reuse_distance < result.first_reuse_distance)) {
+                result.first_reuse_distance = reuse_distance;
+            }
+            if (reuse_distance > result.max_reuse_distance) {
+                result.max_reuse_distance = reuse_distance;
+            }
+            break;
+        }
+    }
+    db_gl_hash_scratch_release(&scratch);
+    return result;
+}
+
+static void db_glfw_log_default_framebuffer_probe(
+    const char *backend_name, const db_glfw_default_fb_probe_result_t *result) {
+    if ((backend_name == NULL) || (result == NULL)) {
+        return;
+    }
+    if (result->observed_any_match == 0) {
+        db_infof(backend_name,
+                 "glfw default-fb probe: preserve=no first_reuse_distance=0 "
+                 "max_reuse_distance=0");
+        return;
+    }
+    const int stable_preserve = (result->preserves_immediately != 0) &&
+                                (result->first_reuse_distance == 1) &&
+                                (result->max_reuse_distance == 1);
+    db_infof(backend_name,
+             "glfw default-fb probe: preserve=%s first_reuse_distance=%d "
+             "max_reuse_distance=%d",
+             (stable_preserve != 0) ? "yes" : "unstable",
+             result->first_reuse_distance, result->max_reuse_distance);
+}
+
+static db_glfw_default_fb_probe_result_t
+db_glfw_probe_and_log_default_framebuffer_behavior(
+    const char *backend_name, db_gl_renderer_t renderer,
+    const db_display_gl_context_policy_t *policy, int swap_interval) {
+    db_glfw_default_fb_probe_result_t result = {0};
+    const int probe_window_hidden = 1;
+    int context_is_gles = 0;
+    GLFWwindow *window =
+        db_glfw_create_renderer_window(backend_name, policy, swap_interval,
+                                       probe_window_hidden, &context_is_gles);
+    const char *runtime_version = NULL;
+    (void)db_display_prepare_and_validate_gl_runtime(
+        (db_gl_proc_resolver_fn_t)glfwGetProcAddress, renderer, backend_name,
+        DB_DISPLAY_GL_RUNTIME_LOG_DISABLED,
+        (policy->allow_gles1_1_fallback != 0) ? context_is_gles : -1,
+        &runtime_version, NULL);
+    result = db_glfw_probe_default_framebuffer_reuse(backend_name, window);
+    db_glfw_log_default_framebuffer_probe(backend_name, &result);
+    db_glfw_destroy_window(window);
+    return result;
+}
+
+static int db_glfw_default_framebuffer_probe_is_stable(
+    const db_glfw_default_fb_probe_result_t *result) {
+    return (result != NULL) && (result->observed_any_match != 0) &&
+           (result->preserves_immediately != 0) &&
+           (result->first_reuse_distance == 1) &&
+           (result->max_reuse_distance == 1);
+}
+#endif
 
 static void db_present_cpu_texture_resize(db_cpu_present_gl_state_t *state,
                                           uint32_t pixel_width,
@@ -773,7 +944,8 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
 
     const db_display_gl_renderer_ops_t *renderer_ops = &ctx->renderer_ops;
     renderer_ops->render_frame_glfw(frame_index, framebuffer_width_px,
-                                    framebuffer_height_px);
+                                    framebuffer_height_px,
+                                    ctx->renderer_preserved_framebuffer_count);
 
     const db_display_gl_hash_rgba8_cb_ctx_t framebuffer_hash_ctx = {
         .backend_name = ctx->backend_name,
@@ -791,45 +963,56 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
 
 static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
                                      const db_cli_config_t *cfg) {
+    db_cli_config_t effective_cfg = (cfg != NULL) ? *cfg : (db_cli_config_t){0};
     const int offscreen_enabled =
-        ((cfg != NULL) && (cfg->offscreen_enabled != 0)) ? 1 : 0;
+        (effective_cfg.offscreen_enabled != 0) ? 1 : 0;
     const char *backend_name = (offscreen_enabled != 0)
                                    ? DB_BACKEND_NAME_DISPLAY_OFFSCREEN
                                    : DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_GL;
     db_validate_runtime_environment(backend_name,
                                     DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
     db_install_signal_handlers();
-
-    const db_display_runtime_hash_config_t runtime_hash_cfg =
-        db_display_runtime_hash_config_from_cli(cfg, 0, 0);
-    const db_display_runtime_config_t runtime_cfg = runtime_hash_cfg.runtime;
-    const int swap_interval =
-        ((cfg != NULL) && (cfg->vsync_enabled != 0)) ? 1 : 0;
-    const db_display_hash_settings_t hash_settings =
-        runtime_hash_cfg.hash_settings;
+    const int swap_interval = (effective_cfg.vsync_enabled != 0) ? 1 : 0;
     int context_is_gles = 0;
     const char *runtime_version = NULL;
     const db_display_gl_renderer_ops_t renderer_ops =
         db_display_gl_select_renderer_ops(renderer);
     const db_display_gl_context_policy_t context_policy =
         db_display_gl_context_policy_for_renderer(renderer);
-
-    GLFWwindow *window = NULL;
-    if (context_policy.allow_gles1_1_fallback != 0) {
-        window = db_glfw_create_gl1_5_or_gles1_1_window(
-            backend_name, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
-            BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
-            context_policy.requested_gl_major,
-            context_policy.requested_gl_minor, swap_interval, &context_is_gles,
-            offscreen_enabled);
-    } else {
-        window = db_glfw_create_opengl_window(
-            backend_name, "OpenGL 3.3 Shader GLFW DriverBench",
-            BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
-            context_policy.requested_gl_major,
-            context_policy.requested_gl_minor, 1, swap_interval,
-            offscreen_enabled);
+    uint32_t renderer_preserved_framebuffer_count = 2U;
+    if (offscreen_enabled != 0) {
+        renderer_preserved_framebuffer_count =
+            (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) ? 2U : 0U;
     }
+
+#ifdef __linux__
+    if (offscreen_enabled == 0) {
+        const db_glfw_default_fb_probe_result_t probe_result =
+            db_glfw_probe_and_log_default_framebuffer_behavior(
+                backend_name, renderer, &context_policy, swap_interval);
+        if ((renderer == DB_GL_RENDERER_GL1_5_GLES1_1) &&
+            (effective_cfg.backbuffer_draw_full == 0) &&
+            (effective_cfg.backbuffer_draw_mode_explicit == 0) &&
+            (db_glfw_default_framebuffer_probe_is_stable(&probe_result) == 0)) {
+            effective_cfg.backbuffer_draw_full = 1;
+            renderer_preserved_framebuffer_count = 0U;
+            db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "full");
+            db_infof(backend_name,
+                     "forcing full backbuffer draw: unstable default-fb reuse "
+                     "observed on Linux GLFW");
+        }
+    }
+#endif
+
+    const db_display_runtime_hash_config_t runtime_hash_cfg =
+        db_display_runtime_hash_config_from_cli(&effective_cfg, 0, 0);
+    const db_display_runtime_config_t runtime_cfg = runtime_hash_cfg.runtime;
+    const db_display_hash_settings_t hash_settings =
+        runtime_hash_cfg.hash_settings;
+
+    GLFWwindow *window = db_glfw_create_renderer_window(
+        backend_name, &context_policy, swap_interval, offscreen_enabled,
+        &context_is_gles);
 
     (void)db_display_prepare_and_validate_gl_runtime(
         (db_gl_proc_resolver_fn_t)glfwGetProcAddress, renderer, backend_name,
@@ -861,6 +1044,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         .output_hash_enabled = hash_settings.output_hash_enabled,
         .debug_clear_default_framebuffer =
             runtime_cfg.debug_clear_default_framebuffer,
+        .renderer_preserved_framebuffer_count =
+            renderer_preserved_framebuffer_count,
         .work_unit_count = work_unit_count,
         .window = window,
     };

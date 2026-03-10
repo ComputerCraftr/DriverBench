@@ -227,6 +227,9 @@ static void db_cli_set_runtime_mode_or_exit(const char *raw_value) {
 static void
 db_cli_set_runtime_backbuffer_draw_mode_or_exit(const char *raw_value,
                                                 db_cli_config_t *cfg) {
+    if (cfg != NULL) {
+        cfg->backbuffer_draw_mode_explicit = 1;
+    }
     if (db_string_is(raw_value, "dirty")) {
         cfg->backbuffer_draw_full = 0;
         db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "dirty");
@@ -623,6 +626,7 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
         .fps_cap = BENCH_FPS_CAP,
         .frame_limit = 0U,
         .backbuffer_draw_full = 0,
+        .backbuffer_draw_mode_explicit = 0,
         .debug_clear_default_framebuffer = 0,
         .offscreen_enabled = 0,
         .vsync_enabled = BENCH_DEFAULT_VSYNC_ENABLED,

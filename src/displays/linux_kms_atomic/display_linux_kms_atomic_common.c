@@ -112,6 +112,7 @@ typedef struct {
     EGLDisplay dpy;
     EGLSurface surf;
     struct gbm_surface *gbm_surf;
+    uint32_t preserved_framebuffer_count;
     const db_kms_atomic_renderer_vtable_t *renderer;
 } db_kms_atomic_gl_frame_producer_t;
 
@@ -146,6 +147,55 @@ static __attribute__((noreturn)) void failf(const char *fmt, ...) {
 
 static void die(const char *msg) { failf("%s: %s", msg, strerror(errno)); }
 static void diex(const char *msg) { failf("%s", msg); }
+
+static const char *db_kms_atomic_egl_error_name(EGLint error_code) {
+    switch (error_code) {
+    case EGL_SUCCESS:
+        return "EGL_SUCCESS";
+    case EGL_NOT_INITIALIZED:
+        return "EGL_NOT_INITIALIZED";
+    case EGL_BAD_ACCESS:
+        return "EGL_BAD_ACCESS";
+    case EGL_BAD_ALLOC:
+        return "EGL_BAD_ALLOC";
+    case EGL_BAD_ATTRIBUTE:
+        return "EGL_BAD_ATTRIBUTE";
+    case EGL_BAD_CONTEXT:
+        return "EGL_BAD_CONTEXT";
+    case EGL_BAD_CONFIG:
+        return "EGL_BAD_CONFIG";
+    case EGL_BAD_CURRENT_SURFACE:
+        return "EGL_BAD_CURRENT_SURFACE";
+    case EGL_BAD_DISPLAY:
+        return "EGL_BAD_DISPLAY";
+    case EGL_BAD_SURFACE:
+        return "EGL_BAD_SURFACE";
+    case EGL_BAD_MATCH:
+        return "EGL_BAD_MATCH";
+    case EGL_BAD_PARAMETER:
+        return "EGL_BAD_PARAMETER";
+    case EGL_BAD_NATIVE_PIXMAP:
+        return "EGL_BAD_NATIVE_PIXMAP";
+    case EGL_BAD_NATIVE_WINDOW:
+        return "EGL_BAD_NATIVE_WINDOW";
+    case EGL_CONTEXT_LOST:
+        return "EGL_CONTEXT_LOST";
+#ifdef EGL_TIMEOUT_EXPIRED_KHR
+    case EGL_TIMEOUT_EXPIRED_KHR:
+        return "EGL_TIMEOUT_EXPIRED_KHR";
+#endif
+    default:
+        return "EGL_UNKNOWN_ERROR";
+    }
+}
+
+static void db_kms_atomic_log_egl_failure(const char *backend,
+                                          const char *stage) {
+    const EGLint error_code = eglGetError();
+    db_infof(backend, "KMS EGL: %s failed (%s / 0x%04x)", stage,
+             db_kms_atomic_egl_error_name(error_code),
+             (unsigned int)error_code);
+}
 
 static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
                             const char *name) {
@@ -612,7 +662,8 @@ static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
         (db_kms_atomic_gl_frame_producer_t *)user_ctx;
     db_display_gl_debug_clear_default_framebuffer_if_enabled(
         producer->debug_clear_default_framebuffer);
-    producer->renderer->render_frame(frame_index);
+    producer->renderer->render_frame(frame_index,
+                                     producer->preserved_framebuffer_count);
     eglSwapBuffers(producer->dpy, producer->surf);
 
     struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(producer->gbm_surf);
@@ -622,19 +673,54 @@ static struct fb *db_kms_atomic_next_gl_fb(void *user_ctx,
     return fb_from_bo(producer->kms_fd, next_bo, 1);
 }
 
+static uint32_t
+db_kms_atomic_enable_preserved_swap_behavior(const char *backend,
+                                             EGLDisplay dpy, EGLSurface surf) {
+    if ((backend == NULL) || (dpy == EGL_NO_DISPLAY) ||
+        (surf == EGL_NO_SURFACE)) {
+        return 0U;
+    }
+
+    if (!eglSurfaceAttrib(dpy, surf, EGL_SWAP_BEHAVIOR, EGL_BUFFER_PRESERVED)) {
+        db_infof(
+            backend,
+            "EGL swap behavior preserve request rejected; using full draw");
+        return 0U;
+    }
+
+    EGLint swap_behavior = EGL_BUFFER_DESTROYED;
+    if (!eglQuerySurface(dpy, surf, EGL_SWAP_BEHAVIOR, &swap_behavior)) {
+        db_infof(backend,
+                 "EGL swap behavior query failed after preserve request; "
+                 "using full draw");
+        return 0U;
+    }
+    if (swap_behavior != EGL_BUFFER_PRESERVED) {
+        db_infof(backend,
+                 "EGL swap behavior remained destroyed after preserve request; "
+                 "using full draw");
+        return 0U;
+    }
+    db_infof(backend,
+             "EGL swap behavior preserved; enabling GL1 dirty backbuffer draw");
+    return 2U;
+}
+
 static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
-    struct gbm_device *gbm, EGLConfig *out_cfg, EGLContext *out_ctx,
-    EGLSurface *out_surf, struct gbm_surface *gbm_surf, int req_gl_major,
-    int req_gl_minor, int allow_gles1_1_fallback) {
+    const char *backend, struct gbm_device *gbm, EGLConfig *out_cfg,
+    EGLContext *out_ctx, EGLSurface *out_surf, struct gbm_surface *gbm_surf,
+    int req_gl_major, int req_gl_minor, int allow_gles1_1_fallback) {
     EGLDisplay dpy = eglGetDisplay((EGLNativeDisplayType)gbm);
     if (dpy == EGL_NO_DISPLAY) {
-        die("eglGetDisplay");
+        db_kms_atomic_log_egl_failure(backend, "eglGetDisplay");
+        diex("eglGetDisplay failed");
     }
 
     EGLint major = 0;
     EGLint minor = 0;
     if (!eglInitialize(dpy, &major, &minor)) {
-        die("eglInitialize");
+        db_kms_atomic_log_egl_failure(backend, "eglInitialize");
+        diex("eglInitialize failed");
     }
 
     const EGLint base_cfg[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -644,6 +730,8 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
                                EGL_NONE};
 
     if (eglBindAPI(EGL_OPENGL_API)) {
+        db_infof(backend, "KMS EGL: trying desktop OpenGL %d.%d window surface",
+                 req_gl_major, req_gl_minor);
         EGLint cfg_attribs_gl[64];
         int idx = 0;
         for (int i = 0; base_cfg[i] != EGL_NONE; i += 2) {
@@ -656,8 +744,12 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
 
         EGLConfig cfg;
         EGLint config_count = 0;
-        if (eglChooseConfig(dpy, cfg_attribs_gl, &cfg, 1, &config_count) &&
-            (config_count == 1)) {
+        if (eglChooseConfig(dpy, cfg_attribs_gl, &cfg, 1, &config_count)) {
+            db_infof(backend, "KMS EGL: desktop GL config_count=%d",
+                     config_count);
+        }
+        if ((config_count == 1) &&
+            eglChooseConfig(dpy, cfg_attribs_gl, &cfg, 1, &config_count)) {
             EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, NULL);
             if (ctx != EGL_NO_CONTEXT) {
                 EGLSurface surf = eglCreateWindowSurface(
@@ -676,13 +768,31 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
                         *out_surf = surf;
                         return dpy;
                     }
+                    db_infof(backend,
+                             "KMS EGL: desktop GL runtime version did not meet "
+                             "%d.%d requirement",
+                             req_gl_major, req_gl_minor);
+                } else if (surf == EGL_NO_SURFACE) {
+                    db_kms_atomic_log_egl_failure(
+                        backend, "desktop GL eglCreateWindowSurface");
+                } else {
+                    db_kms_atomic_log_egl_failure(backend,
+                                                  "desktop GL eglMakeCurrent");
                 }
                 if (surf != EGL_NO_SURFACE) {
                     eglDestroySurface(dpy, surf);
                 }
                 eglDestroyContext(dpy, ctx);
+            } else {
+                db_kms_atomic_log_egl_failure(backend,
+                                              "desktop GL eglCreateContext");
             }
+        } else {
+            db_infof(backend,
+                     "KMS EGL: no matching desktop GL window config found");
         }
+    } else {
+        db_kms_atomic_log_egl_failure(backend, "eglBindAPI(EGL_OPENGL_API)");
     }
 
     if (allow_gles1_1_fallback == 0) {
@@ -690,8 +800,10 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
     }
 
     if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-        die("eglBindAPI ES");
+        db_kms_atomic_log_egl_failure(backend, "eglBindAPI(EGL_OPENGL_ES_API)");
+        diex("eglBindAPI ES failed");
     }
+    db_infof(backend, "KMS EGL: trying OpenGL ES 1.1 fallback window surface");
 
     EGLint cfg_attribs_es[64];
     int idx = 0;
@@ -709,22 +821,26 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
         (config_count != 1)) {
         die("eglChooseConfig ES");
     }
+    db_infof(backend, "KMS EGL: GLES config_count=%d", config_count);
 
     const EGLint ctx_attribs_es1[] = {EGL_CONTEXT_CLIENT_VERSION, 1, EGL_NONE};
     EGLContext ctx =
         eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctx_attribs_es1);
     if (ctx == EGL_NO_CONTEXT) {
-        die("eglCreateContext ES1");
+        db_kms_atomic_log_egl_failure(backend, "GLES eglCreateContext");
+        diex("eglCreateContext ES1 failed");
     }
 
     EGLSurface surf =
         eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)gbm_surf, NULL);
     if (surf == EGL_NO_SURFACE) {
-        die("eglCreateWindowSurface");
+        db_kms_atomic_log_egl_failure(backend, "GLES eglCreateWindowSurface");
+        diex("eglCreateWindowSurface failed");
     }
 
     if (!eglMakeCurrent(dpy, surf, surf, ctx)) {
-        die("eglMakeCurrent ES1");
+        db_kms_atomic_log_egl_failure(backend, "GLES eglMakeCurrent");
+        diex("eglMakeCurrent ES1 failed");
     }
 
     *out_cfg = cfg;
@@ -774,7 +890,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     EGLContext ctx;
     EGLSurface surf;
     EGLDisplay dpy = egl_init_try_gl_then_optional_gles1_1(
-        gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
+        backend, gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
         allow_gles1_1_fallback);
 
     (void)db_display_prepare_and_validate_gl_runtime(
@@ -786,6 +902,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     const int viewport_height =
         db_checked_u32_to_i32(backend, "viewport_height", height);
     db_gl_set_viewport_px(viewport_width, viewport_height);
+    const uint32_t preserved_framebuffer_count =
+        db_kms_atomic_enable_preserved_swap_behavior(backend, dpy, surf);
 
     renderer->init();
     const char *capability_mode = renderer->capability_mode();
@@ -820,6 +938,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         .dpy = dpy,
         .surf = surf,
         .gbm_surf = gbm_surf,
+        .preserved_framebuffer_count = preserved_framebuffer_count,
         .renderer = renderer,
     };
     cur = db_kms_atomic_prime_first_frame_and_modeset(

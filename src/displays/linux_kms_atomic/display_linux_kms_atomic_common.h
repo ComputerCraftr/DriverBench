@@ -15,7 +15,8 @@ typedef struct {
     const char *(*capability_mode)(void);
     void (*draw_stats)(uint64_t *full_draw_frames, uint64_t *dirty_draw_frames);
     void (*init)(void);
-    void (*render_frame)(uint32_t frame_index);
+    void (*render_frame)(uint32_t frame_index,
+                         uint32_t preserved_framebuffer_count);
     void (*shutdown)(void);
     uint32_t (*work_unit_count)(void);
 } db_kms_atomic_renderer_vtable_t;

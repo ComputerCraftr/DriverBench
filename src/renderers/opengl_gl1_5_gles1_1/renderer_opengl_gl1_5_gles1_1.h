@@ -4,10 +4,9 @@
 #include <stdint.h>
 
 void db_renderer_opengl_gl1_5_gles1_1_init(void);
-void db_renderer_opengl_gl1_5_gles1_1_render_frame(uint32_t frame_index,
-                                                   int viewport_width_px,
-                                                   int viewport_height_px,
-                                                   int double_buffered);
+void db_renderer_opengl_gl1_5_gles1_1_render_frame(
+    uint32_t frame_index, int viewport_width_px, int viewport_height_px,
+    uint32_t preserved_framebuffer_count);
 void db_renderer_opengl_gl1_5_gles1_1_shutdown(void);
 const char *db_renderer_opengl_gl1_5_gles1_1_capability_mode(void);
 uint32_t db_renderer_opengl_gl1_5_gles1_1_work_unit_count(void);

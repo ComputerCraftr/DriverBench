@@ -3,43 +3,55 @@
 
 #include <stdint.h>
 
-#include "../driverbench_config.h"
 #include "../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
 #include "../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
 #include "../renderers/renderer_identity.h"
+#include "display_types.h"
 
 typedef struct {
     const char *renderer_name;
     void (*draw_stats)(uint64_t *full_draw_frames, uint64_t *dirty_draw_frames);
     void (*init)(void);
     void (*render_frame_glfw)(uint32_t frame_index, int viewport_width_px,
-                              int viewport_height_px);
-    void (*render_frame_kms)(uint32_t frame_index);
+                              int viewport_height_px,
+                              uint32_t preserved_framebuffer_count);
+    void (*render_frame_kms)(uint32_t frame_index,
+                             uint32_t preserved_framebuffer_count);
     const char *(*runtime_capability_mode)(void);
     uint64_t (*state_hash)(void);
     void (*shutdown)(void);
     uint32_t (*work_unit_count)(void);
 } db_display_gl_renderer_ops_t;
 
-static inline void db_display_gl1_render_frame_glfw(uint32_t frame_index,
-                                                    int viewport_width_px,
-                                                    int viewport_height_px) {
+static inline void
+db_display_gl1_render_frame_glfw(uint32_t frame_index, int viewport_width_px,
+                                 int viewport_height_px,
+                                 uint32_t preserved_framebuffer_count) {
     db_renderer_opengl_gl1_5_gles1_1_render_frame(
-        frame_index, viewport_width_px, viewport_height_px, 1);
+        frame_index, viewport_width_px, viewport_height_px,
+        preserved_framebuffer_count);
 }
 
-static inline void db_display_gl1_render_frame_kms(uint32_t frame_index) {
-    db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_index, 0, 0, 1);
+static inline void
+db_display_gl1_render_frame_kms(uint32_t frame_index,
+                                uint32_t preserved_framebuffer_count) {
+    db_renderer_opengl_gl1_5_gles1_1_render_frame(frame_index, 0, 0,
+                                                  preserved_framebuffer_count);
 }
 
-static inline void db_display_gl3_render_frame_glfw(uint32_t frame_index,
-                                                    int viewport_width_px,
-                                                    int viewport_height_px) {
+static inline void
+db_display_gl3_render_frame_glfw(uint32_t frame_index, int viewport_width_px,
+                                 int viewport_height_px,
+                                 uint32_t preserved_framebuffer_count) {
+    (void)preserved_framebuffer_count;
     db_renderer_opengl_gl3_3_render_frame(frame_index, viewport_width_px,
                                           viewport_height_px);
 }
 
-static inline void db_display_gl3_render_frame_kms(uint32_t frame_index) {
+static inline void
+db_display_gl3_render_frame_kms(uint32_t frame_index,
+                                uint32_t preserved_framebuffer_count) {
+    (void)preserved_framebuffer_count;
     db_renderer_opengl_gl3_3_render_frame(frame_index, 0, 0);
 }
 
