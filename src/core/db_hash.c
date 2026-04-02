@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "db_alloc_policy.h"
 #include "db_buffer_convert.h"
 #include "db_core.h"
 
@@ -14,14 +15,10 @@ static inline uint8_t *db_hash_reserve_canonical_bytes(size_t bytes) {
     if (bytes == 0U) {
         return NULL;
     }
-    if (g_hash_canonical_capacity >= bytes) {
-        return g_hash_canonical_bytes;
-    }
-    free(g_hash_canonical_bytes);
-    g_hash_canonical_bytes = (uint8_t *)db_alloc_aligned_array_or_fail(
-        "db_hash", "canonical_bytes", bytes, sizeof(uint8_t),
-        DB_CACHELINE_ALIGNMENT_BYTES);
-    g_hash_canonical_capacity = bytes;
+    db_reserve_aligned_array_capacity_or_fail(
+        (void **)&g_hash_canonical_bytes, &g_hash_canonical_capacity, bytes,
+        bytes, sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES, 0U, "db_hash",
+        "canonical_bytes");
     return g_hash_canonical_bytes;
 }
 

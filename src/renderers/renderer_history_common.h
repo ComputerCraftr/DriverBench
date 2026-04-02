@@ -25,7 +25,7 @@ typedef struct {
 } db_history_pair_state_t;
 
 typedef struct {
-    db_damage_block_t *blocks;
+    db_grid_block_t *blocks;
     size_t capacity;
 } db_history_snake_damage_block_scratch_t;
 
@@ -332,9 +332,9 @@ db_history_seed_background_rgba8(const db_benchmark_runtime_init_t *runtime,
     db_rgba01_to_u8_rgba4(clear_rgba, out_rgba);
 }
 
-static inline size_t db_history_damage_blocks_copy_trunc(
-    db_damage_block_t *dst_blocks, size_t dst_capacity,
-    const db_damage_block_t *src_blocks, size_t src_count) {
+static inline size_t db_history_grid_blocks_copy_trunc(
+    db_grid_block_t *dst_blocks, size_t dst_capacity,
+    const db_grid_block_t *src_blocks, size_t src_count) {
     if ((dst_blocks == NULL) || (dst_capacity == 0U)) {
         return 0U;
     }
@@ -342,7 +342,7 @@ static inline size_t db_history_damage_blocks_copy_trunc(
     const size_t copied = (available < dst_capacity) ? available : dst_capacity;
     if (copied > 0U) {
         db_copy_bytes(dst_blocks, src_blocks,
-                      copied * sizeof(db_damage_block_t));
+                      copied * sizeof(db_grid_block_t));
     }
     return copied;
 }
@@ -353,7 +353,7 @@ static inline void db_history_gradient_replay_state_reset(
         return;
     }
     state->draw_count = 0U;
-    state->draw_blocks[0] = (db_damage_block_t){0U, 0U, 0U, 0U};
+    state->draw_blocks[0] = (db_grid_block_t){0U, 0U, 0U, 0U};
     state->state.head_row = 0U;
     state->state.direction_down = 1;
     state->state.cycle_index = 0U;
@@ -361,12 +361,12 @@ static inline void db_history_gradient_replay_state_reset(
 
 static inline void db_history_gradient_replay_state_store(
     db_gradient_backbuffer_replay_state_t *state,
-    const db_damage_block_t *draw_blocks, size_t draw_count,
+    const db_grid_block_t *draw_blocks, size_t draw_count,
     const db_gradient_state_t *render_state) {
     if (state == NULL) {
         return;
     }
-    state->draw_count = db_history_damage_blocks_copy_trunc(
+    state->draw_count = db_history_grid_blocks_copy_trunc(
         state->draw_blocks,
         sizeof(state->draw_blocks) / sizeof(state->draw_blocks[0]), draw_blocks,
         draw_count);

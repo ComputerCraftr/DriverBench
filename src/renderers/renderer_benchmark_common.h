@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "../config/benchmark_config.h"
+#include "../config/runtime_options.h"
 #include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
@@ -37,6 +38,10 @@
 #define DB_GRADIENT_WINDOW_ROWS 32U
 #define DB_GRADIENT_DRAW_RANGE_WORK_CAP 8U
 #define DB_PALETTE_SALT_BASE_STEP DB_U32_GOLDEN_RATIO
+#define DB_RGBA16F_CHANNELS_PER_PIXEL 4U
+#define DB_RGBA16F_BYTES_PER_PIXEL                                             \
+    (sizeof(uint16_t) * DB_RGBA16F_CHANNELS_PER_PIXEL)
+#define DB_RGBA8_BYTES_PER_PIXEL 4U
 
 typedef enum {
     DB_PATTERN_GRADIENT_SWEEP = 0,
@@ -67,10 +72,329 @@ typedef struct {
     uint32_t row_count;
     uint32_t col_start;
     uint32_t col_count;
+} db_grid_block_t;
+
+typedef struct {
+    uint32_t row_start;
+    uint32_t row_count;
+    uint32_t col_start;
+    uint32_t col_count;
 } db_damage_block_t;
 
 typedef struct {
-    db_damage_block_t draw_blocks[4];
+    uint32_t pixel_width;
+    uint32_t pixel_height;
+    uint32_t *pixels_rgba8;
+    uint16_t *pixels_rgba16f;
+    int uses_rgba16f;
+} db_benchmark_pixel_surface_t;
+
+static inline db_grid_block_t db_grid_block_full(uint32_t row_count,
+                                                 uint32_t col_count) {
+    return (db_grid_block_t){
+        .row_start = 0U,
+        .row_count = row_count,
+        .col_start = 0U,
+        .col_count = col_count,
+    };
+}
+
+static inline db_damage_block_t db_damage_block_full(uint32_t row_count,
+                                                     uint32_t col_count) {
+    return (db_damage_block_t){
+        .row_start = 0U,
+        .row_count = row_count,
+        .col_start = 0U,
+        .col_count = col_count,
+    };
+}
+
+static inline uint32_t db_checked_span_end_u32(const char *backend,
+                                               const char *field_name,
+                                               uint32_t start, uint32_t count) {
+    return db_checked_add_u32(backend, field_name, start, count);
+}
+
+static inline uint32_t
+db_grid_block_row_end_or_fail(const char *field_name,
+                              const db_grid_block_t *block) {
+    if (block == NULL) {
+        db_failf(DB_BENCH_COMMON_BACKEND, "%s block is NULL", field_name);
+    }
+    return db_checked_span_end_u32(DB_BENCH_COMMON_BACKEND, field_name,
+                                   block->row_start, block->row_count);
+}
+
+static inline uint32_t
+db_grid_block_col_end_or_fail(const char *field_name,
+                              const db_grid_block_t *block) {
+    if (block == NULL) {
+        db_failf(DB_BENCH_COMMON_BACKEND, "%s block is NULL", field_name);
+    }
+    return db_checked_span_end_u32(DB_BENCH_COMMON_BACKEND, field_name,
+                                   block->col_start, block->col_count);
+}
+
+static inline uint32_t
+db_damage_block_row_end_or_fail(const char *field_name,
+                                const db_damage_block_t *block) {
+    if (block == NULL) {
+        db_failf(DB_BENCH_COMMON_BACKEND, "%s block is NULL", field_name);
+    }
+    return db_checked_span_end_u32(DB_BENCH_COMMON_BACKEND, field_name,
+                                   block->row_start, block->row_count);
+}
+
+static inline uint32_t
+db_damage_block_col_end_or_fail(const char *field_name,
+                                const db_damage_block_t *block) {
+    if (block == NULL) {
+        db_failf(DB_BENCH_COMMON_BACKEND, "%s block is NULL", field_name);
+    }
+    return db_checked_span_end_u32(DB_BENCH_COMMON_BACKEND, field_name,
+                                   block->col_start, block->col_count);
+}
+
+static inline uint32_t
+db_grid_block_span_units_or_fail(const char *field_name,
+                                 const db_grid_block_t *block) {
+    if (block == NULL) {
+        db_failf(DB_BENCH_COMMON_BACKEND, "%s block is NULL", field_name);
+    }
+    return db_checked_mul_u32(DB_BENCH_COMMON_BACKEND, field_name,
+                              block->row_count, block->col_count);
+}
+
+static inline uint32_t
+db_damage_block_span_units_or_fail(const char *field_name,
+                                   const db_damage_block_t *block) {
+    if (block == NULL) {
+        db_failf(DB_BENCH_COMMON_BACKEND, "%s block is NULL", field_name);
+    }
+    return db_checked_mul_u32(DB_BENCH_COMMON_BACKEND, field_name,
+                              block->row_count, block->col_count);
+}
+
+static inline db_damage_block_t
+db_damage_block_from_grid_block(const db_grid_block_t *block) {
+    if (block == NULL) {
+        return (db_damage_block_t){0U, 0U, 0U, 0U};
+    }
+    return (db_damage_block_t){
+        .row_start = block->row_start,
+        .row_count = block->row_count,
+        .col_start = block->col_start,
+        .col_count = block->col_count,
+    };
+}
+
+static inline int db_grid_block_to_pixel_block(
+    uint32_t grid_cols, uint32_t grid_rows, const db_grid_block_t *grid_block,
+    uint32_t pixel_width, uint32_t pixel_height, db_damage_block_t *out_block) {
+    if ((out_block == NULL) || (grid_cols == 0U) || (grid_rows == 0U) ||
+        (grid_block == NULL) || (pixel_width == 0U) || (pixel_height == 0U) ||
+        (grid_block->row_count == 0U) || (grid_block->col_count == 0U) ||
+        (grid_block->row_start >= grid_rows) ||
+        (grid_block->col_start >= grid_cols)) {
+        return 0;
+    }
+    const uint32_t row_end = db_u32_min(
+        grid_rows, db_grid_block_row_end_or_fail("grid_row_end", grid_block));
+    const uint32_t col_end = db_u32_min(
+        grid_cols, db_grid_block_col_end_or_fail("grid_col_end", grid_block));
+    if ((row_end <= grid_block->row_start) ||
+        (col_end <= grid_block->col_start)) {
+        return 0;
+    }
+    const uint32_t x0 =
+        (uint32_t)(((uint64_t)grid_block->col_start * (uint64_t)pixel_width) /
+                   (uint64_t)grid_cols);
+    uint32_t x1 = (uint32_t)(((uint64_t)col_end * (uint64_t)pixel_width) /
+                             (uint64_t)grid_cols);
+    if (col_end == grid_cols) {
+        x1 = pixel_width;
+    }
+    const uint32_t y0 =
+        (uint32_t)(((uint64_t)grid_block->row_start * (uint64_t)pixel_height) /
+                   (uint64_t)grid_rows);
+    uint32_t y1 = (uint32_t)(((uint64_t)row_end * (uint64_t)pixel_height) /
+                             (uint64_t)grid_rows);
+    if (row_end == grid_rows) {
+        y1 = pixel_height;
+    }
+    if ((x1 <= x0) || (y1 <= y0)) {
+        return 0;
+    }
+    *out_block = (db_damage_block_t){
+        .row_start = y0,
+        .row_count = y1 - y0,
+        .col_start = x0,
+        .col_count = x1 - x0,
+    };
+    return 1;
+}
+
+static inline int db_grid_tile_to_pixel_block(
+    uint32_t grid_cols, uint32_t grid_rows, uint32_t tile_index,
+    uint32_t pixel_width, uint32_t pixel_height, db_damage_block_t *out_block) {
+    if (grid_cols == 0U) {
+        return 0;
+    }
+    const db_grid_block_t grid_block = {
+        .row_start = tile_index / grid_cols,
+        .row_count = 1U,
+        .col_start = tile_index % grid_cols,
+        .col_count = 1U,
+    };
+    return db_grid_block_to_pixel_block(grid_cols, grid_rows, &grid_block,
+                                        pixel_width, pixel_height, out_block);
+}
+
+static inline uint32_t db_grid_axis_edge_to_pixel_coord(uint32_t grid_extent,
+                                                        uint32_t edge_index,
+                                                        uint32_t pixel_extent) {
+    if ((grid_extent == 0U) || (pixel_extent == 0U)) {
+        return 0U;
+    }
+    if (edge_index >= grid_extent) {
+        return pixel_extent;
+    }
+    return (uint32_t)(((uint64_t)edge_index * (uint64_t)pixel_extent) /
+                      (uint64_t)grid_extent);
+}
+
+static inline float db_pixel_coord_to_ndc_f32(uint32_t pixel_coord,
+                                              uint32_t pixel_extent) {
+    if (pixel_extent == 0U) {
+        return 0.0F;
+    }
+    const double normalized =
+        ((double)pixel_coord * 2.0) / (double)pixel_extent;
+    return db_double_to_f32(normalized - 1.0);
+}
+
+static inline void db_pixel_bounds_to_ndc_f32(uint32_t x0_px, uint32_t y0_px,
+                                              uint32_t x1_px, uint32_t y1_px,
+                                              uint32_t pixel_width,
+                                              uint32_t pixel_height, float *x0,
+                                              float *y0, float *x1, float *y1) {
+    if ((x0 == NULL) || (y0 == NULL) || (x1 == NULL) || (y1 == NULL)) {
+        return;
+    }
+    *x0 = db_pixel_coord_to_ndc_f32(x0_px, pixel_width);
+    *x1 = db_pixel_coord_to_ndc_f32(x1_px, pixel_width);
+    *y0 = db_pixel_coord_to_ndc_f32(y0_px, pixel_height);
+    *y1 = db_pixel_coord_to_ndc_f32(y1_px, pixel_height);
+}
+
+static inline void db_rgb_pixels_write_index_f64(uint32_t *pixels_rgba8,
+                                                 uint16_t *pixels_rgba16f,
+                                                 int uses_rgba16f, size_t idx,
+                                                 const double *rgb) {
+    if (rgb == NULL) {
+        return;
+    }
+    if (uses_rgba16f != 0) {
+        const size_t base = idx * DB_RGBA16F_CHANNELS_PER_PIXEL;
+        pixels_rgba16f[base + 0U] = db_double_to_f16(rgb[0]);
+        pixels_rgba16f[base + 1U] = db_double_to_f16(rgb[1]);
+        pixels_rgba16f[base + 2U] = db_double_to_f16(rgb[2]);
+        pixels_rgba16f[base + 3U] = DB_F16_ONE;
+        return;
+    }
+    pixels_rgba8[idx] =
+        db_pack_rgba8888_from_rgb01(rgb[0], rgb[1], rgb[2], UINT8_MAX);
+}
+
+// CPU pixel surfaces consume canonical f64 color data only at these helpers.
+// Legal export boundaries here are:
+// - f64 -> rgba8 packed u8
+// - f64 -> rgba16f packed f16
+// GPU-facing float submission must use dedicated f64 -> f32 helpers at the
+// actual GL/Vulkan consumption sites instead of routing through CPU pixel APIs.
+static inline void db_rgb_pixels_read_index_f64(const uint32_t *pixels_rgba8,
+                                                const uint16_t *pixels_rgba16f,
+                                                int uses_rgba16f, size_t idx,
+                                                double *out_rgb) {
+    if (out_rgb == NULL) {
+        return;
+    }
+    if (uses_rgba16f != 0) {
+        const size_t base = idx * DB_RGBA16F_CHANNELS_PER_PIXEL;
+        db_rgb_f16_to_f64_rgb3(&pixels_rgba16f[base], out_rgb);
+        return;
+    }
+    db_unpack_rgba8888_rgb01(pixels_rgba8[idx], out_rgb);
+}
+
+static inline void db_rgb_pixels_fill_solid_f64(uint32_t width, uint32_t height,
+                                                uint32_t *pixels_rgba8,
+                                                uint16_t *pixels_rgba16f,
+                                                int uses_rgba16f,
+                                                const double *rgb) {
+    if ((rgb == NULL) || (width == 0U) || (height == 0U)) {
+        return;
+    }
+    if (uses_rgba16f != 0) {
+        const uint16_t rgba_f16[4] = {db_double_to_f16(rgb[0]),
+                                      db_double_to_f16(rgb[1]),
+                                      db_double_to_f16(rgb[2]), DB_F16_ONE};
+        uint16_t *dst = pixels_rgba16f;
+        const size_t row_stride = (size_t)width * DB_RGBA16F_CHANNELS_PER_PIXEL;
+        for (uint32_t row = 0U; row < height; row++) {
+            db_fill_rgba16f_buffer(dst, width, rgba_f16);
+            dst += row_stride;
+        }
+        return;
+    }
+    const uint32_t packed_color =
+        db_pack_rgba8888_from_rgb01(rgb[0], rgb[1], rgb[2], UINT8_MAX);
+    uint32_t *dst = pixels_rgba8;
+    for (uint32_t row = 0U; row < height; row++) {
+        db_fill_u32_buffer(dst, width, packed_color);
+        dst += width;
+    }
+}
+
+static inline void db_rgb_pixels_fill_damage_block_f64(
+    uint32_t width, uint32_t height, uint32_t *pixels_rgba8,
+    uint16_t *pixels_rgba16f, int uses_rgba16f, uint32_t row_start,
+    uint32_t row_count, uint32_t col_start, uint32_t col_count,
+    const double *rgb) {
+    if ((rgb == NULL) || (row_start >= height) || (col_start >= width) ||
+        (row_count == 0U) || (col_count == 0U)) {
+        return;
+    }
+    const uint32_t span_rows = db_u32_min(row_count, height - row_start);
+    const uint32_t span_cols = db_u32_min(col_count, width - col_start);
+    if ((span_rows == 0U) || (span_cols == 0U)) {
+        return;
+    }
+    if (uses_rgba16f != 0) {
+        const uint16_t rgba_f16[4] = {db_double_to_f16(rgb[0]),
+                                      db_double_to_f16(rgb[1]),
+                                      db_double_to_f16(rgb[2]), DB_F16_ONE};
+        uint16_t *dst =
+            pixels_rgba16f + ((((size_t)row_start * width) + col_start) *
+                              DB_RGBA16F_CHANNELS_PER_PIXEL);
+        const size_t row_stride = (size_t)width * DB_RGBA16F_CHANNELS_PER_PIXEL;
+        for (uint32_t row = 0U; row < span_rows; row++) {
+            db_fill_rgba16f_buffer(dst, span_cols, rgba_f16);
+            dst += row_stride;
+        }
+        return;
+    }
+    const uint32_t packed_color =
+        db_pack_rgba8888_from_rgb01(rgb[0], rgb[1], rgb[2], UINT8_MAX);
+    uint32_t *dst = pixels_rgba8 + (((size_t)row_start * width) + col_start);
+    for (uint32_t row = 0U; row < span_rows; row++) {
+        db_fill_u32_buffer(dst, span_cols, packed_color);
+        dst += width;
+    }
+}
+
+typedef struct {
+    db_grid_block_t draw_blocks[4];
     size_t draw_count;
     db_gradient_state_t state;
 } db_gradient_backbuffer_replay_state_t;
@@ -96,10 +420,32 @@ typedef struct {
     int backbuffer_draw_full;
 } db_benchmark_runtime_init_t;
 
-typedef void (*db_gradient_row_block_color_apply_fn_t)(uint32_t row_start,
-                                                       uint32_t row_count,
-                                                       const double *row_rgb,
-                                                       void *user_data);
+typedef struct {
+    db_grid_block_t block;
+    double rgb[3];
+} db_gradient_row_segment_t;
+
+typedef struct {
+    db_grid_block_t block;
+    uint32_t row_end;
+    uint32_t transition_start;
+    uint32_t transition_end;
+    uint32_t next_row;
+    uint32_t head_row;
+    uint32_t cycle_index;
+    int direction_down;
+    int phase;
+    double source_rgb[3];
+    double target_rgb[3];
+} db_gradient_row_segment_iter_t;
+
+enum {
+    DB_GRADIENT_SEGMENT_PHASE_TOP = 0,
+    DB_GRADIENT_SEGMENT_PHASE_BLEND = 1,
+    DB_GRADIENT_SEGMENT_PHASE_BOTTOM = 2,
+    DB_GRADIENT_SEGMENT_PHASE_DONE = 3,
+    DB_GRADIENT_SEGMENT_PHASE_SOLID = 10,
+};
 
 static inline uint64_t db_benchmark_runtime_state_hash_cross_renderer(
     const db_benchmark_runtime_init_t *runtime, uint32_t frame_index,
@@ -781,14 +1127,14 @@ db_gradient_step_from_runtime(db_pattern_t pattern, uint32_t head_row,
 static inline size_t
 db_gradient_collect_dirty_blocks(const db_gradient_damage_plan_t *plan,
                                  uint32_t max_rows, uint32_t full_width_cols,
-                                 db_damage_block_t *out_blocks,
+                                 db_grid_block_t *out_blocks,
                                  size_t out_capacity) {
     if ((plan == NULL) || (out_blocks == NULL) || (out_capacity == 0U) ||
         (max_rows == 0U) || (full_width_cols == 0U)) {
         return 0U;
     }
     size_t out_count = 0U;
-    const db_damage_block_t raw_blocks[2] = {
+    const db_grid_block_t raw_blocks[2] = {
         {.row_start = plan->dirty_row_start,
          .row_count = plan->dirty_row_count,
          .col_start = 0U,
@@ -800,17 +1146,18 @@ db_gradient_collect_dirty_blocks(const db_gradient_damage_plan_t *plan,
     };
     for (size_t index = 0U; (index < 2U) && (out_count < out_capacity);
          index++) {
-        const db_damage_block_t block = raw_blocks[index];
+        const db_grid_block_t block = raw_blocks[index];
         if ((block.row_count == 0U) || (block.col_count == 0U) ||
             (block.row_start >= max_rows)) {
             continue;
         }
-        const uint32_t clamped_end =
-            db_u32_min(max_rows, block.row_start + block.row_count);
+        const uint32_t clamped_end = db_u32_min(
+            max_rows,
+            db_grid_block_row_end_or_fail("gradient_clamped_end", &block));
         if (clamped_end <= block.row_start) {
             continue;
         }
-        out_blocks[out_count++] = (db_damage_block_t){
+        out_blocks[out_count++] = (db_grid_block_t){
             .row_start = block.row_start,
             .row_count = clamped_end - block.row_start,
             .col_start = 0U,
@@ -821,9 +1168,9 @@ db_gradient_collect_dirty_blocks(const db_gradient_damage_plan_t *plan,
 }
 
 static inline size_t db_gradient_subtract_replay_blocks(
-    const db_damage_block_t *base_blocks, size_t base_count,
-    const db_damage_block_t *cut_blocks, size_t cut_count,
-    db_damage_block_t *out_blocks, size_t out_capacity) {
+    const db_grid_block_t *base_blocks, size_t base_count,
+    const db_grid_block_t *cut_blocks, size_t cut_count,
+    db_grid_block_t *out_blocks, size_t out_capacity) {
     if ((base_blocks == NULL) || (base_count == 0U) || (out_blocks == NULL) ||
         (out_capacity == 0U)) {
         return 0U;
@@ -839,7 +1186,7 @@ static inline size_t db_gradient_subtract_replay_blocks(
     for (size_t base_index = 0U;
          (base_index < base_count) && (out_count < out_capacity);
          base_index++) {
-        const db_damage_block_t base = base_blocks[base_index];
+        const db_grid_block_t base = base_blocks[base_index];
         if ((base.row_count == 0U) || (base.col_count == 0U)) {
             continue;
         }
@@ -849,7 +1196,7 @@ static inline size_t db_gradient_subtract_replay_blocks(
                                base_start, base.row_count);
         uint32_t current_start = base_start;
         while (cut_index < cut_count) {
-            const db_damage_block_t cut = cut_blocks[cut_index];
+            const db_grid_block_t cut = cut_blocks[cut_index];
             if ((cut.row_count == 0U) || (cut.col_count == 0U)) {
                 cut_index++;
                 continue;
@@ -866,7 +1213,7 @@ static inline size_t db_gradient_subtract_replay_blocks(
                 break;
             }
             if ((current_start < cut_start) && (out_count < out_capacity)) {
-                out_blocks[out_count++] = (db_damage_block_t){
+                out_blocks[out_count++] = (db_grid_block_t){
                     .row_start = current_start,
                     .row_count = db_checked_sub_u32(DB_BENCH_COMMON_BACKEND,
                                                     "gradient_left_count",
@@ -883,7 +1230,7 @@ static inline size_t db_gradient_subtract_replay_blocks(
             cut_index++;
         }
         if ((current_start < base_end) && (out_count < out_capacity)) {
-            out_blocks[out_count++] = (db_damage_block_t){
+            out_blocks[out_count++] = (db_grid_block_t){
                 .row_start = current_start,
                 .row_count = db_checked_sub_u32(DB_BENCH_COMMON_BACKEND,
                                                 "gradient_right_count",
@@ -897,8 +1244,8 @@ static inline size_t db_gradient_subtract_replay_blocks(
 }
 
 static inline size_t db_gradient_append_merged_blocks(
-    const db_damage_block_t *blocks, size_t block_count,
-    db_damage_block_t *out_blocks, size_t out_capacity, size_t out_count) {
+    const db_grid_block_t *blocks, size_t block_count,
+    db_grid_block_t *out_blocks, size_t out_capacity, size_t out_count) {
     if ((blocks == NULL) || (out_blocks == NULL) || (out_capacity == 0U) ||
         (out_count >= out_capacity)) {
         return out_count;
@@ -911,7 +1258,7 @@ static inline size_t db_gradient_append_merged_blocks(
     const size_t copy_limit =
         (block_count < copy_capacity) ? block_count : copy_capacity;
     for (size_t index = 0U; index < copy_limit; index++) {
-        const db_damage_block_t block = blocks[index];
+        const db_grid_block_t block = blocks[index];
         if ((block.row_count == 0U) || (block.col_count == 0U)) {
             continue;
         }
@@ -919,7 +1266,7 @@ static inline size_t db_gradient_append_merged_blocks(
             out_blocks[out_count++] = block;
             continue;
         }
-        db_damage_block_t *tail = &out_blocks[out_count - 1U];
+        db_grid_block_t *tail = &out_blocks[out_count - 1U];
         const uint32_t tail_end = db_checked_add_u32(
             DB_BENCH_COMMON_BACKEND, "gradient_append_tail_end",
             tail->row_start, tail->row_count);
@@ -944,10 +1291,57 @@ static inline size_t db_gradient_append_merged_blocks(
     return out_count;
 }
 
-static inline size_t db_gradient_build_curr_draw_blocks(
-    const db_damage_block_t *skipped_blocks, size_t skipped_count,
-    const db_damage_block_t *dirty_blocks, size_t dirty_count,
+static inline size_t db_grid_blocks_compact_full_width_or_full(
+    const db_grid_block_t *blocks, size_t block_count, uint32_t max_rows,
+    uint32_t full_width_cols, db_grid_block_t *out_blocks,
+    size_t out_capacity) {
+    if ((blocks == NULL) || (block_count == 0U) || (out_blocks == NULL) ||
+        (out_capacity == 0U) || (max_rows == 0U) || (full_width_cols == 0U)) {
+        return 0U;
+    }
+    if (block_count > out_capacity) {
+        out_blocks[0] = db_grid_block_full(max_rows, full_width_cols);
+        return 1U;
+    }
+    const size_t compact_count = db_gradient_append_merged_blocks(
+        blocks, block_count, out_blocks, out_capacity, 0U);
+    if (compact_count == 0U) {
+        return 0U;
+    }
+    if ((compact_count == 1U) && (out_blocks[0].row_start == 0U) &&
+        (out_blocks[0].row_count == max_rows) &&
+        (out_blocks[0].col_start == 0U) &&
+        (out_blocks[0].col_count == full_width_cols)) {
+        return 1U;
+    }
+    return compact_count;
+}
+
+static inline size_t db_damage_blocks_from_grid_blocks_or_full(
+    const db_grid_block_t *blocks, size_t block_count, uint32_t max_rows,
     uint32_t full_width_cols, db_damage_block_t *out_blocks,
+    size_t out_capacity) {
+    if ((out_blocks == NULL) || (out_capacity == 0U) || (max_rows == 0U) ||
+        (full_width_cols == 0U)) {
+        return 0U;
+    }
+    if ((blocks == NULL) || (block_count == 0U)) {
+        return 0U;
+    }
+    if (block_count > out_capacity) {
+        out_blocks[0] = db_damage_block_full(max_rows, full_width_cols);
+        return 1U;
+    }
+    for (size_t index = 0U; index < block_count; index++) {
+        out_blocks[index] = db_damage_block_from_grid_block(&blocks[index]);
+    }
+    return block_count;
+}
+
+static inline size_t db_gradient_build_curr_draw_blocks(
+    const db_grid_block_t *skipped_blocks, size_t skipped_count,
+    const db_grid_block_t *dirty_blocks, size_t dirty_count,
+    uint32_t full_width_cols, db_grid_block_t *out_blocks,
     size_t out_capacity) {
     if ((out_blocks == NULL) || (out_capacity == 0U) ||
         (full_width_cols == 0U)) {
@@ -1022,59 +1416,139 @@ static inline void db_gradient_row_color_rgb3(uint32_t row_index,
     db_blend_rgb3(source_rgb, target_rgb, blend, out_rgb);
 }
 
-static inline void db_for_each_gradient_row_block_color(
-    uint32_t row_start, uint32_t row_count, uint32_t head_row,
-    int direction_down, uint32_t cycle_index,
-    db_gradient_row_block_color_apply_fn_t apply_row_block_color,
-    void *user_data) {
+static inline int db_gradient_row_segment_iter_init(
+    const db_grid_block_t *block, uint32_t head_row, int direction_down,
+    uint32_t cycle_index, db_gradient_row_segment_iter_t *iter) {
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t window_rows = db_gradient_window_rows_effective();
-    if ((rows == 0U) || (row_count == 0U) || (apply_row_block_color == NULL)) {
-        return;
+    if ((block == NULL) || (iter == NULL) || (rows == 0U) ||
+        (block->row_count == 0U) || (block->col_count == 0U)) {
+        return 0;
     }
-    const uint32_t row_end = db_u32_min(rows, row_start + row_count);
+    const uint32_t row_start = block->row_start;
+    const uint32_t row_count = block->row_count;
+    const uint32_t row_end =
+        db_u32_min(rows, db_checked_span_end_u32(DB_BENCH_COMMON_BACKEND,
+                                                 "gradient_apply_row_end",
+                                                 row_start, row_count));
     if (row_end <= row_start) {
-        return;
+        return 0;
     }
+    *iter = (db_gradient_row_segment_iter_t){
+        .block = *block,
+        .row_end = row_end,
+        .transition_start = db_u32_saturating_sub(head_row, window_rows),
+        .transition_end = db_u32_min(
+            rows,
+            db_checked_add_u32(
+                DB_BENCH_COMMON_BACKEND, "gradient_transition_end",
+                db_u32_saturating_sub(head_row, window_rows), window_rows)),
+        .next_row = row_start,
+        .head_row = head_row,
+        .cycle_index = cycle_index,
+        .direction_down = direction_down,
+        .phase = (window_rows == 0U) ? DB_GRADIENT_SEGMENT_PHASE_SOLID
+                                     : DB_GRADIENT_SEGMENT_PHASE_TOP,
+        .source_rgb = {0.0, 0.0, 0.0},
+        .target_rgb = {0.0, 0.0, 0.0},
+    };
+    db_palette_cycle_color_rgb3(cycle_index, iter->source_rgb);
+    db_palette_cycle_color_rgb3(cycle_index + 1U, iter->target_rgb);
+    return 1;
+}
 
-    double source_rgb[3] = {0.0, 0.0, 0.0};
-    double target_rgb[3] = {0.0, 0.0, 0.0};
-    db_palette_cycle_color_rgb3(cycle_index, source_rgb);
-    db_palette_cycle_color_rgb3(cycle_index + 1U, target_rgb);
-
-    if (window_rows == 0U) {
-        apply_row_block_color(row_start, row_end - row_start, target_rgb,
-                              user_data);
-        return;
+static inline int
+db_gradient_row_segment_iter_next(db_gradient_row_segment_iter_t *iter,
+                                  db_gradient_row_segment_t *out_segment) {
+    if ((iter == NULL) || (out_segment == NULL)) {
+        return 0;
     }
+    const double *top_rgb =
+        (iter->direction_down != 0) ? iter->target_rgb : iter->source_rgb;
+    const double *bottom_rgb =
+        (iter->direction_down != 0) ? iter->source_rgb : iter->target_rgb;
+    const uint32_t block_row_start = iter->block.row_start;
+    const uint32_t block_col_start = iter->block.col_start;
+    const uint32_t block_col_count = iter->block.col_count;
 
-    const uint32_t transition_start =
-        db_u32_saturating_sub(head_row, window_rows);
-    const uint32_t transition_end =
-        db_u32_min(rows, transition_start + window_rows);
-    const double *top_rgb = (direction_down != 0) ? target_rgb : source_rgb;
-    const double *bottom_rgb = (direction_down != 0) ? source_rgb : target_rgb;
-
-    const uint32_t top_end = db_u32_min(row_end, transition_start);
-    if (top_end > row_start) {
-        apply_row_block_color(row_start, top_end - row_start, top_rgb,
-                              user_data);
+    if (iter->phase == DB_GRADIENT_SEGMENT_PHASE_SOLID) {
+        *out_segment = (db_gradient_row_segment_t){
+            .block =
+                {
+                    .row_start = block_row_start,
+                    .row_count = iter->row_end - block_row_start,
+                    .col_start = block_col_start,
+                    .col_count = block_col_count,
+                },
+            .rgb = {iter->target_rgb[0], iter->target_rgb[1],
+                    iter->target_rgb[2]},
+        };
+        iter->phase = DB_GRADIENT_SEGMENT_PHASE_DONE;
+        return 1;
     }
-
-    const uint32_t blend_start = db_u32_max(row_start, transition_start);
-    const uint32_t blend_end = db_u32_min(row_end, transition_end);
-    for (uint32_t row = blend_start; row < blend_end; row++) {
-        double row_rgb[3] = {0.0, 0.0, 0.0};
-        db_gradient_row_color_rgb3(row, head_row, direction_down, cycle_index,
-                                   row_rgb);
-        apply_row_block_color(row, 1U, row_rgb, user_data);
+    if (iter->phase == DB_GRADIENT_SEGMENT_PHASE_TOP) {
+        const uint32_t top_end =
+            db_u32_min(iter->row_end, iter->transition_start);
+        iter->next_row = db_u32_max(block_row_start, iter->transition_start);
+        iter->phase = DB_GRADIENT_SEGMENT_PHASE_BLEND;
+        if (top_end > block_row_start) {
+            *out_segment = (db_gradient_row_segment_t){
+                .block =
+                    {
+                        .row_start = block_row_start,
+                        .row_count = top_end - block_row_start,
+                        .col_start = block_col_start,
+                        .col_count = block_col_count,
+                    },
+                .rgb = {top_rgb[0], top_rgb[1], top_rgb[2]},
+            };
+            return 1;
+        }
     }
-
-    const uint32_t bottom_start = db_u32_max(row_start, transition_end);
-    if (row_end > bottom_start) {
-        apply_row_block_color(bottom_start, row_end - bottom_start, bottom_rgb,
-                              user_data);
+    if (iter->phase == DB_GRADIENT_SEGMENT_PHASE_BLEND) {
+        const uint32_t blend_end =
+            db_u32_min(iter->row_end, iter->transition_end);
+        if (iter->next_row < blend_end) {
+            double row_rgb[3] = {0.0, 0.0, 0.0};
+            const uint32_t row = iter->next_row;
+            db_gradient_row_color_rgb3(row, iter->head_row,
+                                       iter->direction_down, iter->cycle_index,
+                                       row_rgb);
+            *out_segment = (db_gradient_row_segment_t){
+                .block =
+                    {
+                        .row_start = row,
+                        .row_count = 1U,
+                        .col_start = block_col_start,
+                        .col_count = block_col_count,
+                    },
+                .rgb = {row_rgb[0], row_rgb[1], row_rgb[2]},
+            };
+            iter->next_row = row + 1U;
+            return 1;
+        }
+        iter->next_row = db_u32_max(block_row_start, iter->transition_end);
+        iter->phase = DB_GRADIENT_SEGMENT_PHASE_BOTTOM;
     }
+    if (iter->phase == DB_GRADIENT_SEGMENT_PHASE_BOTTOM) {
+        const uint32_t bottom_start =
+            db_u32_max(block_row_start, iter->transition_end);
+        iter->phase = DB_GRADIENT_SEGMENT_PHASE_DONE;
+        if (iter->row_end > bottom_start) {
+            *out_segment = (db_gradient_row_segment_t){
+                .block =
+                    {
+                        .row_start = bottom_start,
+                        .row_count = iter->row_end - bottom_start,
+                        .col_start = block_col_start,
+                        .col_count = block_col_count,
+                    },
+                .rgb = {bottom_rgb[0], bottom_rgb[1], bottom_rgb[2]},
+            };
+            return 1;
+        }
+    }
+    return 0;
 }
 
 #endif

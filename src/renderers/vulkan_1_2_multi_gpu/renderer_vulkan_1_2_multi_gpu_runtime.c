@@ -3,8 +3,11 @@
 #include <string.h>
 
 #include "../../config/benchmark_config.h"
+#include "../../config/runtime_options.h"
+#include "../../core/db_alloc_policy.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
+#include "../../core/db_numeric.h"
 #include "../renderer_benchmark_common.h"
 #include "../renderer_history_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
@@ -100,7 +103,7 @@ static uint64_t db_vk_compute_output_hash_from_image(VkImage image,
     }
     const uint64_t byte_count_u64 =
         (uint64_t)extent.width * (uint64_t)extent.height * UINT64_C(4);
-    const size_t byte_count = (size_t)db_checked_u64_to_u32(
+    const size_t byte_count = db_checked_u64_to_size(
         BACKEND_NAME, "vk_output_hash_bytes", byte_count_u64);
     db_vk_ensure_output_hash_readback_buffer(byte_count);
 
@@ -180,17 +183,16 @@ static uint64_t db_vk_compute_output_hash_from_image(VkImage image,
 }
 
 static inline db_vk_grid_row_block_draw_req_t db_vk_gradient_row_block_req(
-    const db_damage_block_t *block, db_pattern_t pattern,
+    const db_grid_block_t *block, db_pattern_t pattern,
     const db_gradient_state_t *state, uint32_t frame_index) {
-    if ((block == NULL) || (state == NULL)) {
+    if ((state == NULL) || (block == NULL) || (block->row_count == 0U) ||
+        (block->col_count == 0U)) {
         return (db_vk_grid_row_block_draw_req_t){0};
     }
     return (db_vk_grid_row_block_draw_req_t){
-        .span_units = block->row_count * block->col_count,
-        .row_start = block->row_start,
-        .row_end = block->row_start + block->row_count,
-        .col_start = block->col_start,
-        .col_end = block->col_start + block->col_count,
+        .span_units =
+            db_grid_block_span_units_or_fail("vk_gradient_span_units", block),
+        .block = *block,
         .payload =
             {
                 .color = db_vk_shader_ignored_color_rgb,
@@ -207,6 +209,28 @@ static inline db_vk_grid_row_block_draw_req_t db_vk_gradient_row_block_req(
                 .band_count = 0U,
             },
     };
+}
+
+static void db_vk_draw_gradient_block_segments(
+    const db_vk_owner_draw_ctx_t *draw_ctx, const db_grid_block_t *block,
+    db_pattern_t pattern, const db_gradient_state_t *state,
+    uint32_t frame_index) {
+    if ((draw_ctx == NULL) || (block == NULL) || (state == NULL) ||
+        (block->row_count == 0U) || (block->col_count == 0U)) {
+        return;
+    }
+    db_gradient_row_segment_iter_t iter = {0};
+    db_gradient_row_segment_t segment = {0};
+    if (db_gradient_row_segment_iter_init(
+            block, state->head_row, state->direction_down,
+            state->cycle_index, &iter) == 0) {
+        return;
+    }
+    while (db_gradient_row_segment_iter_next(&iter, &segment) != 0) {
+        const db_vk_grid_row_block_draw_req_t req = db_vk_gradient_row_block_req(
+            &segment.block, pattern, state, frame_index);
+        db_vk_draw_owner_grid_row_block(draw_ctx, &req);
+    }
 }
 
 static inline int db_vk_dual_metrics_enabled(void) {
@@ -239,18 +263,6 @@ static inline uint32_t db_vk_metrics_sample_capacity_hint(void) {
                : DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY;
 }
 
-static int db_vk_compare_f64(const void *lhs, const void *rhs) {
-    const double lhs_value = *(const double *)lhs;
-    const double rhs_value = *(const double *)rhs;
-    if (lhs_value < rhs_value) {
-        return -1;
-    }
-    if (lhs_value > rhs_value) {
-        return 1;
-    }
-    return 0;
-}
-
 static void db_vk_record_render_frame_sample(double frame_ms) {
     if (db_vk_dual_metrics_enabled() == 0) {
         return;
@@ -265,17 +277,20 @@ static void db_vk_record_render_frame_sample(double frame_ms) {
     if (g_state.render_frame_samples_count >=
         g_state.render_frame_samples_capacity) {
         const uint32_t new_capacity =
-            g_state.render_frame_samples_capacity * 2U;
+            db_u32_grow_capacity_3_2(g_state.render_frame_samples_capacity,
+                                     g_state.render_frame_samples_count + 1U,
+                                     db_vk_metrics_sample_capacity_hint());
         if (new_capacity <= g_state.render_frame_samples_capacity) {
             db_failf(BACKEND_NAME, "render frame sample capacity overflow");
         }
-        double *const grown = (double *)realloc(g_state.render_frame_samples_ms,
-                                                sizeof(double) * new_capacity);
-        if (grown == NULL) {
-            db_failf(BACKEND_NAME, "failed to grow render frame samples");
-        }
-        g_state.render_frame_samples_ms = grown;
-        g_state.render_frame_samples_capacity = new_capacity;
+        size_t sample_capacity = (size_t)g_state.render_frame_samples_capacity;
+        db_reserve_array_capacity_or_fail(
+            (void **)&g_state.render_frame_samples_ms, &sample_capacity,
+            (size_t)new_capacity, db_vk_metrics_sample_capacity_hint(),
+            sizeof(double), g_state.render_frame_samples_count, BACKEND_NAME,
+            "render_frame_samples");
+        g_state.render_frame_samples_capacity = db_checked_size_to_u32(
+            BACKEND_NAME, "render_frame_samples_capacity", sample_capacity);
     }
     g_state.render_frame_samples_ms[g_state.render_frame_samples_count++] =
         frame_ms;
@@ -738,7 +753,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 .grid_cols = grid_cols,
                 .payload_cache = &draw_payload_cache,
             };
-            db_damage_block_t curr_blocks[2] = {
+            db_grid_block_t curr_blocks[2] = {
                 {0U, 0U, 0U, 0U},
                 {0U, 0U, 0U, 0U},
             };
@@ -747,7 +762,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
             const int seeded_full =
                 (g_state.history_pair.is_valid == 0) ? 1 : 0;
             if (seeded_full != 0) {
-                curr_blocks[0] = (db_damage_block_t){
+                curr_blocks[0] = (db_grid_block_t){
                     .row_start = 0U,
                     .row_count = grid_rows,
                     .col_start = 0U,
@@ -757,7 +772,7 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                 g_state.history_pair.is_valid = 1;
                 frame_full_draw = 1;
             } else if (g_state.gradient_prev_frame.draw_count > 0U) {
-                db_damage_block_t replay_blocks[2] = {
+                db_grid_block_t replay_blocks[2] = {
                     {0U, 0U, 0U, 0U},
                     {0U, 0U, 0U, 0U},
                 };
@@ -766,29 +781,25 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                     g_state.gradient_prev_frame.draw_count, curr_blocks,
                     curr_count, replay_blocks, 2U);
                 for (size_t i = 0U; i < replay_count; i++) {
-                    const db_damage_block_t replay = replay_blocks[i];
+                    const db_grid_block_t replay = replay_blocks[i];
                     if (replay.row_count == 0U) {
                         continue;
                     }
-                    const db_vk_grid_row_block_draw_req_t replay_req =
-                        db_vk_gradient_row_block_req(
-                            &replay, g_state.runtime.pattern,
-                            &g_state.gradient_prev_frame.state,
-                            g_state.frame.frame_index);
-                    db_vk_draw_owner_grid_row_block(&draw_ctx, &replay_req);
+                    db_vk_draw_gradient_block_segments(
+                        &draw_ctx, &replay, g_state.runtime.pattern,
+                        &g_state.gradient_prev_frame.state,
+                        g_state.frame.frame_index);
                 }
             }
 
             for (size_t i = 0U; i < curr_count; i++) {
-                const db_damage_block_t block = curr_blocks[i];
+                const db_grid_block_t block = curr_blocks[i];
                 if (block.row_count == 0U) {
                     continue;
                 }
-                const db_vk_grid_row_block_draw_req_t req =
-                    db_vk_gradient_row_block_req(
-                        &block, g_state.runtime.pattern, &plan.render_state,
-                        g_state.frame.frame_index);
-                db_vk_draw_owner_grid_row_block(&draw_ctx, &req);
+                db_vk_draw_gradient_block_segments(
+                    &draw_ctx, &block, g_state.runtime.pattern,
+                    &plan.render_state, g_state.frame.frame_index);
             }
             if (seeded_full == 0) {
                 frame_dirty_draw = 1;
@@ -1021,7 +1032,7 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
         (g_state.render_frame_samples_count > 0U)) {
         qsort(g_state.render_frame_samples_ms,
               g_state.render_frame_samples_count, sizeof(double),
-              db_vk_compare_f64);
+              db_qsort_compare_f64);
         render_p50_ms = db_vk_scheduler_percentile_sorted(
             g_state.render_frame_samples_ms, g_state.render_frame_samples_count,
             DB_VK_PERCENTILE_P50);

@@ -6,13 +6,13 @@
 
 #include "../renderer_benchmark_common.h"
 
-void db_renderer_cpu_renderer_init(void);
+void db_renderer_cpu_renderer_init_with_hdr_float_bo(int use_hdr_float_bo);
 void db_renderer_cpu_renderer_render_frame(uint32_t frame_index);
 void db_renderer_cpu_renderer_shutdown(void);
 
 uint32_t db_renderer_cpu_renderer_work_unit_count(void);
 const char *db_renderer_cpu_renderer_capability_mode(void);
-int db_renderer_cpu_renderer_is_hdr_float_bo(void);
+int db_renderer_cpu_renderer_bo_uses_rgba16f(void);
 const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
                                                       uint32_t *out_height);
 const uint16_t *db_renderer_cpu_renderer_pixels_rgba16f(uint32_t *out_width,

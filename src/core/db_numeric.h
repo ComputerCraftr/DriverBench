@@ -103,16 +103,15 @@ static inline double db_u8_to_unit_f64(uint32_t value_u8) {
 }
 
 // Deterministic narrowing/conversion policy:
-// - f64 -> f32: default IEEE cast, then canonicalize NaN and zero.
-// - f32 -> f64: widen, then canonicalize NaN and zero.
-// - f64 in [0, 1] -> u8: treat NaN as 0, clamp, then round-half-up.
-// - f64 <-> f16: canonicalize NaN and zero in both directions.
-// - Sign is preserved only for finite non-zero values and infinities where the
-//   destination format can represent sign.
-//
-// These rules remove representation-only variation (-0, signed NaN payloads)
-// from deterministic state/pixel processing while preserving meaningful sign
-// where it is representable.
+// - Internal benchmark/state/color math stays in f64.
+// - f64 -> f32 is only for direct GPU-facing float consumption boundaries
+//   such as GL/Vulkan vertex data, uniforms, and float upload payloads.
+// - f64 in [0, 1] -> u8 and f64 -> f16 are the CPU pixel export boundaries
+//   for rgba8 and rgba16f surfaces.
+// - f32 -> f64 and f16 -> f64 are import/readback boundaries back into the
+//   canonical internal f64 representation.
+// - Canonicalization removes representation-only variation (-0, NaN payloads)
+//   while preserving meaningful sign where the destination format supports it.
 static inline float db_double_to_f32(double value) {
     if (isnan(value) != 0) {
         return nanf("");
@@ -372,6 +371,21 @@ static inline void db_blend_rgb3(const double *prior_rgb,
     out_rgb[0] = prior_rgb[0] + ((target_rgb[0] - prior_rgb[0]) * blend_factor);
     out_rgb[1] = prior_rgb[1] + ((target_rgb[1] - prior_rgb[1]) * blend_factor);
     out_rgb[2] = prior_rgb[2] + ((target_rgb[2] - prior_rgb[2]) * blend_factor);
+}
+
+// Generic qsort/bsearch-compatible comparator for f64 arrays.
+// Keep this centralized instead of duplicating local void*-ABI shims at each
+// sample-sorting call site.
+static inline int db_qsort_compare_f64(const void *lhs, const void *rhs) {
+    const double lhs_value = *(const double *)lhs;
+    const double rhs_value = *(const double *)rhs;
+    if (lhs_value < rhs_value) {
+        return -1;
+    }
+    if (lhs_value > rhs_value) {
+        return 1;
+    }
+    return 0;
 }
 
 #endif

@@ -4,6 +4,7 @@
 
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
+#include "../../core/db_hash.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
 #include "../../renderers/renderer_gl_common.h"
@@ -11,7 +12,6 @@
 #ifdef DB_HAS_VULKAN_API
 #include "../../renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.h"
 #endif
-#include "../display_cpu_hash_common.h"
 #include "../display_dispatch.h"
 #include "../display_frame_loop_common.h"
 #include "../display_gl_hash_readback_common.h"
@@ -52,8 +52,28 @@ typedef struct {
 #endif
 
 static uint64_t db_offscreen_cpu_bo_hash(void) {
-    return db_display_cpu_renderer_bo_hash_or_fail(
-        DB_BACKEND_NAME_DISPLAY_OFFSCREEN);
+    uint32_t pixel_width = 0U;
+    uint32_t pixel_height = 0U;
+    if (db_renderer_cpu_renderer_bo_uses_rgba16f() != 0) {
+        const uint16_t *pixels = db_renderer_cpu_renderer_pixels_rgba16f(
+            &pixel_width, &pixel_height);
+        if (pixels == NULL) {
+            db_failf(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
+                     "cpu renderer returned invalid HDR framebuffer");
+        }
+        return db_hash_rgba16f_pixels_canonical(
+            pixels, pixel_width, pixel_height,
+            (size_t)pixel_width * 4U * sizeof(uint16_t), 0);
+    }
+    const uint32_t *pixels =
+        db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
+    if (pixels == NULL) {
+        db_failf(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
+                 "cpu renderer returned invalid framebuffer");
+    }
+    return db_hash_rgba8_pixels_canonical((const uint8_t *)pixels, pixel_width,
+                                          pixel_height,
+                                          (size_t)pixel_width * 4U, 0);
 }
 
 static db_display_frame_loop_result_t
@@ -63,9 +83,10 @@ db_offscreen_cpu_frame_step(void *user_data, uint32_t frame_index,
     if ((ctx == NULL) || (ctx->frame_step == NULL)) {
         return DB_DISPLAY_FRAME_LOOP_STOP;
     }
-    db_display_cpu_render_present_and_hash(ctx->frame_step, frame_index,
-                                           elapsed_ms, NULL, NULL,
-                                           db_offscreen_cpu_bo_hash);
+    db_renderer_cpu_renderer_render_frame(frame_index);
+    db_display_cpu_frame_step(ctx->frame_step, frame_index, elapsed_ms,
+                              db_renderer_cpu_renderer_state_hash,
+                              db_offscreen_cpu_bo_hash);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
 
@@ -178,28 +199,25 @@ db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
         db_display_gl_default_preserved_framebuffer_count(
             ctx->renderer_ops->renderer),
         0);
-    const db_display_gl_hash_rgba16f_cb_ctx_t output_hash_ctx = {
-        .backend_name = ctx->backend_name,
-        .framebuffer_width_px = ctx->framebuffer_width_px,
-        .framebuffer_height_px = ctx->framebuffer_height_px,
-        .scratch = ctx->hash_scratch,
-    };
-    db_display_gl_frame_step_with_hash_fns(
-        ctx->frame_step, frame_index, elapsed_ms,
-        db_display_gl_renderer_ops_state_hash_cb, (void *)ctx->renderer_ops,
-        db_display_gl_hash_rgba16f_framebuffer_cb, (void *)&output_hash_ctx);
+    db_display_gl_frame_step(ctx->frame_step, frame_index, elapsed_ms, 1,
+                             ctx->renderer_ops->state_hash(), 1,
+                             db_gl_hash_framebuffer_rgba16f_or_fail(
+                                 ctx->backend_name, ctx->framebuffer_width_px,
+                                 ctx->framebuffer_height_px, ctx->hash_scratch,
+                                 1));
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
 
 static int db_run_offscreen_glfw_gl1(const db_cli_config_t *cfg) {
     db_cli_config_t glfw_cfg = (cfg != NULL) ? *cfg : (db_cli_config_t){0};
-    glfw_cfg.offscreen_enabled = 1;
+    glfw_cfg.glfw_window_hidden = 1;
 #ifdef __linux__
     if (glfw_cfg.backbuffer_draw_mode_explicit == 0) {
-        // Hidden GLFW offscreen is used as a deterministic harness, not as a
-        // preserved-default-framebuffer presentation path.
+        // The offscreen GL1 route is implemented with a hidden GLFW window as a
+        // deterministic harness, not as a preserved-default-framebuffer
+        // presentation path.
         glfw_cfg.backbuffer_draw_full = 1;
-        db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "full");
+        db_runtime_option_set_backbuffer_draw_full(1);
     }
 #endif
     return db_run_glfw_window(DB_API_OPENGL, DB_GL_RENDERER_GL1_5_GLES1_1,
@@ -220,11 +238,10 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
     GLFWwindow *window = db_glfw_create_opengl_window(
         DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO,
         "OpenGL 3.3 Offscreen FBO DriverBench", BENCH_WINDOW_WIDTH_PX,
-        BENCH_WINDOW_HEIGHT_PX, 3, 3, 1, 0, 1);
-    (void)db_display_prepare_and_validate_gl_runtime(
+        BENCH_WINDOW_HEIGHT_PX, 3, 3, 1, 0, DB_GLFW_WINDOW_HIDDEN);
+    (void)db_display_require_gl_runtime_for_renderer(
         (db_gl_proc_resolver_fn_t)glfwGetProcAddress, DB_GL_RENDERER_GL3_3,
-        DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO,
-        DB_DISPLAY_GL_RUNTIME_LOG_ENABLED, -1, NULL, NULL);
+        DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, -1);
     if (db_gl_context_probe_texture_float_support() == 0) {
         db_failf(DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO,
                  "GL3 offscreen float hashing requires texture-float support");
@@ -330,7 +347,8 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     const db_display_hash_settings_t hash_settings =
         runtime_hash_cfg.hash_settings;
 
-    db_renderer_cpu_renderer_init();
+    db_renderer_cpu_renderer_init_with_hdr_float_bo(
+        db_display_cpu_hdr_option_state().option_enables_hdr);
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
 

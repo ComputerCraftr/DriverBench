@@ -297,10 +297,7 @@ typedef struct {
 
 typedef struct {
     uint32_t span_units;
-    uint32_t row_start;
-    uint32_t row_end;
-    uint32_t col_start;
-    uint32_t col_end;
+    db_grid_block_t block;
     db_vk_draw_payload_t payload;
 } db_vk_grid_row_block_draw_req_t;
 

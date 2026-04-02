@@ -18,22 +18,6 @@
 #define DB_NS_PER_SECOND 1000000000.0
 #define DB_NS_PER_SECOND_U64 UINT64_C(1000000000)
 #define DB_CACHELINE_ALIGNMENT_BYTES 64U
-#define DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY "allow_remote_display"
-#define DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE "backbuffer_draw_mode"
-#define DB_RUNTIME_OPT_BENCH_SPEED "bench_speed"
-#define DB_RUNTIME_OPT_BENCHMARK_MODE "benchmark_mode"
-#define DB_RUNTIME_OPT_CPU_HDR "cpu_hdr"
-#define DB_RUNTIME_OPT_FPS_CAP "fps_cap"
-#define DB_RUNTIME_OPT_FRAME_LIMIT "frame_limit"
-#define DB_RUNTIME_OPT_HASH "hash"
-#define DB_RUNTIME_OPT_HASH_REPORT "hash_report"
-#define DB_RUNTIME_OPT_METRICS_MODE "metrics_mode"
-#define DB_RUNTIME_OPT_OFFSCREEN "offscreen"
-#define DB_RUNTIME_OPT_RANDOM_SEED "random_seed"
-#define DB_RUNTIME_OPT_VK_ALLOW_CPU_WORKERS "vk_allow_cpu_workers"
-#define DB_RUNTIME_OPT_VK_MULTI_DEVICE_POLICY "vk_multi_device_policy"
-#define DB_RUNTIME_OPT_VK_NO_PRESENT "vk_no_present"
-#define DB_RUNTIME_OPT_VSYNC "vsync"
 #define DB_U32_MIX_SHIFT_A 16U
 #define DB_U32_MIX_SHIFT_B 15U
 #define DB_U32_MIX_MUL_A 0x7FEB352DU
@@ -53,8 +37,6 @@ int db_parse_bool_text(const char *value, int *out_value);
 int db_parse_fps_cap_text(const char *value, double *out_value);
 uint32_t db_fold_u64_to_u32(uint64_t value);
 uint32_t db_mix_u32(uint32_t value);
-const char *db_runtime_option_get(const char *name);
-void db_runtime_option_set(const char *name, const char *value);
 void db_validate_runtime_environment(const char *backend,
                                      const char *remote_override_option);
 void db_install_signal_handlers(void);
@@ -132,6 +114,16 @@ static inline uint32_t db_checked_u64_to_u32(const char *backend,
                  (unsigned long long)value);
     }
     return (uint32_t)value;
+}
+
+static inline size_t db_checked_u64_to_size(const char *backend,
+                                            const char *field_name,
+                                            uint64_t value) {
+    if (value > (uint64_t)SIZE_MAX) {
+        db_failf(backend, "%s out of size_t range: %llu", field_name,
+                 (unsigned long long)value);
+    }
+    return (size_t)value;
 }
 
 static inline void *db_alloc_array_or_fail(const char *backend,

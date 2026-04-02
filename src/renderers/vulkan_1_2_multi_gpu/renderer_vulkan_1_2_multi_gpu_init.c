@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../config/runtime_options.h"
 #include "../../core/db_core.h"
 #include "../renderer_benchmark_common.h"
 #include "db_embedded_shaders.h"

@@ -1,5 +1,7 @@
 #include "db_core.h"
 
+#include "../config/runtime_options.h"
+
 #include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -9,16 +11,11 @@
 #include <string.h>
 #include <time.h>
 
-#define DB_RUNTIME_OPTION_CAPACITY 32U
 #define DB_MAX_SLEEP_NS 100000000.0
 #define DISPLAY_LOCALHOST_PREFIX "localhost:"
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 
 static volatile sig_atomic_t db_stop_requested = 0;
-static struct {
-    const char *key;
-    const char *value;
-} db_runtime_options[DB_RUNTIME_OPTION_CAPACITY] = {0};
 
 static int db_ascii_ieq_char(char lhs, char rhs) {
     if ((lhs >= 'A') && (lhs <= 'Z')) {
@@ -165,37 +162,6 @@ int db_parse_fps_cap_text(const char *value, double *out_value) {
     }
 
     return 0;
-}
-
-const char *db_runtime_option_get(const char *name) {
-    if (name == NULL) {
-        return NULL;
-    }
-    for (size_t i = 0U; i < DB_RUNTIME_OPTION_CAPACITY; i++) {
-        if ((db_runtime_options[i].key != NULL) &&
-            (strcmp(db_runtime_options[i].key, name) == 0)) {
-            return db_runtime_options[i].value;
-        }
-    }
-    return NULL;
-}
-
-void db_runtime_option_set(const char *name, const char *value) {
-    if ((name == NULL) || (value == NULL)) {
-        return;
-    }
-    for (size_t i = 0U; i < DB_RUNTIME_OPTION_CAPACITY; i++) {
-        if (db_runtime_options[i].key == NULL) {
-            db_runtime_options[i].key = name;
-            db_runtime_options[i].value = value;
-            return;
-        }
-        if (strcmp(db_runtime_options[i].key, name) == 0) {
-            db_runtime_options[i].value = value;
-            return;
-        }
-    }
-    db_failf("db_core", "Runtime option capacity exceeded");
 }
 
 static int db_has_ssh_env(void) {

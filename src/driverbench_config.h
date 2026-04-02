@@ -16,7 +16,7 @@ typedef struct db_cli_config {
     uint32_t frame_limit;
     int backbuffer_draw_full;
     int backbuffer_draw_mode_explicit;
-    int offscreen_enabled;
+    int glfw_window_hidden;
     int debug_clear_default_framebuffer;
     int vsync_enabled;
     int api_is_auto;

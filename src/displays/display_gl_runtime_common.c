@@ -7,6 +7,28 @@
 #include "../renderers/renderer_gl_common.h"
 #include "display_types.h"
 
+static void
+db_display_validate_gles_1x_runtime_or_fail(const char *backend,
+                                            const char *runtime_version);
+static void db_display_validate_gl3_runtime_or_fail(const char *backend,
+                                                    const char *runtime_version,
+                                                    int runtime_is_gles);
+static void db_display_validate_gl_runtime_for_renderer_or_fail(
+    db_gl_renderer_t renderer, const char *backend, const char *runtime_version,
+    int runtime_is_gles);
+static void db_display_log_context_gles_fallback_mismatch(const char *backend,
+                                                          int context_is_gles,
+                                                          int runtime_is_gles);
+static void db_display_log_runtime_api(const char *backend,
+                                       const char *api_name,
+                                       const char *version_label,
+                                       const char *version_value,
+                                       const char *renderer_label,
+                                       const char *renderer_value);
+static void
+db_display_log_gl_runtime_info(const char *backend,
+                               const db_display_gl_runtime_info_t *runtime);
+
 db_display_gl_context_policy_t
 db_display_gl_context_policy_for_renderer(db_gl_renderer_t renderer) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
@@ -23,8 +45,9 @@ db_display_gl_context_policy_for_renderer(db_gl_renderer_t renderer) {
     };
 }
 
-void db_display_validate_gles_1x_runtime_or_fail(const char *backend,
-                                                 const char *runtime_version) {
+static void
+db_display_validate_gles_1x_runtime_or_fail(const char *backend,
+                                            const char *runtime_version) {
     int es_major = 0;
     int es_minor = 0;
     if (!db_parse_gl_version_numbers(runtime_version, &es_major, &es_minor)) {
@@ -37,9 +60,9 @@ void db_display_validate_gles_1x_runtime_or_fail(const char *backend,
     }
 }
 
-void db_display_validate_gl3_runtime_or_fail(const char *backend,
-                                             const char *runtime_version,
-                                             int runtime_is_gles) {
+static void db_display_validate_gl3_runtime_or_fail(const char *backend,
+                                                    const char *runtime_version,
+                                                    int runtime_is_gles) {
     if (runtime_is_gles != 0) {
         db_failf(backend,
                  "OpenGL ES runtime is unsupported for renderer gl3_3; "
@@ -53,7 +76,7 @@ void db_display_validate_gl3_runtime_or_fail(const char *backend,
     }
 }
 
-void db_display_validate_gl_runtime_for_renderer_or_fail(
+static void db_display_validate_gl_runtime_for_renderer_or_fail(
     db_gl_renderer_t renderer, const char *backend, const char *runtime_version,
     int runtime_is_gles) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
@@ -67,20 +90,18 @@ void db_display_validate_gl_runtime_for_renderer_or_fail(
                                             runtime_is_gles);
 }
 
-void db_display_log_context_gles_fallback_mismatch(const char *backend,
-                                                   int context_is_gles,
-                                                   int runtime_is_gles) {
+static void db_display_log_context_gles_fallback_mismatch(const char *backend,
+                                                          int context_is_gles,
+                                                          int runtime_is_gles) {
     if ((context_is_gles != 0) && (runtime_is_gles == 0)) {
         db_infof(backend, "context creation reported GLES fallback, "
                           "but runtime API is OpenGL");
     }
 }
 
-int db_display_prepare_gl_runtime(db_gl_proc_resolver_fn_t resolver,
-                                  const char *backend,
-                                  db_display_gl_runtime_log_mode_t log_mode,
-                                  const char **out_runtime_version,
-                                  const char **out_runtime_renderer) {
+db_display_gl_runtime_info_t
+db_display_prepare_gl_runtime_info(db_gl_proc_resolver_fn_t resolver,
+                                   const char *backend) {
     if (resolver == NULL) {
         db_failf((backend != NULL) ? backend : "display_gl_runtime_common",
                  "GL proc resolver is NULL");
@@ -89,51 +110,36 @@ int db_display_prepare_gl_runtime(db_gl_proc_resolver_fn_t resolver,
     db_gl_set_proc_resolver(resolver);
     db_gl_preload_upload_proc_table();
 
-    const char *runtime_version = db_gl_get_version_string();
-    const char *runtime_renderer = db_gl_get_renderer_string();
-    if (out_runtime_version != NULL) {
-        *out_runtime_version = runtime_version;
-    }
-    if (out_runtime_renderer != NULL) {
-        *out_runtime_renderer = runtime_renderer;
-    }
-
-    if (log_mode == DB_DISPLAY_GL_RUNTIME_LOG_ENABLED) {
-        return db_display_log_gl_runtime_api(backend, runtime_version,
-                                             runtime_renderer);
-    }
-    return db_gl_is_es_context(runtime_version);
+    const char *version = db_gl_get_version_string();
+    const db_display_gl_runtime_info_t runtime = {
+        .version = version,
+        .renderer = db_gl_get_renderer_string(),
+        .is_gles = db_gl_is_es_context(version),
+    };
+    return runtime;
 }
 
-int db_display_prepare_and_validate_gl_runtime(
+db_display_gl_runtime_info_t db_display_require_gl_runtime_for_renderer(
     db_gl_proc_resolver_fn_t resolver, db_gl_renderer_t renderer,
-    const char *backend, db_display_gl_runtime_log_mode_t log_mode,
-    int context_is_gles, const char **out_runtime_version,
-    const char **out_runtime_renderer) {
-    const char *runtime_version = NULL;
-    const char *runtime_renderer = NULL;
-    const int runtime_is_gles = db_display_prepare_gl_runtime(
-        resolver, backend, log_mode, &runtime_version, &runtime_renderer);
-    if (out_runtime_version != NULL) {
-        *out_runtime_version = runtime_version;
-    }
-    if (out_runtime_renderer != NULL) {
-        *out_runtime_renderer = runtime_renderer;
-    }
+    const char *backend, int context_is_gles) {
+    const db_display_gl_runtime_info_t runtime =
+        db_display_prepare_gl_runtime_info(resolver, backend);
+    db_display_log_gl_runtime_info(backend, &runtime);
     db_display_validate_gl_runtime_for_renderer_or_fail(
-        renderer, backend, runtime_version, runtime_is_gles);
+        renderer, backend, runtime.version, runtime.is_gles);
     if (context_is_gles >= 0) {
         db_display_log_context_gles_fallback_mismatch(backend, context_is_gles,
-                                                      runtime_is_gles);
+                                                      runtime.is_gles);
     }
-    return runtime_is_gles;
+    return runtime;
 }
 
-void db_display_log_runtime_api(const char *backend, const char *api_name,
-                                const char *version_label,
-                                const char *version_value,
-                                const char *renderer_label,
-                                const char *renderer_value) {
+static void db_display_log_runtime_api(const char *backend,
+                                       const char *api_name,
+                                       const char *version_label,
+                                       const char *version_value,
+                                       const char *renderer_label,
+                                       const char *renderer_value) {
     db_infof(backend, "runtime API: %s, %s: %s, %s: %s",
              (api_name != NULL) ? api_name : "(null)",
              (version_label != NULL) ? version_label : "version",
@@ -142,14 +148,15 @@ void db_display_log_runtime_api(const char *backend, const char *api_name,
              (renderer_value != NULL) ? renderer_value : "(null)");
 }
 
-int db_display_log_gl_runtime_api(const char *backend,
-                                  const char *runtime_version,
-                                  const char *runtime_renderer) {
-    const int runtime_is_gles = db_gl_is_es_context(runtime_version);
+static void
+db_display_log_gl_runtime_info(const char *backend,
+                               const db_display_gl_runtime_info_t *runtime) {
+    if (runtime == NULL) {
+        return;
+    }
     db_display_log_runtime_api(
-        backend, (runtime_is_gles != 0) ? "OpenGL ES" : "OpenGL", "GL_VERSION",
-        runtime_version, "GL_RENDERER", runtime_renderer);
-    return runtime_is_gles;
+        backend, (runtime->is_gles != 0) ? "OpenGL ES" : "OpenGL", "GL_VERSION",
+        runtime->version, "GL_RENDERER", runtime->renderer);
 }
 
 void db_display_log_vulkan_runtime_api(const char *backend,

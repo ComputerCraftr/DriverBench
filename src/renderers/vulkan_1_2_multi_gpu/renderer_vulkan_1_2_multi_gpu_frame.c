@@ -516,12 +516,8 @@ static void db_vk_pixel_bounds_ndc(uint32_t x0_px, uint32_t y0_px,
                                    uint32_t x1_px, uint32_t y1_px,
                                    VkExtent2D extent, float *x0, float *y0,
                                    float *x1, float *y1) {
-    const double inv_w = 1.0 / (double)db_u32_max(extent.width, 1U);
-    const double inv_h = 1.0 / (double)db_u32_max(extent.height, 1U);
-    *x0 = db_double_to_f32((2.0 * (double)x0_px * inv_w) - 1.0);
-    *x1 = db_double_to_f32((2.0 * (double)x1_px * inv_w) - 1.0);
-    *y0 = db_double_to_f32((2.0 * (double)y0_px * inv_h) - 1.0);
-    *y1 = db_double_to_f32((2.0 * (double)y1_px * inv_h) - 1.0);
+    db_pixel_bounds_to_ndc_f32(x0_px, y0_px, x1_px, y1_px, extent.width,
+                               extent.height, x0, y0, x1, y1);
 }
 
 static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx, uint32_t row,
@@ -533,27 +529,37 @@ static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx, uint32_t row,
         return;
     }
 
-    uint32_t x0 = (ctx->extent.width * col_start) / ctx->grid_cols;
-    uint32_t x1 = (ctx->extent.width * col_end) / ctx->grid_cols;
-    uint32_t y0 = (ctx->extent.height * row) / ctx->grid_rows;
-    uint32_t y1 = (ctx->extent.height * (row + 1U)) / ctx->grid_rows;
-    if ((x1 <= x0) || (y1 <= y0)) {
+    const db_grid_block_t block = {
+        .row_start = row,
+        .row_count = 1U,
+        .col_start = col_start,
+        .col_count = col_end - col_start,
+    };
+    db_damage_block_t pixel_block = {0U, 0U, 0U, 0U};
+    if (db_grid_block_to_pixel_block(ctx->grid_cols, ctx->grid_rows, &block,
+                                     ctx->extent.width, ctx->extent.height,
+                                     &pixel_block) == 0) {
         return;
     }
 
     VkRect2D sc;
-    sc.offset.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", x0);
-    sc.offset.y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", y0);
-    sc.extent.width = x1 - x0;
-    sc.extent.height = y1 - y0;
+    sc.offset.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
+                                        pixel_block.col_start);
+    sc.offset.y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
+                                        pixel_block.row_start);
+    sc.extent.width = pixel_block.col_count;
+    sc.extent.height = pixel_block.row_count;
     vkCmdSetScissor(ctx->cmd, 0, 1, &sc);
 
     float ndc_x0 = 0.0F;
     float ndc_y0 = 0.0F;
     float ndc_x1 = 0.0F;
     float ndc_y1 = 0.0F;
-    db_vk_pixel_bounds_ndc(x0, y0, x1, y1, ctx->extent, &ndc_x0, &ndc_y0,
-                           &ndc_x1, &ndc_y1);
+    db_vk_pixel_bounds_ndc(
+        pixel_block.col_start, pixel_block.row_start,
+        pixel_block.col_start + pixel_block.col_count,
+        pixel_block.row_start + pixel_block.row_count, ctx->extent, &ndc_x0,
+        &ndc_y0, &ndc_x1, &ndc_y1);
 
     db_vk_draw_dynamic_req_t dynamic = {
         .ndc_x0 = ndc_x0,
@@ -576,44 +582,38 @@ static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx, uint32_t row,
 }
 
 static void db_vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
-                                      uint32_t row_start, uint32_t row_end,
-                                      uint32_t col_start, uint32_t col_end,
+                                      const db_grid_block_t *block,
                                       const db_vk_draw_payload_t *payload) {
-    if ((ctx == NULL) || (payload == NULL) || (row_end <= row_start) ||
-        (row_start >= ctx->grid_rows) || (ctx->grid_rows == 0U) ||
-        (ctx->grid_cols == 0U) || (col_end <= col_start) ||
-        (col_start >= ctx->grid_cols)) {
+    if ((ctx == NULL) || (payload == NULL) || (block == NULL) ||
+        (block->row_count == 0U) || (block->col_count == 0U) ||
+        (block->row_start >= ctx->grid_rows) || (ctx->grid_rows == 0U) ||
+        (ctx->grid_cols == 0U) || (block->col_start >= ctx->grid_cols)) {
         return;
     }
-    uint32_t row_end_clamped = row_end;
-    if (row_end_clamped > ctx->grid_rows) {
-        row_end_clamped = ctx->grid_rows;
-    }
-    uint32_t col_end_clamped = col_end;
-    if (col_end_clamped > ctx->grid_cols) {
-        col_end_clamped = ctx->grid_cols;
-    }
-
-    const uint32_t x0 = (ctx->extent.width * col_start) / ctx->grid_cols;
-    const uint32_t x1 = (ctx->extent.width * col_end_clamped) / ctx->grid_cols;
-    const uint32_t y0 = (ctx->extent.height * row_start) / ctx->grid_rows;
-    const uint32_t y1 = (ctx->extent.height * row_end_clamped) / ctx->grid_rows;
-    if ((x1 <= x0) || (y1 <= y0)) {
+    db_damage_block_t pixel_block = {0U, 0U, 0U, 0U};
+    if (db_grid_block_to_pixel_block(ctx->grid_cols, ctx->grid_rows, block,
+                                     ctx->extent.width, ctx->extent.height,
+                                     &pixel_block) == 0) {
         return;
     }
     VkRect2D sc = {0};
-    sc.offset.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", x0);
-    sc.offset.y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", y0);
-    sc.extent.width = x1 - x0;
-    sc.extent.height = y1 - y0;
+    sc.offset.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
+                                        pixel_block.col_start);
+    sc.offset.y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
+                                        pixel_block.row_start);
+    sc.extent.width = pixel_block.col_count;
+    sc.extent.height = pixel_block.row_count;
     vkCmdSetScissor(ctx->cmd, 0, 1, &sc);
 
     float ndc_x0 = 0.0F;
     float ndc_y0 = 0.0F;
     float ndc_x1 = 0.0F;
     float ndc_y1 = 0.0F;
-    db_vk_pixel_bounds_ndc(x0, y0, x1, y1, ctx->extent, &ndc_x0, &ndc_y0,
-                           &ndc_x1, &ndc_y1);
+    db_vk_pixel_bounds_ndc(
+        pixel_block.col_start, pixel_block.row_start,
+        pixel_block.col_start + pixel_block.col_count,
+        pixel_block.row_start + pixel_block.row_count, ctx->extent, &ndc_x0,
+        &ndc_y0, &ndc_x1, &ndc_y1);
     db_vk_draw_dynamic_req_t dynamic = {
         .ndc_x0 = ndc_x0,
         .ndc_y0 = ndc_y0,
@@ -706,6 +706,7 @@ void db_vk_draw_owner_grid_row_block(
     const db_vk_owner_draw_ctx_t *ctx,
     const db_vk_grid_row_block_draw_req_t *req) {
     if ((ctx == NULL) || (req == NULL) || (req->span_units == 0U) ||
+        (req->block.row_count == 0U) || (req->block.col_count == 0U) ||
         (ctx->grid_tiles_drawn == NULL) || (ctx->grid_tiles_per_gpu == NULL) ||
         (ctx->frame_work_units == NULL)) {
         return;
@@ -736,8 +737,7 @@ void db_vk_draw_owner_grid_row_block(
         .grid_cols = ctx->grid_cols,
         .payload_cache = ctx->payload_cache,
     };
-    db_vk_draw_grid_row_block(&draw_ctx, req->row_start, req->row_end,
-                              req->col_start, req->col_end, &req->payload);
+    db_vk_draw_grid_row_block(&draw_ctx, &req->block, &req->payload);
     db_vk_owner_timing_end(ctx->cmd, ctx->timing_enabled,
                            ctx->timing_query_pool, owner,
                            ctx->frame_owner_finished);
@@ -745,7 +745,7 @@ void db_vk_draw_owner_grid_row_block(
 }
 
 static void db_vk_draw_snake_compact_blocks(
-    const db_vk_owner_draw_ctx_t *ctx, const db_damage_block_t *blocks,
+    const db_vk_owner_draw_ctx_t *ctx, const db_grid_block_t *blocks,
     size_t block_count, const float *color, uint32_t render_mode,
     uint32_t snake_shape_index, uint32_t active_cursor, int snake_phase_flag,
     uint32_t batch_size, int phase_completed) {
@@ -768,26 +768,23 @@ static void db_vk_draw_snake_compact_blocks(
         .band_count = 0U,
     };
     for (size_t block_index = 0U; block_index < block_count; block_index++) {
-        const db_damage_block_t *block = &blocks[block_index];
-        const uint32_t col_end = block->col_start + block->col_count;
+        const db_grid_block_t *block = &blocks[block_index];
         if (block->row_count >= DB_VK_SNAKE_ROW_BLOCK_MIN_ROWS) {
-            const uint32_t row_units = col_end - block->col_start;
-            const uint64_t span_units_u64 =
-                (uint64_t)block->row_count * (uint64_t)row_units;
             const db_vk_grid_row_block_draw_req_t req = {
-                .span_units = db_checked_u64_to_u32(
-                    BACKEND_NAME, "snake_row_block_units", span_units_u64),
-                .row_start = block->row_start,
-                .row_end = block->row_start + block->row_count,
-                .col_start = block->col_start,
-                .col_end = col_end,
+                .span_units =
+                    db_grid_block_span_units_or_fail("snake_row_block_units",
+                                                     block),
+                .block = *block,
                 .payload = payload_base,
             };
             db_vk_draw_owner_grid_row_block(ctx, &req);
             continue;
         }
-        for (uint32_t row = block->row_start;
-             row < (block->row_start + block->row_count); row++) {
+        const uint32_t col_end =
+            db_grid_block_col_end_or_fail("vk_snake_col_end", block);
+        const uint32_t row_end =
+            db_grid_block_row_end_or_fail("vk_snake_row_end", block);
+        for (uint32_t row = block->row_start; row < row_end; row++) {
             const db_vk_grid_span_draw_req_t req = {
                 .span_units = col_end - block->col_start,
                 .row = row,
@@ -816,7 +813,7 @@ void db_vk_draw_snake_grid_plan(const db_vk_owner_draw_ctx_t *ctx,
     if ((plan->prev_count == 0U) && (plan->batch_size == 0U)) {
         return;
     }
-    const db_damage_block_t *blocks = NULL;
+    const db_grid_block_t *blocks = NULL;
     size_t block_count = 0U;
     if ((g_state.snake_scratch.damage.blocks == NULL) ||
         (db_snake_collect_damage_blocks_for_plan(
@@ -861,7 +858,7 @@ void db_vk_draw_snake_region_plan(const db_vk_owner_draw_ctx_t *ctx,
             }
         }
     }
-    const db_damage_block_t *blocks = NULL;
+    const db_grid_block_t *blocks = NULL;
     size_t block_count = 0U;
     if (((g_state.snake_scratch.damage.blocks == NULL) ||
          (db_snake_collect_damage_blocks(

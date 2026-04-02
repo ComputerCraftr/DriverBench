@@ -47,29 +47,30 @@ function(db_extract_hash_or_fail output hash_key out_hash_value)
   set(${out_hash_value} "${hash_value}" PARENT_SCOPE)
 endfunction()
 
+set(run_arg_sets "")
 if(DEFINED TEST_ARGS AND NOT "${TEST_ARGS}" STREQUAL "")
-  set(run1_args "${TEST_ARGS}")
+  list(APPEND run_arg_sets "${TEST_ARGS}")
 else()
-  set(run1_args "")
+  list(APPEND run_arg_sets "")
 endif()
 
 if(DEFINED TEST_ARGS_B AND NOT "${TEST_ARGS_B}" STREQUAL "")
-  set(run2_args "${TEST_ARGS_B}")
+  list(APPEND run_arg_sets "${TEST_ARGS_B}")
 else()
-  set(run2_args "${run1_args}")
+  list(APPEND run_arg_sets "${TEST_ARGS}")
 endif()
 
 if(DEFINED TEST_ARGS_C AND NOT "${TEST_ARGS_C}" STREQUAL "")
-  set(run3_args "${TEST_ARGS_C}")
-else()
-  set(run3_args "")
+  list(APPEND run_arg_sets "${TEST_ARGS_C}")
 endif()
 
-db_run_once(run1_output "${run1_args}")
-db_run_once(run2_output "${run2_args}")
-if(NOT "${run3_args}" STREQUAL "")
-  db_run_once(run3_output "${run3_args}")
-endif()
+set(run_outputs "")
+foreach(run_args IN LISTS run_arg_sets)
+  db_run_once(run_output "${run_args}")
+  list(APPEND run_outputs "${run_output}")
+endforeach()
+
+list(GET run_outputs 0 reference_output)
 
 set(hash_summary "")
 foreach(hash_check IN LISTS TEST_HASH_CHECKS)
@@ -83,33 +84,28 @@ foreach(hash_check IN LISTS TEST_HASH_CHECKS)
     string(SUBSTRING "${hash_check}" ${expected_start} -1 expected_hash)
   endif()
 
-  db_extract_hash_or_fail("${run1_output}" "${hash_key}" run1_hash)
-  db_extract_hash_or_fail("${run2_output}" "${hash_key}" run2_hash)
-
-  if(NOT run1_hash STREQUAL run2_hash)
-    message(FATAL_ERROR
-      "Determinism mismatch for ${TEST_BIN} key '${hash_key}': ${run1_hash} != ${run2_hash}\n"
-      "run1:\n${run1_output}\n"
-      "run2:\n${run2_output}\n")
-  endif()
-
-  if(NOT "${run3_args}" STREQUAL "")
-    db_extract_hash_or_fail("${run3_output}" "${hash_key}" run3_hash)
-    if(NOT run1_hash STREQUAL run3_hash)
+  db_extract_hash_or_fail("${reference_output}" "${hash_key}" reference_hash)
+  set(candidate_outputs "${run_outputs}")
+  list(REMOVE_AT candidate_outputs 0)
+  set(run_index 1)
+  foreach(run_output IN LISTS candidate_outputs)
+    db_extract_hash_or_fail("${run_output}" "${hash_key}" candidate_hash)
+    if(NOT reference_hash STREQUAL candidate_hash)
       message(FATAL_ERROR
-        "Determinism mismatch for ${TEST_BIN} key '${hash_key}': ${run1_hash} != ${run3_hash}\n"
-        "run1:\n${run1_output}\n"
-        "run3:\n${run3_output}\n")
+        "Determinism mismatch for ${TEST_BIN} key '${hash_key}': ${reference_hash} != ${candidate_hash}\n"
+        "reference:\n${reference_output}\n"
+        "candidate #${run_index}:\n${run_output}\n")
     endif()
-  endif()
+    math(EXPR run_index "${run_index} + 1")
+  endforeach()
 
-  if(NOT "${expected_hash}" STREQUAL "" AND NOT run1_hash STREQUAL expected_hash)
+  if(NOT "${expected_hash}" STREQUAL "" AND NOT reference_hash STREQUAL expected_hash)
     message(FATAL_ERROR
-      "Golden hash mismatch for ${TEST_BIN} key '${hash_key}': expected ${expected_hash}, got ${run1_hash}\n"
-      "run output:\n${run1_output}\n")
+      "Golden hash mismatch for ${TEST_BIN} key '${hash_key}': expected ${expected_hash}, got ${reference_hash}\n"
+      "run output:\n${reference_output}\n")
   endif()
 
-  list(APPEND hash_summary "${hash_key}=${run1_hash}")
+  list(APPEND hash_summary "${hash_key}=${reference_hash}")
 endforeach()
 
 string(JOIN ", " hash_summary_text ${hash_summary})

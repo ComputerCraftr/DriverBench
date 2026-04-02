@@ -756,13 +756,12 @@ static EGLDisplay egl_init_try_gl_then_optional_gles1_1(
                     dpy, cfg, (EGLNativeWindowType)gbm_surf, NULL);
                 if ((surf != EGL_NO_SURFACE) &&
                     eglMakeCurrent(dpy, surf, surf, ctx)) {
-                    const char *ver = NULL;
-                    (void)db_display_prepare_gl_runtime(
-                        (db_gl_proc_resolver_fn_t)eglGetProcAddress,
-                        BACKEND_NAME, DB_DISPLAY_GL_RUNTIME_LOG_DISABLED, &ver,
-                        NULL);
-                    if (db_gl_version_text_at_least(ver, req_gl_major,
-                                                    req_gl_minor)) {
+                    const db_display_gl_runtime_info_t runtime =
+                        db_display_prepare_gl_runtime_info(
+                            (db_gl_proc_resolver_fn_t)eglGetProcAddress,
+                            BACKEND_NAME);
+                    if (db_gl_version_text_at_least(
+                            runtime.version, req_gl_major, req_gl_minor)) {
                         *out_cfg = cfg;
                         *out_ctx = ctx;
                         *out_surf = surf;
@@ -893,9 +892,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         backend, gbm, &egl_cfg, &ctx, &surf, gbm_surf, req_major, req_minor,
         allow_gles1_1_fallback);
 
-    (void)db_display_prepare_and_validate_gl_runtime(
-        (db_gl_proc_resolver_fn_t)eglGetProcAddress, gl_renderer, backend,
-        DB_DISPLAY_GL_RUNTIME_LOG_ENABLED, -1, NULL, NULL);
+    (void)db_display_require_gl_runtime_for_renderer(
+        (db_gl_proc_resolver_fn_t)eglGetProcAddress, gl_renderer, backend, -1);
 
     const int viewport_width =
         db_checked_u32_to_i32(backend, "viewport_width", width);
@@ -1059,7 +1057,7 @@ static struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx,
     db_kms_atomic_cpu_frame_producer_t *producer =
         (db_kms_atomic_cpu_frame_producer_t *)user_ctx;
     db_renderer_cpu_renderer_render_frame(frame_index);
-    const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
+    const int use_hdr_float_bo = db_renderer_cpu_renderer_bo_uses_rgba16f();
     const uint32_t *pixels_rgba8 = NULL;
     const uint16_t *pixels_rgba16f = NULL;
     uint32_t src_width = 0U;
@@ -1102,7 +1100,8 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
     uint32_t height = 0U;
     db_kms_atomic_init_core(card, &kms, &gbm, &width, &height);
 
-    db_renderer_cpu_renderer_init();
+    db_renderer_cpu_renderer_init_with_hdr_float_bo(
+        db_display_cpu_hdr_option_state().option_enables_hdr);
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
     const db_display_runtime_config_t runtime_cfg =
         db_display_runtime_hash_config_from_cli(cfg, 0, 0).runtime;

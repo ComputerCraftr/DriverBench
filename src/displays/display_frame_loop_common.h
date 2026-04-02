@@ -6,7 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../config/runtime_options.h"
+#include "../core/db_alloc_policy.h"
 #include "../core/db_core.h"
+#include "../core/db_numeric.h"
 
 typedef enum {
     DB_DISPLAY_FRAME_LOOP_CONTINUE = 0,
@@ -54,18 +57,6 @@ static inline int db_display_dual_metrics_enabled(void) {
         db_runtime_option_get(DB_RUNTIME_OPT_METRICS_MODE);
     return ((metrics_mode != NULL) && (strcmp(metrics_mode, "dual") == 0)) ? 1
                                                                            : 0;
-}
-
-static int db_display_compare_f64(const void *lhs, const void *rhs) {
-    const double lhs_value = *(const double *)lhs;
-    const double rhs_value = *(const double *)rhs;
-    if (lhs_value < rhs_value) {
-        return -1;
-    }
-    if (lhs_value > rhs_value) {
-        return 1;
-    }
-    return 0;
 }
 
 static inline double db_display_percentile_sorted(const double *samples,
@@ -156,22 +147,21 @@ db_display_run_frame_loop(const db_display_frame_loop_t *loop) {
         }
         if (samples != NULL) {
             if (sample_count >= sample_capacity) {
-                const size_t new_capacity = sample_capacity * 2U;
+                const size_t new_capacity = db_size_grow_capacity_3_2(
+                    sample_capacity, sample_count + 1U,
+                    DB_DISPLAY_FRAME_SAMPLE_INIT_CAPACITY);
                 if (new_capacity <= sample_capacity) {
                     db_failf((loop->backend != NULL) ? loop->backend
                                                      : "display_frame_loop",
                              "display frame sample capacity overflow");
                 }
-                double *const grown =
-                    (double *)realloc(samples, new_capacity * sizeof(double));
-                if (grown == NULL) {
-                    free(samples);
-                    db_failf((loop->backend != NULL) ? loop->backend
-                                                     : "display_frame_loop",
-                             "failed to grow display frame samples");
-                }
-                samples = grown;
-                sample_capacity = new_capacity;
+                db_reserve_array_capacity_or_fail(
+                    (void **)&samples, &sample_capacity, new_capacity,
+                    DB_DISPLAY_FRAME_SAMPLE_INIT_CAPACITY, sizeof(double),
+                    sample_count,
+                    (loop->backend != NULL) ? loop->backend
+                                            : "display_frame_loop",
+                    "display_frame_samples");
             }
             samples[sample_count++] = frame_total_ms;
         }
@@ -185,7 +175,7 @@ db_display_run_frame_loop(const db_display_frame_loop_t *loop) {
     result.elapsed_ms =
         (double)(db_now_ns_monotonic() - bench_start_ns) / DB_NS_PER_MS;
     if ((samples != NULL) && (sample_count > 0U)) {
-        qsort(samples, sample_count, sizeof(double), db_display_compare_f64);
+        qsort(samples, sample_count, sizeof(double), db_qsort_compare_f64);
         result.frame_p50_ms = db_display_percentile_sorted(
             samples, sample_count, DB_DISPLAY_PERCENTILE_P50);
         result.frame_p95_ms = db_display_percentile_sorted(

@@ -10,10 +10,11 @@
 
 #include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
+#include "../core/db_numeric.h"
+#include "renderer_benchmark_common.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
-#define DB_HAS_DLSYM_PROC_ADDRESS 1
 #endif
 
 typedef void *(*db_gl_map_buffer_fn_t)(GLenum target, GLenum access);
@@ -75,6 +76,7 @@ typedef void (*db_gl_get_shader_iv_fn_t)(GLuint shader, GLenum pname,
 typedef GLint (*db_gl_get_uniform_location_fn_t)(GLuint program,
                                                  const char *name);
 typedef const GLubyte *(*db_gl_get_string_raw_fn_t)(GLenum name);
+typedef const GLubyte *(*db_gl_get_stringi_raw_fn_t)(GLenum name, GLuint index);
 typedef void *(*db_gl_map_buffer_range_fn_t)(GLenum target, GLintptr offset,
                                              GLsizeiptr length,
                                              GLbitfield access);
@@ -168,6 +170,7 @@ typedef struct {
     db_gl_get_shader_info_log_fn_t get_shader_info_log;
     db_gl_get_shader_iv_fn_t get_shader_iv;
     db_gl_get_string_raw_fn_t get_string;
+    db_gl_get_stringi_raw_fn_t get_stringi;
     db_gl_get_uniform_location_fn_t get_uniform_location;
     db_gl_map_buffer_fn_t map_buffer;
     db_gl_map_buffer_range_fn_t map_buffer_range;
@@ -190,6 +193,17 @@ typedef struct {
     db_gl_compile_shader_fn_t compile_shader;
     int loaded;
 } db_gl_upload_proc_table_t;
+
+typedef struct {
+    const char *version_text;
+    const char *extensions_text;
+    int has_valid_version;
+    int has_valid_extensions;
+    int uses_indexed_extension_query;
+    int is_es;
+    int version_major;
+    int version_minor;
+} db_gl_runtime_metadata_t;
 
 // Track a small fixed number of texture units for redundant bind elision.
 #define DB_GL_TRACKED_TEXTURE_UNIT_COUNT 32U
@@ -295,20 +309,59 @@ int db_gl_is_es_context(const char *version_text) {
 }
 
 // 1) Capability utility helpers (error clear/probe pattern/capability strings).
-void db_gl_clear_errors(db_gl_get_error_fn_t get_error) {
-    if (get_error == NULL) {
+static void db_gl_probe_drain_errors(void) {
+    if (g_upload_proc_table.get_error == NULL) {
         return;
     }
-    while (get_error() != 0U) {
+    while (g_upload_proc_table.get_error() != GL_NO_ERROR) {
     }
 }
 
-size_t db_gl_upload_probe_size_bytes(size_t bytes) {
+static int db_gl_probe_step_error_free(void) {
+    return (g_upload_proc_table.get_error != NULL) &&
+           (g_upload_proc_table.get_error() == GL_NO_ERROR);
+}
+
+static int db_gl_probe_finish(int success) {
+    db_gl_probe_drain_errors();
+    return (success != 0) ? 1 : 0;
+}
+
+static const uint8_t db_gl_probe_channel_high_threshold = 200U;
+static const uint8_t db_gl_probe_channel_low_threshold = 80U;
+
+static inline size_t db_gl_probe_rgba_pixel_offset(size_t width, size_t col,
+                                                   size_t row) {
+    return ((row * width) + col) * 4U;
+}
+
+static inline int db_gl_probe_rgb_matches(const uint8_t *pixels, size_t offset,
+                                          uint8_t red, uint8_t green,
+                                          uint8_t blue) {
+    if (pixels == NULL) {
+        return 0;
+    }
+    const uint8_t red_value = pixels[offset + 0U];
+    const uint8_t green_value = pixels[offset + 1U];
+    const uint8_t blue_value = pixels[offset + 2U];
+    const int red_matches =
+        (red != 0U) ? (red_value > db_gl_probe_channel_high_threshold)
+                    : (red_value < db_gl_probe_channel_low_threshold);
+    const int green_matches =
+        (green != 0U) ? (green_value > db_gl_probe_channel_high_threshold)
+                      : (green_value < db_gl_probe_channel_low_threshold);
+    const int blue_matches =
+        (blue != 0U) ? (blue_value > db_gl_probe_channel_high_threshold)
+                     : (blue_value < db_gl_probe_channel_low_threshold);
+    return red_matches && green_matches && blue_matches;
+}
+
+static size_t db_gl_upload_probe_size_bytes(size_t bytes) {
     return (bytes < DB_GL_PROBE_PREFIX_BYTES) ? bytes
                                               : DB_GL_PROBE_PREFIX_BYTES;
 }
 
-void db_gl_upload_probe_fill_pattern(uint8_t *pattern, size_t count) {
+static void db_gl_upload_probe_fill_pattern(uint8_t *pattern, size_t count) {
     if (pattern == NULL) {
         return;
     }
@@ -390,65 +443,191 @@ void db_gl_capability_mode_compose(char *output, size_t output_size,
                       upload, (backbuffer_replay != 0) ? "yes" : "no");
 }
 
-int db_gl_extensions_advertise_buffer_storage(const char *version_text,
-                                              const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_has_gl_extension_token(exts, "GL_EXT_buffer_storage");
+static int db_gl_runtime_has_extension(const db_gl_runtime_metadata_t *runtime,
+                                       const char *extension_name) {
+    if ((runtime == NULL) || (runtime->has_valid_extensions == 0) ||
+        (extension_name == NULL)) {
+        return 0;
     }
-
-    return db_has_gl_extension_token(exts, "GL_ARB_buffer_storage") ||
-           db_gl_version_text_at_least(version_text, 4, 4);
+    if (runtime->uses_indexed_extension_query == 0) {
+        return db_has_gl_extension_token(runtime->extensions_text,
+                                         extension_name);
+    }
+    if ((g_upload_proc_table.get_stringi == NULL) ||
+        (g_upload_proc_table.get_integerv == NULL)) {
+        return 0;
+    }
+    GLint extension_count = 0;
+    g_upload_proc_table.get_integerv(GL_NUM_EXTENSIONS, &extension_count);
+    for (GLint extension_index = 0; extension_index < extension_count;
+         extension_index++) {
+        const char *const runtime_extension =
+            (const char *)g_upload_proc_table.get_stringi(
+                GL_EXTENSIONS, (GLuint)extension_index);
+        if ((runtime_extension != NULL) &&
+            (strcmp(runtime_extension, extension_name) == 0)) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
-int db_gl_extensions_advertise_map_buffer(const char *version_text,
-                                          const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_has_gl_extension_token(exts, "GL_OES_mapbuffer");
-    }
-
-    return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
-           db_gl_version_text_at_least(version_text, 1, 5);
+static int
+db_gl_runtime_has_usable_version(const db_gl_runtime_metadata_t *runtime) {
+    return (runtime != NULL) && (runtime->has_valid_version != 0);
 }
 
-int db_gl_extensions_advertise_map_buffer_range(const char *version_text,
-                                                const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_has_gl_extension_token(exts, "GL_EXT_map_buffer_range") ||
-               db_gl_version_text_at_least(version_text, 3, 0);
-    }
-
-    return db_has_gl_extension_token(exts, "GL_ARB_map_buffer_range") ||
-           db_has_gl_extension_token(exts, "GL_EXT_map_buffer_range") ||
-           db_gl_version_text_at_least(version_text, 3, 0);
+static int
+db_gl_runtime_is_es_context(const db_gl_runtime_metadata_t *runtime) {
+    return (db_gl_runtime_has_usable_version(runtime) != 0) &&
+           (runtime->is_es != 0);
 }
 
-int db_gl_extensions_advertise_pbo(const char *version_text, const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_gl_version_text_at_least(version_text, 3, 0) ||
-               db_has_gl_extension_token(exts, "GL_EXT_pixel_buffer_object");
-    }
-
-    return db_gl_version_text_at_least(version_text, 2, 1) ||
-           db_has_gl_extension_token(exts, "GL_ARB_pixel_buffer_object");
+static int
+db_gl_runtime_is_desktop_context(const db_gl_runtime_metadata_t *runtime) {
+    return (db_gl_runtime_has_usable_version(runtime) != 0) &&
+           (runtime->is_es == 0);
 }
 
-int db_gl_extensions_advertise_texture_float(const char *version_text,
-                                             const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_gl_version_text_at_least(version_text, 3, 0) ||
-               db_has_gl_extension_token(exts, "GL_OES_texture_float");
-    }
-    return db_gl_version_text_at_least(version_text, 3, 0) ||
-           db_has_gl_extension_token(exts, "GL_ARB_texture_float");
+static int
+db_gl_runtime_version_at_least(const db_gl_runtime_metadata_t *runtime,
+                               int req_major, int req_minor) {
+    return (db_gl_runtime_has_usable_version(runtime) != 0) &&
+           ((runtime->version_major > req_major) ||
+            ((runtime->version_major == req_major) &&
+             (runtime->version_minor >= req_minor)));
 }
 
-int db_gl_extensions_advertise_vbo(const char *version_text, const char *exts) {
-    if (db_gl_is_es_context(version_text) != 0) {
-        return db_gl_version_text_at_least(version_text, 1, 1);
-    }
+static int db_gl_runtime_supports_desktop_core_or_extension(
+    const db_gl_runtime_metadata_t *runtime, int req_major, int req_minor,
+    const char *extension_name) {
+    return (db_gl_runtime_is_desktop_context(runtime) != 0) &&
+           (db_gl_runtime_version_at_least(runtime, req_major, req_minor) ||
+            db_gl_runtime_has_extension(runtime, extension_name));
+}
 
-    return db_has_gl_extension_token(exts, "GL_ARB_vertex_buffer_object") ||
-           db_gl_version_text_at_least(version_text, 1, 5);
+static int db_gl_runtime_supports_es_core_or_extension(
+    const db_gl_runtime_metadata_t *runtime, int req_major, int req_minor,
+    const char *extension_name) {
+    return (db_gl_runtime_is_es_context(runtime) != 0) &&
+           (db_gl_runtime_version_at_least(runtime, req_major, req_minor) ||
+            db_gl_runtime_has_extension(runtime, extension_name));
+}
+
+static db_gl_runtime_metadata_t db_gl_runtime_metadata_load(void) {
+    db_gl_runtime_metadata_t runtime = {0};
+    if (g_upload_proc_table.get_string == NULL) {
+        return runtime;
+    }
+    runtime.version_text =
+        (const char *)g_upload_proc_table.get_string(GL_VERSION);
+    runtime.has_valid_version = db_parse_gl_version_numbers(
+        runtime.version_text, &runtime.version_major, &runtime.version_minor);
+    if (runtime.has_valid_version == 0) {
+        runtime.version_text = NULL;
+        return runtime;
+    }
+    runtime.is_es = db_gl_is_es_context(runtime.version_text);
+    if (runtime.is_es != 0) {
+        runtime.extensions_text =
+            (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
+        runtime.has_valid_extensions =
+            (runtime.extensions_text != NULL) ? 1 : 0;
+        return runtime;
+    }
+    if (db_gl_runtime_version_at_least(&runtime, 3, 0)) {
+        runtime.uses_indexed_extension_query =
+            ((g_upload_proc_table.get_stringi != NULL) &&
+             (g_upload_proc_table.get_integerv != NULL))
+                ? 1
+                : 0;
+        runtime.has_valid_extensions = runtime.uses_indexed_extension_query;
+        return runtime;
+    }
+    // Desktop GL before 3.0 uses the legacy GL_EXTENSIONS string query.
+    if (runtime.version_major < 3) {
+        runtime.extensions_text =
+            (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
+        runtime.has_valid_extensions =
+            (runtime.extensions_text != NULL) ? 1 : 0;
+    }
+    return runtime;
+}
+
+static int db_gl_extensions_advertise_buffer_storage(
+    const db_gl_runtime_metadata_t *runtime) {
+    if (db_gl_runtime_has_usable_version(runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(runtime) != 0) {
+        return db_gl_runtime_has_extension(runtime, "GL_EXT_buffer_storage");
+    }
+    return db_gl_runtime_supports_desktop_core_or_extension(
+        runtime, 4, 4, "GL_ARB_buffer_storage");
+}
+
+static int
+db_gl_extensions_advertise_map_buffer(const db_gl_runtime_metadata_t *runtime) {
+    if (db_gl_runtime_has_usable_version(runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(runtime) != 0) {
+        return db_gl_runtime_has_extension(runtime, "GL_OES_mapbuffer");
+    }
+    return db_gl_runtime_supports_desktop_core_or_extension(
+        runtime, 1, 5, "GL_ARB_vertex_buffer_object");
+}
+
+static int db_gl_extensions_advertise_map_buffer_range(
+    const db_gl_runtime_metadata_t *runtime) {
+    if (db_gl_runtime_has_usable_version(runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(runtime) != 0) {
+        return db_gl_runtime_supports_es_core_or_extension(
+            runtime, 3, 0, "GL_EXT_map_buffer_range");
+    }
+    return db_gl_runtime_version_at_least(runtime, 3, 0) ||
+           db_gl_runtime_has_extension(runtime, "GL_ARB_map_buffer_range") ||
+           db_gl_runtime_has_extension(runtime, "GL_EXT_map_buffer_range");
+}
+
+static int
+db_gl_extensions_advertise_pbo(const db_gl_runtime_metadata_t *runtime) {
+    if (db_gl_runtime_has_usable_version(runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(runtime) != 0) {
+        return db_gl_runtime_supports_es_core_or_extension(
+            runtime, 3, 0, "GL_EXT_pixel_buffer_object");
+    }
+    return db_gl_runtime_supports_desktop_core_or_extension(
+        runtime, 2, 1, "GL_ARB_pixel_buffer_object");
+}
+
+static int db_gl_extensions_advertise_texture_float(
+    const db_gl_runtime_metadata_t *runtime) {
+    if (db_gl_runtime_has_usable_version(runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(runtime) != 0) {
+        return db_gl_runtime_supports_es_core_or_extension(
+            runtime, 3, 0, "GL_OES_texture_float");
+    }
+    return db_gl_runtime_supports_desktop_core_or_extension(
+        runtime, 3, 0, "GL_ARB_texture_float");
+}
+
+static int
+db_gl_extensions_advertise_vbo(const db_gl_runtime_metadata_t *runtime) {
+    if (db_gl_runtime_has_usable_version(runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(runtime) != 0) {
+        return db_gl_runtime_version_at_least(runtime, 1, 1);
+    }
+    return db_gl_runtime_supports_desktop_core_or_extension(
+        runtime, 1, 5, "GL_ARB_vertex_buffer_object");
 }
 
 // 2) Proc resolver and proc table loading.
@@ -485,13 +664,6 @@ db_gl_upload_ops_t db_gl_internal_get_upload_ops(void) {
 
 GLenum db_gl_internal_get_error_value(void) { return db_gl_get_error_value(); }
 
-static const char *db_gl_get_string_value(GLenum name) {
-    if (g_upload_proc_table.get_string == NULL) {
-        return NULL;
-    }
-    return (const char *)g_upload_proc_table.get_string(name);
-}
-
 static db_gl_generic_proc_t db_gl_get_proc(const char *name) {
     if (name == NULL) {
         return NULL;
@@ -504,7 +676,7 @@ static db_gl_generic_proc_t db_gl_get_proc(const char *name) {
         }
     }
 
-#ifdef DB_HAS_DLSYM_PROC_ADDRESS
+#if defined(__APPLE__) || defined(__linux__)
     db_gl_generic_proc_t dlsym_proc =
         (db_gl_generic_proc_t)dlsym(RTLD_DEFAULT, name);
     if (dlsym_proc != NULL) {
@@ -733,6 +905,8 @@ static void db_gl_load_upload_proc_table(void) {
         (db_gl_get_shader_iv_fn_t)(db_gl_get_proc("glGetShaderiv"));
     g_upload_proc_table.get_string =
         (db_gl_get_string_raw_fn_t)(db_gl_get_proc("glGetString"));
+    g_upload_proc_table.get_stringi =
+        (db_gl_get_stringi_raw_fn_t)(db_gl_get_proc("glGetStringi"));
     g_upload_proc_table.get_uniform_location =
         (db_gl_get_uniform_location_fn_t)(db_gl_get_proc(
             "glGetUniformLocation"));
@@ -765,6 +939,281 @@ static void db_gl_load_upload_proc_table(void) {
         (db_gl_viewport_fn_t)(db_gl_get_proc("glViewport"));
 
     g_upload_proc_table.loaded = 1;
+}
+
+static int db_gl_context_supports_unpack_row_length_upload(void) {
+    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
+    if (g_upload_proc_table.pixel_storei == NULL) {
+        return 0;
+    }
+    if (db_gl_runtime_has_usable_version(&runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(&runtime) != 0) {
+        return db_gl_runtime_supports_es_core_or_extension(
+            &runtime, 3, 0, "GL_EXT_unpack_subimage");
+    }
+    // Desktop GL exposes GL_UNPACK_ROW_LENGTH in the core pixel-store API from
+    // GL 1.2 onward.
+    return db_gl_runtime_version_at_least(&runtime, 1, 2);
+}
+
+static void db_gl_quad_init(float *verts);
+static void db_gl_set_unpack_row_length_pixels(int pixel_count);
+static int db_gl_probe_texture_create_rgba16f(unsigned int *out_texture,
+                                              int width, int height);
+
+static int db_gl_probe_shadow_present_partial_upload_support_rgba8(void) {
+    static int cached_result = -1;
+    if (cached_result >= 0) {
+        return cached_result;
+    }
+    if (db_gl_context_supports_unpack_row_length_upload() == 0) {
+        cached_result = 0;
+        return 0;
+    }
+
+    db_gl_probe_drain_errors();
+    unsigned int probe_texture = 0U;
+    if (db_gl_texture_create_rgba8(&probe_texture, 4, 4, NULL) == 0) {
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    static const uint8_t k_base_rgba8[4U * 4U * 4U] = {
+        0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+        0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+    };
+    static const uint8_t k_patch_rgba8[4U * 4U * 4U] = {
+        0, 0, 255, 255, 0,   0,   255, 255, 0,   0,   255, 255, 0, 0, 255, 255,
+        0, 0, 255, 255, 255, 0,   0,   255, 0,   255, 0,   255, 0, 0, 255, 255,
+        0, 0, 255, 255, 255, 255, 0,   255, 255, 0,   255, 255, 0, 0, 255, 255,
+        0, 0, 255, 255, 0,   0,   255, 255, 0,   0,   255, 255, 0, 0, 255, 255,
+    };
+    uint8_t probe_readback[4U * 4U * 4U] = {0U};
+    int viewport[4] = {0, 0, 0, 0};
+
+    db_gl_texture_bind_2d(probe_texture);
+    db_gl_texture_sub_image_2d_rgba(0, 0, 4, 4, k_base_rgba8);
+    if (db_gl_probe_step_error_free() == 0) {
+        db_gl_texture_delete_if_valid(&probe_texture);
+        db_gl_texture_bind_2d(0U);
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+    db_gl_set_unpack_alignment_1();
+    db_gl_set_unpack_row_length_pixels(4);
+    db_gl_texture_sub_image_2d_rgba(
+        1, 1, 2, 2, &k_patch_rgba8[db_gl_probe_rgba_pixel_offset(4U, 1U, 1U)]);
+    db_gl_set_unpack_row_length_pixels(0);
+    if (db_gl_probe_step_error_free() == 0) {
+        db_gl_texture_delete_if_valid(&probe_texture);
+        db_gl_texture_bind_2d(0U);
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    db_gl_get_integerv(GL_VIEWPORT, viewport);
+    float probe_vertices[8] = {0.0F};
+    db_gl_quad_init(probe_vertices);
+    const float probe_texcoords[8] = {0.0F, 1.0F, 1.0F, 1.0F,
+                                      0.0F, 0.0F, 1.0F, 0.0F};
+    const float probe_colors[DB_RECT_VERTEX_COUNT * 4U] = {
+        1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+        1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+    };
+    db_gl_set_viewport_px(4, 4);
+    db_gl_clear_color_rgba(0.0F, 0.0F, 0.0F, 1.0F);
+    db_gl_clear_color_buffer();
+    db_gl_set_depth_test_enabled(0);
+    db_gl_set_cull_face_enabled(0);
+    db_gl_set_blend_enabled(0);
+    db_gl_set_texture_2d_enabled(1);
+    db_gl_set_client_state_vertex_array_enabled(1);
+    db_gl_set_client_state_color_array_enabled(1);
+    db_gl_set_client_state_texcoord_array_enabled(1);
+    db_gl_set_vertex_pointer_2f(0, probe_vertices);
+    db_gl_set_color_pointer_f(4, 0, probe_colors);
+    db_gl_set_texcoord_pointer_2f(0, probe_texcoords);
+    db_gl_texture_bind_2d(probe_texture);
+    db_gl_draw_arrays_triangle_strip(0, 4);
+    db_gl_read_pixels_rgba8(0, 0, 4, 4, probe_readback);
+    const int draw_ok = db_gl_probe_step_error_free();
+
+    db_gl_texture_bind_2d(0U);
+    db_gl_set_texture_2d_enabled(0);
+    db_gl_set_client_state_texcoord_array_enabled(0);
+    db_gl_set_client_state_color_array_enabled(0);
+    db_gl_set_client_state_vertex_array_enabled(0);
+    db_gl_set_viewport_px(viewport[2], viewport[3]);
+    db_gl_texture_delete_if_valid(&probe_texture);
+    if (draw_ok == 0) {
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    const uint8_t *pixels = probe_readback;
+    const size_t center0 = db_gl_probe_rgba_pixel_offset(4U, 1U, 1U);
+    const size_t center1 = db_gl_probe_rgba_pixel_offset(4U, 2U, 1U);
+    const size_t center2 = db_gl_probe_rgba_pixel_offset(4U, 1U, 2U);
+    const size_t center3 = db_gl_probe_rgba_pixel_offset(4U, 2U, 2U);
+    cached_result = db_gl_probe_finish(
+        db_gl_probe_rgb_matches(pixels, center0, 1U, 0U, 0U) &&
+        db_gl_probe_rgb_matches(pixels, center1, 0U, 1U, 0U) &&
+        db_gl_probe_rgb_matches(pixels, center2, 1U, 1U, 0U) &&
+        db_gl_probe_rgb_matches(pixels, center3, 1U, 0U, 1U));
+    return cached_result;
+}
+
+static int db_gl_probe_shadow_present_partial_upload_support_rgba16f(void) {
+    static int cached_result = -1;
+    if (cached_result >= 0) {
+        return cached_result;
+    }
+    if ((db_gl_context_supports_unpack_row_length_upload() == 0) ||
+        (db_gl_context_probe_texture_float_present_support() == 0)) {
+        cached_result = 0;
+        return 0;
+    }
+
+    db_gl_probe_drain_errors();
+    unsigned int probe_texture = 0U;
+    if (db_gl_probe_texture_create_rgba16f(&probe_texture, 4, 4) == 0) {
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    static const uint16_t k_base_rgba16f[4U * 4U * 4U] = {
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+    };
+    static const uint16_t k_patch_rgba16f[4U * 4U * 4U] = {
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE,
+        0x0000U,    DB_F16_ONE, 0x0000U,    DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,
+        DB_F16_ONE, DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+    };
+    uint8_t probe_readback[4U * 4U * 4U] = {0U};
+    int viewport[4] = {0, 0, 0, 0};
+
+    db_gl_texture_bind_2d(probe_texture);
+    db_gl_texture_sub_image_2d_rgba16f(0, 0, 4, 4, k_base_rgba16f);
+    if (db_gl_probe_step_error_free() == 0) {
+        db_gl_texture_delete_if_valid(&probe_texture);
+        db_gl_texture_bind_2d(0U);
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+    db_gl_set_unpack_alignment_1();
+    db_gl_set_unpack_row_length_pixels(4);
+    db_gl_texture_sub_image_2d_rgba16f(
+        1, 1, 2, 2,
+        &k_patch_rgba16f[db_gl_probe_rgba_pixel_offset(4U, 1U, 1U)]);
+    db_gl_set_unpack_row_length_pixels(0);
+    if (db_gl_probe_step_error_free() == 0) {
+        db_gl_texture_delete_if_valid(&probe_texture);
+        db_gl_texture_bind_2d(0U);
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    db_gl_get_integerv(GL_VIEWPORT, viewport);
+    float probe_vertices[8] = {0.0F};
+    db_gl_quad_init(probe_vertices);
+    const float probe_texcoords[8] = {0.0F, 1.0F, 1.0F, 1.0F,
+                                      0.0F, 0.0F, 1.0F, 0.0F};
+    const float probe_colors[DB_RECT_VERTEX_COUNT * 4U] = {
+        1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+        1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+    };
+    db_gl_set_viewport_px(4, 4);
+    db_gl_clear_color_rgba(0.0F, 0.0F, 0.0F, 1.0F);
+    db_gl_clear_color_buffer();
+    db_gl_set_depth_test_enabled(0);
+    db_gl_set_cull_face_enabled(0);
+    db_gl_set_blend_enabled(0);
+    db_gl_set_texture_2d_enabled(1);
+    db_gl_set_client_state_vertex_array_enabled(1);
+    db_gl_set_client_state_color_array_enabled(1);
+    db_gl_set_client_state_texcoord_array_enabled(1);
+    db_gl_set_vertex_pointer_2f(0, probe_vertices);
+    db_gl_set_color_pointer_f(4, 0, probe_colors);
+    db_gl_set_texcoord_pointer_2f(0, probe_texcoords);
+    db_gl_texture_bind_2d(probe_texture);
+    db_gl_draw_arrays_triangle_strip(0, 4);
+    db_gl_read_pixels_rgba8(0, 0, 4, 4, probe_readback);
+    const int draw_ok = db_gl_probe_step_error_free();
+
+    db_gl_texture_bind_2d(0U);
+    db_gl_set_texture_2d_enabled(0);
+    db_gl_set_client_state_texcoord_array_enabled(0);
+    db_gl_set_client_state_color_array_enabled(0);
+    db_gl_set_client_state_vertex_array_enabled(0);
+    db_gl_set_viewport_px(viewport[2], viewport[3]);
+    db_gl_texture_delete_if_valid(&probe_texture);
+    if (draw_ok == 0) {
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    const uint8_t *pixels = probe_readback;
+    const size_t center0 = db_gl_probe_rgba_pixel_offset(4U, 1U, 1U);
+    const size_t center1 = db_gl_probe_rgba_pixel_offset(4U, 2U, 1U);
+    const size_t center2 = db_gl_probe_rgba_pixel_offset(4U, 1U, 2U);
+    const size_t center3 = db_gl_probe_rgba_pixel_offset(4U, 2U, 2U);
+    cached_result = db_gl_probe_finish(
+        db_gl_probe_rgb_matches(pixels, center0, 1U, 0U, 0U) &&
+        db_gl_probe_rgb_matches(pixels, center1, 0U, 1U, 0U) &&
+        db_gl_probe_rgb_matches(pixels, center2, 1U, 1U, 0U) &&
+        db_gl_probe_rgb_matches(pixels, center3, 1U, 0U, 1U));
+    return cached_result;
+}
+
+static int db_gl_context_supports_full_npot_texture_2d(void) {
+    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
+    if (db_gl_runtime_has_usable_version(&runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_runtime_is_es_context(&runtime) != 0) {
+        return db_gl_runtime_has_extension(&runtime, "GL_OES_texture_npot");
+    }
+    return db_gl_runtime_supports_desktop_core_or_extension(
+        &runtime, 2, 0, "GL_ARB_texture_non_power_of_two");
+}
+
+static int db_gl_context_supports_shadow_present_exact_size_texture_2d(void) {
+    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
+    if (db_gl_runtime_has_usable_version(&runtime) == 0) {
+        return 0;
+    }
+    if (db_gl_context_supports_full_npot_texture_2d() != 0) {
+        return 1;
+    }
+    if (db_gl_runtime_is_es_context(&runtime) != 0) {
+        // ES 2.0 permits NPOT 2D textures for non-mipmapped CLAMP_TO_EDGE
+        // usage. The shadow-present path only uses GL_NEAREST +
+        // GL_CLAMP_TO_EDGE and never enables mipmaps.
+        return db_gl_runtime_version_at_least(&runtime, 2, 0);
+    }
+    return 0;
 }
 
 // 3) Wrapper APIs: buffer and VBO/VAO operations.
@@ -828,12 +1277,8 @@ int db_gl_vbo_init_data(size_t bytes, const void *data, unsigned int usage) {
                : 0;
 }
 
-int db_gl_vbo_init_static_data(size_t bytes, const void *data) {
-    return db_gl_vbo_init_data(bytes, data, GL_STATIC_DRAW);
-}
-
 // Context capability checks (metadata/procs).
-int db_gl_context_has_pbo_upload_procs(void) {
+static int db_gl_context_has_pbo_upload_procs(void) {
     db_gl_require_upload_proc_table_loaded(
         "db_gl_context_has_pbo_upload_procs");
     return (g_upload_proc_table.bind_buffer != NULL) &&
@@ -843,20 +1288,14 @@ int db_gl_context_has_pbo_upload_procs(void) {
            (g_upload_proc_table.delete_buffers != NULL);
 }
 
-int db_gl_context_advertises_vbo(void) {
+static int db_gl_context_advertises_vbo(void) {
     db_gl_load_upload_proc_table();
-    if (g_upload_proc_table.get_string == NULL) {
-        return 0;
-    }
-    const char *version =
-        (const char *)g_upload_proc_table.get_string(GL_VERSION);
-    const char *exts =
-        (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
-    return db_gl_extensions_advertise_vbo(version, exts);
+    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
+    return db_gl_extensions_advertise_vbo(&runtime);
 }
 
 // 3) Wrapper APIs: geometry utilities and texture operations.
-void db_gl_quad_init(float *verts) {
+static void db_gl_quad_init(float *verts) {
     verts[DB_GL_QUAD_V0_X] = -1.0F;
     verts[DB_GL_QUAD_V0_Y] = -1.0F;
     verts[DB_GL_QUAD_V1_X] = 1.0F;
@@ -865,6 +1304,502 @@ void db_gl_quad_init(float *verts) {
     verts[DB_GL_QUAD_V2_Y] = 1.0F;
     verts[DB_GL_QUAD_V3_X] = 1.0F;
     verts[DB_GL_QUAD_V3_Y] = 1.0F;
+}
+
+static unsigned int db_gl_pbo_create_or_zero(void) {
+    db_gl_require_upload_proc_table_loaded("db_gl_pbo_create_or_zero");
+    if ((g_upload_proc_table.gen_buffers == NULL) ||
+        (g_upload_proc_table.delete_buffers == NULL)) {
+        return 0U;
+    }
+    GLuint pbo = 0U;
+    g_upload_proc_table.gen_buffers(1, &pbo);
+    return (unsigned int)pbo;
+}
+
+static void db_gl_pbo_delete_if_valid(unsigned int pbo) {
+    db_gl_require_upload_proc_table_loaded("db_gl_pbo_delete_if_valid");
+    if ((pbo == 0U) || (g_upload_proc_table.delete_buffers == NULL)) {
+        return;
+    }
+    const GLuint gl_pbo = (GLuint)pbo;
+    g_upload_proc_table.delete_buffers(1, &gl_pbo);
+}
+
+static void db_gl_pbo_unbind_unpack(void) {
+    db_gl_require_upload_proc_table_loaded("db_gl_pbo_unbind_unpack");
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        return;
+    }
+    g_upload_proc_table.bind_buffer(GL_PIXEL_UNPACK_BUFFER, 0U);
+}
+
+static unsigned int db_gl_pbo_create_if_usable(int prefer_unpack_pbo) {
+    db_gl_load_upload_proc_table();
+    if ((prefer_unpack_pbo == 0) ||
+        (db_gl_context_has_pbo_upload_procs() == 0)) {
+        return 0U;
+    }
+    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
+    if (db_gl_extensions_advertise_pbo(&runtime) == 0) {
+        return 0U;
+    }
+    return db_gl_pbo_create_or_zero();
+}
+
+void db_gl_shadow_present_init_runtime(db_gl_shadow_present_state_t *state,
+                                       int prefer_unpack_pbo,
+                                       int selected_content_uses_rgba16f) {
+    if ((state == NULL) || (state->initialized != 0)) {
+        return;
+    }
+    const int runtime_supports_hdr_present =
+        (db_gl_context_probe_texture_float_present_support() != 0) ? 1 : 0;
+    const db_gl_shadow_present_texture_format_t selected_texture_format =
+        ((selected_content_uses_rgba16f != 0) &&
+         (runtime_supports_hdr_present != 0))
+            ? DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F
+            : DB_GL_SHADOW_PRESENT_TEXTURE_RGBA8;
+    const int supports_unpack_row_length_upload =
+        (selected_texture_format == DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)
+            ? db_gl_probe_shadow_present_partial_upload_support_rgba16f()
+            : db_gl_probe_shadow_present_partial_upload_support_rgba8();
+    *state = (db_gl_shadow_present_state_t){
+        .initialized = 1,
+        .backing_valid = 0,
+        .texture_valid = 0,
+        .texture_needs_full_upload = 1,
+        .runtime_supports_unpack_row_length_upload =
+            (supports_unpack_row_length_upload != 0) ? 1 : 0,
+        .runtime_supports_hdr_present = runtime_supports_hdr_present,
+        .uses_exact_size_texture =
+            (db_gl_context_supports_shadow_present_exact_size_texture_2d() != 0)
+                ? 1
+                : 0,
+        .selected_texture_format = selected_texture_format,
+        .unpack_pbo = db_gl_pbo_create_if_usable(prefer_unpack_pbo),
+    };
+    db_gl_quad_init(state->vertices);
+    state->texcoords[DB_GL_QUAD_V0_X] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V0_Y] = 1.0F;
+    state->texcoords[DB_GL_QUAD_V1_X] = 1.0F;
+    state->texcoords[DB_GL_QUAD_V1_Y] = 1.0F;
+    state->texcoords[DB_GL_QUAD_V2_X] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V2_Y] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V3_X] = 1.0F;
+    state->texcoords[DB_GL_QUAD_V3_Y] = 0.0F;
+    for (size_t i = 0U; i < (size_t)DB_RECT_VERTEX_COUNT; i++) {
+        const size_t base = i * 4U;
+        state->colors[base + 0U] = 1.0F;
+        state->colors[base + 1U] = 1.0F;
+        state->colors[base + 2U] = 1.0F;
+        state->colors[base + 3U] = 1.0F;
+    }
+}
+
+void db_gl_shadow_present_log_decision(
+    const char *backend, const char *present_name, int content_uses_rgba16f,
+    int hdr_explicit_requested, const db_gl_shadow_present_state_t *state) {
+    if ((backend == NULL) || (present_name == NULL) || (state == NULL)) {
+        return;
+    }
+    const int use_pbo = (state->unpack_pbo != 0U) ? 1 : 0;
+    const char *const texture_size_mode =
+        (state->uses_exact_size_texture != 0) ? "exact_size" : "pow2_fallback";
+    const char *const partial_upload_mode =
+        (state->runtime_supports_unpack_row_length_upload != 0)
+            ? "row_length"
+            : "rowwise_fallback";
+    if (state->selected_texture_format ==
+        DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F) {
+        db_infof(backend,
+                 "%s hdr=enabled reason=float texture present probe passed, "
+                 "pbo=%s, hdr_explicit=%s, texture_sizing=%s, "
+                 "partial_upload=%s",
+                 present_name, (use_pbo != 0) ? "yes" : "no",
+                 (hdr_explicit_requested != 0) ? "yes" : "no",
+                 texture_size_mode, partial_upload_mode);
+        return;
+    }
+    if (content_uses_rgba16f == 0) {
+        db_infof(backend,
+                 "%s hdr=disabled reason=content prefers sdr backbuffer, "
+                 "pbo=%s, texture_sizing=%s, partial_upload=%s",
+                 present_name, (use_pbo != 0) ? "yes" : "no", texture_size_mode,
+                 partial_upload_mode);
+        return;
+    }
+    if (state->runtime_supports_hdr_present == 0) {
+        db_infof(backend,
+                 "%s hdr=disabled reason=float texture present probe failed, "
+                 "falling back to rgba8, pbo=%s, texture_sizing=%s, "
+                 "partial_upload=%s",
+                 present_name, (use_pbo != 0) ? "yes" : "no", texture_size_mode,
+                 partial_upload_mode);
+        return;
+    }
+    db_infof(backend,
+             "%s hdr=disabled reason=present texture did not select rgba16f "
+             "despite supported float present probe, pbo=%s, "
+             "texture_sizing=%s, partial_upload=%s",
+             present_name, (use_pbo != 0) ? "yes" : "no", texture_size_mode,
+             partial_upload_mode);
+}
+
+void db_gl_shadow_present_shutdown(db_gl_shadow_present_state_t *state) {
+    if (state == NULL) {
+        return;
+    }
+    if (state->unpack_pbo != 0U) {
+        db_gl_pbo_delete_if_valid(state->unpack_pbo);
+        state->unpack_pbo = 0U;
+    }
+    db_gl_texture_delete_if_valid(&state->texture);
+    *state = (db_gl_shadow_present_state_t){0};
+}
+
+void db_gl_shadow_present_prepare_texture(db_gl_shadow_present_state_t *state,
+                                          const char *backend,
+                                          uint32_t pixel_width,
+                                          uint32_t pixel_height) {
+    if ((state == NULL) || (backend == NULL) || (pixel_width == 0U) ||
+        (pixel_height == 0U)) {
+        return;
+    }
+    const uint32_t target_width = (state->uses_exact_size_texture != 0)
+                                      ? pixel_width
+                                      : db_u32_next_pow2(pixel_width);
+    const uint32_t target_height = (state->uses_exact_size_texture != 0)
+                                       ? pixel_height
+                                       : db_u32_next_pow2(pixel_height);
+    const int content_size_changed = (state->content_width != pixel_width) ||
+                                     (state->content_height != pixel_height);
+    const int needs_recreate = (state->texture == 0U) ||
+                               (state->texture_width < target_width) ||
+                               (state->texture_height < target_height);
+    if (needs_recreate == 0) {
+        if (content_size_changed != 0) {
+            state->content_width = pixel_width;
+            state->content_height = pixel_height;
+            state->texture_valid = 0;
+            state->texture_needs_full_upload = 1;
+        }
+        return;
+    }
+
+    // Texture allocation with NULL pixels must not inherit a bound unpack PBO.
+    if (state->unpack_pbo != 0U) {
+        db_gl_pbo_unbind_unpack();
+    }
+
+    state->texture_width = target_width;
+    state->texture_height = target_height;
+    state->content_width = pixel_width;
+    state->content_height = pixel_height;
+    if (state->texture != 0U) {
+        db_gl_texture_delete_if_valid(&state->texture);
+    }
+    const int created =
+        (state->selected_texture_format == DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)
+            ? db_gl_texture_create_rgba16f(
+                  &state->texture,
+                  db_checked_u32_to_i32(backend, "shadow_tex_width",
+                                        state->texture_width),
+                  db_checked_u32_to_i32(backend, "shadow_tex_height",
+                                        state->texture_height),
+                  NULL)
+            : db_gl_texture_create_rgba8(
+                  &state->texture,
+                  db_checked_u32_to_i32(backend, "shadow_tex_width",
+                                        state->texture_width),
+                  db_checked_u32_to_i32(backend, "shadow_tex_height",
+                                        state->texture_height),
+                  NULL);
+    if (created == 0) {
+        db_failf(backend, "failed to create shared shadow texture");
+    }
+    state->texture_valid = 0;
+    state->texture_needs_full_upload = 1;
+}
+
+static void db_gl_set_unpack_row_length_pixels(int pixel_count) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.pixel_storei != NULL) {
+        g_upload_proc_table.pixel_storei(GL_UNPACK_ROW_LENGTH, pixel_count);
+    }
+}
+
+void db_gl_shadow_present_upload_damage_blocks(
+    const db_gl_shadow_present_state_t *state, const char *backend,
+    const void *selected_pixels, uint32_t pixel_width, uint32_t pixel_height,
+    const db_damage_block_t *blocks, size_t block_count) {
+    if ((state == NULL) || (backend == NULL) || (state->texture == 0U) ||
+        (pixel_width == 0U) || (pixel_height == 0U) || (blocks == NULL) ||
+        (block_count == 0U)) {
+        return;
+    }
+    if (selected_pixels == NULL) {
+        return;
+    }
+
+    const uint32_t pixel_bytes =
+        (state->selected_texture_format == DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)
+            ? (uint32_t)(sizeof(uint16_t) * 4U)
+            : 4U;
+    const size_t total_bytes = (size_t)db_checked_mul_u32(
+        backend, "shadow_upload_total_bytes",
+        db_checked_mul_u32(backend, "shadow_row_bytes", pixel_width,
+                           pixel_bytes),
+        pixel_height);
+    if (total_bytes > (size_t)PTRDIFF_MAX) {
+        db_failf(backend, "shadow_upload_total_bytes too large: %zu",
+                 total_bytes);
+    }
+    const int use_pbo = (state->unpack_pbo != 0U) ? 1 : 0;
+    const int use_unpack_row_length =
+        (state->runtime_supports_unpack_row_length_upload != 0) ? 1 : 0;
+    const uint32_t row_bytes = db_checked_mul_u32(backend, "shadow_row_bytes",
+                                                  pixel_width, pixel_bytes);
+    db_gl_texture_bind_2d(state->texture);
+    db_gl_set_unpack_alignment_1();
+    for (size_t i = 0U; i < block_count; i++) {
+        const db_damage_block_t block = blocks[i];
+        if ((block.row_count == 0U) || (block.col_count == 0U)) {
+            continue;
+        }
+        const uint32_t row_end = db_u32_min(
+            pixel_height, db_checked_add_u32(backend, "shadow_row_end",
+                                             block.row_start, block.row_count));
+        const uint32_t col_end = db_u32_min(
+            pixel_width, db_checked_add_u32(backend, "shadow_col_end",
+                                            block.col_start, block.col_count));
+        if ((row_end <= block.row_start) || (col_end <= block.col_start)) {
+            continue;
+        }
+        const uint32_t row_count = row_end - block.row_start;
+        const uint32_t col_count = col_end - block.col_start;
+        const uint32_t block_row_bytes = db_checked_mul_u32(
+            backend, "shadow_block_row_bytes", col_count, pixel_bytes);
+        const size_t src_offset_bytes =
+            ((size_t)block.row_start * (size_t)row_bytes) +
+            ((size_t)block.col_start * (size_t)pixel_bytes);
+        if (use_unpack_row_length != 0) {
+            db_gl_set_unpack_row_length_pixels(db_checked_u32_to_i32(
+                backend, "shadow_unpack_row_length", pixel_width));
+            if (use_pbo != 0) {
+                const size_t block_bytes =
+                    ((size_t)(row_count - 1U) * (size_t)row_bytes) +
+                    (size_t)block_row_bytes;
+                db_gl_upload_buffer_target(
+                    ((const uint8_t *)selected_pixels) + src_offset_bytes,
+                    block_bytes, DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
+                    state->unpack_pbo, 0, NULL, 0, 0);
+                if (state->selected_texture_format ==
+                    DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F) {
+                    db_gl_texture_sub_image_2d_rgba16f(
+                        db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                              block.col_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_y",
+                                              block.row_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                              col_count),
+                        db_checked_u32_to_i32(backend, "shadow_upload_h",
+                                              row_count),
+                        db_gl_vbo_offset_ptr(0U));
+                } else {
+                    db_gl_texture_sub_image_2d_rgba(
+                        db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                              block.col_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_y",
+                                              block.row_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                              col_count),
+                        db_checked_u32_to_i32(backend, "shadow_upload_h",
+                                              row_count),
+                        db_gl_vbo_offset_ptr(0U));
+                }
+            } else {
+                const void *pixels_ptr =
+                    (state->selected_texture_format ==
+                     DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)
+                        ? (const void *)(((const uint16_t *)selected_pixels) +
+                                         (src_offset_bytes /
+                                          (sizeof(uint16_t) * 4U)))
+                        : (const void *)(((const uint8_t *)selected_pixels) +
+                                         src_offset_bytes);
+                if (state->selected_texture_format ==
+                    DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F) {
+                    db_gl_texture_sub_image_2d_rgba16f(
+                        db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                              block.col_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_y",
+                                              block.row_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                              col_count),
+                        db_checked_u32_to_i32(backend, "shadow_upload_h",
+                                              row_count),
+                        pixels_ptr);
+                } else {
+                    db_gl_texture_sub_image_2d_rgba(
+                        db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                              block.col_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_y",
+                                              block.row_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                              col_count),
+                        db_checked_u32_to_i32(backend, "shadow_upload_h",
+                                              row_count),
+                        pixels_ptr);
+                }
+            }
+            db_gl_set_unpack_row_length_pixels(0);
+            continue;
+        }
+        for (uint32_t row = block.row_start; row < row_end; row++) {
+            const size_t row_src_offset_bytes =
+                ((size_t)row * (size_t)row_bytes) +
+                ((size_t)block.col_start * (size_t)pixel_bytes);
+            if (use_pbo != 0) {
+                db_gl_upload_buffer_target(
+                    ((const uint8_t *)selected_pixels) + row_src_offset_bytes,
+                    (size_t)block_row_bytes,
+                    DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER, state->unpack_pbo, 0,
+                    NULL, 0, 0);
+                if (state->selected_texture_format ==
+                    DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F) {
+                    db_gl_texture_sub_image_2d_rgba16f(
+                        db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                              block.col_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_y", row),
+                        db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                              col_count),
+                        1, db_gl_vbo_offset_ptr(0U));
+                } else {
+                    db_gl_texture_sub_image_2d_rgba(
+                        db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                              block.col_start),
+                        db_checked_u32_to_i32(backend, "shadow_upload_y", row),
+                        db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                              col_count),
+                        1, db_gl_vbo_offset_ptr(0U));
+                }
+            } else if (state->selected_texture_format ==
+                       DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F) {
+                const uint16_t *pixels_ptr =
+                    ((const uint16_t *)selected_pixels) +
+                    (row_src_offset_bytes / (sizeof(uint16_t) * 4U));
+                db_gl_texture_sub_image_2d_rgba16f(
+                    db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                          block.col_start),
+                    db_checked_u32_to_i32(backend, "shadow_upload_y", row),
+                    db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                          col_count),
+                    1, pixels_ptr);
+            } else {
+                const uint8_t *pixels_ptr =
+                    ((const uint8_t *)selected_pixels) + row_src_offset_bytes;
+                db_gl_texture_sub_image_2d_rgba(
+                    db_checked_u32_to_i32(backend, "shadow_upload_x",
+                                          block.col_start),
+                    db_checked_u32_to_i32(backend, "shadow_upload_y", row),
+                    db_checked_u32_to_i32(backend, "shadow_upload_w",
+                                          col_count),
+                    1, pixels_ptr);
+            }
+        }
+    }
+    if (use_unpack_row_length != 0) {
+        db_gl_set_unpack_row_length_pixels(0);
+    }
+    if (use_pbo != 0) {
+        db_gl_pbo_unbind_unpack();
+    }
+}
+
+void db_gl_shadow_present_frame(const db_gl_shadow_present_frame_t *frame) {
+    if ((frame == NULL) || (frame->state == NULL) || (frame->backend == NULL) ||
+        (frame->pixel_width == 0U) || (frame->pixel_height == 0U)) {
+        return;
+    }
+    db_gl_shadow_present_prepare_texture(
+        frame->state, frame->backend, frame->pixel_width, frame->pixel_height);
+    if (frame->state->texture == 0U) {
+        db_failf(frame->backend,
+                 "shared shadow present texture is not initialized");
+    }
+    if (frame->selected_pixels == NULL) {
+        db_failf(frame->backend, "shared shadow present pixels are missing");
+    }
+    if (frame->prepare_upload_target_fn != NULL) {
+        frame->prepare_upload_target_fn(frame->state, frame->pixel_width,
+                                        frame->pixel_height,
+                                        frame->prepare_upload_target_user_data);
+    }
+
+    if ((frame->state->texture_needs_full_upload != 0) ||
+        ((frame->state->texture_valid == 0) &&
+         ((frame->damage_blocks == NULL) ||
+          (frame->damage_block_count == 0U)))) {
+        const db_damage_block_t full_block =
+            db_damage_block_full(frame->pixel_height, frame->pixel_width);
+        db_gl_shadow_present_upload_damage_blocks(
+            frame->state, frame->backend, frame->selected_pixels,
+            frame->pixel_width, frame->pixel_height, &full_block, 1U);
+        frame->state->texture_valid = 1;
+        frame->state->texture_needs_full_upload = 0;
+    } else if ((frame->damage_blocks != NULL) &&
+               (frame->damage_block_count > 0U)) {
+        db_gl_shadow_present_upload_damage_blocks(
+            frame->state, frame->backend, frame->selected_pixels,
+            frame->pixel_width, frame->pixel_height, frame->damage_blocks,
+            frame->damage_block_count);
+        frame->state->texture_valid = 1;
+    }
+
+    db_gl_shadow_present_draw(frame->state, frame->pixel_width,
+                              frame->pixel_height);
+}
+
+void db_gl_shadow_present_draw(const db_gl_shadow_present_state_t *state,
+                               uint32_t pixel_width, uint32_t pixel_height) {
+    if ((state == NULL) || (state->texture == 0U) || (pixel_width == 0U) ||
+        (pixel_height == 0U)) {
+        return;
+    }
+    db_gl_shadow_present_state_t *const mutable_state =
+        (db_gl_shadow_present_state_t *)state;
+    const float tex_u =
+        (mutable_state->texture_width == 0U)
+            ? 1.0F
+            : db_u32_ratio_to_f32(pixel_width, mutable_state->texture_width);
+    const float tex_v =
+        (mutable_state->texture_height == 0U)
+            ? 1.0F
+            : db_u32_ratio_to_f32(pixel_height, mutable_state->texture_height);
+    mutable_state->texcoords[DB_GL_QUAD_V0_X] = 0.0F;
+    mutable_state->texcoords[DB_GL_QUAD_V0_Y] = tex_v;
+    mutable_state->texcoords[DB_GL_QUAD_V1_X] = tex_u;
+    mutable_state->texcoords[DB_GL_QUAD_V1_Y] = tex_v;
+    mutable_state->texcoords[DB_GL_QUAD_V2_X] = 0.0F;
+    mutable_state->texcoords[DB_GL_QUAD_V2_Y] = 0.0F;
+    mutable_state->texcoords[DB_GL_QUAD_V3_X] = tex_u;
+    mutable_state->texcoords[DB_GL_QUAD_V3_Y] = 0.0F;
+
+    db_gl_set_depth_test_enabled(0);
+    db_gl_set_cull_face_enabled(0);
+    db_gl_set_blend_enabled(0);
+    db_gl_set_texture_2d_enabled(1);
+    db_gl_set_client_state_vertex_array_enabled(1);
+    db_gl_set_client_state_color_array_enabled(1);
+    db_gl_set_client_state_texcoord_array_enabled(1);
+    db_gl_set_vertex_pointer_2f(0, mutable_state->vertices);
+    db_gl_set_color_pointer_f(4, 0, mutable_state->colors);
+    db_gl_set_texcoord_pointer_2f(0, mutable_state->texcoords);
+    db_gl_texture_bind_2d(mutable_state->texture);
+    db_gl_draw_arrays_triangle_strip(0, 4);
+    db_gl_texture_bind_2d(0U);
+    db_gl_set_texture_2d_enabled(0);
+    db_gl_set_client_state_texcoord_array_enabled(0);
 }
 
 void db_gl_set_viewport_px(int width_px, int height_px) {
@@ -886,17 +1821,10 @@ static void db_gl_texture_set_nearest_clamp_2d(void) {
                                        GL_NEAREST);
     g_upload_proc_table.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                                        GL_NEAREST);
-#ifdef GL_CLAMP_TO_EDGE
     g_upload_proc_table.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
                                        GL_CLAMP_TO_EDGE);
     g_upload_proc_table.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
                                        GL_CLAMP_TO_EDGE);
-#else
-    g_upload_proc_table.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
-                                       GL_CLAMP);
-    g_upload_proc_table.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
-                                       GL_CLAMP);
-#endif
 }
 
 static int db_gl_texture_allocate_rgba_typed(unsigned int texture, int width,
@@ -912,15 +1840,13 @@ static int db_gl_texture_allocate_rgba_typed(unsigned int texture, int width,
         (g_upload_proc_table.tex_image_2d == NULL)) {
         return 0;
     }
+    db_gl_probe_drain_errors();
     g_upload_proc_table.bind_texture(GL_TEXTURE_2D, (GLuint)texture);
     db_gl_texture_set_nearest_clamp_2d();
     g_upload_proc_table.tex_image_2d(GL_TEXTURE_2D, 0, (GLint)internal_format,
                                      (GLsizei)width, (GLsizei)height, 0,
                                      GL_RGBA, (GLenum)pixel_type, pixels);
-    return ((g_upload_proc_table.get_error != NULL) &&
-            (g_upload_proc_table.get_error() == GL_NO_ERROR))
-               ? 1
-               : 0;
+    return db_gl_probe_finish(db_gl_probe_step_error_free());
 }
 
 int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
@@ -1133,6 +2059,13 @@ void db_gl_set_pack_alignment_1(void) {
     db_gl_load_upload_proc_table();
     if (g_upload_proc_table.pixel_storei != NULL) {
         g_upload_proc_table.pixel_storei(GL_PACK_ALIGNMENT, 1);
+    }
+}
+
+void db_gl_set_unpack_alignment_1(void) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.pixel_storei != NULL) {
+        g_upload_proc_table.pixel_storei(GL_UNPACK_ALIGNMENT, 1);
     }
 }
 
@@ -1545,6 +2478,13 @@ void db_gl_uniform3f(int location, float x_val, float y_val, float z_val) {
     }
 }
 
+void db_gl_uniform3fv3(int location, const float *xyz) {
+    if (xyz == NULL) {
+        return;
+    }
+    db_gl_uniform3f(location, xyz[0], xyz[1], xyz[2]);
+}
+
 void db_gl_use_program(unsigned int program) {
     db_gl_load_upload_proc_table();
     if ((g_current_program_valid != 0) && (g_current_program == program)) {
@@ -1606,33 +2546,7 @@ const char *db_gl_get_extensions_string(void) {
     return (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
 }
 
-// 3) Wrapper APIs: query strings, PBO utilities, and proc preload.
-unsigned int db_gl_pbo_create_or_zero(void) {
-    db_gl_require_upload_proc_table_loaded("db_gl_pbo_create_or_zero");
-    if (g_upload_proc_table.gen_buffers == NULL) {
-        return 0U;
-    }
-    GLuint pbo = 0U;
-    g_upload_proc_table.gen_buffers(1, &pbo);
-    return (unsigned int)pbo;
-}
-
-void db_gl_pbo_delete_if_valid(unsigned int pbo) {
-    db_gl_require_upload_proc_table_loaded("db_gl_pbo_delete_if_valid");
-    if ((pbo == 0U) || (g_upload_proc_table.delete_buffers == NULL)) {
-        return;
-    }
-    const GLuint gl_pbo = (GLuint)pbo;
-    g_upload_proc_table.delete_buffers(1, &gl_pbo);
-}
-
-void db_gl_pbo_unbind_unpack(void) {
-    db_gl_require_upload_proc_table_loaded("db_gl_pbo_unbind_unpack");
-    if (g_upload_proc_table.bind_buffer == NULL) {
-        return;
-    }
-    g_upload_proc_table.bind_buffer(GL_PIXEL_UNPACK_BUFFER, 0U);
-}
+// 3) Wrapper APIs: query strings and proc preload.
 
 void db_gl_preload_upload_proc_table(void) { db_gl_load_upload_proc_table(); }
 
@@ -1649,55 +2563,183 @@ static int db_gl_verify_buffer_prefix(const uint8_t *expected,
     }
 
     uint8_t actual[DB_GL_PROBE_PREFIX_BYTES] = {0};
-    db_gl_clear_errors((db_gl_get_error_fn_t)g_upload_proc_table.get_error);
+    db_gl_probe_drain_errors();
     g_upload_proc_table.get_buffer_sub_data(GL_ARRAY_BUFFER, 0,
                                             (GLsizeiptr)expected_size, actual);
 
-    if (db_gl_get_error_value() != GL_NO_ERROR) {
+    return db_gl_probe_finish(db_gl_probe_step_error_free() &&
+                              (memcmp(expected, actual, expected_size) == 0));
+}
+
+static int db_gl_probe_texture_create_rgba16f(unsigned int *out_texture,
+                                              int width, int height) {
+    if (out_texture == NULL) {
+        return 0;
+    }
+    *out_texture = 0U;
+    db_gl_load_upload_proc_table();
+    if ((g_upload_proc_table.gen_textures == NULL) ||
+        (g_upload_proc_table.bind_texture == NULL) ||
+        (g_upload_proc_table.tex_parameteri == NULL) ||
+        (g_upload_proc_table.tex_image_2d == NULL)) {
         return 0;
     }
 
-    return memcmp(expected, actual, expected_size) == 0;
+    db_gl_probe_drain_errors();
+
+    GLuint texture = 0U;
+    g_upload_proc_table.gen_textures(1, &texture);
+    if (texture == 0U) {
+        return db_gl_probe_finish(0);
+    }
+
+    g_upload_proc_table.bind_texture(GL_TEXTURE_2D, texture);
+    g_upload_proc_table.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                       GL_NEAREST);
+    g_upload_proc_table.tex_parameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                                       GL_NEAREST);
+    g_upload_proc_table.tex_image_2d(GL_TEXTURE_2D, 0, (GLint)GL_RGBA16F,
+                                     (GLsizei)width, (GLsizei)height, 0,
+                                     GL_RGBA, GL_HALF_FLOAT, NULL);
+    if (db_gl_probe_step_error_free() == 0) {
+        if (g_upload_proc_table.delete_textures != NULL) {
+            g_upload_proc_table.delete_textures(1, &texture);
+        }
+        return db_gl_probe_finish(0);
+    }
+
+    *out_texture = (unsigned int)texture;
+    return db_gl_probe_finish(1);
 }
 
 int db_gl_context_probe_texture_float_support(void) {
-    db_gl_load_upload_proc_table();
-    if (g_upload_proc_table.get_string == NULL) {
-        return 0;
+    static int cached_result = -1;
+    if (cached_result >= 0) {
+        return cached_result;
     }
-    const char *version =
-        (const char *)g_upload_proc_table.get_string(GL_VERSION);
-    const char *exts =
-        (const char *)g_upload_proc_table.get_string(GL_EXTENSIONS);
-    if (db_gl_extensions_advertise_texture_float(version, exts) == 0) {
+    db_gl_load_upload_proc_table();
+    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
+    if (db_gl_extensions_advertise_texture_float(&runtime) == 0) {
+        cached_result = 0;
         return 0;
     }
 
     // Probe: create/upload/delete a tiny RGBA16F texture and require clean
     // error state throughout.
-    while (db_gl_get_error_code() != GL_NO_ERROR) {
-    }
+    db_gl_probe_drain_errors();
 
     unsigned int probe_texture = 0U;
-    if (db_gl_texture_create_rgba16f(&probe_texture, 2, 2, NULL) == 0) {
-        while (db_gl_get_error_code() != GL_NO_ERROR) {
-        }
+    if (db_gl_probe_texture_create_rgba16f(&probe_texture, 2, 2) == 0) {
+        db_gl_probe_drain_errors();
+        cached_result = 0;
         return 0;
     }
 
     static const uint16_t k_probe_rgba16f[4U * 4U] = {
-        0x3C00U, 0x0000U, 0x0000U, 0x3C00U, 0x0000U, 0x3C00U, 0x0000U, 0x3C00U,
-        0x0000U, 0x0000U, 0x3C00U, 0x3C00U, 0x3C00U, 0x3C00U, 0x3C00U, 0x3C00U,
+        DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, 0x0000U,    DB_F16_ONE,
+        0x0000U,    DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        DB_F16_ONE, DB_F16_ONE, DB_F16_ONE, DB_F16_ONE,
     };
     db_gl_texture_bind_2d(probe_texture);
     db_gl_texture_sub_image_2d_rgba16f(0, 0, 2, 2, k_probe_rgba16f);
-    const unsigned int error_after_upload = db_gl_get_error_code();
-
+    const int upload_ok = db_gl_probe_step_error_free();
     db_gl_texture_delete_if_valid(&probe_texture);
     db_gl_texture_bind_2d(0U);
-    while (db_gl_get_error_code() != GL_NO_ERROR) {
+    cached_result = db_gl_probe_finish(upload_ok);
+    return cached_result;
+}
+
+int db_gl_context_probe_texture_float_present_support(void) {
+    static int cached_result = -1;
+    if (cached_result >= 0) {
+        return cached_result;
     }
-    return (error_after_upload == GL_NO_ERROR) ? 1 : 0;
+    if (db_gl_context_probe_texture_float_support() == 0) {
+        cached_result = 0;
+        return 0;
+    }
+
+    db_gl_probe_drain_errors();
+
+    unsigned int probe_texture = 0U;
+    if (db_gl_probe_texture_create_rgba16f(&probe_texture, 2, 2) == 0) {
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    static const uint16_t k_probe_rgba16f[4U * 4U] = {
+        DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, 0x0000U,    DB_F16_ONE,
+        0x0000U,    DB_F16_ONE, 0x0000U,    0x0000U,    DB_F16_ONE, DB_F16_ONE,
+        DB_F16_ONE, DB_F16_ONE, DB_F16_ONE, DB_F16_ONE,
+    };
+    db_gl_texture_bind_2d(probe_texture);
+    db_gl_texture_sub_image_2d_rgba16f(0, 0, 2, 2, k_probe_rgba16f);
+    if (db_gl_probe_step_error_free() == 0) {
+        db_gl_texture_delete_if_valid(&probe_texture);
+        db_gl_texture_bind_2d(0U);
+        cached_result = db_gl_probe_finish(0);
+        return cached_result;
+    }
+
+    int viewport[4] = {0, 0, 0, 0};
+    db_gl_get_integerv(GL_VIEWPORT, viewport);
+    float probe_vertices[8] = {0.0F};
+    db_gl_quad_init(probe_vertices);
+    const float probe_texcoords[8] = {0.0F, 1.0F, 1.0F, 1.0F,
+                                      0.0F, 0.0F, 1.0F, 0.0F};
+    const float probe_colors[DB_RECT_VERTEX_COUNT * 4U] = {
+        1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+        1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F,
+    };
+    uint8_t probe_readback[2U * 2U * 4U] = {0U};
+
+    db_gl_set_viewport_px(2, 2);
+    db_gl_clear_color_rgba(0.0F, 0.0F, 0.0F, 1.0F);
+    db_gl_clear_color_buffer();
+    db_gl_set_depth_test_enabled(0);
+    db_gl_set_cull_face_enabled(0);
+    db_gl_set_blend_enabled(0);
+    db_gl_set_texture_2d_enabled(1);
+    db_gl_set_client_state_vertex_array_enabled(1);
+    db_gl_set_client_state_color_array_enabled(1);
+    db_gl_set_client_state_texcoord_array_enabled(1);
+    db_gl_set_vertex_pointer_2f(0, probe_vertices);
+    db_gl_set_color_pointer_f(4, 0, probe_colors);
+    db_gl_set_texcoord_pointer_2f(0, probe_texcoords);
+    db_gl_texture_bind_2d(probe_texture);
+    db_gl_draw_arrays_triangle_strip(0, 4);
+    db_gl_read_pixels_rgba8(0, 0, 2, 2, probe_readback);
+    const int draw_ok = db_gl_probe_step_error_free();
+
+    db_gl_texture_bind_2d(0U);
+    db_gl_set_texture_2d_enabled(0);
+    db_gl_set_client_state_texcoord_array_enabled(0);
+    db_gl_set_client_state_color_array_enabled(0);
+    db_gl_set_client_state_vertex_array_enabled(0);
+    db_gl_set_viewport_px(viewport[2], viewport[3]);
+    db_gl_texture_delete_if_valid(&probe_texture);
+
+    if (draw_ok == 0) {
+        cached_result = db_gl_probe_finish(0);
+        return 0;
+    }
+
+    const uint8_t *const p0 =
+        &probe_readback[db_gl_probe_rgba_pixel_offset(2U, 0U, 0U)];
+    const uint8_t *const p1 =
+        &probe_readback[db_gl_probe_rgba_pixel_offset(2U, 1U, 0U)];
+    const uint8_t *const p2 =
+        &probe_readback[db_gl_probe_rgba_pixel_offset(2U, 0U, 1U)];
+    const uint8_t *const p3 =
+        &probe_readback[db_gl_probe_rgba_pixel_offset(2U, 1U, 1U)];
+    cached_result =
+        db_gl_probe_finish((db_gl_probe_rgb_matches(p0, 0U, 0U, 0U, 1U) &&
+                            db_gl_probe_rgb_matches(p1, 0U, 1U, 1U, 1U) &&
+                            db_gl_probe_rgb_matches(p2, 0U, 1U, 0U, 0U) &&
+                            db_gl_probe_rgb_matches(p3, 0U, 0U, 1U, 0U))
+                               ? 1
+                               : 0);
+    return cached_result;
 }
 
 static int db_gl_context_probe_persistent_upload(size_t bytes,
@@ -1715,31 +2757,31 @@ static int db_gl_context_probe_persistent_upload(size_t bytes,
     const GLbitfield storage_flags =
         GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
 
-    db_gl_clear_errors((db_gl_get_error_fn_t)g_upload_proc_table.get_error);
+    db_gl_probe_drain_errors();
     g_upload_proc_table.buffer_storage(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, NULL,
                                        storage_flags);
-    if (db_gl_get_error_value() != GL_NO_ERROR) {
-        return 0;
+    if (db_gl_probe_step_error_free() == 0) {
+        return db_gl_probe_finish(0);
     }
 
     void *mapped = g_upload_proc_table.map_buffer_range(
         GL_ARRAY_BUFFER, 0, (GLsizeiptr)bytes, storage_flags);
-    if ((mapped == NULL) || (db_gl_get_error_value() != GL_NO_ERROR)) {
+    if ((mapped == NULL) || (db_gl_probe_step_error_free() == 0)) {
         if (mapped != NULL) {
             (void)g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER);
         }
-        return 0;
+        return db_gl_probe_finish(0);
     }
 
     db_copy_bytes(mapped, initial_vertices, probe_size);
     if (!db_gl_verify_buffer_prefix((const uint8_t *)initial_vertices,
                                     probe_size)) {
         (void)g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER);
-        return 0;
+        return db_gl_probe_finish(0);
     }
 
     *mapped_out = mapped;
-    return 1;
+    return db_gl_probe_finish(1);
 }
 
 static int db_gl_context_probe_map_range_upload(size_t bytes,
@@ -1758,28 +2800,28 @@ static int db_gl_context_probe_map_range_upload(size_t bytes,
     uint8_t pattern[DB_GL_PROBE_PREFIX_BYTES] = {0};
     db_gl_upload_probe_fill_pattern(pattern, probe_size);
 
-    db_gl_clear_errors((db_gl_get_error_fn_t)g_upload_proc_table.get_error);
+    db_gl_probe_drain_errors();
     void *dst = g_upload_proc_table.map_buffer_range(
         GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size,
         GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT |
             GL_MAP_UNSYNCHRONIZED_BIT);
-    if ((dst == NULL) || (db_gl_get_error_value() != GL_NO_ERROR)) {
-        return 0;
+    if ((dst == NULL) || (db_gl_probe_step_error_free() == 0)) {
+        return db_gl_probe_finish(0);
     }
 
     db_copy_bytes(dst, pattern, probe_size);
     if ((g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER) != GL_TRUE) ||
-        (db_gl_get_error_value() != GL_NO_ERROR)) {
-        return 0;
+        (db_gl_probe_step_error_free() == 0)) {
+        return db_gl_probe_finish(0);
     }
 
     if (!db_gl_verify_buffer_prefix(pattern, probe_size)) {
-        return 0;
+        return db_gl_probe_finish(0);
     }
 
     g_upload_proc_table.buffer_sub_data(
         GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size, initial_vertices);
-    return db_gl_get_error_value() == GL_NO_ERROR;
+    return db_gl_probe_finish(db_gl_probe_step_error_free());
 }
 
 static int
@@ -1799,25 +2841,25 @@ db_gl_context_probe_map_buffer_upload(size_t bytes,
     uint8_t pattern[DB_GL_PROBE_PREFIX_BYTES] = {0};
     db_gl_upload_probe_fill_pattern(pattern, probe_size);
 
-    db_gl_clear_errors((db_gl_get_error_fn_t)g_upload_proc_table.get_error);
+    db_gl_probe_drain_errors();
     void *dst = g_upload_proc_table.map_buffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-    if ((dst == NULL) || (db_gl_get_error_value() != GL_NO_ERROR)) {
-        return 0;
+    if ((dst == NULL) || (db_gl_probe_step_error_free() == 0)) {
+        return db_gl_probe_finish(0);
     }
 
     db_copy_bytes(dst, pattern, probe_size);
     if ((g_upload_proc_table.unmap_buffer(GL_ARRAY_BUFFER) != GL_TRUE) ||
-        (db_gl_get_error_value() != GL_NO_ERROR)) {
-        return 0;
+        (db_gl_probe_step_error_free() == 0)) {
+        return db_gl_probe_finish(0);
     }
 
     if (!db_gl_verify_buffer_prefix(pattern, probe_size)) {
-        return 0;
+        return db_gl_probe_finish(0);
     }
 
     g_upload_proc_table.buffer_sub_data(
         GL_ARRAY_BUFFER, 0, (GLsizeiptr)probe_size, initial_vertices);
-    return db_gl_get_error_value() == GL_NO_ERROR;
+    return db_gl_probe_finish(db_gl_probe_step_error_free());
 }
 
 void db_gl_context_probe_upload_capabilities(size_t bytes,
@@ -1836,11 +2878,10 @@ void db_gl_context_probe_upload_capabilities(size_t bytes,
     db_gl_require_upload_proc_table_loaded(
         "db_gl_context_probe_upload_capabilities");
 
-    const char *version = db_gl_get_string_value(GL_VERSION);
-    const char *exts = db_gl_get_string_value(GL_EXTENSIONS);
+    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
 
-    if (db_gl_extensions_advertise_buffer_storage(version, exts) &&
-        db_gl_extensions_advertise_map_buffer_range(version, exts) &&
+    if (db_gl_extensions_advertise_buffer_storage(&runtime) &&
+        db_gl_extensions_advertise_map_buffer_range(&runtime) &&
         db_gl_context_probe_persistent_upload(bytes, initial_vertices,
                                               &out->persistent_mapped_ptr)) {
         out->use_persistent_upload = 1;
@@ -1854,17 +2895,18 @@ void db_gl_context_probe_upload_capabilities(size_t bytes,
     // the probe buffer, not the data-path validation itself.
     g_upload_proc_table.buffer_data(GL_ARRAY_BUFFER, (GLsizeiptr)bytes, NULL,
                                     GL_DYNAMIC_DRAW);
-    if (db_gl_get_error_value() != GL_NO_ERROR) {
+    if (db_gl_probe_step_error_free() == 0) {
+        (void)db_gl_probe_finish(0);
         return;
     }
 
-    if (db_gl_extensions_advertise_map_buffer_range(version, exts) &&
+    if (db_gl_extensions_advertise_map_buffer_range(&runtime) &&
         db_gl_context_probe_map_range_upload(bytes, initial_vertices)) {
         out->use_map_range_upload = 1;
         return;
     }
 
-    if (db_gl_extensions_advertise_map_buffer(version, exts) &&
+    if (db_gl_extensions_advertise_map_buffer(&runtime) &&
         db_gl_context_probe_map_buffer_upload(bytes, initial_vertices)) {
         out->use_map_buffer_upload = 1;
     }

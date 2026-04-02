@@ -7,8 +7,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include "../../core/db_alloc_policy.h"
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
+#include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
@@ -19,7 +21,7 @@
 #include "../../renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.h"
 #endif
 #include "../../config/benchmark_config.h"
-#include "../display_cpu_hash_common.h"
+#include "../../config/runtime_options.h"
 #include "../display_dispatch.h"
 #include "../display_frame_loop_common.h"
 #include "../display_gl_hash_readback_common.h"
@@ -36,10 +38,6 @@
 #define DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE_HDR                                 \
     "cpu_glfw_window_tex_sub_image_hdr_rgba16f"
 #define DB_CPU_DEBUG_CLEAR_CHUNK_ROWS 64U
-#define DB_CPU_RGBA16F_CHANNELS_PER_PIXEL 4U
-#define DB_CPU_RGBA16F_BYTES_PER_PIXEL                                         \
-    (sizeof(uint16_t) * DB_CPU_RGBA16F_CHANNELS_PER_PIXEL)
-#define DB_CPU_RGBA8_BYTES_PER_PIXEL 4U
 #ifdef DB_HAS_VULKAN_API
 typedef struct {
     const char *backend_name;
@@ -51,17 +49,7 @@ typedef struct {
 #endif
 
 typedef struct {
-    unsigned int pbo;
-    int has_pbo;
-    int initialized;
-    int force_full_upload;
-    int use_hdr_float_bo;
-    unsigned int texture;
-    uint32_t texture_height;
-    int use_npot;
-    uint32_t texture_width;
-    float texcoords[8];
-    float vertices[8];
+    db_gl_shadow_present_state_t shared;
     int last_viewport_w;
     int last_viewport_h;
     // Debug-only scratch buffer used to clear the CPU present texture without
@@ -75,20 +63,41 @@ typedef struct {
     int debug_clear_ready;
 } db_cpu_present_gl_state_t;
 
+typedef enum {
+    DB_GLFW_CPU_PRESENT_FORMAT_RGBA8 = 0,
+    DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F = 1,
+} db_glfw_cpu_present_format_t;
+
 typedef struct {
     const char *api_name;
     const char *capability_mode;
     double next_progress_log_due_ms;
     db_display_frame_step_t frame_step;
     db_display_hash_tracker_t *state_hash_tracker;
-    db_display_hash_tracker_t *bo_hash_tracker;
+    db_display_hash_tracker_t *framebuffer_hash_tracker;
+    int framebuffer_hash_uses_rgba16f;
+    db_gl_framebuffer_hash_scratch_t *hash_rgba8_scratch;
+    db_gl_framebuffer_hash_f16_scratch_t *hash_rgba16f_scratch;
     int state_hash_enabled;
     int output_hash_enabled;
     int debug_clear_default_framebuffer;
+    db_glfw_cpu_present_format_t selected_format;
     db_cpu_present_gl_state_t *present;
     uint32_t work_unit_count;
     GLFWwindow *window;
 } db_glfw_cpu_loop_ctx_t;
+
+typedef struct {
+    db_cpu_present_gl_state_t *state;
+    int debug_clear_default_framebuffer;
+    int selected_present_uses_rgba16f;
+} db_cpu_present_prepare_upload_target_ctx_t;
+
+typedef struct {
+    int hdr_explicit_requested;
+    db_glfw_cpu_present_format_t selected_format;
+    const char *capability_mode;
+} db_glfw_cpu_present_mode_t;
 
 typedef struct {
     const char *backend_name;
@@ -98,7 +107,9 @@ typedef struct {
     db_display_frame_step_t frame_step;
     db_display_hash_tracker_t *state_hash_tracker;
     db_display_hash_tracker_t *framebuffer_hash_tracker;
-    db_gl_framebuffer_hash_scratch_t *hash_scratch;
+    int framebuffer_hash_uses_rgba16f;
+    db_gl_framebuffer_hash_scratch_t *hash_rgba8_scratch;
+    db_gl_framebuffer_hash_f16_scratch_t *hash_rgba16f_scratch;
     double next_progress_log_due_ms;
     int state_hash_enabled;
     int output_hash_enabled;
@@ -108,18 +119,10 @@ typedef struct {
     GLFWwindow *window;
 } db_glfw_opengl_loop_ctx_t;
 
-#ifdef __linux__
-typedef struct {
-    int observed_any_match;
-    int preserves_immediately;
-    int first_reuse_distance;
-    int max_reuse_distance;
-} db_glfw_default_fb_probe_result_t;
-#endif
-
 static GLFWwindow *db_glfw_create_renderer_window(
     const char *backend_name, const db_display_gl_context_policy_t *policy,
-    int swap_interval, int offscreen_enabled, int *out_context_is_gles) {
+    int swap_interval, db_glfw_window_visibility_t visibility,
+    int *out_context_is_gles) {
     if (policy == NULL) {
         return NULL;
     }
@@ -128,7 +131,7 @@ static GLFWwindow *db_glfw_create_renderer_window(
             backend_name, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
             BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
             policy->requested_gl_major, policy->requested_gl_minor,
-            swap_interval, out_context_is_gles, offscreen_enabled);
+            swap_interval, out_context_is_gles, visibility);
     }
     if (out_context_is_gles != NULL) {
         *out_context_is_gles = 0;
@@ -137,115 +140,10 @@ static GLFWwindow *db_glfw_create_renderer_window(
         backend_name, "OpenGL 3.3 Shader GLFW DriverBench",
         BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
         policy->requested_gl_major, policy->requested_gl_minor, 1,
-        swap_interval, offscreen_enabled);
+        swap_interval, visibility);
 }
 
 #ifdef __linux__
-static uint64_t db_glfw_probe_read_default_fb_hash_or_fail(
-    const char *backend_name, int framebuffer_width_px,
-    int framebuffer_height_px, db_gl_framebuffer_hash_scratch_t *scratch) {
-    const uint8_t *pixels = db_gl_read_framebuffer_rgba8_or_fail(
-        backend_name, framebuffer_width_px, framebuffer_height_px, scratch);
-    return db_hash_rgba8_pixels_canonical(
-        pixels,
-        db_checked_int_to_u32(backend_name, "probe_fb_w", framebuffer_width_px),
-        db_checked_int_to_u32(backend_name, "probe_fb_h",
-                              framebuffer_height_px),
-        (size_t)db_checked_int_to_u32(backend_name, "probe_fb_row_bytes",
-                                      framebuffer_width_px) *
-            4U,
-        1);
-}
-
-static db_glfw_default_fb_probe_result_t
-db_glfw_probe_default_framebuffer_reuse(const char *backend_name,
-                                        GLFWwindow *window) {
-    static const float probe_colors[8][4] = {
-        {1.0F, 0.0F, 0.0F, 1.0F},   {0.0F, 1.0F, 0.0F, 1.0F},
-        {0.0F, 0.0F, 1.0F, 1.0F},   {1.0F, 1.0F, 0.0F, 1.0F},
-        {1.0F, 0.0F, 1.0F, 1.0F},   {0.0F, 1.0F, 1.0F, 1.0F},
-        {0.5F, 0.25F, 0.75F, 1.0F}, {0.75F, 0.5F, 0.25F, 1.0F},
-    };
-    db_glfw_default_fb_probe_result_t result = {
-        .observed_any_match = 0,
-        .preserves_immediately = 0,
-        .first_reuse_distance = 0,
-        .max_reuse_distance = 0,
-    };
-    if ((backend_name == NULL) || (window == NULL)) {
-        return result;
-    }
-
-    int framebuffer_width_px = 0;
-    int framebuffer_height_px = 0;
-    glfwGetFramebufferSize(window, &framebuffer_width_px,
-                           &framebuffer_height_px);
-    if ((framebuffer_width_px <= 0) || (framebuffer_height_px <= 0)) {
-        return result;
-    }
-    db_gl_set_viewport_px(framebuffer_width_px, framebuffer_height_px);
-
-    db_gl_framebuffer_hash_scratch_t scratch = {0};
-    uint64_t pre_swap_hashes[8] = {0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U};
-    for (size_t frame_index = 0U; frame_index < 8U; frame_index++) {
-        const float *const rgba = probe_colors[frame_index];
-        db_gl_clear_color_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
-        db_gl_clear_color_buffer();
-        pre_swap_hashes[frame_index] =
-            db_glfw_probe_read_default_fb_hash_or_fail(
-                backend_name, framebuffer_width_px, framebuffer_height_px,
-                &scratch);
-        glfwSwapBuffers(window);
-        glfwPollEvents();
-        const uint64_t post_swap_hash =
-            db_glfw_probe_read_default_fb_hash_or_fail(
-                backend_name, framebuffer_width_px, framebuffer_height_px,
-                &scratch);
-        for (size_t prior_index = 0U; prior_index <= frame_index;
-             prior_index++) {
-            if (post_swap_hash != pre_swap_hashes[prior_index]) {
-                continue;
-            }
-            result.observed_any_match = 1;
-            const int reuse_distance = (int)((frame_index - prior_index) + 1U);
-            if (prior_index == frame_index) {
-                result.preserves_immediately = 1;
-            }
-            if ((result.first_reuse_distance == 0) ||
-                (reuse_distance < result.first_reuse_distance)) {
-                result.first_reuse_distance = reuse_distance;
-            }
-            if (reuse_distance > result.max_reuse_distance) {
-                result.max_reuse_distance = reuse_distance;
-            }
-            break;
-        }
-    }
-    db_gl_hash_scratch_release(&scratch);
-    return result;
-}
-
-static void db_glfw_log_default_framebuffer_probe(
-    const char *backend_name, const db_glfw_default_fb_probe_result_t *result) {
-    if ((backend_name == NULL) || (result == NULL)) {
-        return;
-    }
-    if (result->observed_any_match == 0) {
-        db_infof(backend_name,
-                 "glfw default-fb probe: preserve=no first_reuse_distance=0 "
-                 "max_reuse_distance=0");
-        return;
-    }
-    const int stable_preserve = (result->preserves_immediately != 0) &&
-                                (result->first_reuse_distance == 1) &&
-                                (result->max_reuse_distance == 1);
-    db_infof(backend_name,
-             "glfw default-fb probe: preserve=%s first_reuse_distance=%d "
-             "max_reuse_distance=%d",
-             (stable_preserve != 0) ? "yes" : "unstable",
-             result->first_reuse_distance, result->max_reuse_distance);
-}
-
 static db_glfw_default_fb_probe_result_t
 db_glfw_probe_and_log_default_framebuffer_behavior(
     const char *backend_name, db_gl_renderer_t renderer,
@@ -256,268 +154,15 @@ db_glfw_probe_and_log_default_framebuffer_behavior(
     GLFWwindow *window =
         db_glfw_create_renderer_window(backend_name, policy, swap_interval,
                                        probe_window_hidden, &context_is_gles);
-    const char *runtime_version = NULL;
-    (void)db_display_prepare_and_validate_gl_runtime(
+    (void)db_display_require_gl_runtime_for_renderer(
         (db_gl_proc_resolver_fn_t)glfwGetProcAddress, renderer, backend_name,
-        DB_DISPLAY_GL_RUNTIME_LOG_DISABLED,
-        (policy->allow_gles1_1_fallback != 0) ? context_is_gles : -1,
-        &runtime_version, NULL);
-    result = db_glfw_probe_default_framebuffer_reuse(backend_name, window);
-    db_glfw_log_default_framebuffer_probe(backend_name, &result);
+        (policy->allow_gles1_1_fallback != 0) ? context_is_gles : -1);
+    result =
+        db_glfw_probe_and_log_default_framebuffer_reuse(backend_name, window);
     db_glfw_destroy_window(window);
     return result;
 }
-
-static int db_glfw_default_framebuffer_probe_is_stable(
-    const db_glfw_default_fb_probe_result_t *result) {
-    return (result != NULL) && (result->observed_any_match != 0) &&
-           (result->preserves_immediately != 0) &&
-           (result->first_reuse_distance == 1) &&
-           (result->max_reuse_distance == 1);
-}
 #endif
-
-static void db_present_cpu_texture_resize(db_cpu_present_gl_state_t *state,
-                                          uint32_t pixel_width,
-                                          uint32_t pixel_height) {
-    if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
-        return;
-    }
-
-    const uint32_t target_width =
-        (state->use_npot != 0) ? pixel_width : db_u32_next_pow2(pixel_width);
-    const uint32_t target_height =
-        (state->use_npot != 0) ? pixel_height : db_u32_next_pow2(pixel_height);
-
-    state->texture_width = target_width;
-    state->texture_height = target_height;
-    if (state->texture == 0U) {
-        const int created =
-            (state->use_hdr_float_bo != 0)
-                ? db_gl_texture_create_rgba16f(
-                      &state->texture,
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_width", state->texture_width),
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_height", state->texture_height),
-                      NULL)
-                : db_gl_texture_create_rgba8(
-                      &state->texture,
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_width", state->texture_width),
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_height", state->texture_height),
-                      NULL);
-        if (created == 0) {
-            db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                     "failed to create CPU present texture");
-        }
-    } else {
-        const int allocated =
-            (state->use_hdr_float_bo != 0)
-                ? db_gl_texture_allocate_rgba16f(
-                      state->texture,
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_width", state->texture_width),
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_height", state->texture_height),
-                      NULL)
-                : db_gl_texture_allocate_rgba8(
-                      state->texture,
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_width", state->texture_width),
-                      db_checked_u32_to_i32(
-                          DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                          "cpu_tex_height", state->texture_height),
-                      NULL);
-        if (allocated == 0) {
-            db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                     "failed to resize CPU present texture");
-        }
-    }
-    state->force_full_upload = 1;
-}
-
-static void db_present_cpu_init_state(db_cpu_present_gl_state_t *state,
-                                      int enable_pbo_probe) {
-    if ((state == NULL) || (state->initialized != 0)) {
-        return;
-    }
-    state->texture = 0U;
-    state->force_full_upload = 1;
-    if ((enable_pbo_probe != 0) &&
-        (db_gl_context_has_pbo_upload_procs() != 0)) {
-        state->pbo = db_gl_pbo_create_or_zero();
-        if (state->pbo != 0U) {
-            state->has_pbo = 1;
-        }
-    }
-
-    db_gl_quad_init(state->vertices);
-
-    db_gl_set_depth_test_enabled(0);
-    db_gl_set_cull_face_enabled(0);
-    db_gl_set_blend_enabled(0);
-    db_gl_set_texture_2d_enabled(1);
-    db_gl_set_client_state_vertex_array_enabled(1);
-    db_gl_set_client_state_texcoord_array_enabled(1);
-    db_gl_set_vertex_pointer_2f(0, state->vertices);
-    db_gl_set_texcoord_pointer_2f(0, state->texcoords);
-    state->initialized = 1;
-}
-
-static void db_present_cpu_upload_rows(db_cpu_present_gl_state_t *state,
-                                       uint32_t col_start, uint32_t pixel_width,
-                                       uint32_t row_start, uint32_t row_count,
-                                       const void *pixel_data,
-                                       int allow_null_data) {
-    if ((state == NULL) || (pixel_width == 0U) || (row_count == 0U) ||
-        ((allow_null_data == 0) && (pixel_data == NULL))) {
-        return;
-    }
-    if (state->use_hdr_float_bo != 0) {
-        db_gl_texture_sub_image_2d_rgba16f(
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_x", col_start),
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_y", row_start),
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_w", pixel_width),
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_h", row_count),
-            pixel_data);
-    } else {
-        db_gl_texture_sub_image_2d_rgba(
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_x", col_start),
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_y", row_start),
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_w", pixel_width),
-            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                                  "cpu_upload_h", row_count),
-            pixel_data);
-    }
-}
-
-static void db_present_cpu_shutdown_state(db_cpu_present_gl_state_t *state) {
-    if (state == NULL) {
-        return;
-    }
-    if (state->pbo != 0U) {
-        db_gl_pbo_delete_if_valid(state->pbo);
-        state->pbo = 0U;
-    }
-    if (state->texture != 0U) {
-        db_gl_texture_delete_if_valid(&state->texture);
-    }
-    if (state->debug_clear_buf != NULL) {
-        free(state->debug_clear_buf);
-        state->debug_clear_buf = NULL;
-        state->debug_clear_buf_bytes = 0U;
-        state->debug_clear_ready = 0;
-    }
-}
-
-static void db_present_cpu_upload_damage_blocks(
-    db_cpu_present_gl_state_t *state, const uint8_t *pixels_rgba8,
-    const uint16_t *pixels_rgba16f, uint32_t pixel_width, uint32_t pixel_height,
-    const db_damage_block_t *blocks, size_t block_count) {
-    if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U) ||
-        (blocks == NULL) || (block_count == 0U)) {
-        return;
-    }
-    if ((state->use_hdr_float_bo != 0) && (pixels_rgba16f == NULL)) {
-        return;
-    }
-    if ((state->use_hdr_float_bo == 0) && (pixels_rgba8 == NULL)) {
-        return;
-    }
-
-    const uint32_t pixel_bytes = (state->use_hdr_float_bo != 0)
-                                     ? (uint32_t)DB_CPU_RGBA16F_BYTES_PER_PIXEL
-                                     : DB_CPU_RGBA8_BYTES_PER_PIXEL;
-    const size_t total_bytes = (size_t)db_checked_mul_u32(
-        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "cpu_upload_total_bytes",
-        db_checked_mul_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                           "cpu_upload_row_bytes", pixel_width, pixel_bytes),
-        pixel_height);
-    if (total_bytes > (size_t)PTRDIFF_MAX) {
-        db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                 "cpu_upload_total_bytes too large: %zu", total_bytes);
-    }
-    const int use_pbo = (state->has_pbo != 0) && (state->pbo != 0U) &&
-                        (db_gl_context_has_pbo_upload_procs() != 0);
-    const uint32_t row_bytes =
-        db_checked_mul_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                           "cpu_upload_row_bytes", pixel_width, pixel_bytes);
-    for (size_t i = 0U; i < block_count; i++) {
-        const db_damage_block_t block = blocks[i];
-        if ((block.row_count == 0U) || (block.col_count == 0U)) {
-            continue;
-        }
-        const uint32_t row_end = db_u32_min(
-            pixel_height,
-            db_checked_add_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                               "cpu_upload_row_end", block.row_start,
-                               block.row_count));
-        const uint32_t col_end = db_u32_min(
-            pixel_width,
-            db_checked_add_u32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                               "cpu_upload_col_end", block.col_start,
-                               block.col_count));
-        if ((row_end <= block.row_start) || (col_end <= block.col_start)) {
-            continue;
-        }
-        const uint32_t row_count = row_end - block.row_start;
-        const uint32_t col_count = col_end - block.col_start;
-        const uint32_t block_row_bytes = db_checked_mul_u32(
-            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-            "cpu_upload_block_row_bytes", col_count, pixel_bytes);
-        for (uint32_t row_offset = 0U; row_offset < row_count; row_offset++) {
-            const uint32_t row = block.row_start + row_offset;
-            const size_t src_offset_bytes =
-                ((size_t)row * (size_t)row_bytes) +
-                ((size_t)block.col_start * (size_t)pixel_bytes);
-            if (use_pbo != 0) {
-                const db_gl_upload_range_t upload_range = {
-                    .src_offset_bytes = src_offset_bytes,
-                    .dst_offset_bytes = 0U,
-                    .size_bytes = (size_t)block_row_bytes,
-                };
-                const void *source_base = (state->use_hdr_float_bo != 0)
-                                              ? (const void *)pixels_rgba16f
-                                              : (const void *)pixels_rgba8;
-                db_gl_upload_ranges_target(
-                    source_base, total_bytes, &upload_range, 1U,
-                    DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER, state->pbo, 0, NULL,
-                    0, 0);
-                db_present_cpu_upload_rows(
-                    state, block.col_start, col_count, row, 1U,
-                    db_gl_vbo_offset_ptr(upload_range.dst_offset_bytes), 1);
-            } else {
-                const void *pixels_ptr =
-                    (state->use_hdr_float_bo != 0)
-                        ? (const void *)(pixels_rgba16f +
-                                         (src_offset_bytes /
-                                          DB_CPU_RGBA16F_BYTES_PER_PIXEL))
-                        : (const void *)(pixels_rgba8 + src_offset_bytes);
-                db_present_cpu_upload_rows(state, block.col_start, col_count,
-                                           row, 1U, pixels_ptr, 0);
-            }
-        }
-    }
-    if (use_pbo != 0) {
-        db_gl_pbo_unbind_unpack();
-    }
-}
 
 static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
                                                uint32_t pixel_width) {
@@ -527,7 +172,7 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
 
     const uint32_t row_bytes = db_checked_mul_u32(
         DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "cpu_debug_clear_row_bytes",
-        pixel_width, DB_CPU_RGBA8_BYTES_PER_PIXEL);
+        pixel_width, DB_RGBA8_BYTES_PER_PIXEL);
 
     // Fixed chunk size to keep uploads bounded; this buffer is reused.
     const uint32_t chunk_bytes_u32 = db_checked_mul_u32(
@@ -536,7 +181,8 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
     const size_t chunk_bytes = (size_t)chunk_bytes_u32;
     if (chunk_bytes == 0U) {
         state->debug_clear_ready = 0;
-        state->force_full_upload = 1;
+        state->shared.texture_valid = 0;
+        state->shared.texture_needs_full_upload = 1;
         return;
     }
 
@@ -550,30 +196,15 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
         return;
     }
 
-    // Allocate or resize the reusable scratch buffer.
-    if (state->debug_clear_buf == NULL) {
-        state->debug_clear_buf = (uint8_t *)db_alloc_array_or_fail(
-            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "debug_clear_buf", 1,
-            chunk_bytes);
-    } else if (state->debug_clear_buf_bytes != chunk_bytes) {
-        uint8_t *new_buf =
-            (uint8_t *)realloc(state->debug_clear_buf, chunk_bytes);
-        if (new_buf != NULL) {
-            state->debug_clear_buf = new_buf;
-        } else {
-            // Allocation failure: disable debug clear buffer and force full
-            // upload as a safe fallback.
-            state->debug_clear_ready = 0;
-            state->force_full_upload = 1;
-            return;
-        }
-    }
+    // Allocate or grow the reusable scratch buffer.
+    db_reserve_array_capacity_or_fail(
+        (void **)&state->debug_clear_buf, &state->debug_clear_buf_bytes,
+        chunk_bytes, chunk_bytes, sizeof(uint8_t), 0U,
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "debug_clear_buf");
 
     state->debug_clear_pixel_width = pixel_width;
     state->debug_clear_row_bytes = row_bytes;
     state->debug_clear_chunk_rows = DB_CPU_DEBUG_CLEAR_CHUNK_ROWS;
-    state->debug_clear_buf_bytes = chunk_bytes;
-
     // Cache clear color bytes.
     const double debug_clear_rgba01[4] = {
         BENCH_CLEAR_COLOR_R,
@@ -585,7 +216,7 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
 
     // Fill the buffer once via shared conversion helper.
     db_fill_rgba8_byte_pattern(state->debug_clear_buf,
-                               chunk_bytes_u32 / DB_CPU_RGBA8_BYTES_PER_PIXEL,
+                               chunk_bytes_u32 / DB_RGBA8_BYTES_PER_PIXEL,
                                state->debug_clear_rgba);
 
     state->debug_clear_ready = 1;
@@ -596,8 +227,8 @@ static void db_present_cpu_debug_clear_prepare(db_cpu_present_gl_state_t *state,
 static void db_present_cpu_clear_texture_debug(db_cpu_present_gl_state_t *state,
                                                uint32_t pixel_width,
                                                uint32_t pixel_height) {
-    if ((state == NULL) || (state->texture == 0U) || (pixel_width == 0U) ||
-        (pixel_height == 0U)) {
+    if ((state == NULL) || (state->shared.texture == 0U) ||
+        (pixel_width == 0U) || (pixel_height == 0U)) {
         return;
     }
 
@@ -606,11 +237,12 @@ static void db_present_cpu_clear_texture_debug(db_cpu_present_gl_state_t *state,
         (state->debug_clear_pixel_width != pixel_width) ||
         (state->debug_clear_row_bytes == 0U) ||
         (state->debug_clear_chunk_rows == 0U)) {
-        state->force_full_upload = 1;
+        state->shared.texture_valid = 0;
+        state->shared.texture_needs_full_upload = 1;
         return;
     }
 
-    db_gl_texture_bind_2d(state->texture);
+    db_gl_texture_bind_2d(state->shared.texture);
 
     const uint32_t chunk_rows = state->debug_clear_chunk_rows;
     uint32_t row = 0U;
@@ -632,51 +264,30 @@ static void db_present_cpu_clear_texture_debug(db_cpu_present_gl_state_t *state,
 }
 
 static void
-db_present_cpu_prepare_resources(db_cpu_present_gl_state_t *state,
-                                 uint32_t pixel_width, uint32_t pixel_height,
-                                 int debug_clear_default_framebuffer) {
-    if ((state == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
+db_glfw_cpu_prepare_upload_target(db_gl_shadow_present_state_t *shared,
+                                  uint32_t pixel_width, uint32_t pixel_height,
+                                  void *user_data) {
+    db_cpu_present_prepare_upload_target_ctx_t *ctx =
+        (db_cpu_present_prepare_upload_target_ctx_t *)user_data;
+    if ((ctx == NULL) || (ctx->state == NULL) || (shared == NULL)) {
         return;
     }
-
-    const uint32_t target_width =
-        (state->use_npot != 0) ? pixel_width : db_u32_next_pow2(pixel_width);
-    const uint32_t target_height =
-        (state->use_npot != 0) ? pixel_height : db_u32_next_pow2(pixel_height);
-    if ((target_width != state->texture_width) ||
-        (target_height != state->texture_height)) {
-        db_present_cpu_texture_resize(state, pixel_width, pixel_height);
-    }
-    if ((debug_clear_default_framebuffer != 0) &&
-        (state->use_hdr_float_bo == 0)) {
-        db_present_cpu_debug_clear_prepare(state, pixel_width);
+    if ((ctx->debug_clear_default_framebuffer != 0) &&
+        (ctx->selected_present_uses_rgba16f == 0)) {
+        db_present_cpu_debug_clear_prepare(ctx->state, pixel_width);
+        db_present_cpu_clear_texture_debug(ctx->state, pixel_width,
+                                           pixel_height);
     }
 }
 
-static void db_present_cpu_framebuffer(GLFWwindow *window,
-                                       db_cpu_present_gl_state_t *state,
-                                       const db_damage_block_t *blocks,
-                                       size_t block_count,
-                                       int debug_clear_default_framebuffer) {
+static void db_glfw_cpu_present_shadow_framebuffer(
+    GLFWwindow *window, db_cpu_present_gl_state_t *state,
+    const db_damage_block_t *blocks, size_t block_count,
+    int debug_clear_default_framebuffer,
+    db_glfw_cpu_present_format_t selected_format) {
     uint32_t pixel_width = 0U;
     uint32_t pixel_height = 0U;
-    const int use_hdr_float_bo = db_renderer_cpu_renderer_is_hdr_float_bo();
-    const uint32_t *pixels_rgba8 = NULL;
-    const uint16_t *pixels_rgba16f = NULL;
-    if (use_hdr_float_bo != 0) {
-        pixels_rgba16f = db_renderer_cpu_renderer_pixels_rgba16f(&pixel_width,
-                                                                 &pixel_height);
-    } else {
-        pixels_rgba8 =
-            db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
-    }
-    if (((use_hdr_float_bo != 0) && (pixels_rgba16f == NULL)) ||
-        ((use_hdr_float_bo == 0) && (pixels_rgba8 == NULL)) ||
-        (pixel_width == 0U) || (pixel_height == 0U)) {
-        db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                 "cpu renderer returned invalid framebuffer");
-    }
-    state->use_hdr_float_bo = use_hdr_float_bo;
+    const void *selected_pixels = NULL;
 
     int framebuffer_width_px = 0;
     int framebuffer_height_px = 0;
@@ -708,59 +319,42 @@ static void db_present_cpu_framebuffer(GLFWwindow *window,
     // CPU present also clears the texture itself in debug mode.
     db_display_gl_debug_clear_default_framebuffer_if_enabled(debug_clear);
 
-    db_present_cpu_prepare_resources(state, pixel_width, pixel_height,
-                                     debug_clear);
-    if (state->texture == 0U) {
-        db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                 "CPU present texture is not initialized");
-    }
-
-    if (debug_clear != 0) {
-        db_present_cpu_clear_texture_debug(state, pixel_width, pixel_height);
-    }
-
-    // Direct row-based uploading, no pattern planner.
-    if (state->force_full_upload != 0) {
-        const db_damage_block_t full = {
-            .row_start = 0U,
-            .row_count = pixel_height,
-            .col_start = 0U,
-            .col_count = pixel_width,
-        };
-        db_present_cpu_upload_damage_blocks(
-            state, (const uint8_t *)pixels_rgba8, pixels_rgba16f, pixel_width,
-            pixel_height, &full, 1U);
-        state->force_full_upload = 0;
+    if (selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F) {
+        selected_pixels = (const void *)db_renderer_cpu_renderer_pixels_rgba16f(
+            &pixel_width, &pixel_height);
+        if ((selected_pixels == NULL) || (pixel_width == 0U) ||
+            (pixel_height == 0U)) {
+            db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                     "cpu renderer returned invalid HDR framebuffer");
+        }
     } else {
-        if ((blocks != NULL) && (block_count > 0U)) {
-            db_present_cpu_upload_damage_blocks(
-                state, (const uint8_t *)pixels_rgba8, pixels_rgba16f,
-                pixel_width, pixel_height, blocks, block_count);
+        selected_pixels = (const void *)db_renderer_cpu_renderer_pixels_rgba8(
+            &pixel_width, &pixel_height);
+        if ((selected_pixels == NULL) || (pixel_width == 0U) ||
+            (pixel_height == 0U)) {
+            db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                     "cpu renderer returned invalid framebuffer");
         }
     }
 
-    const float tex_u =
-        (state->texture_width == 0U)
-            ? 1.0F
-            : db_u32_ratio_to_f32(pixel_width, state->texture_width);
-    const float tex_v =
-        (state->texture_height == 0U)
-            ? 1.0F
-            : db_u32_ratio_to_f32(pixel_height, state->texture_height);
-    state->texcoords[DB_GL_QUAD_V0_X] = 0.0F;
-    state->texcoords[DB_GL_QUAD_V0_Y] = tex_v;
-    state->texcoords[DB_GL_QUAD_V1_X] = tex_u;
-    state->texcoords[DB_GL_QUAD_V1_Y] = tex_v;
-    state->texcoords[DB_GL_QUAD_V2_X] = 0.0F;
-    state->texcoords[DB_GL_QUAD_V2_Y] = 0.0F;
-    state->texcoords[DB_GL_QUAD_V3_X] = tex_u;
-    state->texcoords[DB_GL_QUAD_V3_Y] = 0.0F;
-    db_gl_draw_arrays_triangle_strip(0, 4);
-}
-
-static uint64_t db_glfw_cpu_renderer_bo_hash_or_fail(void) {
-    return db_display_cpu_renderer_bo_hash_or_fail(
-        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU);
+    db_cpu_present_prepare_upload_target_ctx_t prepare_upload_target_ctx = {
+        .state = state,
+        .debug_clear_default_framebuffer = debug_clear,
+        .selected_present_uses_rgba16f =
+            (selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F) ? 1 : 0,
+    };
+    const db_gl_shadow_present_frame_t present_frame = {
+        .state = &state->shared,
+        .backend = DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+        .pixel_width = pixel_width,
+        .pixel_height = pixel_height,
+        .selected_pixels = selected_pixels,
+        .damage_blocks = blocks,
+        .damage_block_count = block_count,
+        .prepare_upload_target_fn = db_glfw_cpu_prepare_upload_target,
+        .prepare_upload_target_user_data = &prepare_upload_target_ctx,
+    };
+    db_gl_shadow_present_frame(&present_frame);
 }
 
 static void
@@ -770,18 +364,107 @@ db_glfw_cpu_present_damage_cb(const db_damage_block_t *damage_blocks,
     if (ctx == NULL) {
         return;
     }
-    db_present_cpu_framebuffer(ctx->window, ctx->present, damage_blocks,
-                               damage_count,
-                               ctx->debug_clear_default_framebuffer);
+    db_glfw_cpu_present_shadow_framebuffer(
+        ctx->window, ctx->present, damage_blocks, damage_count,
+        ctx->debug_clear_default_framebuffer, ctx->selected_format);
+}
+
+static uint64_t db_glfw_hash_presented_default_framebuffer_or_fail(
+    const char *backend_name, GLFWwindow *window, int uses_rgba16f,
+    db_gl_framebuffer_hash_scratch_t *rgba8_scratch,
+    db_gl_framebuffer_hash_f16_scratch_t *rgba16f_scratch) {
+    if ((backend_name == NULL) || (window == NULL)) {
+        db_failf("display_glfw_window",
+                 "invalid presented default-framebuffer hash inputs");
+    }
+
+    int framebuffer_width_px = 0;
+    int framebuffer_height_px = 0;
+    glfwGetFramebufferSize(window, &framebuffer_width_px,
+                           &framebuffer_height_px);
+    if (uses_rgba16f != 0) {
+        if (rgba16f_scratch == NULL) {
+            db_failf("display_glfw_window",
+                     "missing RGBA16F hash scratch for presented framebuffer");
+        }
+        return db_gl_hash_framebuffer_rgba16f_or_fail(
+            backend_name, framebuffer_width_px, framebuffer_height_px,
+            rgba16f_scratch, 1);
+    }
+    if (rgba8_scratch == NULL) {
+        db_failf("display_glfw_window",
+                 "missing RGBA8 hash scratch for presented framebuffer");
+    }
+    const uint8_t *pixels = db_gl_read_framebuffer_rgba8_or_fail(
+        backend_name, framebuffer_width_px, framebuffer_height_px,
+        rgba8_scratch);
+    return db_hash_rgba8_pixels_canonical(
+        pixels,
+        db_checked_int_to_u32(backend_name, "fb_w", framebuffer_width_px),
+        db_checked_int_to_u32(backend_name, "fb_h", framebuffer_height_px),
+        (size_t)db_checked_int_to_u32(backend_name, "fb_row_bytes",
+                                      framebuffer_width_px) *
+            4U,
+        1);
+}
+
+static db_glfw_cpu_present_mode_t
+db_glfw_cpu_present_mode_or_fail(const db_cpu_present_gl_state_t *present) {
+    if (present == NULL) {
+        db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                 "missing cpu GLFW present state");
+    }
+    const db_display_cpu_hdr_option_state_t hdr_option =
+        db_display_cpu_hdr_option_state();
+    const int hdr_present_supported =
+        (present->shared.runtime_supports_hdr_present != 0) ? 1 : 0;
+    if ((hdr_option.option_explicitly_requests_hdr != 0) &&
+        (hdr_present_supported == 0)) {
+        db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                 "cpu_hdr requested but runtime has no float texture present "
+                 "support");
+    }
+
+    const db_glfw_cpu_present_format_t selected_format =
+        ((hdr_option.option_enables_hdr != 0) && (hdr_present_supported != 0))
+            ? DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F
+            : DB_GLFW_CPU_PRESENT_FORMAT_RGBA8;
+    const int uses_unpack_pbo = (present->shared.unpack_pbo != 0U) ? 1 : 0;
+    const char *capability_mode = NULL;
+    if (uses_unpack_pbo != 0) {
+        capability_mode =
+            (selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F)
+                ? DB_CAP_MODE_CPU_GLFW_PBO_HDR
+                : DB_CAP_MODE_CPU_GLFW_PBO;
+    } else {
+        capability_mode =
+            (selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F)
+                ? DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE_HDR
+                : DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE;
+    }
+
+    return (db_glfw_cpu_present_mode_t){
+        .hdr_explicit_requested = hdr_option.option_explicitly_requests_hdr,
+        .selected_format = selected_format,
+        .capability_mode = capability_mode,
+    };
 }
 
 static db_display_frame_loop_result_t
 db_glfw_cpu_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
     db_glfw_cpu_loop_ctx_t *ctx = (db_glfw_cpu_loop_ctx_t *)user_data;
-    db_display_cpu_render_present_and_hash(
-        &ctx->frame_step, frame_index, elapsed_ms,
-        db_glfw_cpu_present_damage_cb, ctx,
-        db_glfw_cpu_renderer_bo_hash_or_fail);
+    db_renderer_cpu_renderer_render_frame(frame_index);
+    size_t damage_count = 0U;
+    const db_damage_block_t *damage_blocks =
+        db_renderer_cpu_renderer_damage_blocks(&damage_count);
+    db_glfw_cpu_present_damage_cb(damage_blocks, damage_count, ctx);
+    db_display_gl_frame_step(
+        &ctx->frame_step, frame_index, elapsed_ms, 1,
+        db_renderer_cpu_renderer_state_hash(), 1,
+        db_glfw_hash_presented_default_framebuffer_or_fail(
+            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, ctx->window,
+            ctx->framebuffer_hash_uses_rgba16f, ctx->hash_rgba8_scratch,
+            ctx->hash_rgba16f_scratch));
 
     glfwSwapBuffers(ctx->window);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
@@ -808,99 +491,84 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         "CPU Renderer GLFW DriverBench", BENCH_WINDOW_WIDTH_PX,
         BENCH_WINDOW_HEIGHT_PX, gl_legacy_context_major,
         gl_legacy_context_minor, swap_interval, &is_gles,
-        (cfg != NULL) ? cfg->offscreen_enabled : 0);
-    const char *runtime_version = NULL;
-    const int runtime_is_gles = db_display_prepare_and_validate_gl_runtime(
+        ((cfg != NULL) && (cfg->glfw_window_hidden != 0))
+            ? DB_GLFW_WINDOW_HIDDEN
+            : DB_GLFW_WINDOW_VISIBLE);
+    (void)db_display_require_gl_runtime_for_renderer(
         (db_gl_proc_resolver_fn_t)glfwGetProcAddress,
         DB_GL_RENDERER_GL1_5_GLES1_1, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-        DB_DISPLAY_GL_RUNTIME_LOG_ENABLED, is_gles, &runtime_version, NULL);
-    const char *runtime_exts = db_gl_get_extensions_string();
-    const int has_npot =
-        (runtime_is_gles == 0) ||
-        db_gl_version_text_at_least(runtime_version, 2, 0) ||
-        db_has_gl_extension_token(runtime_exts, "GL_OES_texture_npot");
-    const int has_pbo =
-        db_gl_extensions_advertise_pbo(runtime_version, runtime_exts);
-    const int has_texture_float_advertised =
-        db_gl_extensions_advertise_texture_float(runtime_version, runtime_exts);
-    const int has_texture_float =
-        (has_texture_float_advertised != 0) &&
-                (db_gl_context_probe_texture_float_support() != 0)
+        is_gles);
+    db_cpu_present_gl_state_t present = {0};
+    const db_display_cpu_hdr_option_state_t hdr_option =
+        db_display_cpu_hdr_option_state();
+    db_gl_shadow_present_init_runtime(&present.shared, 1,
+                                      hdr_option.option_enables_hdr);
+    const db_glfw_cpu_present_mode_t present_mode =
+        db_glfw_cpu_present_mode_or_fail(&present);
+    db_renderer_cpu_renderer_init_with_hdr_float_bo(
+        (present_mode.selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F)
             ? 1
-            : 0;
-    db_renderer_cpu_renderer_init();
-    db_cpu_present_gl_state_t present = {
-        .has_pbo = 0,
-        .initialized = 0,
-        .use_hdr_float_bo = 0,
-        .pbo = 0U,
-        .texture = 0U,
-        .texture_height = 0U,
-        .texture_width = 0U,
-        .use_npot = has_npot,
-    };
-    const int cpu_hdr_requested = db_renderer_cpu_renderer_is_hdr_float_bo();
-    if ((cpu_hdr_requested != 0) && (has_texture_float == 0)) {
-        db_failf(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-                 "cpu_hdr requested but runtime has no float texture support");
-    }
-    present.use_hdr_float_bo = cpu_hdr_requested;
-    db_present_cpu_init_state(&present, has_pbo);
+            : 0);
 
     // Prepare upload range scratch buffer up-front to avoid per-frame
     // allocations.
     uint32_t init_pixel_width = 0U;
     uint32_t init_pixel_height = 0U;
-    if (present.use_hdr_float_bo != 0) {
+    if (present_mode.selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F) {
         (void)db_renderer_cpu_renderer_pixels_rgba16f(&init_pixel_width,
                                                       &init_pixel_height);
     } else {
         (void)db_renderer_cpu_renderer_pixels_rgba8(&init_pixel_width,
                                                     &init_pixel_height);
     }
-    db_present_cpu_prepare_resources(
-        &present, init_pixel_width, init_pixel_height,
-        runtime_cfg.debug_clear_default_framebuffer);
-    const int use_pbo_mode = ((present.has_pbo != 0) && (present.pbo != 0U) &&
-                              (db_gl_context_has_pbo_upload_procs() != 0))
-                                 ? 1
-                                 : 0;
-    const char *capability_mode = NULL;
-    if (use_pbo_mode != 0) {
-        capability_mode = (present.use_hdr_float_bo != 0)
-                              ? DB_CAP_MODE_CPU_GLFW_PBO_HDR
-                              : DB_CAP_MODE_CPU_GLFW_PBO;
-    } else {
-        capability_mode = (present.use_hdr_float_bo != 0)
-                              ? DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE_HDR
-                              : DB_CAP_MODE_CPU_GLFW_TEX_SUB_IMAGE;
+    db_gl_shadow_present_prepare_texture(
+        &present.shared, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+        init_pixel_width, init_pixel_height);
+    if ((runtime_cfg.debug_clear_default_framebuffer != 0) &&
+        (present_mode.selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA8)) {
+        db_present_cpu_debug_clear_prepare(&present, init_pixel_width);
     }
+    db_gl_shadow_present_log_decision(
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "cpu present",
+        (present_mode.selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F)
+            ? 1
+            : 0,
+        present_mode.hdr_explicit_requested, &present.shared);
 
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
     const uint64_t bench_start_ns = db_now_ns_monotonic();
     db_display_dual_hash_trackers_t hash_trackers =
         db_display_dual_hash_trackers_create_from_runtime(
             DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, &runtime_hash_cfg,
-            DB_DISPLAY_HASH_KEY_STATE, DB_DISPLAY_HASH_KEY_BO);
+            DB_DISPLAY_HASH_KEY_STATE, DB_DISPLAY_HASH_KEY_FRAMEBUFFER);
+    db_gl_framebuffer_hash_scratch_t hash_rgba8_scratch = {0};
+    db_gl_framebuffer_hash_f16_scratch_t hash_rgba16f_scratch = {0};
     db_glfw_cpu_loop_ctx_t loop_ctx = {
         .api_name = db_dispatch_api_name(DB_API_CPU),
-        .capability_mode = capability_mode,
+        .capability_mode = present_mode.capability_mode,
         .next_progress_log_due_ms = 0.0,
         .frame_step = {0},
         .state_hash_tracker = &hash_trackers.state,
-        .bo_hash_tracker = &hash_trackers.output,
+        .framebuffer_hash_tracker = &hash_trackers.output,
+        .framebuffer_hash_uses_rgba16f =
+            (present_mode.selected_format == DB_GLFW_CPU_PRESENT_FORMAT_RGBA16F)
+                ? 1
+                : 0,
+        .hash_rgba8_scratch = &hash_rgba8_scratch,
+        .hash_rgba16f_scratch = &hash_rgba16f_scratch,
         .state_hash_enabled = hash_settings.state_hash_enabled,
         .output_hash_enabled = hash_settings.output_hash_enabled,
         .debug_clear_default_framebuffer =
             runtime_cfg.debug_clear_default_framebuffer,
+        .selected_format = present_mode.selected_format,
         .present = &present,
         .work_unit_count = work_unit_count,
         .window = window,
     };
     loop_ctx.frame_step = db_display_frame_step_make(
         loop_ctx.api_name, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
-        loop_ctx.capability_mode, db_renderer_name_cpu(),
-        loop_ctx.bo_hash_tracker, loop_ctx.state_hash_tracker,
+        present_mode.capability_mode, db_renderer_name_cpu(),
+        loop_ctx.framebuffer_hash_tracker, loop_ctx.state_hash_tracker,
         &loop_ctx.next_progress_log_due_ms, loop_ctx.work_unit_count,
         loop_ctx.output_hash_enabled, loop_ctx.state_hash_enabled);
     const db_glfw_loop_t loop = {
@@ -917,15 +585,23 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
 
     const double bench_ms =
         (double)(db_now_ns_monotonic() - bench_start_ns) / DB_NS_PER_MS;
-    db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU),
-                           db_renderer_name_cpu(),
-                           DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, frames,
-                           work_unit_count, bench_ms, capability_mode);
+    db_benchmark_log_final(
+        db_dispatch_api_name(DB_API_CPU), db_renderer_name_cpu(),
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, frames, work_unit_count,
+        bench_ms, present_mode.capability_mode);
     db_display_dual_hash_trackers_log_final(
         DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, &hash_trackers);
 
+    db_gl_hash_scratch_release(&hash_rgba8_scratch);
+    db_gl_hash_f16_scratch_release(&hash_rgba16f_scratch);
     db_renderer_cpu_renderer_shutdown();
-    db_present_cpu_shutdown_state(&present);
+    db_gl_shadow_present_shutdown(&present.shared);
+    if (present.debug_clear_buf != NULL) {
+        free(present.debug_clear_buf);
+        present.debug_clear_buf = NULL;
+        present.debug_clear_buf_bytes = 0U;
+        present.debug_clear_ready = 0;
+    }
     db_glfw_destroy_window(window);
     return 0;
 }
@@ -947,16 +623,12 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
                                framebuffer_width_px, framebuffer_height_px,
                                ctx->renderer_preserved_framebuffer_count, 0);
 
-    const db_display_gl_hash_rgba8_cb_ctx_t framebuffer_hash_ctx = {
-        .backend_name = ctx->backend_name,
-        .framebuffer_width_px = framebuffer_width_px,
-        .framebuffer_height_px = framebuffer_height_px,
-        .scratch = ctx->hash_scratch,
-    };
-    db_display_gl_frame_step_with_hash_fns(
-        &ctx->frame_step, frame_index, elapsed_ms,
-        db_display_gl_renderer_ops_state_hash_cb, (void *)renderer_ops,
-        db_display_gl_hash_rgba8_framebuffer_cb, (void *)&framebuffer_hash_ctx);
+    db_display_gl_frame_step(
+        &ctx->frame_step, frame_index, elapsed_ms, 1,
+        renderer_ops->state_hash(), 1,
+        db_glfw_hash_presented_default_framebuffer_or_fail(
+            ctx->backend_name, ctx->window, ctx->framebuffer_hash_uses_rgba16f,
+            ctx->hash_rgba8_scratch, ctx->hash_rgba16f_scratch));
     glfwSwapBuffers(ctx->window);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
@@ -964,9 +636,12 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
 static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
                                      const db_cli_config_t *cfg) {
     db_cli_config_t effective_cfg = (cfg != NULL) ? *cfg : (db_cli_config_t){0};
-    const int offscreen_enabled =
-        (effective_cfg.offscreen_enabled != 0) ? 1 : 0;
-    const char *backend_name = (offscreen_enabled != 0)
+    const db_glfw_window_visibility_t visibility =
+        (effective_cfg.glfw_window_hidden != 0) ? DB_GLFW_WINDOW_HIDDEN
+                                                : DB_GLFW_WINDOW_VISIBLE;
+    const int true_offscreen_backend =
+        (effective_cfg.display == DB_DISPLAY_OFFSCREEN) ? 1 : 0;
+    const char *backend_name = (true_offscreen_backend != 0)
                                    ? DB_BACKEND_NAME_DISPLAY_OFFSCREEN
                                    : DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_GL;
     db_validate_runtime_environment(backend_name,
@@ -974,7 +649,6 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
     db_install_signal_handlers();
     const int swap_interval = (effective_cfg.vsync_enabled != 0) ? 1 : 0;
     int context_is_gles = 0;
-    const char *runtime_version = NULL;
     const db_display_gl_renderer_ops_t renderer_ops =
         db_display_gl_select_renderer_ops(renderer);
     const db_display_gl_context_policy_t context_policy =
@@ -983,7 +657,7 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         db_display_gl_default_preserved_framebuffer_count(renderer);
 
 #ifdef __linux__
-    if ((offscreen_enabled == 0) &&
+    if ((true_offscreen_backend == 0) &&
         (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)) {
         const db_glfw_default_fb_probe_result_t probe_result =
             db_glfw_probe_and_log_default_framebuffer_behavior(
@@ -996,7 +670,7 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
             (probe_is_stable == 0)) {
             effective_cfg.backbuffer_draw_full = 1;
             renderer_preserved_framebuffer_count = 0U;
-            db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "full");
+            db_runtime_option_set_backbuffer_draw_full(1);
             db_infof(backend_name,
                      "forcing full backbuffer draw: unstable default-fb reuse "
                      "observed on Linux GLFW");
@@ -1011,14 +685,12 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         runtime_hash_cfg.hash_settings;
 
     GLFWwindow *window = db_glfw_create_renderer_window(
-        backend_name, &context_policy, swap_interval, offscreen_enabled,
+        backend_name, &context_policy, swap_interval, visibility,
         &context_is_gles);
 
-    (void)db_display_prepare_and_validate_gl_runtime(
+    (void)db_display_require_gl_runtime_for_renderer(
         (db_gl_proc_resolver_fn_t)glfwGetProcAddress, renderer, backend_name,
-        DB_DISPLAY_GL_RUNTIME_LOG_ENABLED,
-        (context_policy.allow_gles1_1_fallback != 0) ? context_is_gles : -1,
-        &runtime_version, NULL);
+        (context_policy.allow_gles1_1_fallback != 0) ? context_is_gles : -1);
 
     renderer_ops.init();
     const char *capability_mode = renderer_ops.runtime_capability_mode();
@@ -1029,7 +701,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         db_display_dual_hash_trackers_create_from_runtime(
             backend_name, &runtime_hash_cfg, DB_DISPLAY_HASH_KEY_STATE,
             DB_DISPLAY_HASH_KEY_FRAMEBUFFER);
-    db_gl_framebuffer_hash_scratch_t hash_scratch = {0};
+    db_gl_framebuffer_hash_scratch_t hash_rgba8_scratch = {0};
+    db_gl_framebuffer_hash_f16_scratch_t hash_rgba16f_scratch = {0};
     db_glfw_opengl_loop_ctx_t loop_ctx = {
         .backend_name = backend_name,
         .capability_mode = capability_mode,
@@ -1037,7 +710,9 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         .frame_step = {0},
         .state_hash_tracker = &hash_trackers.state,
         .framebuffer_hash_tracker = &hash_trackers.output,
-        .hash_scratch = &hash_scratch,
+        .framebuffer_hash_uses_rgba16f = 0,
+        .hash_rgba8_scratch = &hash_rgba8_scratch,
+        .hash_rgba16f_scratch = &hash_rgba16f_scratch,
         .renderer_ops = renderer_ops,
         .next_progress_log_due_ms = 0.0,
         .state_hash_enabled = hash_settings.state_hash_enabled,
@@ -1077,7 +752,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
 
     renderer_ops.shutdown();
     db_glfw_destroy_window(window);
-    db_gl_hash_scratch_release(&hash_scratch);
+    db_gl_hash_scratch_release(&hash_rgba8_scratch);
+    db_gl_hash_f16_scratch_release(&hash_rgba16f_scratch);
     return 0;
 }
 
@@ -1133,9 +809,13 @@ db_glfw_vulkan_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
 }
 
 static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
-    const int offscreen_enabled =
-        ((cfg != NULL) && (cfg->offscreen_enabled != 0)) ? 1 : 0;
-    const char *backend_name = (offscreen_enabled != 0)
+    const db_glfw_window_visibility_t visibility =
+        ((cfg != NULL) && (cfg->glfw_window_hidden != 0))
+            ? DB_GLFW_WINDOW_HIDDEN
+            : DB_GLFW_WINDOW_VISIBLE;
+    const int true_offscreen_backend =
+        ((cfg != NULL) && (cfg->display == DB_DISPLAY_OFFSCREEN)) ? 1 : 0;
+    const char *backend_name = (true_offscreen_backend != 0)
                                    ? DB_BACKEND_NAME_DISPLAY_OFFSCREEN
                                    : DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_VK;
     db_validate_runtime_environment(backend_name,
@@ -1149,7 +829,7 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
 
     GLFWwindow *window = db_glfw_create_no_api_window(
         backend_name, "Vulkan 1.2 opportunistic multi-GPU (device groups)",
-        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX, offscreen_enabled);
+        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX, visibility);
     uint32_t runtime_api_version = VK_API_VERSION_1_0;
     const VkResult version_result =
         vkEnumerateInstanceVersion(&runtime_api_version);

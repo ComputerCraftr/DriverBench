@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "config/benchmark_config.h"
+#include "config/runtime_options.h"
 #include "core/db_core.h"
 #include "displays/display_dispatch.h"
 #include "displays/display_types.h"
@@ -28,7 +29,7 @@ enum {
     DB_CLI_RT_FRAME_LIMIT = 5,
     DB_CLI_RT_HASH_MODE = 6,
     DB_CLI_RT_BENCH_SPEED = 7,
-    DB_CLI_RT_OFFSCREEN = 8,
+    DB_CLI_RT_GLFW_HIDDEN_WINDOW = 8,
     DB_CLI_RT_VSYNC = 9,
     DB_CLI_RT_DEBUG_CLEAR_DEFAULT_FRAMEBUFFER = 10,
     DB_CLI_RT_BACKBUFFER_DRAW_MODE = 11,
@@ -85,9 +86,9 @@ static void db_usage(void) {
           "  --fps-cap <value>\n"
           "  --hash <none|state|pixel|both>\n"
           "  --frame-limit <value>\n"
+          "  --glfw-hidden-window <0|1>\n"
           "  --hash-report <final|aggregate|both>\n"
           "  --metrics-mode <basic|dual>\n"
-          "  --offscreen <0|1>\n"
           "  --random-seed <value>\n"
           "  --vk-allow-cpu-workers <0|1>\n"
           "  --vk-multi-device-policy <auto|group_only|independent_ok>\n"
@@ -232,12 +233,12 @@ db_cli_set_runtime_backbuffer_draw_mode_or_exit(const char *raw_value,
     }
     if (db_string_is(raw_value, "dirty")) {
         cfg->backbuffer_draw_full = 0;
-        db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "dirty");
+        db_runtime_option_set_backbuffer_draw_full(0);
         return;
     }
     if (db_string_is(raw_value, "full")) {
         cfg->backbuffer_draw_full = 1;
-        db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE, "full");
+        db_runtime_option_set_backbuffer_draw_full(1);
         return;
     }
     db_failf("driverbench_cli",
@@ -378,9 +379,9 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
         {"--fps-cap", DB_RUNTIME_OPT_FPS_CAP, DB_CLI_RT_FPS_CAP},
         {"--hash", DB_RUNTIME_OPT_HASH, DB_CLI_RT_HASH_MODE},
         {"--frame-limit", DB_RUNTIME_OPT_FRAME_LIMIT, DB_CLI_RT_FRAME_LIMIT},
+        {"--glfw-hidden-window", NULL, DB_CLI_RT_GLFW_HIDDEN_WINDOW},
         {"--hash-report", DB_RUNTIME_OPT_HASH_REPORT, DB_CLI_RT_HASH_REPORT},
         {"--metrics-mode", DB_RUNTIME_OPT_METRICS_MODE, DB_CLI_RT_METRICS_MODE},
-        {"--offscreen", DB_RUNTIME_OPT_OFFSCREEN, DB_CLI_RT_OFFSCREEN},
         {"--random-seed", DB_RUNTIME_OPT_RANDOM_SEED, DB_CLI_RT_RANDOM_SEED},
         {"--vk-allow-cpu-workers", DB_RUNTIME_OPT_VK_ALLOW_CPU_WORKERS,
          DB_CLI_RT_VK_ALLOW_CPU_WORKERS},
@@ -441,15 +442,15 @@ static int db_try_parse_runtime_override_option(const char *arg, int argc,
             case DB_CLI_RT_BENCH_SPEED:
                 db_cli_set_runtime_bench_speed_or_exit(value);
                 break;
-            case DB_CLI_RT_OFFSCREEN: {
+            case DB_CLI_RT_GLFW_HIDDEN_WINDOW: {
                 int parsed = 0;
                 if (db_parse_bool_text(value, &parsed) == 0) {
                     db_failf("driverbench_cli",
-                             "invalid value for --offscreen: %s "
+                             "invalid value for --glfw-hidden-window: %s "
                              "(expected bool)",
                              value);
                 }
-                cfg->offscreen_enabled = (parsed != 0);
+                cfg->glfw_window_hidden = (parsed != 0);
                 break;
             }
             case DB_CLI_RT_VSYNC: {
@@ -611,6 +612,17 @@ static void db_cli_validate_hash_mode_or_exit(const db_cli_config_t *cfg) {
     }
 }
 
+static void
+db_cli_validate_glfw_hidden_window_or_exit(const db_cli_config_t *cfg) {
+    if ((cfg == NULL) || (cfg->glfw_window_hidden == 0)) {
+        return;
+    }
+    if (cfg->display != DB_DISPLAY_GLFW_WINDOW) {
+        db_failf("driverbench_cli",
+                 "--glfw-hidden-window requires --display glfw_window");
+    }
+}
+
 void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
     if (out_cfg == NULL) {
         db_failf("driverbench_cli", "output config is null");
@@ -628,7 +640,7 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
         .backbuffer_draw_full = 0,
         .backbuffer_draw_mode_explicit = 0,
         .debug_clear_default_framebuffer = 0,
-        .offscreen_enabled = 0,
+        .glfw_window_hidden = 0,
         .vsync_enabled = BENCH_DEFAULT_VSYNC_ENABLED,
         .api_is_auto = 1,
         .display_is_set = 0,
@@ -674,5 +686,6 @@ void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
 
     db_cli_validate_compiled_support_or_exit(out_cfg);
     db_cli_validate_renderer_selection_or_exit(out_cfg);
+    db_cli_validate_glfw_hidden_window_or_exit(out_cfg);
     db_cli_validate_hash_mode_or_exit(out_cfg);
 }

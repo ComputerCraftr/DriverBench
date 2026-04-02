@@ -4,9 +4,15 @@
 #include <stdint.h>
 
 #include "../config/benchmark_config.h"
+#include "../config/runtime_options.h"
 #include "../core/db_core.h"
 #include "../driverbench_config.h"
 #include "display_hash_common.h"
+
+typedef struct {
+    int option_enables_hdr;
+    int option_explicitly_requests_hdr;
+} db_display_cpu_hdr_option_state_t;
 
 typedef struct {
     int debug_clear_default_framebuffer;
@@ -39,7 +45,36 @@ typedef struct {
     int state_hash_enabled;
 } db_display_frame_step_t;
 
-typedef uint64_t (*db_display_hash_value_fn_t)(void *user_data);
+static inline int db_display_runtime_option_parse_bool(const char *name,
+                                                       int default_value,
+                                                       int *out_was_explicit) {
+    const char *value = db_runtime_option_get(name);
+    if ((value == NULL) || (value[0] == '\0')) {
+        if (out_was_explicit != NULL) {
+            *out_was_explicit = 0;
+        }
+        return default_value;
+    }
+    int parsed = 0;
+    if (db_parse_bool_text(value, &parsed) != 0) {
+        if (out_was_explicit != NULL) {
+            *out_was_explicit = 1;
+        }
+        return (parsed != 0) ? 1 : 0;
+    }
+    if (out_was_explicit != NULL) {
+        *out_was_explicit = 0;
+    }
+    return default_value;
+}
+
+static inline db_display_cpu_hdr_option_state_t
+db_display_cpu_hdr_option_state(void) {
+    db_display_cpu_hdr_option_state_t state = {0};
+    state.option_enables_hdr = db_display_runtime_option_parse_bool(
+        DB_RUNTIME_OPT_CPU_HDR, 1, &state.option_explicitly_requests_hdr);
+    return state;
+}
 
 static inline db_display_runtime_config_t
 db_display_runtime_config_from_cli(const db_cli_config_t *cfg) {
@@ -211,32 +246,6 @@ db_display_gl_frame_step(const db_display_frame_step_t *step,
         (uint64_t)frame_index + 1U, step->work_unit_count, elapsed_ms,
         step->capability_mode, step->next_progress_log_due_ms,
         BENCH_LOG_INTERVAL_MS);
-}
-
-static inline void db_display_gl_frame_step_with_hash_fns(
-    const db_display_frame_step_t *step, uint32_t frame_index,
-    double elapsed_ms, db_display_hash_value_fn_t state_hash_fn,
-    void *state_hash_user_data, db_display_hash_value_fn_t output_hash_fn,
-    void *output_hash_user_data) {
-    int has_state_hash = 0;
-    uint64_t state_hash_value = 0U;
-    int has_output_hash = 0;
-    uint64_t output_hash_value = 0U;
-
-    if ((step != NULL) && (step->state_hash_enabled != 0) &&
-        (state_hash_fn != NULL)) {
-        state_hash_value = state_hash_fn(state_hash_user_data);
-        has_state_hash = 1;
-    }
-    if ((step != NULL) && (step->output_hash_enabled != 0) &&
-        (output_hash_fn != NULL)) {
-        output_hash_value = output_hash_fn(output_hash_user_data);
-        has_output_hash = 1;
-    }
-
-    db_display_gl_frame_step(step, frame_index, elapsed_ms, has_state_hash,
-                             state_hash_value, has_output_hash,
-                             output_hash_value);
 }
 
 static inline void db_display_log_draw_stats(const char *backend,

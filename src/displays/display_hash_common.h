@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "../config/runtime_options.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
 

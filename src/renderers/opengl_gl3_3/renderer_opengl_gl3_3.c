@@ -181,8 +181,7 @@ static void db_gl3_upload_snake_shape_uniforms(
     if (g_state.u_snake_region_color >= 0) {
         float region_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
         db_rgb_f64_to_f32_rgb3(region->color_rgb, region_rgb_f32);
-        db_gl_uniform3f(g_state.u_snake_region_color, region_rgb_f32[0],
-                        region_rgb_f32[1], region_rgb_f32[2]);
+        db_gl_uniform3fv3(g_state.u_snake_region_color, region_rgb_f32);
     }
     if (is_shapes_mode == 0) {
         return;
@@ -196,31 +195,23 @@ static void db_gl3_upload_snake_shape_uniforms(
         db_gl_uniform1ui(g_state.u_snake_shape_kind, (uint32_t)shape_kind);
     }
     if (g_state.u_snake_profile0 >= 0) {
-        db_gl_uniform3f(
+        db_gl_uniform3fv3(
             g_state.u_snake_profile0,
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_X],
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_Y],
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_DIAMOND_RADIUS]);
+            &profile_f32.values[DB_SNAKE_PROFILE_VAL_CIRCLE_RADIUS_X]);
     }
     if (g_state.u_snake_profile1 >= 0) {
-        db_gl_uniform3f(
+        db_gl_uniform3fv3(
             g_state.u_snake_profile1,
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_TRIANGLE_BOTTOM_WIDTH],
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_TOP_WIDTH],
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_TRAPEZOID_BOTTOM_WIDTH]);
+            &profile_f32.values[DB_SNAKE_PROFILE_VAL_TRIANGLE_BOTTOM_WIDTH]);
     }
     if (g_state.u_snake_profile2 >= 0) {
-        db_gl_uniform3f(
+        db_gl_uniform3fv3(
             g_state.u_snake_profile2,
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_WIDTH],
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_HEIGHT],
-            profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_X]);
+            &profile_f32.values[DB_SNAKE_PROFILE_VAL_RECT_HALF_WIDTH]);
     }
     if (g_state.u_snake_profile3 >= 0) {
-        db_gl_uniform3f(g_state.u_snake_profile3,
-                        profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_Y],
-                        profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_COS],
-                        profile_f32.values[DB_SNAKE_PROFILE_VAL_ROTATE_SIN]);
+        db_gl_uniform3fv3(g_state.u_snake_profile3,
+                          &profile_f32.values[DB_SNAKE_PROFILE_VAL_EXTENT_Y]);
     }
     if (g_state.u_snake_triangle_variant >= 0) {
         db_gl_uniform1ui(g_state.u_snake_triangle_variant,
@@ -462,13 +453,7 @@ void db_renderer_opengl_gl3_3_init(void) {
         0) {
         failf("failed to initialize GL array buffer");
     }
-    const db_gl_upload_range_t full_range = {
-        .src_offset_bytes = 0U,
-        .dst_offset_bytes = 0U,
-        .size_bytes = g_state.buffers.vbo_bytes,
-    };
-    db_gl_upload_ranges_target(g_state.vertex.vertices,
-                               g_state.buffers.vbo_bytes, &full_range, 1U,
+    db_gl_upload_buffer_target(g_state.vertex.vertices, g_state.buffers.vbo_bytes,
                                DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER,
                                g_state.buffers.vbo, 0, NULL, 0, 0);
 
@@ -481,8 +466,8 @@ void db_renderer_opengl_gl3_3_init(void) {
     db_gl_context_probe_upload_capabilities(
         g_state.buffers.vbo_bytes, g_state.vertex.vertices, &probe_result);
     g_state.vertex.upload = probe_result;
-    db_gl_upload_ranges_target(
-        g_state.vertex.vertices, g_state.buffers.vbo_bytes, &full_range, 1U,
+    db_gl_upload_buffer_target(
+        g_state.vertex.vertices, g_state.buffers.vbo_bytes,
         DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, g_state.buffers.vbo,
         g_state.vertex.upload.use_persistent_upload,
         g_state.vertex.upload.persistent_mapped_ptr,
@@ -568,10 +553,12 @@ void db_renderer_opengl_gl3_3_init(void) {
                          db_checked_int_to_u32(BACKEND_NAME, "u_render_mode",
                                                g_state.runtime.pattern));
     }
-    db_gl_uniform3f(g_state.u_grid_base_color, BENCH_GRID_PHASE0_R_F,
-                    BENCH_GRID_PHASE0_G_F, BENCH_GRID_PHASE0_B_F);
-    db_gl_uniform3f(g_state.u_grid_target_color, BENCH_GRID_PHASE1_R_F,
-                    BENCH_GRID_PHASE1_G_F, BENCH_GRID_PHASE1_B_F);
+    static const float grid_base_color[3] = {
+        BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F, BENCH_GRID_PHASE0_B_F};
+    static const float grid_target_color[3] = {
+        BENCH_GRID_PHASE1_R_F, BENCH_GRID_PHASE1_G_F, BENCH_GRID_PHASE1_B_F};
+    db_gl_uniform3fv3(g_state.u_grid_base_color, grid_base_color);
+    db_gl_uniform3fv3(g_state.u_grid_target_color, grid_target_color);
     if (g_state.u_band_count >= 0) {
         db_gl_uniform1ui(g_state.u_band_count, BENCH_BANDS);
     }

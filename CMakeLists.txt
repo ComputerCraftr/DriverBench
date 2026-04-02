@@ -48,6 +48,7 @@ if(UNIX AND NOT APPLE)
 endif()
 
 set(DB_CORE_SOURCES
+  src/config/runtime_options.c
   src/core/db_buffer_convert.c
   src/core/db_core.c
   src/core/db_hash.c
@@ -810,6 +811,38 @@ if(BUILD_TESTING)
     )
   endfunction()
 
+  function(db_add_hash_difference_test
+           test_name test_args_a test_args_b hash_key)
+    if(NOT TARGET ${DB_UNIFIED_TARGET})
+      return()
+    endif()
+    add_test(
+      NAME ${test_name}
+      COMMAND ${CMAKE_COMMAND}
+        -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
+        -DTEST_ARGS_A=${test_args_a}
+        -DTEST_ARGS_B=${test_args_b}
+        -DTEST_HASH_KEY=${hash_key}
+        -P ${CMAKE_SOURCE_DIR}/cmake/RunHashDifferenceTest.cmake
+    )
+  endfunction()
+
+  function(db_add_output_expectation_test
+           test_name test_args required_patterns forbidden_patterns)
+    if(NOT TARGET ${DB_UNIFIED_TARGET})
+      return()
+    endif()
+    add_test(
+      NAME ${test_name}
+      COMMAND ${CMAKE_COMMAND}
+        -DTEST_BIN=$<TARGET_FILE:${DB_UNIFIED_TARGET}>
+        -DTEST_ARGS=${test_args}
+        -DTEST_REQUIRED_PATTERNS=${required_patterns}
+        -DTEST_FORBIDDEN_PATTERNS=${forbidden_patterns}
+        -P ${CMAKE_SOURCE_DIR}/cmake/RunOutputExpectationTest.cmake
+    )
+  endfunction()
+
   function(db_add_cpu_renderer_aggregate_test
            test_name benchmark_mode extra_args hash_checks)
     db_add_determinism_test(
@@ -905,6 +938,24 @@ if(BUILD_TESTING)
   )
 
   if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_LINK_LIB)
+    db_add_hash_difference_test(
+      regression_hidden_glfw_cpu_bands_framebuffer_progress
+      "--api cpu --display glfw_window --glfw-hidden-window 1 --benchmark-mode bands --vsync 0 --fps-cap 0 --frame-limit 1 --hash both --hash-report final"
+      "--api cpu --display glfw_window --glfw-hidden-window 1 --benchmark-mode bands --vsync 0 --fps-cap 0 --frame-limit 5 --hash both --hash-report final"
+      "framebuffer_hash_final"
+    )
+    db_add_output_expectation_test(
+      regression_hidden_glfw_cpu_backend_identity
+      "--api cpu --display glfw_window --glfw-hidden-window 1 --benchmark-mode bands --vsync 0 --fps-cap 0 --frame-limit 1"
+      "glfw window visibility=hidden,backend=display_glfw_window_cpu_renderer"
+      "backend=display_offscreen"
+    )
+    db_add_output_expectation_test(
+      regression_cpu_offscreen_backend_identity
+      "--api cpu --display offscreen --benchmark-mode bands --vsync 0 --fps-cap 0 --frame-limit 1"
+      "backend=display_offscreen"
+      "glfw window visibility=hidden,backend=display_glfw_window_cpu_renderer"
+    )
     db_add_cross_renderer_snake_state_triplet(
       determinism_cross_renderer_snake_grid_state_triplet
       snake_grid
@@ -946,5 +997,6 @@ if(BUILD_TESTING)
       )
     endif()
   endif()
+
 
 endif()

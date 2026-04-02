@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define DB_F16_ONE 0x3C00U
+
 void db_copy_bytes(void *dst, const void *src, size_t byte_count);
 void db_move_bytes(void *dst, const void *src, size_t byte_count);
 void db_copy_f32_vec2(float *dst, const float *src);

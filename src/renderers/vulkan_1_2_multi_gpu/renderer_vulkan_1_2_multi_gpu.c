@@ -103,7 +103,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
                 BACKEND_NAME, "snake_row_bounds", db_grid_rows_effective(),
                 sizeof(*g_state.snake_scratch.shape.row_bounds));
         g_state.snake_scratch.damage.blocks =
-            (db_damage_block_t *)db_alloc_array_or_fail(
+            (db_grid_block_t *)db_alloc_array_or_fail(
                 BACKEND_NAME, "snake_damage_blocks",
                 snake_compact_block_capacity,
                 sizeof(*g_state.snake_scratch.damage.blocks));
