@@ -13,12 +13,13 @@ typedef enum {
 
 typedef struct {
     VkResult (*create_window_surface)(VkInstance instance, void *window_handle,
-                                      VkSurfaceKHR *surface, void *user_data);
+                                      VkSurfaceKHR *surface,
+                                      const void *user_data);
     void (*get_framebuffer_size)(void *window_handle, int *width, int *height,
-                                 void *user_data);
-    const char *const *(*get_required_instance_extensions)(uint32_t *count,
-                                                           void *user_data);
-    void *user_data;
+                                 const void *user_data);
+    const char *const *(*get_required_instance_extensions)(
+        uint32_t *count, const void *user_data);
+    const void *user_data;
     void *window_handle;
 } db_vk_wsi_config_t;
 

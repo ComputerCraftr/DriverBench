@@ -161,7 +161,7 @@ static uint32_t db_cli_parse_frame_limit_or_exit(const char *cli_option,
         db_failf("driverbench_cli", "invalid value for %s: %s", cli_option,
                  raw_value);
     }
-    return (uint32_t)parsed;
+    return db_checked_ulong_to_u32("driverbench_cli", cli_option, parsed);
 }
 
 static void db_cli_set_runtime_random_seed_or_exit(const char *raw_value) {
@@ -199,7 +199,7 @@ static void db_cli_set_runtime_bench_speed_or_exit(const char *raw_value) {
         db_failf("driverbench_cli", "invalid value for --bench-speed: %s",
                  raw_value);
     }
-    if (parsed > (double)DB_BENCH_SPEED_STEP_MAX) {
+    if (parsed > DB_BENCH_SPEED_STEP_MAX) {
         db_failf("driverbench_cli",
                  "invalid value for --bench-speed: %s (max: %u)", raw_value,
                  DB_BENCH_SPEED_STEP_MAX);

@@ -46,7 +46,7 @@ GLFWwindow *db_glfw_create_gl1_5_or_gles1_1_window(
     int *out_is_gles, db_glfw_window_visibility_t visibility);
 void db_glfw_destroy_window(GLFWwindow *window);
 void db_glfw_poll_events(void);
-db_display_frame_loop_run_result_t db_glfw_run_loop(const db_glfw_loop_t *loop);
+db_display_frame_loop_run_result_t db_glfw_run_loop(db_glfw_loop_t *loop);
 db_glfw_default_fb_probe_result_t
 db_glfw_probe_and_log_default_framebuffer_reuse(const char *backend_name,
                                                 GLFWwindow *window);

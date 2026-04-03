@@ -992,31 +992,54 @@ static struct fb *db_cpu_create_fb_from_framebuffer(
 
     const size_t dst_stride_pixels =
         (size_t)map_stride_bytes / sizeof(uint32_t);
+    const int map_ptr_u32_aligned =
+        ((((uintptr_t)map_ptr) % _Alignof(uint32_t)) == 0U) ? 1 : 0;
+    const int map_stride_u32_aligned =
+        ((map_stride_bytes % (uint32_t)sizeof(uint32_t)) == 0U) ? 1 : 0;
     if (use_hdr_float_bo != 0) {
         if (pixels_rgba16f == NULL) {
             gbm_bo_unmap(bo, map_data);
             gbm_bo_destroy(bo);
             diex("cpu hdr framebuffer is NULL");
         }
-        if ((src_width == width) && (src_height == height)) {
+        if ((src_width == width) && (src_height == height) &&
+            (map_ptr_u32_aligned != 0)) {
+            uint32_t *const dst_pixels =
+                (uint32_t *)DB_ASSUME_ALIGNED(map_ptr, _Alignof(uint32_t));
             db_convert_rgba16f_to_xrgb8888_block(
-                (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba16f,
+                dst_pixels, dst_stride_pixels, pixels_rgba16f,
                 (size_t)src_width, 0U, height, 0U, width);
         } else {
             for (uint32_t row = 0U; row < height; row++) {
-                const uint32_t src_row =
-                    ((uint64_t)row * (uint64_t)src_height) / (uint64_t)height;
-                uint32_t *dst_row =
-                    ((uint32_t *)map_ptr) + ((size_t)row * dst_stride_pixels);
+                const uint32_t src_row = db_checked_u64_to_u32(
+                    BACKEND_NAME, "src_row",
+                    ((uint64_t)row * (uint64_t)src_height) / (uint64_t)height);
+                uint8_t *const dst_row_bytes =
+                    map_ptr + ((size_t)row * (size_t)map_stride_bytes);
+                uint32_t *const dst_row =
+                    ((map_ptr_u32_aligned != 0) &&
+                     (map_stride_u32_aligned != 0))
+                        ? (uint32_t *)DB_ASSUME_ALIGNED(dst_row_bytes,
+                                                        _Alignof(uint32_t))
+                        : NULL;
                 for (uint32_t col = 0U; col < width; col++) {
-                    const uint32_t src_col =
-                        ((uint64_t)col * (uint64_t)src_width) / (uint64_t)width;
+                    const uint32_t src_col = db_checked_u64_to_u32(
+                        BACKEND_NAME, "src_col",
+                        ((uint64_t)col * (uint64_t)src_width) /
+                            (uint64_t)width);
                     const size_t src_base =
                         (((size_t)src_row * (size_t)src_width) +
                          (size_t)src_col) *
                         4U;
-                    dst_row[col] = db_pack_xrgb8888_from_rgb16f3(
+                    const uint32_t packed = db_pack_xrgb8888_from_rgb16f3(
                         &pixels_rgba16f[src_base]);
+                    if (dst_row != NULL) {
+                        dst_row[col] = packed;
+                    } else {
+                        db_copy_bytes(dst_row_bytes +
+                                          ((size_t)col * sizeof(uint32_t)),
+                                      &packed, sizeof(packed));
+                    }
                 }
             }
         }
@@ -1026,23 +1049,43 @@ static struct fb *db_cpu_create_fb_from_framebuffer(
             gbm_bo_destroy(bo);
             diex("cpu rgba8 framebuffer is NULL");
         }
-        if ((src_width == width) && (src_height == height)) {
-            db_convert_rgba8_to_xrgb8888_block(
-                (uint32_t *)map_ptr, dst_stride_pixels, pixels_rgba8,
-                (size_t)src_width, 0U, height, 0U, width);
+        if ((src_width == width) && (src_height == height) &&
+            (map_ptr_u32_aligned != 0)) {
+            uint32_t *const dst_pixels =
+                (uint32_t *)DB_ASSUME_ALIGNED(map_ptr, _Alignof(uint32_t));
+            db_convert_rgba8_to_xrgb8888_block(dst_pixels, dst_stride_pixels,
+                                               pixels_rgba8, (size_t)src_width,
+                                               0U, height, 0U, width);
         } else {
             for (uint32_t row = 0U; row < height; row++) {
-                const uint32_t src_row =
-                    ((uint64_t)row * (uint64_t)src_height) / (uint64_t)height;
-                uint32_t *dst_row =
-                    ((uint32_t *)map_ptr) + ((size_t)row * dst_stride_pixels);
+                const uint32_t src_row = db_checked_u64_to_u32(
+                    BACKEND_NAME, "src_row",
+                    ((uint64_t)row * (uint64_t)src_height) / (uint64_t)height);
+                uint8_t *const dst_row_bytes =
+                    map_ptr + ((size_t)row * (size_t)map_stride_bytes);
+                uint32_t *const dst_row =
+                    ((map_ptr_u32_aligned != 0) &&
+                     (map_stride_u32_aligned != 0))
+                        ? (uint32_t *)DB_ASSUME_ALIGNED(dst_row_bytes,
+                                                        _Alignof(uint32_t))
+                        : NULL;
                 for (uint32_t col = 0U; col < width; col++) {
-                    const uint32_t src_col =
-                        ((uint64_t)col * (uint64_t)src_width) / (uint64_t)width;
+                    const uint32_t src_col = db_checked_u64_to_u32(
+                        BACKEND_NAME, "src_col",
+                        ((uint64_t)col * (uint64_t)src_width) /
+                            (uint64_t)width);
                     const size_t src_index =
                         ((size_t)src_row * (size_t)src_width) + (size_t)src_col;
                     const uint32_t rgba = pixels_rgba8[src_index];
-                    dst_row[col] = db_pack_xrgb8888_from_rgba8888(rgba);
+                    const uint32_t packed =
+                        db_pack_xrgb8888_from_rgba8888(rgba);
+                    if (dst_row != NULL) {
+                        dst_row[col] = packed;
+                    } else {
+                        db_copy_bytes(dst_row_bytes +
+                                          ((size_t)col * sizeof(uint32_t)),
+                                      &packed, sizeof(packed));
+                    }
                 }
             }
         }

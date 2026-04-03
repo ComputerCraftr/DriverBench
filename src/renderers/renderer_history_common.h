@@ -341,8 +341,7 @@ static inline size_t db_history_grid_blocks_copy_trunc(
     const size_t available = (src_blocks != NULL) ? src_count : 0U;
     const size_t copied = (available < dst_capacity) ? available : dst_capacity;
     if (copied > 0U) {
-        db_copy_bytes(dst_blocks, src_blocks,
-                      copied * sizeof(db_grid_block_t));
+        db_copy_bytes(dst_blocks, src_blocks, copied * sizeof(db_grid_block_t));
     }
     return copied;
 }

@@ -156,8 +156,8 @@ static uint64_t db_glfw_probe_read_default_fb_hash_or_fail(
         db_checked_int_to_u32(backend_name, "probe_fb_w", framebuffer_width_px),
         db_checked_int_to_u32(backend_name, "probe_fb_h",
                               framebuffer_height_px),
-        (size_t)db_checked_int_to_u32(backend_name, "probe_fb_row_bytes",
-                                      framebuffer_width_px) *
+        db_checked_int_to_size(backend_name, "probe_fb_row_pixels",
+                               framebuffer_width_px) *
             4U,
         1);
 }
@@ -228,7 +228,9 @@ db_glfw_probe_and_log_default_framebuffer_reuse(const char *backend_name,
                 continue;
             }
             result.observed_any_match = 1;
-            const int reuse_distance = (int)((frame_index - prior_index) + 1U);
+            const int reuse_distance = db_checked_size_to_i32(
+                backend_name, "probe_reuse_distance",
+                (frame_index - prior_index) + 1U);
             if (prior_index == frame_index) {
                 result.preserves_immediately = 1;
             }
@@ -277,8 +279,7 @@ db_glfw_loop_frame_adapter(void *user_data, uint32_t frame_index,
     return loop->frame_fn(loop->user_data, frame_index, elapsed_ms);
 }
 
-db_display_frame_loop_run_result_t
-db_glfw_run_loop(const db_glfw_loop_t *loop) {
+db_display_frame_loop_run_result_t db_glfw_run_loop(db_glfw_loop_t *loop) {
     if ((loop == NULL) || (loop->frame_fn == NULL) || (loop->window == NULL)) {
         return (db_display_frame_loop_run_result_t){0};
     }
@@ -286,7 +287,7 @@ db_glfw_run_loop(const db_glfw_loop_t *loop) {
         .backend = loop->backend,
         .fps_cap = loop->fps_cap,
         .frame_limit = loop->frame_limit,
-        .user_data = (void *)loop,
+        .user_data = loop,
         .should_continue_fn = db_glfw_loop_should_continue,
         .pre_frame_fn = db_glfw_loop_pre_frame,
         .frame_fn = db_glfw_loop_frame_adapter,

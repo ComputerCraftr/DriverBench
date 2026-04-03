@@ -2,6 +2,7 @@
 #define DRIVERBENCH_DB_CORE_H
 
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,6 +23,13 @@
 #define DB_U32_MIX_SHIFT_B 15U
 #define DB_U32_MIX_MUL_A 0x7FEB352DU
 #define DB_U32_MIX_MUL_B 0x846CA68BU
+
+#if defined(__GNUC__) || defined(__clang__)
+#define DB_ASSUME_ALIGNED(ptr, alignment)                                      \
+    __builtin_assume_aligned((ptr), (alignment))
+#else
+#define DB_ASSUME_ALIGNED(ptr, alignment) (ptr)
+#endif
 
 // Logging and diagnostics.
 void db_failf(const char *backend, const char *fmt, ...)
@@ -97,6 +105,14 @@ db_checked_int_to_u32(const char *backend, const char *field_name, int value) {
     return (uint32_t)value;
 }
 
+static inline size_t db_checked_int_to_size(const char *backend,
+                                            const char *field_name, int value) {
+    if (value < 0) {
+        db_failf(backend, "%s out of size_t range: %d", field_name, value);
+    }
+    return (size_t)value;
+}
+
 static inline uint32_t db_checked_size_to_u32(const char *backend,
                                               const char *field_name,
                                               size_t value) {
@@ -104,6 +120,15 @@ static inline uint32_t db_checked_size_to_u32(const char *backend,
         db_failf(backend, "%s out of u32 range: %zu", field_name, value);
     }
     return (uint32_t)value;
+}
+
+static inline int32_t db_checked_size_to_i32(const char *backend,
+                                             const char *field_name,
+                                             size_t value) {
+    if (value > (size_t)INT32_MAX) {
+        db_failf(backend, "%s out of i32 range: %zu", field_name, value);
+    }
+    return (int32_t)value;
 }
 
 static inline uint32_t db_checked_u64_to_u32(const char *backend,
@@ -116,10 +141,29 @@ static inline uint32_t db_checked_u64_to_u32(const char *backend,
     return (uint32_t)value;
 }
 
+static inline uint32_t db_checked_ulong_to_u32(const char *backend,
+                                               const char *field_name,
+                                               unsigned long value) {
+    if (value > (unsigned long)UINT32_MAX) {
+        db_failf(backend, "%s out of u32 range: %lu", field_name, value);
+    }
+    return (uint32_t)value;
+}
+
+static inline int32_t db_checked_u64_to_i32(const char *backend,
+                                            const char *field_name,
+                                            uint64_t value) {
+    if (value > (uint64_t)INT32_MAX) {
+        db_failf(backend, "%s out of i32 range: %llu", field_name,
+                 (unsigned long long)value);
+    }
+    return (int32_t)value;
+}
+
 static inline size_t db_checked_u64_to_size(const char *backend,
                                             const char *field_name,
                                             uint64_t value) {
-    if (value > (uint64_t)SIZE_MAX) {
+    if (value > SIZE_MAX) {
         db_failf(backend, "%s out of size_t range: %llu", field_name,
                  (unsigned long long)value);
     }
@@ -190,6 +234,15 @@ static inline long db_checked_double_to_long(const char *backend,
     return (long)value;
 }
 
+static inline uint32_t db_checked_double_to_u32(const char *backend,
+                                                const char *field_name,
+                                                double value) {
+    if (!isfinite(value) || (value < 0.0) || (value > UINT32_MAX)) {
+        db_failf(backend, "%s out of u32 range: %.3f", field_name, value);
+    }
+    return (uint32_t)value;
+}
+
 static inline uint32_t db_checked_add_u32(const char *backend,
                                           const char *field_name, uint32_t lhs,
                                           uint32_t rhs) {
@@ -237,6 +290,25 @@ static inline uint32_t db_checked_mul_u32(const char *backend,
 #else
     if ((lhs != 0U) && (rhs > (UINT32_MAX / lhs))) {
         db_failf(backend, "%s u32 mul overflow: %u * %u", field_name, lhs, rhs);
+    }
+    out = lhs * rhs;
+#endif
+    return out;
+}
+
+static inline size_t db_checked_mul_size(const char *backend,
+                                         const char *field_name, size_t lhs,
+                                         size_t rhs) {
+    size_t out = 0U;
+#ifdef DB_CAN_USE_STDCKDINT
+    if (ckd_mul(&out, lhs, rhs)) {
+        db_failf(backend, "%s size mul overflow: %zu * %zu", field_name, lhs,
+                 rhs);
+    }
+#else
+    if ((lhs != 0U) && (rhs > (SIZE_MAX / lhs))) {
+        db_failf(backend, "%s size mul overflow: %zu * %zu", field_name, lhs,
+                 rhs);
     }
     out = lhs * rhs;
 #endif

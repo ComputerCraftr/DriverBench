@@ -82,7 +82,8 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
     }
 
     const uint64_t float_count_u64 = vertex_count_u64 * (uint64_t)vertex_stride;
-    if (float_count_u64 > ((uint64_t)SIZE_MAX / sizeof(float))) {
+    const uint64_t max_float_count = SIZE_MAX / sizeof(float);
+    if (float_count_u64 > max_float_count) {
         return 0;
     }
 
@@ -93,6 +94,10 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
     if (vertices == NULL) {
         return 0;
     }
+    static const double grid_phase0_rgb[3] = {
+        BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B};
+    float grid_phase0_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
+    db_rgb_f64_to_f32_rgb3(grid_phase0_rgb, grid_phase0_rgb_f32);
     for (uint32_t tile_index = 0; tile_index < tile_count; tile_index++) {
         float x0 = 0.0F;
         float y0 = 0.0F;
@@ -103,15 +108,14 @@ int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
             (size_t)tile_index * DB_RECT_VERTEX_COUNT * vertex_stride;
         float *unit = &vertices[base];
         db_fill_rect_unit_pos(unit, x0, y0, x1, y1, vertex_stride);
-        db_set_rect_unit_rgb(
-            unit, vertex_stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-            (const float[3]){BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F,
-                             BENCH_GRID_PHASE0_B_F});
+        db_set_rect_unit_rgb(unit, vertex_stride,
+                             DB_VERTEX_POSITION_FLOAT_COUNT,
+                             grid_phase0_rgb_f32);
         if (vertex_stride == DB_ES_VERTEX_FLOAT_STRIDE) {
             db_set_rect_unit_alpha(unit, vertex_stride,
                                    DB_VERTEX_POSITION_FLOAT_COUNT +
                                        DB_VERTEX_COLOR_FLOAT_COUNT,
-                                   BENCH_CLEAR_COLOR_A_F);
+                                   db_double_to_f32(BENCH_CLEAR_COLOR_A));
         }
     }
 

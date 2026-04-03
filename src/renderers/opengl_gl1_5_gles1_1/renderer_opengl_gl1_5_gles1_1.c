@@ -372,15 +372,17 @@ static void db_gl1_init_snake_color_state_from_vertices(void) {
     if (db_gl1_has_snake_color_state() == 0) {
         return;
     }
-    const float base_rgb[3] = {BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F,
-                               BENCH_GRID_PHASE0_B_F};
+    static const double base_rgb[3] = {BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G,
+                                       BENCH_GRID_PHASE0_B};
+    float base_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
+    db_rgb_f64_to_f32_rgb3(base_rgb, base_rgb_f32);
     for (uint32_t tile_index = 0U; tile_index < g_state.runtime.work_unit_count;
          tile_index++) {
         float *tile_color = db_gl1_snake_tile_color_ptr(tile_index);
         if (tile_color == NULL) {
             continue;
         }
-        db_copy_f32_rgb3(tile_color, base_rgb);
+        db_copy_f32_rgb3(tile_color, base_rgb_f32);
     }
 }
 
@@ -625,6 +627,10 @@ static void db_gl1_refresh_tile_positions_for_viewport(int viewport_w,
         (g_state.vertex.vertices == NULL)) {
         return;
     }
+    const uint32_t viewport_w_u32 =
+        db_checked_int_to_u32(BACKEND_NAME, "viewport_w", viewport_w);
+    const uint32_t viewport_h_u32 =
+        db_checked_int_to_u32(BACKEND_NAME, "viewport_h", viewport_h);
     const uint32_t cols = db_grid_cols_effective();
     const uint32_t rows = db_grid_rows_effective();
     if ((cols == 0U) || (rows == 0U)) {
@@ -634,27 +640,20 @@ static void db_gl1_refresh_tile_positions_for_viewport(int viewport_w,
     for (uint32_t tile_index = 0U; tile_index < g_state.vertex.work_unit_count;
          tile_index++) {
         db_damage_block_t pixel_block = {0U, 0U, 0U, 0U};
-        if (db_grid_tile_to_pixel_block(
-                cols, rows, tile_index, (uint32_t)viewport_w,
-                (uint32_t)viewport_h, &pixel_block) == 0) {
+        if (db_grid_tile_to_pixel_block(cols, rows, tile_index, viewport_w_u32,
+                                        viewport_h_u32, &pixel_block) == 0) {
             continue;
         }
         const uint32_t x0_px = pixel_block.col_start;
         const uint32_t x1_px =
             db_damage_block_col_end_or_fail("gl1_tile_x1_px", &pixel_block);
-        const uint32_t viewport_h_u32 =
-            db_checked_int_to_u32(BACKEND_NAME, "viewport_h", viewport_h);
         const uint32_t y0_px =
             viewport_h_u32 -
             db_damage_block_row_end_or_fail("gl1_tile_y0_px", &pixel_block);
         const uint32_t y1_px = viewport_h_u32 - pixel_block.row_start;
 
-        const float x0 = db_pixel_coord_to_ndc_f32(
-            x0_px,
-            db_checked_int_to_u32(BACKEND_NAME, "viewport_w", viewport_w));
-        const float x1 = db_pixel_coord_to_ndc_f32(
-            x1_px,
-            db_checked_int_to_u32(BACKEND_NAME, "viewport_w", viewport_w));
+        const float x0 = db_pixel_coord_to_ndc_f32(x0_px, viewport_w_u32);
+        const float x1 = db_pixel_coord_to_ndc_f32(x1_px, viewport_w_u32);
         const float y0 = db_pixel_coord_to_ndc_f32(y0_px, viewport_h_u32);
         const float y1 = db_pixel_coord_to_ndc_f32(y1_px, viewport_h_u32);
 
@@ -707,16 +706,20 @@ static void db_gl1_refresh_bands_x_cache(uint32_t cols, uint32_t band_count,
         (band_count > BENCH_BANDS)) {
         return;
     }
+    const uint32_t viewport_w_u32 =
+        db_checked_int_to_u32(BACKEND_NAME, "viewport_w", viewport_w);
     if ((g_state.bands_x_cache_viewport_w == viewport_w) &&
         (g_state.bands_x_cache_cols == cols) &&
         (g_state.bands_x_cache_count == band_count)) {
         return;
     }
     for (uint32_t band = 0U; band <= band_count; band++) {
-        const uint32_t tile_x = (uint32_t)(((uint64_t)band * (uint64_t)cols) /
-                                           (uint64_t)band_count);
-        int x_px = (int)db_grid_axis_edge_to_pixel_coord(cols, tile_x,
-                                                         (uint32_t)viewport_w);
+        const uint32_t tile_x = db_checked_u64_to_u32(
+            BACKEND_NAME, "bands_x_cache_tile_x",
+            ((uint64_t)band * (uint64_t)cols) / (uint64_t)band_count);
+        int x_px = db_checked_u32_to_i32(
+            BACKEND_NAME, "bands_x_cache_x_px",
+            db_grid_axis_edge_to_pixel_coord(cols, tile_x, viewport_w_u32));
         if (band == band_count) {
             x_px = viewport_w;
         }
@@ -727,8 +730,9 @@ static void db_gl1_refresh_bands_x_cache(uint32_t cols, uint32_t band_count,
             x_px = viewport_w;
         }
         g_state.bands_x_cache_px[band] = x_px;
-        g_state.bands_x_cache_ndc[band] =
-            db_pixel_coord_to_ndc_f32((uint32_t)x_px, (uint32_t)viewport_w);
+        g_state.bands_x_cache_ndc[band] = db_pixel_coord_to_ndc_f32(
+            db_checked_int_to_u32(BACKEND_NAME, "bands_x_cache_x_px", x_px),
+            viewport_w_u32);
     }
     g_state.bands_x_cache_viewport_w = viewport_w;
     g_state.bands_x_cache_cols = cols;
@@ -988,11 +992,12 @@ static void db_gl1_draw_compact_scratch_vbo(const char *first_vertex_label,
     }
     db_gl1_configure_vbo_arrays_if_needed();
     db_gl_draw_arrays_triangles(
-        db_checked_u32_to_i32(
-            BACKEND_NAME, first_vertex_label,
-            db_checked_size_to_u32(BACKEND_NAME, first_vertex_label,
-                                   g_state.compact_vbo.first_vertex)),
-        db_gl_draw_vertex_count_i32(BACKEND_NAME, draw_vertex_count));
+        db_checked_size_to_i32(BACKEND_NAME, first_vertex_label,
+                               g_state.compact_vbo.first_vertex),
+        db_gl_draw_vertex_count_i32(BACKEND_NAME,
+                                    db_checked_size_to_u32(BACKEND_NAME,
+                                                           "draw_vertex_count",
+                                                           draw_vertex_count)));
 }
 
 static void db_gl1_draw_compact_scratch_client(size_t draw_vertex_count) {
@@ -1012,7 +1017,10 @@ static void db_gl1_draw_compact_scratch_client(size_t draw_vertex_count) {
         client_color_components, client_stride,
         &g_state.compact_vbo.scratch_vertices[DB_VERTEX_POSITION_FLOAT_COUNT]);
     db_gl_draw_arrays_triangles(
-        0, db_gl_draw_vertex_count_i32(BACKEND_NAME, draw_vertex_count));
+        0, db_gl_draw_vertex_count_i32(
+               BACKEND_NAME,
+               db_checked_size_to_u32(BACKEND_NAME, "draw_vertex_count",
+                                      draw_vertex_count)));
     g_state.client_arrays_configured = 0;
     g_state.vbo_arrays_configured = 0;
     db_gl1_invalidate_array_pointer_cache();
@@ -1177,16 +1185,19 @@ static void db_gl1_draw_bands_compact(uint32_t cols, uint32_t band_count,
             x0_ndc = g_state.bands_x_cache_ndc[band];
             x1_ndc = g_state.bands_x_cache_ndc[band + 1U];
         } else {
-            const uint32_t tile_x0 =
-                (uint32_t)(((uint64_t)band * (uint64_t)cols) /
-                           (uint64_t)band_count);
+            const uint32_t tile_x0 = db_checked_u64_to_u32(
+                BACKEND_NAME, "gl1_band_tile_x0",
+                ((uint64_t)band * (uint64_t)cols) / (uint64_t)band_count);
             const uint32_t tile_x1 =
-                (uint32_t)(((uint64_t)(band + 1U) * (uint64_t)cols) /
-                           (uint64_t)band_count);
-            x0 = (int)db_grid_axis_edge_to_pixel_coord(cols, tile_x0,
-                                                       viewport_w_u32);
-            x1 = (int)db_grid_axis_edge_to_pixel_coord(cols, tile_x1,
-                                                       viewport_w_u32);
+                db_checked_u64_to_u32(BACKEND_NAME, "gl1_band_tile_x1",
+                                      ((uint64_t)(band + 1U) * (uint64_t)cols) /
+                                          (uint64_t)band_count);
+            x0 = db_checked_u32_to_i32(BACKEND_NAME, "gl1_band_x0_px",
+                                       db_grid_axis_edge_to_pixel_coord(
+                                           cols, tile_x0, viewport_w_u32));
+            x1 = db_checked_u32_to_i32(BACKEND_NAME, "gl1_band_x1_px",
+                                       db_grid_axis_edge_to_pixel_coord(
+                                           cols, tile_x1, viewport_w_u32));
             if (band + 1U == band_count) {
                 x1 = viewport_w;
             }

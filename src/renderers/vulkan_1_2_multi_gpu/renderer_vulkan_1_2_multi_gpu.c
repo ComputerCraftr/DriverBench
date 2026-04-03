@@ -114,10 +114,8 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
                 sizeof(*g_state.snake_scratch.compact.blocks));
         g_state.snake_scratch.shape.row_bounds_capacity =
             (size_t)db_grid_rows_effective();
-        g_state.snake_scratch.damage.capacity =
-            snake_compact_block_capacity;
-        g_state.snake_scratch.compact.capacity =
-            snake_compact_block_capacity;
+        g_state.snake_scratch.damage.capacity = snake_compact_block_capacity;
+        g_state.snake_scratch.compact.capacity = snake_compact_block_capacity;
     }
     g_state.gradient_window_rows = db_gradient_window_rows_effective();
     db_history_gradient_replay_state_reset(&g_state.gradient_prev_frame);

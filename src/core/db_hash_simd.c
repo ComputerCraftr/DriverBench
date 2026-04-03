@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "db_buffer_convert.h"
 #include "db_core.h"
@@ -213,9 +214,24 @@ static inline int db_hash_ptr_aligned(const void *ptr, size_t alignment) {
     return (((uintptr_t)ptr) % alignment) == 0U;
 }
 
+DB_HASH_TARGET_SSE41 static inline const __m128i *
+db_x86_assume_aligned128(const void *ptr) {
+    return (const __m128i *)DB_ASSUME_ALIGNED(ptr, 16U);
+}
+
+DB_HASH_TARGET_AVX2 static inline const __m256i *
+db_x86_assume_aligned256(const void *ptr) {
+    return (const __m256i *)DB_ASSUME_ALIGNED(ptr, 32U);
+}
+
+DB_HASH_TARGET_AVX2 static inline __m256i *
+db_x86_assume_aligned256_mut(void *ptr) {
+    return (__m256i *)DB_ASSUME_ALIGNED(ptr, 32U);
+}
+
 DB_HASH_TARGET_SSE41 static inline __m128i db_x86_load128_any(const void *ptr) {
     if (db_hash_ptr_aligned(ptr, 16U) != 0) {
-        return _mm_load_si128((const __m128i *)ptr);
+        return _mm_load_si128(db_x86_assume_aligned128(ptr));
     }
     return _mm_loadu_si128((const __m128i *)ptr);
 }
@@ -338,17 +354,21 @@ DB_HASH_TARGET_AVX2 static inline void db_fnv1a32_8x64_avx2(
 // x86 packing helpers.
 DB_HASH_TARGET_AVX2 static inline void
 db_x86_pack8_u32_to4_u64_avx2(const uint32_t *in_hashes, uint64_t *out_packed) {
-    // On x86 little-endian, adjacent u32 lanes map directly to one u64 pair
-    // in the exact same order expected by the combiner:
-    // [h0,h1,h2,h3,h4,h5,h6,h7] -> [h0|h1<<32, h2|h3<<32, ...].
-    const __m256i hashes_vec = _mm256_load_si256((const __m256i *)in_hashes);
-    _mm256_store_si256((__m256i *)out_packed, hashes_vec);
+    // Callers pass local alignas(32) lane/result arrays, so aligned AVX loads
+    // and stores are valid in this hot pack path.
+    const __m256i hashes_vec =
+        _mm256_load_si256(db_x86_assume_aligned256((const void *)in_hashes));
+    _mm256_store_si256(db_x86_assume_aligned256_mut((void *)out_packed),
+                       hashes_vec);
 }
 
 DB_HASH_TARGET_SSE41 static inline void
 db_x86_pack4_u32_to2_u64_sse41(const uint32_t *in_hashes,
                                uint64_t *out_packed) {
-    const __m128i hashes_vec = _mm_load_si128((const __m128i *)in_hashes);
+    // Callers pass local alignas(16) lane/result arrays, so aligned SSE loads
+    // are valid in this hot pack path.
+    const __m128i hashes_vec =
+        _mm_load_si128(db_x86_assume_aligned128((const void *)in_hashes));
     const __m128i upper_vec = _mm_srli_si128(hashes_vec, 8);
     out_packed[DB_BLOCK_HASH_LANE_0] = (uint64_t)_mm_cvtsi128_si64(hashes_vec);
     out_packed[DB_BLOCK_HASH_LANE_1] = (uint64_t)_mm_cvtsi128_si64(upper_vec);

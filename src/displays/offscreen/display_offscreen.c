@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "../../config/benchmark_config.h"
+#include "../../config/runtime_options.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
 #include "../../driverbench_config.h"
@@ -142,7 +143,7 @@ static int db_run_offscreen_vulkan(const db_cli_config_t *cfg) {
         db_display_dual_hash_trackers_create_from_runtime(
             DB_BACKEND_NAME_DISPLAY_OFFSCREEN, &runtime_hash_cfg,
             DB_DISPLAY_HASH_KEY_STATE, DB_DISPLAY_HASH_KEY_FBO);
-    const db_offscreen_vulkan_loop_ctx_t loop_ctx = {
+    db_offscreen_vulkan_loop_ctx_t loop_ctx = {
         .backend_name = DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
         .state_hash_tracker = &hash_trackers.state,
         .output_hash_tracker = &hash_trackers.output,
@@ -153,7 +154,7 @@ static int db_run_offscreen_vulkan(const db_cli_config_t *cfg) {
         .backend = DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
         .fps_cap = runtime_cfg.fps_cap,
         .frame_limit = runtime_cfg.frame_limit,
-        .user_data = (void *)&loop_ctx,
+        .user_data = &loop_ctx,
         .should_continue_fn = NULL,
         .pre_frame_fn = NULL,
         .frame_fn = db_offscreen_vulkan_frame_step,

@@ -15,7 +15,14 @@
 #include "../renderer_snake_common.h"
 #include "../renderer_snake_shape_common.h"
 #include "../renderer_viewport_common.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Woverlength-strings"
+#endif
 #include "db_embedded_shaders.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 #define BACKEND_NAME "renderer_opengl_gl3_3"
 #define ATTR_COLOR_LOC 1U
@@ -320,8 +327,14 @@ static void db_gl3_ensure_history_targets(int viewport_width_px,
                     }
                 }
             }
-            db_gl_bind_framebuffer(GL_READ_FRAMEBUFFER, prev_read_fbo);
-            db_gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER, prev_draw_fbo);
+            db_gl_bind_framebuffer(GL_READ_FRAMEBUFFER,
+                                   db_checked_int_to_u32(BACKEND_NAME,
+                                                         "prev_read_fbo",
+                                                         prev_read_fbo));
+            db_gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER,
+                                   db_checked_int_to_u32(BACKEND_NAME,
+                                                         "prev_draw_fbo",
+                                                         prev_draw_fbo));
             if (read_fbo != 0U) {
                 db_gl_delete_framebuffers(1, &read_fbo);
             }
@@ -331,10 +344,10 @@ static void db_gl3_ensure_history_targets(int viewport_width_px,
     const db_history_resize_preserve_policy_t resize_policy =
         db_history_resize_preserve_policy_for_pattern(g_state.runtime.pattern,
                                                       1, copied_history, 1);
-    const db_gl3_seed_history_targets_ctx_t seed_ctx = {.history_fbo = new_fbo};
+    db_gl3_seed_history_targets_ctx_t seed_ctx = {.history_fbo = new_fbo};
     (void)db_history_run_seed_clear_if_needed(
         resize_policy.should_seed_targets, &g_state.runtime,
-        db_gl3_seed_history_targets_clear_cb, (void *)&seed_ctx);
+        db_gl3_seed_history_targets_clear_cb, &seed_ctx);
 
     if (old_fbo0 != 0U) {
         db_gl_delete_framebuffers(1, &old_fbo0);
@@ -360,8 +373,12 @@ static void db_gl3_ensure_history_targets(int viewport_width_px,
     db_history_apply_resize_preserve_policy(&resize_policy, &g_state.runtime,
                                             &g_state.history_pair, NULL);
     g_state.history_pair.read_index = 0;
-    db_gl_bind_framebuffer(GL_READ_FRAMEBUFFER, prev_read_fbo);
-    db_gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER, prev_draw_fbo);
+    db_gl_bind_framebuffer(
+        GL_READ_FRAMEBUFFER,
+        db_checked_int_to_u32(BACKEND_NAME, "prev_read_fbo", prev_read_fbo));
+    db_gl_bind_framebuffer(
+        GL_DRAW_FRAMEBUFFER,
+        db_checked_int_to_u32(BACKEND_NAME, "prev_draw_fbo", prev_draw_fbo));
 }
 
 static unsigned int compile_shader(unsigned int shader_type,
@@ -453,7 +470,8 @@ void db_renderer_opengl_gl3_3_init(void) {
         0) {
         failf("failed to initialize GL array buffer");
     }
-    db_gl_upload_buffer_target(g_state.vertex.vertices, g_state.buffers.vbo_bytes,
+    db_gl_upload_buffer_target(g_state.vertex.vertices,
+                               g_state.buffers.vbo_bytes,
                                DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER,
                                g_state.buffers.vbo, 0, NULL, 0, 0);
 
@@ -550,15 +568,20 @@ void db_renderer_opengl_gl3_3_init(void) {
 
     if (g_state.u_render_mode >= 0) {
         db_gl_uniform1ui(g_state.u_render_mode,
-                         db_checked_int_to_u32(BACKEND_NAME, "u_render_mode",
-                                               g_state.runtime.pattern));
+                         db_checked_pattern_to_u32(BACKEND_NAME,
+                                                   "u_render_mode",
+                                                   g_state.runtime.pattern));
     }
-    static const float grid_base_color[3] = {
-        BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F, BENCH_GRID_PHASE0_B_F};
-    static const float grid_target_color[3] = {
-        BENCH_GRID_PHASE1_R_F, BENCH_GRID_PHASE1_G_F, BENCH_GRID_PHASE1_B_F};
-    db_gl_uniform3fv3(g_state.u_grid_base_color, grid_base_color);
-    db_gl_uniform3fv3(g_state.u_grid_target_color, grid_target_color);
+    static const double grid_base_color[3] = {
+        BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B};
+    static const double grid_target_color[3] = {
+        BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G, BENCH_GRID_PHASE1_B};
+    float grid_base_color_f32[3] = {0.0F, 0.0F, 0.0F};
+    float grid_target_color_f32[3] = {0.0F, 0.0F, 0.0F};
+    db_rgb_f64_to_f32_rgb3(grid_base_color, grid_base_color_f32);
+    db_rgb_f64_to_f32_rgb3(grid_target_color, grid_target_color_f32);
+    db_gl_uniform3fv3(g_state.u_grid_base_color, grid_base_color_f32);
+    db_gl_uniform3fv3(g_state.u_grid_target_color, grid_target_color_f32);
     if (g_state.u_band_count >= 0) {
         db_gl_uniform1ui(g_state.u_band_count, BENCH_BANDS);
     }
@@ -724,8 +747,12 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
                            0, 0, g_state.history_width, g_state.history_height,
                            GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-    db_gl_bind_framebuffer(GL_READ_FRAMEBUFFER, prev_read_fbo);
-    db_gl_bind_framebuffer(GL_DRAW_FRAMEBUFFER, prev_draw_fbo);
+    db_gl_bind_framebuffer(
+        GL_READ_FRAMEBUFFER,
+        db_checked_int_to_u32(BACKEND_NAME, "prev_read_fbo", prev_read_fbo));
+    db_gl_bind_framebuffer(
+        GL_DRAW_FRAMEBUFFER,
+        db_checked_int_to_u32(BACKEND_NAME, "prev_draw_fbo", prev_draw_fbo));
     db_history_pair_flip_to_write(&g_state.history_pair);
     db_history_finalize_frame(&g_state.frame, &g_state.runtime,
                               db_grid_cols_effective(),

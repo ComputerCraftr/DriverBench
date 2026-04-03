@@ -402,8 +402,8 @@ static uint64_t db_glfw_hash_presented_default_framebuffer_or_fail(
         pixels,
         db_checked_int_to_u32(backend_name, "fb_w", framebuffer_width_px),
         db_checked_int_to_u32(backend_name, "fb_h", framebuffer_height_px),
-        (size_t)db_checked_int_to_u32(backend_name, "fb_row_bytes",
-                                      framebuffer_width_px) *
+        db_checked_int_to_size(backend_name, "fb_row_pixels",
+                               framebuffer_width_px) *
             4U,
         1);
 }
@@ -571,7 +571,7 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         loop_ctx.framebuffer_hash_tracker, loop_ctx.state_hash_tracker,
         &loop_ctx.next_progress_log_due_ms, loop_ctx.work_unit_count,
         loop_ctx.output_hash_enabled, loop_ctx.state_hash_enabled);
-    const db_glfw_loop_t loop = {
+    db_glfw_loop_t loop = {
         .backend = DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
         .frame_fn = db_glfw_cpu_frame,
         .fps_cap = runtime_cfg.fps_cap,
@@ -730,7 +730,7 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
         loop_ctx.framebuffer_hash_tracker, loop_ctx.state_hash_tracker,
         &loop_ctx.next_progress_log_due_ms, loop_ctx.work_unit_count,
         loop_ctx.output_hash_enabled, loop_ctx.state_hash_enabled);
-    const db_glfw_loop_t loop = {
+    db_glfw_loop_t loop = {
         .backend = backend_name,
         .frame_fn = db_glfw_opengl_frame,
         .fps_cap = runtime_cfg.fps_cap,
@@ -760,7 +760,8 @@ static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
 #ifdef DB_HAS_VULKAN_API
 // NOLINTBEGIN(misc-include-cleaner)
 static const char *const *
-db_glfw_vk_required_instance_extensions(uint32_t *count, void *user_data) {
+db_glfw_vk_required_instance_extensions(uint32_t *count,
+                                        const void *user_data) {
     (void)user_data;
     return glfwGetRequiredInstanceExtensions(count);
 }
@@ -768,14 +769,15 @@ db_glfw_vk_required_instance_extensions(uint32_t *count, void *user_data) {
 static VkResult db_glfw_vk_create_surface(VkInstance instance,
                                           void *window_handle,
                                           VkSurfaceKHR *surface,
-                                          void *user_data) {
+                                          const void *user_data) {
     (void)user_data;
     return glfwCreateWindowSurface(instance, (GLFWwindow *)window_handle, NULL,
                                    surface);
 }
 
 static void db_glfw_vk_get_framebuffer_size(void *window_handle, int *width,
-                                            int *height, void *user_data) {
+                                            int *height,
+                                            const void *user_data) {
     (void)user_data;
     glfwGetFramebufferSize((GLFWwindow *)window_handle, width, height);
 }
@@ -841,7 +843,7 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
 
     const db_vk_wsi_config_t wsi_config = {
         .window_handle = window,
-        .user_data = (void *)backend_name,
+        .user_data = backend_name,
         .get_required_instance_extensions =
             db_glfw_vk_required_instance_extensions,
         .create_window_surface = db_glfw_vk_create_surface,
@@ -856,19 +858,19 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
         db_display_dual_hash_trackers_create_from_runtime(
             backend_name, &runtime_hash_cfg, DB_DISPLAY_HASH_KEY_STATE,
             DB_DISPLAY_HASH_KEY_FBO);
-    const db_glfw_vulkan_loop_ctx_t loop_ctx = {
+    db_glfw_vulkan_loop_ctx_t loop_ctx = {
         .backend_name = backend_name,
         .state_hash_tracker = &hash_trackers.state,
         .output_hash_tracker = &hash_trackers.output,
         .state_hash_enabled = hash_settings.state_hash_enabled,
         .output_hash_enabled = hash_settings.output_hash_enabled,
     };
-    const db_glfw_loop_t loop = {
+    db_glfw_loop_t loop = {
         .backend = backend_name,
         .frame_fn = db_glfw_vulkan_frame,
         .fps_cap = runtime_cfg.fps_cap,
         .frame_limit = runtime_cfg.frame_limit,
-        .user_data = (void *)&loop_ctx,
+        .user_data = &loop_ctx,
         .window = window,
     };
     const db_display_frame_loop_run_result_t loop_result =

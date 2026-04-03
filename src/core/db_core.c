@@ -89,9 +89,23 @@ int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt,
 #ifdef __STDC_LIB_EXT1__
     return vsnprintf_s(buffer, buffer_size, _TRUNCATE, fmt, ap);
 #else
-    // Fallback for platforms without Annex K bounds-checked APIs.
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,clang-analyzer-valist.Uninitialized)
-    return vsnprintf(buffer, buffer_size, fmt, ap);
+    // Fallback for platforms without Annex K bounds-checked APIs. Use a local
+    // copy so the formatting boundary is explicit to the analyzer and to
+    // preserve the caller's va_list state.
+    va_list ap_copy;
+    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
+    va_copy(ap_copy, ap);
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wformat-nonliteral"
+#endif
+    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
+    const int written = vsnprintf(buffer, buffer_size, fmt, ap_copy);
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+    va_end(ap_copy);
+    return written;
 #endif
 }
 

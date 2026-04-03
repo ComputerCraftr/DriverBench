@@ -45,7 +45,8 @@ static double db_vk_projected_makespan_ns(uint32_t gpu_count,
                 extra_ns = SECONDARY_DISPATCH_OVERHEAD_NS;
             }
         }
-        const double lane_ns = db_vk_predicted_lane_ns(lane_ms, units, extra_ns);
+        const double lane_ns =
+            db_vk_predicted_lane_ns(lane_ms, units, extra_ns);
         if (lane_ns > makespan_ns) {
             makespan_ns = lane_ns;
         }

@@ -6,8 +6,6 @@
 
 #include "../core/db_core.h"
 #include "renderer_benchmark_common.h"
-#include "renderer_history_common.h"
-#include "renderer_snake_common.h"
 
 #define DB_GL_PROBE_PREFIX_BYTES 64U
 #define DB_GL_MAP_RANGE_PROBE_XOR_SEED 0xA5U
@@ -183,7 +181,7 @@ void db_gl_shadow_present_upload_damage_blocks(
     const void *selected_pixels, uint32_t pixel_width, uint32_t pixel_height,
     const db_damage_block_t *blocks, size_t block_count);
 void db_gl_shadow_present_frame(const db_gl_shadow_present_frame_t *frame);
-void db_gl_shadow_present_draw(const db_gl_shadow_present_state_t *state,
+void db_gl_shadow_present_draw(db_gl_shadow_present_state_t *state,
                                uint32_t pixel_width, uint32_t pixel_height);
 void db_gl_set_viewport_px(int width_px, int height_px);
 int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,

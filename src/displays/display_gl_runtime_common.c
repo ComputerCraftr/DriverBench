@@ -4,6 +4,7 @@
 
 #include "../config/benchmark_config.h"
 #include "../core/db_core.h"
+#include "../core/db_numeric.h"
 #include "../renderers/renderer_gl_common.h"
 #include "display_types.h"
 
@@ -179,7 +180,9 @@ void db_display_gl_debug_clear_default_framebuffer_if_enabled(
     if (debug_clear_enabled == 0) {
         return;
     }
-    db_gl_clear_color_rgba(BENCH_CLEAR_COLOR_R_F, BENCH_CLEAR_COLOR_G_F,
-                           BENCH_CLEAR_COLOR_B_F, BENCH_CLEAR_COLOR_A_F);
+    db_gl_clear_color_rgba(db_double_to_f32(BENCH_CLEAR_COLOR_R),
+                           db_double_to_f32(BENCH_CLEAR_COLOR_G),
+                           db_double_to_f32(BENCH_CLEAR_COLOR_B),
+                           db_double_to_f32(BENCH_CLEAR_COLOR_A));
     db_gl_clear_color_buffer();
 }

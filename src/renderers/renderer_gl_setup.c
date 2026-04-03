@@ -282,8 +282,8 @@ int db_parse_gl_version_numbers(const char *version_text, int *major_out,
     if (parse_end == minor_start) {
         return 0;
     }
-    if ((major_l < 0L) || (minor_l < 0L) || (major_l > (long)INT_MAX) ||
-        (minor_l > (long)INT_MAX)) {
+    if ((major_l < 0L) || (minor_l < 0L) || (major_l > INT_MAX) ||
+        (minor_l > INT_MAX)) {
         return 0;
     }
 
@@ -1546,12 +1546,13 @@ void db_gl_shadow_present_upload_damage_blocks(
         (state->selected_texture_format == DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)
             ? (uint32_t)(sizeof(uint16_t) * 4U)
             : 4U;
-    const size_t total_bytes = (size_t)db_checked_mul_u32(
-        backend, "shadow_upload_total_bytes",
-        db_checked_mul_u32(backend, "shadow_row_bytes", pixel_width,
-                           pixel_bytes),
-        pixel_height);
-    if (total_bytes > (size_t)PTRDIFF_MAX) {
+    const size_t row_bytes_size = db_checked_mul_size(
+        backend, "shadow_row_bytes", (size_t)pixel_width, (size_t)pixel_bytes);
+    const size_t total_bytes =
+        db_checked_mul_size(backend, "shadow_upload_total_bytes",
+                            row_bytes_size, (size_t)pixel_height);
+    const size_t max_gl_shadow_bytes = PTRDIFF_MAX;
+    if (total_bytes > max_gl_shadow_bytes) {
         db_failf(backend, "shadow_upload_total_bytes too large: %zu",
                  total_bytes);
     }
@@ -1760,30 +1761,28 @@ void db_gl_shadow_present_frame(const db_gl_shadow_present_frame_t *frame) {
                               frame->pixel_height);
 }
 
-void db_gl_shadow_present_draw(const db_gl_shadow_present_state_t *state,
+void db_gl_shadow_present_draw(db_gl_shadow_present_state_t *state,
                                uint32_t pixel_width, uint32_t pixel_height) {
     if ((state == NULL) || (state->texture == 0U) || (pixel_width == 0U) ||
         (pixel_height == 0U)) {
         return;
     }
-    db_gl_shadow_present_state_t *const mutable_state =
-        (db_gl_shadow_present_state_t *)state;
     const float tex_u =
-        (mutable_state->texture_width == 0U)
+        (state->texture_width == 0U)
             ? 1.0F
-            : db_u32_ratio_to_f32(pixel_width, mutable_state->texture_width);
+            : db_u32_ratio_to_f32(pixel_width, state->texture_width);
     const float tex_v =
-        (mutable_state->texture_height == 0U)
+        (state->texture_height == 0U)
             ? 1.0F
-            : db_u32_ratio_to_f32(pixel_height, mutable_state->texture_height);
-    mutable_state->texcoords[DB_GL_QUAD_V0_X] = 0.0F;
-    mutable_state->texcoords[DB_GL_QUAD_V0_Y] = tex_v;
-    mutable_state->texcoords[DB_GL_QUAD_V1_X] = tex_u;
-    mutable_state->texcoords[DB_GL_QUAD_V1_Y] = tex_v;
-    mutable_state->texcoords[DB_GL_QUAD_V2_X] = 0.0F;
-    mutable_state->texcoords[DB_GL_QUAD_V2_Y] = 0.0F;
-    mutable_state->texcoords[DB_GL_QUAD_V3_X] = tex_u;
-    mutable_state->texcoords[DB_GL_QUAD_V3_Y] = 0.0F;
+            : db_u32_ratio_to_f32(pixel_height, state->texture_height);
+    state->texcoords[DB_GL_QUAD_V0_X] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V0_Y] = tex_v;
+    state->texcoords[DB_GL_QUAD_V1_X] = tex_u;
+    state->texcoords[DB_GL_QUAD_V1_Y] = tex_v;
+    state->texcoords[DB_GL_QUAD_V2_X] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V2_Y] = 0.0F;
+    state->texcoords[DB_GL_QUAD_V3_X] = tex_u;
+    state->texcoords[DB_GL_QUAD_V3_Y] = 0.0F;
 
     db_gl_set_depth_test_enabled(0);
     db_gl_set_cull_face_enabled(0);
@@ -1792,10 +1791,10 @@ void db_gl_shadow_present_draw(const db_gl_shadow_present_state_t *state,
     db_gl_set_client_state_vertex_array_enabled(1);
     db_gl_set_client_state_color_array_enabled(1);
     db_gl_set_client_state_texcoord_array_enabled(1);
-    db_gl_set_vertex_pointer_2f(0, mutable_state->vertices);
-    db_gl_set_color_pointer_f(4, 0, mutable_state->colors);
-    db_gl_set_texcoord_pointer_2f(0, mutable_state->texcoords);
-    db_gl_texture_bind_2d(mutable_state->texture);
+    db_gl_set_vertex_pointer_2f(0, state->vertices);
+    db_gl_set_color_pointer_f(4, 0, state->colors);
+    db_gl_set_texcoord_pointer_2f(0, state->texcoords);
+    db_gl_texture_bind_2d(state->texture);
     db_gl_draw_arrays_triangle_strip(0, 4);
     db_gl_texture_bind_2d(0U);
     db_gl_set_texture_2d_enabled(0);

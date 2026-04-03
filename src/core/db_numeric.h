@@ -185,6 +185,17 @@ static inline void db_rgb_f64_to_f32_rgb3(const double *rgb, float *rgb_out) {
     rgb_out[2] = db_double_to_f32(rgb[2]);
 }
 
+static inline void db_rgba_f64_to_f32_rgba4(const double *rgba,
+                                            float *rgba_out) {
+    if ((rgba == NULL) || (rgba_out == NULL)) {
+        return;
+    }
+    rgba_out[0] = db_double_to_f32(rgba[0]);
+    rgba_out[1] = db_double_to_f32(rgba[1]);
+    rgba_out[2] = db_double_to_f32(rgba[2]);
+    rgba_out[3] = db_double_to_f32(rgba[3]);
+}
+
 static inline void db_rgb_f32_to_f64_rgb3(const float *rgb, double *rgb_out) {
     if ((rgb == NULL) || (rgb_out == NULL)) {
         return;
@@ -208,7 +219,9 @@ static inline int db_equal_f32_rgb3(const float *lhs, const float *rhs) {
     if ((lhs == NULL) || (rhs == NULL)) {
         return 0;
     }
-    return (lhs[0] == rhs[0]) && (lhs[1] == rhs[1]) && (lhs[2] == rhs[2]);
+    return (db_f32_to_bits_u32(lhs[0]) == db_f32_to_bits_u32(rhs[0])) &&
+           (db_f32_to_bits_u32(lhs[1]) == db_f32_to_bits_u32(rhs[1])) &&
+           (db_f32_to_bits_u32(lhs[2]) == db_f32_to_bits_u32(rhs[2]));
 }
 
 static inline int db_equal_u32_rgb3(const uint32_t *lhs, const uint32_t *rhs) {
@@ -319,7 +332,7 @@ static inline double db_f16_to_double(uint16_t value) {
     const uint32_t mant = (uint32_t)value & DB_F16_MANT_MASK;
     if (exp == DB_F16_EXP_MASK) {
         if (mant == 0U) {
-            return (sign != 0U) ? -INFINITY : INFINITY;
+            return (sign != 0U) ? -HUGE_VAL : HUGE_VAL;
         }
         return nan("");
     }

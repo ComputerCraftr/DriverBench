@@ -2,9 +2,11 @@
 #define DRIVERBENCH_DB_ALLOC_POLICY_H
 
 #include <stddef.h>
-#include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
+#include "db_buffer_convert.h"
 #include "db_core.h"
 
 static inline size_t db_size_grow_capacity_3_2(size_t current_capacity,
@@ -110,7 +112,7 @@ static inline void db_reserve_aligned_array_capacity_or_fail(
     void *const new_buffer = db_alloc_aligned_array_or_fail(
         backend, field_name, new_capacity, element_size, alignment);
     if ((*buffer != NULL) && (preserve_count > 0U)) {
-        memcpy(new_buffer, *buffer, preserve_count * element_size);
+        db_copy_bytes(new_buffer, *buffer, preserve_count * element_size);
     }
     free(*buffer);
     *buffer = new_buffer;

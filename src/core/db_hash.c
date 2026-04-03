@@ -15,6 +15,8 @@ static inline uint8_t *db_hash_reserve_canonical_bytes(size_t bytes) {
     if (bytes == 0U) {
         return NULL;
     }
+    // Hash canonical scratch is cacheline-aligned by construction, so SIMD
+    // block-hash code can safely treat it as an aligned input buffer.
     db_reserve_aligned_array_capacity_or_fail(
         (void **)&g_hash_canonical_bytes, &g_hash_canonical_capacity, bytes,
         bytes, sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES, 0U, "db_hash",
@@ -57,7 +59,8 @@ uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
     }
 
     const uint8_t *src_bytes = (const uint8_t *)pixels;
-    uint8_t *const canonical_bytes = db_hash_reserve_canonical_bytes(packed_bytes);
+    uint8_t *const canonical_bytes =
+        db_hash_reserve_canonical_bytes(packed_bytes);
     for (uint32_t row = 0U; row < height; row++) {
         const uint32_t src_row =
             (rows_bottom_to_top != 0U) ? (height - 1U - row) : row;
@@ -90,7 +93,8 @@ uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
     }
 
     const uint8_t *src_bytes = (const uint8_t *)pixels;
-    uint8_t *const canonical_bytes = db_hash_reserve_canonical_bytes(packed_bytes);
+    uint8_t *const canonical_bytes =
+        db_hash_reserve_canonical_bytes(packed_bytes);
     for (uint32_t row = 0U; row < height; row++) {
         const uint32_t src_row =
             (rows_bottom_to_top != 0U) ? (height - 1U - row) : row;

@@ -52,6 +52,12 @@ typedef enum {
     DB_PATTERN_SNAKE_SHAPES = 5,
 } db_pattern_t;
 
+static inline uint32_t db_checked_pattern_to_u32(const char *backend,
+                                                 const char *field_name,
+                                                 db_pattern_t pattern) {
+    return db_checked_int_to_u32(backend, field_name, (int)pattern);
+}
+
 typedef struct {
     uint32_t head_row;
     uint32_t cycle_index;
@@ -594,7 +600,8 @@ db_benchmark_random_seed_from_runtime_or_time(const char *backend_name) {
         db_failf(backend_name, "Invalid %s='%s'", DB_RUNTIME_OPT_RANDOM_SEED,
                  value);
     }
-    return (uint32_t)parsed;
+    return db_checked_ulong_to_u32(backend_name, DB_RUNTIME_OPT_RANDOM_SEED,
+                                   parsed);
 }
 
 static inline uint32_t
@@ -614,12 +621,13 @@ db_benchmark_speed_step_from_runtime(const char *backend_name) {
     if (rounded_up < 1.0) {
         rounded_up = 1.0;
     }
-    if (rounded_up > (double)DB_BENCH_SPEED_STEP_MAX) {
+    if (rounded_up > DB_BENCH_SPEED_STEP_MAX) {
         db_failf(backend_name,
                  "Invalid %s='%.9g' (max effective per-frame step: %u)",
                  DB_RUNTIME_OPT_BENCH_SPEED, parsed, DB_BENCH_SPEED_STEP_MAX);
     }
-    return (uint32_t)rounded_up;
+    return db_checked_double_to_u32(backend_name, DB_RUNTIME_OPT_BENCH_SPEED,
+                                    rounded_up);
 }
 
 static inline void db_log_benchmark_mode(const char *backend_name,

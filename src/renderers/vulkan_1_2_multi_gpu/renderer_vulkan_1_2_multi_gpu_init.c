@@ -6,7 +6,14 @@
 #include "../../config/runtime_options.h"
 #include "../../core/db_core.h"
 #include "../renderer_benchmark_common.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Woverlength-strings"
+#endif
 #include "db_embedded_shaders.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 #include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 
@@ -121,6 +128,10 @@ static const char *db_vk_compose_capability_mode(db_pattern_t pattern) {
 }
 
 static const char *db_vk_present_mode_name(VkPresentModeKHR mode) {
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch-enum"
+#endif
     switch (mode) {
     case VK_PRESENT_MODE_IMMEDIATE_KHR:
         return "immediate";
@@ -133,6 +144,9 @@ static const char *db_vk_present_mode_name(VkPresentModeKHR mode) {
     default:
         return "unknown";
     }
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 }
 
 static uint32_t db_vk_capped_enumeration_count_or_log(const char *label,
@@ -295,6 +309,10 @@ db_vk_physical_device_score(const db_vk_physical_device_info_t *info) {
     if (info->supports_present != 0) {
         score += (1ULL << 32U);
     }
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch-enum"
+#endif
     switch (info->properties.deviceType) {
     case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
         score += (5ULL << DB_VK_DEVICE_SCORE_SHIFT);
@@ -314,6 +332,9 @@ db_vk_physical_device_score(const db_vk_physical_device_info_t *info) {
     default:
         break;
     }
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
     return score + (uint64_t)(MAX_GPU_COUNT - info->queue_family_index);
 }
 

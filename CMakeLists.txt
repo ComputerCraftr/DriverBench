@@ -281,11 +281,28 @@ function(db_apply_perf_options target_name)
     target_compile_options(${target_name} PRIVATE
       -Wall
       -Wextra
+      -Wpedantic
+      -Werror
+      -Wformat=2
+      -Wcast-align
+      -Wcast-qual
+      -Wconversion
+      -Wsign-conversion
+      -Wdouble-promotion
+      -Wfloat-equal
+      -Wimplicit-fallthrough
+      -Wmissing-prototypes
+      -Wstrict-prototypes
+      -Wnewline-eof
+      -Wnull-dereference
+      -Wshadow-all
+      -Wswitch-enum
+      -Wundef
       -Wunreachable-code
       -Wunused-function
       -Wunused-parameter
       -Wunused-variable
-      -Wshadow
+      -Wvla
     )
   endif()
 

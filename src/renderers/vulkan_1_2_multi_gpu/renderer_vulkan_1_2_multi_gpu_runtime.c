@@ -101,10 +101,11 @@ static uint64_t db_vk_compute_output_hash_from_image(VkImage image,
         (extent.height == 0U)) {
         return DB_FNV1A64_OFFSET;
     }
-    const uint64_t byte_count_u64 =
-        (uint64_t)extent.width * (uint64_t)extent.height * UINT64_C(4);
-    const size_t byte_count = db_checked_u64_to_size(
-        BACKEND_NAME, "vk_output_hash_bytes", byte_count_u64);
+    const size_t byte_count = db_checked_mul_size(
+        BACKEND_NAME, "vk_output_hash_bytes",
+        db_checked_mul_size(BACKEND_NAME, "vk_output_hash_pixels",
+                            (size_t)extent.width, (size_t)extent.height),
+        4U);
     db_vk_ensure_output_hash_readback_buffer(byte_count);
 
     vkQueueWaitIdle(g_state.queue);
@@ -182,9 +183,10 @@ static uint64_t db_vk_compute_output_hash_from_image(VkImage image,
     return hash;
 }
 
-static inline db_vk_grid_row_block_draw_req_t db_vk_gradient_row_block_req(
-    const db_grid_block_t *block, db_pattern_t pattern,
-    const db_gradient_state_t *state, uint32_t frame_index) {
+static inline db_vk_grid_row_block_draw_req_t
+db_vk_gradient_row_block_req(const db_grid_block_t *block, db_pattern_t pattern,
+                             const db_gradient_state_t *state,
+                             uint32_t frame_index) {
     if ((state == NULL) || (block == NULL) || (block->row_count == 0U) ||
         (block->col_count == 0U)) {
         return (db_vk_grid_row_block_draw_req_t){0};
@@ -196,7 +198,8 @@ static inline db_vk_grid_row_block_draw_req_t db_vk_gradient_row_block_req(
         .payload =
             {
                 .color = db_vk_shader_ignored_color_rgb,
-                .render_mode = (uint32_t)pattern,
+                .render_mode = db_checked_pattern_to_u32(
+                    BACKEND_NAME, "vk_render_mode", pattern),
                 .gradient_head_row = state->head_row,
                 .snake_shape_index = 0U,
                 .gradient_direction_flag = state->direction_down,
@@ -221,14 +224,15 @@ static void db_vk_draw_gradient_block_segments(
     }
     db_gradient_row_segment_iter_t iter = {0};
     db_gradient_row_segment_t segment = {0};
-    if (db_gradient_row_segment_iter_init(
-            block, state->head_row, state->direction_down,
-            state->cycle_index, &iter) == 0) {
+    if (db_gradient_row_segment_iter_init(block, state->head_row,
+                                          state->direction_down,
+                                          state->cycle_index, &iter) == 0) {
         return;
     }
     while (db_gradient_row_segment_iter_next(&iter, &segment) != 0) {
-        const db_vk_grid_row_block_draw_req_t req = db_vk_gradient_row_block_req(
-            &segment.block, pattern, state, frame_index);
+        const db_vk_grid_row_block_draw_req_t req =
+            db_vk_gradient_row_block_req(&segment.block, pattern, state,
+                                         frame_index);
         db_vk_draw_owner_grid_row_block(draw_ctx, &req);
     }
 }
@@ -257,7 +261,8 @@ static inline uint32_t db_vk_metrics_sample_capacity_hint(void) {
     if (parsed > (unsigned long)UINT32_MAX) {
         return UINT32_MAX;
     }
-    const uint32_t hint = (uint32_t)parsed;
+    const uint32_t hint =
+        db_checked_ulong_to_u32(BACKEND_NAME, "frame_limit_hint", parsed);
     return (hint > DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY)
                ? hint
                : DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY;
@@ -601,8 +606,10 @@ db_vk_frame_result_t db_renderer_vulkan_1_2_multi_gpu_render_frame(void) {
                          : g_state.render_pass;
     if (using_history_target != 0) {
         const uint32_t history_target_index =
-            (g_state.runtime_flags.uses_history_pipeline != 0) ? write_index
-                                                               : 0U;
+            (g_state.runtime_flags.uses_history_pipeline != 0)
+                ? db_checked_int_to_u32(BACKEND_NAME, "history_target_index",
+                                        write_index)
+                : 0U;
         rbi.framebuffer =
             g_state.history_targets[history_target_index].framebuffer;
     } else {

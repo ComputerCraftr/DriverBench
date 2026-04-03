@@ -5,7 +5,6 @@
 #include <stdlib.h>
 
 #include "../../config/benchmark_config.h"
-#include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
@@ -15,8 +14,6 @@
 #include "../renderer_snake_shape_common.h"
 
 #define BACKEND_NAME "renderer_cpu_renderer"
-#define DB_ALPHA_U8 UINT8_MAX
-#define DB_ALPHA_F16 DB_F16_ONE
 #define DB_CAP_MODE_CPU_OFFSCREEN_BO "cpu_offscreen_bo"
 #define DB_CAP_MODE_CPU_OFFSCREEN_BO_HDR "cpu_offscreen_bo_hdr_rgba16f"
 
@@ -107,10 +104,9 @@ db_cpu_apply_gradient_damage_block(db_cpu_bo_t *bo,
     }
     db_gradient_row_segment_t segment = {0};
     while (db_gradient_row_segment_iter_next(&iter, &segment) != 0) {
-        db_cpu_bo_fill_damage_block_rgb(bo, segment.block.row_start,
-                                        segment.block.row_count,
-                                        segment.block.col_start,
-                                        segment.block.col_count, segment.rgb);
+        db_cpu_bo_fill_damage_block_rgb(
+            bo, segment.block.row_start, segment.block.row_count,
+            segment.block.col_start, segment.block.col_count, segment.rgb);
     }
 }
 
@@ -206,8 +202,8 @@ void db_renderer_cpu_renderer_init_with_hdr_float_bo(int use_hdr_float_bo) {
     const uint32_t grid_cols = db_grid_cols_effective();
     const uint32_t grid_rows = db_grid_rows_effective();
     const uint64_t pixel_count = (uint64_t)grid_cols * (uint64_t)grid_rows;
-    if ((pixel_count == 0U) ||
-        (pixel_count > ((uint64_t)SIZE_MAX / sizeof(uint32_t)))) {
+    const uint64_t max_rgba8_pixel_count = SIZE_MAX / sizeof(uint32_t);
+    if ((pixel_count == 0U) || (pixel_count > max_rgba8_pixel_count)) {
         db_failf(BACKEND_NAME, "invalid offscreen BO size: %ux%u", grid_cols,
                  grid_rows);
     }
@@ -314,7 +310,8 @@ void db_renderer_cpu_renderer_render_frame(uint32_t frame_index) {
             }
         }
         const db_snake_active_tile_scratch_t scratch = {
-            .active_tile_indices = g_state.snake_scratch.shape.active_tile_indices,
+            .active_tile_indices =
+                g_state.snake_scratch.shape.active_tile_indices,
             .active_tile_valid = g_state.snake_scratch.shape.active_tile_valid,
             .active_prior_rgb = g_state.snake_scratch.shape.active_prior_rgb,
             .active_tile_capacity =

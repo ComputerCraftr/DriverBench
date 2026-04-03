@@ -13,12 +13,8 @@
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
 #define COLOR_CHANNEL_ALPHA 3U
-#define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
 #define MASK_GPU0 1U
-#define RENDERER_NAME "renderer_vulkan_1_2_multi_gpu"
-#define WAIT_TIMEOUT_NS 100000000ULL
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
-#define infof(...) db_infof(BACKEND_NAME, __VA_ARGS__)
 
 typedef struct {
     uint32_t span_units;
@@ -46,10 +42,16 @@ void db_vk_push_constants_frame_static(VkCommandBuffer cmd,
                                        VkPipelineLayout layout,
                                        VkExtent2D extent, uint32_t grid_rows,
                                        uint32_t grid_cols) {
-    float base_color[4] = {BENCH_GRID_PHASE0_R_F, BENCH_GRID_PHASE0_G_F,
-                           BENCH_GRID_PHASE0_B_F, BENCH_CLEAR_COLOR_A_F};
-    float target_color[4] = {BENCH_GRID_PHASE1_R_F, BENCH_GRID_PHASE1_G_F,
-                             BENCH_GRID_PHASE1_B_F, BENCH_CLEAR_COLOR_A_F};
+    static const double base_color_rgba[4] = {
+        BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B,
+        BENCH_CLEAR_COLOR_A};
+    static const double target_color_rgba[4] = {
+        BENCH_GRID_PHASE1_R, BENCH_GRID_PHASE1_G, BENCH_GRID_PHASE1_B,
+        BENCH_CLEAR_COLOR_A};
+    float base_color[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+    float target_color[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+    db_rgba_f64_to_f32_rgba4(base_color_rgba, base_color);
+    db_rgba_f64_to_f32_rgba4(target_color_rgba, target_color);
 
     vkCmdPushConstants(cmd, layout, db_pc_stages,
                        (uint32_t)offsetof(PushConstants, gradient_window_rows),
@@ -543,10 +545,10 @@ static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx, uint32_t row,
     }
 
     VkRect2D sc;
-    sc.offset.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
-                                        pixel_block.col_start);
-    sc.offset.y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
-                                        pixel_block.row_start);
+    sc.offset.x =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", pixel_block.col_start);
+    sc.offset.y =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", pixel_block.row_start);
     sc.extent.width = pixel_block.col_count;
     sc.extent.height = pixel_block.row_count;
     vkCmdSetScissor(ctx->cmd, 0, 1, &sc);
@@ -555,11 +557,10 @@ static void db_vk_draw_grid_span(const db_vk_grid_draw_ctx_t *ctx, uint32_t row,
     float ndc_y0 = 0.0F;
     float ndc_x1 = 0.0F;
     float ndc_y1 = 0.0F;
-    db_vk_pixel_bounds_ndc(
-        pixel_block.col_start, pixel_block.row_start,
-        pixel_block.col_start + pixel_block.col_count,
-        pixel_block.row_start + pixel_block.row_count, ctx->extent, &ndc_x0,
-        &ndc_y0, &ndc_x1, &ndc_y1);
+    db_vk_pixel_bounds_ndc(pixel_block.col_start, pixel_block.row_start,
+                           pixel_block.col_start + pixel_block.col_count,
+                           pixel_block.row_start + pixel_block.row_count,
+                           ctx->extent, &ndc_x0, &ndc_y0, &ndc_x1, &ndc_y1);
 
     db_vk_draw_dynamic_req_t dynamic = {
         .ndc_x0 = ndc_x0,
@@ -597,10 +598,10 @@ static void db_vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
         return;
     }
     VkRect2D sc = {0};
-    sc.offset.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
-                                        pixel_block.col_start);
-    sc.offset.y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
-                                        pixel_block.row_start);
+    sc.offset.x =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", pixel_block.col_start);
+    sc.offset.y =
+        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", pixel_block.row_start);
     sc.extent.width = pixel_block.col_count;
     sc.extent.height = pixel_block.row_count;
     vkCmdSetScissor(ctx->cmd, 0, 1, &sc);
@@ -609,11 +610,10 @@ static void db_vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
     float ndc_y0 = 0.0F;
     float ndc_x1 = 0.0F;
     float ndc_y1 = 0.0F;
-    db_vk_pixel_bounds_ndc(
-        pixel_block.col_start, pixel_block.row_start,
-        pixel_block.col_start + pixel_block.col_count,
-        pixel_block.row_start + pixel_block.row_count, ctx->extent, &ndc_x0,
-        &ndc_y0, &ndc_x1, &ndc_y1);
+    db_vk_pixel_bounds_ndc(pixel_block.col_start, pixel_block.row_start,
+                           pixel_block.col_start + pixel_block.col_count,
+                           pixel_block.row_start + pixel_block.row_count,
+                           ctx->extent, &ndc_x0, &ndc_y0, &ndc_x1, &ndc_y1);
     db_vk_draw_dynamic_req_t dynamic = {
         .ndc_x0 = ndc_x0,
         .ndc_y0 = ndc_y0,
@@ -771,9 +771,8 @@ static void db_vk_draw_snake_compact_blocks(
         const db_grid_block_t *block = &blocks[block_index];
         if (block->row_count >= DB_VK_SNAKE_ROW_BLOCK_MIN_ROWS) {
             const db_vk_grid_row_block_draw_req_t req = {
-                .span_units =
-                    db_grid_block_span_units_or_fail("snake_row_block_units",
-                                                     block),
+                .span_units = db_grid_block_span_units_or_fail(
+                    "snake_row_block_units", block),
                 .block = *block,
                 .payload = payload_base,
             };

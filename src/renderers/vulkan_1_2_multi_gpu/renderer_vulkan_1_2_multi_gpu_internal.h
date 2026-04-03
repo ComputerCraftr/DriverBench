@@ -414,6 +414,10 @@ db_vk_scheduler_frame_safety_ns(VkPresentModeKHR present_mode) {
 extern renderer_state_t g_state;
 
 static inline const char *db_vk_result_name(VkResult result) {
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wswitch-enum"
+#endif
     switch (result) {
     case VK_SUCCESS:
         return "VK_SUCCESS";
@@ -466,6 +470,9 @@ static inline const char *db_vk_result_name(VkResult result) {
     default:
         return "VK_RESULT_UNKNOWN";
     }
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 }
 
 static inline void __attribute__((noreturn))

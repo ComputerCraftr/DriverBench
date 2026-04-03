@@ -391,8 +391,9 @@ static inline size_t db_snake_shape_build_exact_row_bounds(
         return 0U;
     }
     const db_snake_region_t *region = &shape_desc->region;
+    const size_t region_height = (size_t)region->height;
     const size_t row_count =
-        (size_t)db_u32_min(region->height, (uint32_t)cache_capacity);
+        (region_height < cache_capacity) ? region_height : cache_capacity;
     const db_snake_shape_profile_t *profile = &shape_desc->shape_profile;
     double verts_x[4] = {0.0, 0.0, 0.0, 0.0};
     double verts_y[4] = {0.0, 0.0, 0.0, 0.0};

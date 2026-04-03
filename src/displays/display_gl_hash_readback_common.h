@@ -27,14 +27,14 @@ static inline const uint8_t *db_gl_read_framebuffer_rgba8_or_fail(
         return NULL;
     }
 
-    const uint64_t pixel_count =
-        (uint64_t)(uint32_t)width_px * (uint64_t)(uint32_t)height_px;
-    const uint64_t byte_count_u64 = pixel_count * 4U;
-    if (byte_count_u64 > (uint64_t)SIZE_MAX) {
-        db_failf(backend, "Framebuffer hash size overflow");
-    }
-
-    const size_t byte_count = (size_t)byte_count_u64;
+    const size_t width_size =
+        db_checked_int_to_size(backend, "hash_fb_width_px", width_px);
+    const size_t height_size =
+        db_checked_int_to_size(backend, "hash_fb_height_px", height_px);
+    const size_t pixel_count = db_checked_mul_size(
+        backend, "gl_hash_rgba8_pixel_count", width_size, height_size);
+    const size_t byte_count = db_checked_mul_size(
+        backend, "gl_hash_rgba8_byte_count", pixel_count, 4U);
     db_reserve_aligned_array_capacity_or_fail(
         (void **)&scratch->bytes, &scratch->size, byte_count, byte_count,
         sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES, 0U, backend,
@@ -59,17 +59,14 @@ static inline const uint16_t *db_gl_read_framebuffer_rgba16f_or_fail(
         return NULL;
     }
 
-    const uint64_t pixel_count_u64 =
-        (uint64_t)(uint32_t)width_px * (uint64_t)(uint32_t)height_px;
-    if (pixel_count_u64 > (uint64_t)SIZE_MAX) {
-        db_failf(backend, "Framebuffer hash pixel count overflow");
-    }
-
-    const size_t pixel_count = (size_t)pixel_count_u64;
-    if (pixel_count > (SIZE_MAX / 4U)) {
-        db_failf(backend, "Framebuffer hash f16 value count overflow");
-    }
-    const size_t required_f16_values = pixel_count * 4U;
+    const size_t width_size =
+        db_checked_int_to_size(backend, "hash_fb_width_px", width_px);
+    const size_t height_size =
+        db_checked_int_to_size(backend, "hash_fb_height_px", height_px);
+    const size_t pixel_count = db_checked_mul_size(
+        backend, "gl_hash_rgba16f_pixel_count", width_size, height_size);
+    const size_t required_f16_values = db_checked_mul_size(
+        backend, "gl_hash_rgba16f_value_count", pixel_count, 4U);
     db_reserve_aligned_array_capacity_or_fail(
         (void **)&scratch->pixels, &scratch->value_count, required_f16_values,
         required_f16_values, sizeof(uint16_t), DB_CACHELINE_ALIGNMENT_BYTES, 0U,
@@ -92,7 +89,10 @@ static inline uint64_t db_gl_hash_framebuffer_rgba16f_or_fail(
         db_checked_int_to_u32(backend, "hash_fb_width_px", width_px);
     const uint32_t height_u32 =
         db_checked_int_to_u32(backend, "hash_fb_height_px", height_px);
-    const size_t row_stride_bytes = ((size_t)width_u32) * 4U * sizeof(uint16_t);
+    const size_t row_stride_bytes = db_checked_mul_size(
+        backend, "gl_hash_rgba16f_row_stride_bytes",
+        db_checked_int_to_size(backend, "hash_fb_width_px", width_px),
+        4U * sizeof(uint16_t));
     return db_hash_rgba16f_pixels_canonical(rgba16f, width_u32, height_u32,
                                             row_stride_bytes, canonicalize);
 }

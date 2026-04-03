@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../renderer_gl_common.h"
+#include "../renderer_history_common.h"
 #include "../renderer_snake_common.h"
 
 typedef struct {

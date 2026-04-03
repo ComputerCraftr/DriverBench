@@ -8,7 +8,6 @@
 // NOLINTBEGIN(misc-include-cleaner)
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
-#define MASK_GPU0 1U
 #define failf(...) db_failf(BACKEND_NAME, __VA_ARGS__)
 
 uint32_t db_vk_build_device_group_mask(uint32_t device_count) {
