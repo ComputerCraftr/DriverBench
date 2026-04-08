@@ -1,6 +1,6 @@
-if(NOT DEFINED TEST_BIN)
-  message(FATAL_ERROR "TEST_BIN is required")
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/TestRunnerCommon.cmake")
+
+db_test_require_defined(TEST_BIN)
 
 if(NOT DEFINED TEST_HASH_CHECKS OR "${TEST_HASH_CHECKS}" STREQUAL "")
   if(NOT DEFINED TEST_HASH_KEY)
@@ -12,40 +12,7 @@ if(NOT DEFINED TEST_HASH_CHECKS OR "${TEST_HASH_CHECKS}" STREQUAL "")
     set(TEST_HASH_CHECKS "${TEST_HASH_KEY}")
   endif()
 endif()
-string(REPLACE "|" ";" TEST_HASH_CHECKS "${TEST_HASH_CHECKS}")
-string(REPLACE "," ";" TEST_HASH_CHECKS "${TEST_HASH_CHECKS}")
-
-function(db_run_once out_output args_string)
-  set(test_command ${TEST_BIN})
-  if(NOT "${args_string}" STREQUAL "")
-    separate_arguments(test_args_list NATIVE_COMMAND "${args_string}")
-    list(APPEND test_command ${test_args_list})
-  endif()
-  execute_process(
-    COMMAND ${test_command}
-    RESULT_VARIABLE run_status
-    OUTPUT_VARIABLE run_stdout
-    ERROR_VARIABLE run_stderr
-  )
-  if(NOT run_status EQUAL 0)
-    message(FATAL_ERROR
-      "Determinism run failed (status=${run_status})\n"
-      "stdout:\n${run_stdout}\n"
-      "stderr:\n${run_stderr}\n")
-  endif()
-  set(${out_output} "${run_stdout}\n${run_stderr}" PARENT_SCOPE)
-endfunction()
-
-function(db_extract_hash_or_fail output hash_key out_hash_value)
-  string(REGEX MATCH "${hash_key}=0x[0-9a-fA-F]+" hash_match "${output}")
-  if(hash_match STREQUAL "")
-    message(FATAL_ERROR
-      "Hash key '${hash_key}' not found in output.\n"
-      "output:\n${output}\n")
-  endif()
-  string(REGEX REPLACE "^${hash_key}=" "" hash_value "${hash_match}")
-  set(${out_hash_value} "${hash_value}" PARENT_SCOPE)
-endfunction()
+db_test_parse_list_var(TEST_HASH_CHECKS)
 
 set(run_arg_sets "")
 if(DEFINED TEST_ARGS AND NOT "${TEST_ARGS}" STREQUAL "")
@@ -66,7 +33,13 @@ endif()
 
 set(run_outputs "")
 foreach(run_args IN LISTS run_arg_sets)
-  db_run_once(run_output "${run_args}")
+  db_test_run_command(run_output skip_reason run_status "${run_args}"
+    "Determinism run failed")
+  if(NOT "${skip_reason}" STREQUAL "")
+    message(STATUS
+      "Determinism test skipped: ${skip_reason}\n${run_output}")
+    return()
+  endif()
   list(APPEND run_outputs "${run_output}")
 endforeach()
 
@@ -84,12 +57,12 @@ foreach(hash_check IN LISTS TEST_HASH_CHECKS)
     string(SUBSTRING "${hash_check}" ${expected_start} -1 expected_hash)
   endif()
 
-  db_extract_hash_or_fail("${reference_output}" "${hash_key}" reference_hash)
+  db_test_extract_hash_or_fail("${reference_output}" "${hash_key}" reference_hash)
   set(candidate_outputs "${run_outputs}")
   list(REMOVE_AT candidate_outputs 0)
   set(run_index 1)
   foreach(run_output IN LISTS candidate_outputs)
-    db_extract_hash_or_fail("${run_output}" "${hash_key}" candidate_hash)
+    db_test_extract_hash_or_fail("${run_output}" "${hash_key}" candidate_hash)
     if(NOT reference_hash STREQUAL candidate_hash)
       message(FATAL_ERROR
         "Determinism mismatch for ${TEST_BIN} key '${hash_key}': ${reference_hash} != ${candidate_hash}\n"

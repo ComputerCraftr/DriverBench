@@ -1,3 +1,5 @@
+#include "../../renderers/renderer_benchmark_runtime.h"
+#include "../../renderers/renderer_benchmark_types.h"
 #ifdef DB_HAS_VULKAN_API
 #define GLFW_INCLUDE_VULKAN
 #endif
@@ -14,7 +16,6 @@
 #include "../../core/db_numeric.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
-#include "../../renderers/renderer_benchmark_common.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../../renderers/renderer_identity.h"
 #ifdef DB_HAS_VULKAN_API

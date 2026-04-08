@@ -228,9 +228,9 @@ db_glfw_probe_and_log_default_framebuffer_reuse(const char *backend_name,
                 continue;
             }
             result.observed_any_match = 1;
-            const int reuse_distance = db_checked_size_to_i32(
-                backend_name, "probe_reuse_distance",
-                (frame_index - prior_index) + 1U);
+            const int reuse_distance =
+                db_checked_size_to_i32(backend_name, "probe_reuse_distance",
+                                       (frame_index - prior_index) + 1U);
             if (prior_index == frame_index) {
                 result.preserves_immediately = 1;
             }

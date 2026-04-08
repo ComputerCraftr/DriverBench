@@ -6,7 +6,7 @@
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
 
-renderer_state_t g_state = {0};
+renderer_state_t g_vk_state = {0};
 
 void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     if (ctx == NULL) {

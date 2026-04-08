@@ -1,42 +1,19 @@
-if(NOT DEFINED TEST_BIN)
-  message(FATAL_ERROR "TEST_BIN is required")
+include("${CMAKE_CURRENT_LIST_DIR}/TestRunnerCommon.cmake")
+
+db_test_require_defined(TEST_BIN)
+db_test_default_string(TEST_ARGS "")
+db_test_default_string(TEST_REQUIRED_PATTERNS "")
+db_test_default_string(TEST_FORBIDDEN_PATTERNS "")
+db_test_parse_list_var(TEST_REQUIRED_PATTERNS)
+db_test_parse_list_var(TEST_FORBIDDEN_PATTERNS)
+
+db_test_run_command(combined_output skip_reason run_status "${TEST_ARGS}"
+  "Output-expectation run failed")
+if(NOT "${skip_reason}" STREQUAL "")
+  message(STATUS
+    "Output-expectation test skipped: ${skip_reason}\n${combined_output}")
+  return()
 endif()
-
-if(NOT DEFINED TEST_ARGS)
-  set(TEST_ARGS "")
-endif()
-
-if(NOT DEFINED TEST_REQUIRED_PATTERNS)
-  set(TEST_REQUIRED_PATTERNS "")
-endif()
-string(REPLACE "," ";" TEST_REQUIRED_PATTERNS "${TEST_REQUIRED_PATTERNS}")
-
-if(NOT DEFINED TEST_FORBIDDEN_PATTERNS)
-  set(TEST_FORBIDDEN_PATTERNS "")
-endif()
-string(REPLACE "," ";" TEST_FORBIDDEN_PATTERNS "${TEST_FORBIDDEN_PATTERNS}")
-
-set(test_command ${TEST_BIN})
-if(NOT "${TEST_ARGS}" STREQUAL "")
-  separate_arguments(test_args_list NATIVE_COMMAND "${TEST_ARGS}")
-  list(APPEND test_command ${test_args_list})
-endif()
-
-execute_process(
-  COMMAND ${test_command}
-  RESULT_VARIABLE run_status
-  OUTPUT_VARIABLE run_stdout
-  ERROR_VARIABLE run_stderr
-)
-
-if(NOT run_status EQUAL 0)
-  message(FATAL_ERROR
-    "Output-expectation run failed (status=${run_status})\n"
-    "stdout:\n${run_stdout}\n"
-    "stderr:\n${run_stderr}\n")
-endif()
-
-set(combined_output "${run_stdout}\n${run_stderr}")
 
 foreach(required_pattern IN LISTS TEST_REQUIRED_PATTERNS)
   if("${required_pattern}" STREQUAL "")

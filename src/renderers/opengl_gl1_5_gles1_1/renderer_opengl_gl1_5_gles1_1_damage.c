@@ -4,9 +4,10 @@
 #include <stdint.h>
 
 #include "../../core/db_hash.h"
-#include "../renderer_benchmark_common.h"
-#include "../renderer_snake_common.h"
+#include "../renderer_benchmark_types.h"
+#include "../renderer_snake_collect.h"
 #include "../renderer_snake_shape_common.h"
+#include "../renderer_snake_types.h"
 
 int db_gl1_collect_current_snake_frame_blocks(
     const db_gl1_damage_collect_ctx_t *ctx, db_grid_block_t *damage_blocks,

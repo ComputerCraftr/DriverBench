@@ -1,0 +1,6 @@
+#ifndef DRIVERBENCH_RENDERER_GL_SHADOW_PRESENT_INTERNAL_H
+#define DRIVERBENCH_RENDERER_GL_SHADOW_PRESENT_INTERNAL_H
+
+#include "renderer_gl_probe_internal.h"
+
+#endif

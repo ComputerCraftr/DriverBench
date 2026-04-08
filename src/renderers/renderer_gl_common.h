@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "../core/db_core.h"
-#include "renderer_benchmark_common.h"
+#include "renderer_benchmark_gradient.h"
 
 #define DB_GL_PROBE_PREFIX_BYTES 64U
 #define DB_GL_MAP_RANGE_PROBE_XOR_SEED 0xA5U

@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "../renderer_history_common.h"
-#include "../renderer_snake_common.h"
+#include "../renderer_snake_emit.h"
 
 typedef struct {
     uint32_t pattern;

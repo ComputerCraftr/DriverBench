@@ -79,7 +79,11 @@ void db_benchmark_log_final(const char *api_name, const char *renderer_name,
         }                                                                      \
     } while (0)
 
-// Checked conversion and allocation helpers.
+// Helper naming contract:
+// - db_checked_*: checked arithmetic, conversion, or allocation helpers only.
+// - db_*_or_fail: domain or precondition wrappers that may fail for semantic,
+//   object-level, or contract reasons beyond a single numeric check.
+// - plain db_*: total or otherwise non-failing utility helpers.
 static inline int32_t db_checked_u32_to_i32(const char *backend,
                                             const char *field_name,
                                             uint32_t value) {

@@ -7,7 +7,9 @@
 #include "../config/benchmark_config.h"
 #include "../core/db_core.h"
 #include "../core/db_numeric.h"
-#include "renderer_benchmark_common.h"
+#include "renderer_benchmark_geometry.h"
+#include "renderer_benchmark_runtime.h"
+#include "renderer_benchmark_types.h"
 
 size_t db_gl_compact_vbo_total_bytes(size_t base_vbo_bytes) {
     if (base_vbo_bytes > (SIZE_MAX / 2U)) {

@@ -9,9 +9,9 @@
 #include <vulkan/vulkan.h>
 
 #include "../../config/benchmark_config.h"
-#include "../renderer_benchmark_common.h"
+#include "../renderer_benchmark_gradient.h"
 #include "../renderer_history_common.h"
-#include "../renderer_snake_common.h"
+#include "../renderer_snake_emit.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 
 #define MAX_BAND_OWNER BENCH_BANDS
@@ -411,7 +411,8 @@ db_vk_scheduler_frame_safety_ns(VkPresentModeKHR present_mode) {
     return DB_VK_NONBLOCKING_FRAME_SAFETY_NS;
 }
 
-extern renderer_state_t g_state;
+extern renderer_state_t g_vk_state;
+#define g_state g_vk_state
 
 static inline const char *db_vk_result_name(VkResult result) {
 #ifdef __clang__

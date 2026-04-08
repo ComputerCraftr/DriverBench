@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../renderer_benchmark_common.h"
+#include "../renderer_benchmark_gradient.h"
 
 void db_renderer_cpu_renderer_init_with_hdr_float_bo(int use_hdr_float_bo);
 void db_renderer_cpu_renderer_render_frame(uint32_t frame_index);

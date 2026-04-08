@@ -1,7 +1,7 @@
 #ifndef DRIVERBENCH_RENDERER_VIEWPORT_COMMON_H
 #define DRIVERBENCH_RENDERER_VIEWPORT_COMMON_H
 
-#include "renderer_benchmark_common.h"
+#include "renderer_benchmark_gradient.h"
 
 typedef struct {
     int has_viewport;

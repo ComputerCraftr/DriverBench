@@ -5,7 +5,6 @@
 #include "../../config/benchmark_config.h"
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
-#include "../renderer_benchmark_common.h"
 #include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 

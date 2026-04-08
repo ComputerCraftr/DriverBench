@@ -8,8 +8,8 @@
 #include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 #include "../core/db_numeric.h"
-#include "renderer_benchmark_common.h"
-#include "renderer_snake_common.h"
+#include "renderer_benchmark_gradient.h"
+#include "renderer_snake_emit.h"
 #include "renderer_snake_shape_common.h"
 
 typedef struct {

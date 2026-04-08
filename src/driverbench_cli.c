@@ -12,7 +12,7 @@
 #include "core/db_core.h"
 #include "displays/display_dispatch.h"
 #include "displays/display_types.h"
-#include "renderers/renderer_benchmark_common.h"
+#include "renderers/renderer_benchmark_types.h"
 
 typedef struct {
     const char *cli_option;

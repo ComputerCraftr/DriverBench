@@ -8,12 +8,13 @@
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
-#include "../renderer_benchmark_common.h"
+#include "../renderer_benchmark_runtime.h"
+#include "../renderer_benchmark_types.h"
 #include "../renderer_gl_api.h"
 #include "../renderer_gl_common.h"
 #include "../renderer_history_common.h"
-#include "../renderer_snake_common.h"
 #include "../renderer_snake_shape_common.h"
+#include "../renderer_snake_types.h"
 #include "../renderer_viewport_common.h"
 #ifdef __clang__
 #pragma clang diagnostic push
@@ -567,10 +568,10 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.uniform_viewport_height_cache = UINT32_MAX;
 
     if (g_state.u_render_mode >= 0) {
-        db_gl_uniform1ui(g_state.u_render_mode,
-                         db_checked_pattern_to_u32(BACKEND_NAME,
-                                                   "u_render_mode",
-                                                   g_state.runtime.pattern));
+        db_gl_uniform1ui(
+            g_state.u_render_mode,
+            db_checked_pattern_enum_to_u32(BACKEND_NAME, "u_render_mode",
+                                           g_state.runtime.pattern));
     }
     static const double grid_base_color[3] = {
         BENCH_GRID_PHASE0_R, BENCH_GRID_PHASE0_G, BENCH_GRID_PHASE0_B};
