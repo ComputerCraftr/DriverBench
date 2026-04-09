@@ -62,6 +62,8 @@ typedef struct {
     uint32_t logical_cols;
     uint32_t logical_rows;
     db_benchmark_pixel_surface_t pixel_surface;
+    db_benchmark_pixel_surface_t mirror_pixel_surface;
+    int mirror_pixel_surface_enabled;
     float *tile_rgb_f32;
     uint32_t tile_count;
 } db_snake_rgb_sink_t;

@@ -5,13 +5,14 @@
 
 #include "../renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.h"
 #include "../renderers/opengl_gl3_3/renderer_opengl_gl3_3.h"
+#include "../renderers/renderer_gl_common.h"
 #include "../renderers/renderer_identity.h"
 #include "display_types.h"
 
 typedef struct {
     db_gl_renderer_t renderer;
     const char *renderer_name;
-    void (*draw_stats)(uint64_t *full_draw_frames, uint64_t *dirty_draw_frames);
+    void (*draw_stats)(db_renderer_draw_path_stats_t *stats);
     void (*init)(void);
     const char *(*runtime_capability_mode)(void);
     uint64_t (*state_hash)(void);

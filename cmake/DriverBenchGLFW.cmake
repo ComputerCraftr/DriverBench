@@ -111,7 +111,7 @@ if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_LINK_LIB)
     src/displays/glfw_window/display_glfw_window.c
     src/displays/glfw_window/display_glfw_window_common.c
   )
-  list(APPEND DB_DRIVERBENCH_SOURCES ${DB_GLFW_SOURCES})
+  list(APPEND DB_APP_SOURCES ${DB_GLFW_SOURCES})
   db_set_source_include_directories("${DB_GLFW_EXTRA_INCLUDE_DIRS}" ${DB_GLFW_SOURCES})
   if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL) AND
      DB_COMPILER_IS_CLANG)

@@ -88,13 +88,7 @@ int db_gl_probe_shadow_present_partial_upload_support_rgba8(void) {
     db_gl_set_viewport_px(4, 4);
     db_gl_clear_color_rgba(0.0F, 0.0F, 0.0F, 1.0F);
     db_gl_clear_color_buffer();
-    db_gl_set_depth_test_enabled(0);
-    db_gl_set_cull_face_enabled(0);
-    db_gl_set_blend_enabled(0);
-    db_gl_set_texture_2d_enabled(1);
-    db_gl_set_client_state_vertex_array_enabled(1);
-    db_gl_set_client_state_color_array_enabled(1);
-    db_gl_set_client_state_texcoord_array_enabled(1);
+    db_gl_prepare_textured_present_state();
     db_gl_set_vertex_pointer_2f(0, probe_vertices);
     db_gl_set_color_pointer_f(4, 0, probe_colors);
     db_gl_set_texcoord_pointer_2f(0, probe_texcoords);
@@ -103,9 +97,7 @@ int db_gl_probe_shadow_present_partial_upload_support_rgba8(void) {
     db_gl_read_pixels_rgba8(0, 0, 4, 4, probe_readback);
     const int draw_ok = db_gl_probe_step_error_free();
 
-    db_gl_texture_bind_2d(0U);
-    db_gl_set_texture_2d_enabled(0);
-    db_gl_set_client_state_texcoord_array_enabled(0);
+    db_gl_finish_textured_present_state();
     db_gl_set_client_state_color_array_enabled(0);
     db_gl_set_client_state_vertex_array_enabled(0);
     db_gl_set_viewport_px(viewport[2], viewport[3]);
@@ -208,13 +200,7 @@ int db_gl_probe_shadow_present_partial_upload_support_rgba16f(void) {
     db_gl_set_viewport_px(4, 4);
     db_gl_clear_color_rgba(0.0F, 0.0F, 0.0F, 1.0F);
     db_gl_clear_color_buffer();
-    db_gl_set_depth_test_enabled(0);
-    db_gl_set_cull_face_enabled(0);
-    db_gl_set_blend_enabled(0);
-    db_gl_set_texture_2d_enabled(1);
-    db_gl_set_client_state_vertex_array_enabled(1);
-    db_gl_set_client_state_color_array_enabled(1);
-    db_gl_set_client_state_texcoord_array_enabled(1);
+    db_gl_prepare_textured_present_state();
     db_gl_set_vertex_pointer_2f(0, probe_vertices);
     db_gl_set_color_pointer_f(4, 0, probe_colors);
     db_gl_set_texcoord_pointer_2f(0, probe_texcoords);
@@ -223,9 +209,7 @@ int db_gl_probe_shadow_present_partial_upload_support_rgba16f(void) {
     db_gl_read_pixels_rgba8(0, 0, 4, 4, probe_readback);
     const int draw_ok = db_gl_probe_step_error_free();
 
-    db_gl_texture_bind_2d(0U);
-    db_gl_set_texture_2d_enabled(0);
-    db_gl_set_client_state_texcoord_array_enabled(0);
+    db_gl_finish_textured_present_state();
     db_gl_set_client_state_color_array_enabled(0);
     db_gl_set_client_state_vertex_array_enabled(0);
     db_gl_set_viewport_px(viewport[2], viewport[3]);

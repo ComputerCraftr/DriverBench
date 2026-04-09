@@ -9,6 +9,7 @@
 #include "../core/db_core.h"
 #include "../core/db_numeric.h"
 #include "renderer_benchmark_gradient.h"
+#include "renderer_gl_common.h"
 #include "renderer_snake_emit.h"
 #include "renderer_snake_shape_common.h"
 
@@ -16,6 +17,7 @@ typedef struct {
     uint64_t state_hash;
     uint64_t full_draw_frames;
     uint64_t dirty_draw_frames;
+    db_renderer_draw_path_stats_t draw_paths;
     uint32_t frame_index;
 } db_renderer_frame_stats_t;
 
@@ -95,12 +97,14 @@ typedef struct {
     uint32_t resync_frames_remaining;
     int initial_seed_done;
     int backbuffer_valid;
+    int authoritative_rebuild_pending;
 } db_history_snake_backbuffer_state_t;
 
 typedef struct {
-    int should_seed_now;
-    int should_force_full_upload;
-} db_history_snake_backbuffer_action_t;
+    int should_seed_background_now;
+    int should_rebuild_current_frame_now;
+    int should_force_full_upload_now;
+} db_history_backbuffer_recovery_action_t;
 
 static inline db_history_pair_state_t
 db_history_pair_state_make(int is_valid, int read_index) {
@@ -177,8 +181,10 @@ static inline int db_runtime_backbuffer_replay_enabled(
            ((is_gradient != 0) || (is_snake_history_texture != 0));
 }
 
-static inline uint32_t db_history_seed_frame_count_for_swapchain(
-    uint32_t preserved_framebuffer_count) {
+// Backbuffer seed policy is distinct from raw preserved-buffer count even when
+// the current conservative policy maps them 1:1.
+static inline uint32_t
+db_history_backbuffer_seed_frame_count(uint32_t preserved_framebuffer_count) {
     return preserved_framebuffer_count;
 }
 
@@ -446,6 +452,42 @@ db_history_copy_draw_stats(const db_renderer_frame_stats_t *frame,
     }
 }
 
+static inline void db_history_record_draw_path(
+    db_renderer_draw_path_stats_t *stats, int full_present, int dirty_geometry,
+    int shadow_fallback, int replay_only, uint32_t work_units_drawn) {
+    if ((stats == NULL) || (work_units_drawn == 0U)) {
+        return;
+    }
+    if (full_present != 0) {
+        stats->full_present_frames++;
+    }
+    if (dirty_geometry != 0) {
+        stats->dirty_geometry_frames++;
+    }
+    if (shadow_fallback != 0) {
+        stats->shadow_fallback_frames++;
+    }
+    if (replay_only != 0) {
+        stats->replay_only_frames++;
+    }
+}
+
+static inline void
+db_history_copy_draw_path_stats(const db_renderer_frame_stats_t *frame,
+                                db_renderer_draw_path_stats_t *out) {
+    if ((frame == NULL) || (out == NULL)) {
+        return;
+    }
+    *out = frame->draw_paths;
+    if ((out->full_present_frames == 0U) &&
+        (out->dirty_geometry_frames == 0U) &&
+        (out->shadow_fallback_frames == 0U) &&
+        (out->replay_only_frames == 0U)) {
+        out->full_present_frames = frame->full_draw_frames;
+        out->dirty_geometry_frames = frame->dirty_draw_frames;
+    }
+}
+
 static inline db_gradient_damage_plan_t
 db_history_eval_gradient_step_from_runtime(
     const db_benchmark_runtime_init_t *runtime) {
@@ -556,7 +598,8 @@ static inline void db_history_apply_resize_preserve_policy(
     history_pair->is_valid = policy->history_valid_after_resize;
 }
 
-static inline int db_history_should_seed_full_on_invalid(int history_valid) {
+static inline int
+db_history_should_rebuild_current_frame_on_invalid(int history_valid) {
     return history_valid == 0;
 }
 
@@ -614,12 +657,14 @@ static inline db_history_snake_backbuffer_state_t
 db_history_snake_backbuffer_state_load(uint32_t seed_frames_remaining,
                                        uint32_t resync_frames_remaining,
                                        int initial_seed_done,
-                                       int backbuffer_valid) {
+                                       int backbuffer_valid,
+                                       int authoritative_rebuild_pending) {
     return (db_history_snake_backbuffer_state_t){
         .seed_frames_remaining = seed_frames_remaining,
         .resync_frames_remaining = resync_frames_remaining,
         .initial_seed_done = initial_seed_done,
         .backbuffer_valid = backbuffer_valid,
+        .authoritative_rebuild_pending = authoritative_rebuild_pending,
     };
 }
 
@@ -630,15 +675,15 @@ static inline void db_history_snake_backbuffer_state_reset(
         return;
     }
     *state = db_history_snake_backbuffer_state_load(
-        0U,
-        db_history_seed_frame_count_for_swapchain(preserved_framebuffer_count),
-        0, 0);
+        0U, db_history_backbuffer_seed_frame_count(preserved_framebuffer_count),
+        0, 0, 0);
 }
 
 static inline void db_history_snake_backbuffer_state_store(
     const db_history_snake_backbuffer_state_t *state,
     uint32_t *out_seed_frames_remaining, uint32_t *out_resync_frames_remaining,
-    int *out_initial_seed_done, int *out_backbuffer_valid) {
+    int *out_initial_seed_done, int *out_backbuffer_valid,
+    int *out_authoritative_rebuild_pending) {
     if (state == NULL) {
         return;
     }
@@ -654,13 +699,41 @@ static inline void db_history_snake_backbuffer_state_store(
     if (out_backbuffer_valid != NULL) {
         *out_backbuffer_valid = state->backbuffer_valid;
     }
+    if (out_authoritative_rebuild_pending != NULL) {
+        *out_authoritative_rebuild_pending =
+            state->authoritative_rebuild_pending;
+    }
 }
 
-static inline db_history_snake_backbuffer_action_t
+static inline int db_history_should_rebuild_snake_current_frame(
+    db_pattern_t pattern, int uses_dirty_backbuffer_mode,
+    const db_history_snake_backbuffer_state_t *state) {
+    if ((state == NULL) || (uses_dirty_backbuffer_mode == 0) ||
+        (pattern != DB_PATTERN_SNAKE_GRID)) {
+        return 0;
+    }
+    return (state->authoritative_rebuild_pending != 0) ||
+           ((state->initial_seed_done != 0) &&
+            (db_history_should_rebuild_current_frame_on_invalid(
+                 state->backbuffer_valid) != 0));
+}
+
+static inline int db_history_should_rebuild_snake_current_frame_resync(
+    db_pattern_t pattern, int uses_dirty_backbuffer_mode,
+    const db_history_snake_backbuffer_state_t *state) {
+    if ((state == NULL) || (uses_dirty_backbuffer_mode == 0) ||
+        (pattern != DB_PATTERN_SNAKE_GRID) || (state->initial_seed_done == 0)) {
+        return 0;
+    }
+    return state->resync_frames_remaining > 0U;
+}
+
+static inline db_history_backbuffer_recovery_action_t
 db_history_eval_snake_backbuffer_action(
-    int uses_dirty_backbuffer_mode, uint32_t preserved_framebuffer_count,
+    db_pattern_t pattern, int uses_dirty_backbuffer_mode,
+    uint32_t preserved_framebuffer_count,
     db_history_snake_backbuffer_state_t *state) {
-    db_history_snake_backbuffer_action_t action = {0};
+    db_history_backbuffer_recovery_action_t action = {0};
     if (state == NULL) {
         return action;
     }
@@ -668,14 +741,13 @@ db_history_eval_snake_backbuffer_action(
             uses_dirty_backbuffer_mode, state->initial_seed_done,
             state->backbuffer_valid, state->seed_frames_remaining) != 0) {
         state->seed_frames_remaining =
-            db_history_seed_frame_count_for_swapchain(
-                preserved_framebuffer_count);
+            db_history_backbuffer_seed_frame_count(preserved_framebuffer_count);
     }
     if (db_history_should_seed_backbuffer_now(
             uses_dirty_backbuffer_mode, state->initial_seed_done,
             state->backbuffer_valid, state->seed_frames_remaining) != 0) {
-        action.should_seed_now = 1;
-        action.should_force_full_upload = 1;
+        action.should_seed_background_now = 1;
+        action.should_force_full_upload_now = 1;
         state->backbuffer_valid = 1;
         if (state->seed_frames_remaining > 0U) {
             state->seed_frames_remaining--;
@@ -683,13 +755,23 @@ db_history_eval_snake_backbuffer_action(
         if (state->seed_frames_remaining == 0U) {
             state->initial_seed_done = 1;
         }
+    } else if (db_history_should_rebuild_snake_current_frame(
+                   pattern, uses_dirty_backbuffer_mode, state) != 0) {
+        action.should_rebuild_current_frame_now = 1;
+        action.should_force_full_upload_now = 1;
+        state->backbuffer_valid = 1;
+        state->authoritative_rebuild_pending = 0;
+    } else if (db_history_should_rebuild_snake_current_frame_resync(
+                   pattern, uses_dirty_backbuffer_mode, state) != 0) {
+        action.should_rebuild_current_frame_now = 1;
+        action.should_force_full_upload_now = 1;
     } else if (db_history_should_force_full_upload_invalid_backbuffer(
                    uses_dirty_backbuffer_mode, state->backbuffer_valid) != 0) {
-        action.should_force_full_upload = 1;
+        action.should_force_full_upload_now = 1;
     }
     if (db_history_should_force_full_upload_resync(
             uses_dirty_backbuffer_mode, state->resync_frames_remaining) != 0) {
-        action.should_force_full_upload = 1;
+        action.should_force_full_upload_now = 1;
         if (state->resync_frames_remaining > 0U) {
             state->resync_frames_remaining--;
         }
@@ -697,32 +779,46 @@ db_history_eval_snake_backbuffer_action(
     return action;
 }
 
-static inline db_history_snake_backbuffer_action_t
-db_history_eval_snake_backbuffer_action_io(int uses_dirty_backbuffer_mode,
-                                           uint32_t preserved_framebuffer_count,
-                                           uint32_t *io_seed_frames_remaining,
-                                           uint32_t *io_resync_frames_remaining,
-                                           int *io_initial_seed_done,
-                                           int *io_backbuffer_valid) {
+static inline db_history_backbuffer_recovery_action_t
+db_history_eval_snake_backbuffer_action_io(
+    db_pattern_t pattern, int uses_dirty_backbuffer_mode,
+    uint32_t preserved_framebuffer_count, uint32_t *io_seed_frames_remaining,
+    uint32_t *io_resync_frames_remaining, int *io_initial_seed_done,
+    int *io_backbuffer_valid, int *io_authoritative_rebuild_pending) {
     db_history_snake_backbuffer_state_t state =
         db_history_snake_backbuffer_state_load(
             (io_seed_frames_remaining != NULL) ? *io_seed_frames_remaining : 0U,
             (io_resync_frames_remaining != NULL) ? *io_resync_frames_remaining
                                                  : 0U,
             (io_initial_seed_done != NULL) ? *io_initial_seed_done : 0,
-            (io_backbuffer_valid != NULL) ? *io_backbuffer_valid : 0);
-    const db_history_snake_backbuffer_action_t action =
+            (io_backbuffer_valid != NULL) ? *io_backbuffer_valid : 0,
+            (io_authoritative_rebuild_pending != NULL)
+                ? *io_authoritative_rebuild_pending
+                : 0);
+    const db_history_backbuffer_recovery_action_t action =
         db_history_eval_snake_backbuffer_action(
-            uses_dirty_backbuffer_mode, preserved_framebuffer_count, &state);
+            pattern, uses_dirty_backbuffer_mode, preserved_framebuffer_count,
+            &state);
     db_history_snake_backbuffer_state_store(
         &state, io_seed_frames_remaining, io_resync_frames_remaining,
-        io_initial_seed_done, io_backbuffer_valid);
+        io_initial_seed_done, io_backbuffer_valid,
+        io_authoritative_rebuild_pending);
     return action;
 }
 
-static inline void db_history_invalidate_snake_backbuffer_on_resize(
-    uint32_t preserved_framebuffer_count, int *io_backbuffer_valid,
-    size_t *io_previous_upload_count,
+static inline db_history_backbuffer_recovery_action_t
+db_history_eval_history_backbuffer_recovery_action(int history_valid) {
+    db_history_backbuffer_recovery_action_t action = {0};
+    if (db_history_should_rebuild_current_frame_on_invalid(history_valid) !=
+        0) {
+        action.should_rebuild_current_frame_now = 1;
+    }
+    return action;
+}
+
+static inline void db_history_invalidate_history_backbuffer_on_resize(
+    db_pattern_t pattern, uint32_t preserved_framebuffer_count,
+    int *io_backbuffer_valid, size_t *io_previous_upload_count,
     db_history_snake_backbuffer_state_t *io_snake_backbuffer_state) {
     if (io_backbuffer_valid != NULL) {
         *io_backbuffer_valid = 0;
@@ -731,15 +827,32 @@ static inline void db_history_invalidate_snake_backbuffer_on_resize(
         *io_previous_upload_count = 0U;
     }
     if (io_snake_backbuffer_state != NULL) {
+        if (pattern == DB_PATTERN_SNAKE_GRID) {
+            io_snake_backbuffer_state->backbuffer_valid = 0;
+            io_snake_backbuffer_state->authoritative_rebuild_pending = 1;
+            io_snake_backbuffer_state->resync_frames_remaining =
+                db_history_backbuffer_seed_frame_count(
+                    preserved_framebuffer_count);
+            io_snake_backbuffer_state->seed_frames_remaining = 0U;
+            return;
+        }
         io_snake_backbuffer_state->seed_frames_remaining =
-            db_history_seed_frame_count_for_swapchain(
-                preserved_framebuffer_count);
+            db_history_backbuffer_seed_frame_count(preserved_framebuffer_count);
         io_snake_backbuffer_state->backbuffer_valid = 0;
         io_snake_backbuffer_state->initial_seed_done = 0;
+        io_snake_backbuffer_state->authoritative_rebuild_pending = 0;
         io_snake_backbuffer_state->resync_frames_remaining =
-            db_history_seed_frame_count_for_swapchain(
-                preserved_framebuffer_count);
+            db_history_backbuffer_seed_frame_count(preserved_framebuffer_count);
     }
+}
+
+static inline void db_history_invalidate_snake_backbuffer_on_resize(
+    db_pattern_t pattern, uint32_t preserved_framebuffer_count,
+    int *io_backbuffer_valid, size_t *io_previous_upload_count,
+    db_history_snake_backbuffer_state_t *io_snake_backbuffer_state) {
+    db_history_invalidate_history_backbuffer_on_resize(
+        pattern, preserved_framebuffer_count, io_backbuffer_valid,
+        io_previous_upload_count, io_snake_backbuffer_state);
 }
 
 #endif

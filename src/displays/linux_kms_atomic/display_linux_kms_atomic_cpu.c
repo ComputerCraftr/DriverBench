@@ -7,11 +7,21 @@
 #include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
+#include "../../renderers/renderer_benchmark_runtime.h"
 
-static struct fb *db_cpu_create_fb_from_framebuffer(
-    struct gbm_device *gbm, int fd, const uint32_t *pixels_rgba8,
-    const uint16_t *pixels_rgba16f, uint32_t src_width, uint32_t src_height,
-    int use_hdr_float_bo, uint32_t width, uint32_t height) {
+static struct fb *
+db_cpu_create_fb_from_framebuffer(struct gbm_device *gbm, int fd,
+                                  const db_benchmark_pixel_surface_t *surface,
+                                  uint32_t width, uint32_t height) {
+    if ((surface == NULL) || (surface->pixel_width == 0U) ||
+        (surface->pixel_height == 0U)) {
+        diex("cpu framebuffer surface is invalid");
+    }
+    const uint32_t src_width = surface->pixel_width;
+    const uint32_t src_height = surface->pixel_height;
+    const int use_hdr_float_bo = (surface->uses_rgba16f != 0) ? 1 : 0;
+    const uint32_t *const pixels_rgba8 = surface->pixels_rgba8;
+    const uint16_t *const pixels_rgba16f = surface->pixels_rgba16f;
     uint32_t bo_flags = GBM_BO_USE_SCANOUT;
 #ifdef GBM_BO_USE_WRITE
     bo_flags |= GBM_BO_USE_WRITE;
@@ -142,25 +152,12 @@ static struct fb *db_cpu_create_fb_from_framebuffer(
 struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx, uint32_t frame_index) {
     db_kms_atomic_cpu_frame_producer_t *producer =
         (db_kms_atomic_cpu_frame_producer_t *)user_ctx;
-    db_renderer_cpu_renderer_render_frame(frame_index);
-    const int use_hdr_float_bo = db_renderer_cpu_renderer_bo_uses_rgba16f();
-    const uint32_t *pixels_rgba8 = NULL;
-    const uint16_t *pixels_rgba16f = NULL;
-    uint32_t src_width = 0U;
-    uint32_t src_height = 0U;
-    if (use_hdr_float_bo != 0) {
-        pixels_rgba16f =
-            db_renderer_cpu_renderer_pixels_rgba16f(&src_width, &src_height);
-    } else {
-        pixels_rgba8 =
-            db_renderer_cpu_renderer_pixels_rgba8(&src_width, &src_height);
+    if (producer == NULL) {
+        return NULL;
     }
-    if (((use_hdr_float_bo != 0) && (pixels_rgba16f == NULL)) ||
-        ((use_hdr_float_bo == 0) && (pixels_rgba8 == NULL))) {
-        db_failf(producer->backend, "cpu renderer returned NULL framebuffer");
-    }
-    return db_cpu_create_fb_from_framebuffer(
-        producer->gbm, producer->kms_fd, pixels_rgba8, pixels_rgba16f,
-        src_width, src_height, use_hdr_float_bo, producer->width,
-        producer->height);
+    (void)db_renderer_cpu_renderer_render_frame_to_surface(
+        frame_index, &producer->surface, NULL);
+    return db_cpu_create_fb_from_framebuffer(producer->gbm, producer->kms_fd,
+                                             &producer->surface,
+                                             producer->width, producer->height);
 }

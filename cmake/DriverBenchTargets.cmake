@@ -1,6 +1,5 @@
 set(DB_GL_RENDERER_SOURCES
   src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1.c
-  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_damage.c
   src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_draw.c
   src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_frame.c
   src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_snake.c
@@ -10,22 +9,33 @@ set(DB_GL_RENDERER_SOURCES
   src/renderers/renderer_gl_common.c
   src/renderers/renderer_gl_probe.c
   src/renderers/renderer_gl_proc.c
-  src/renderers/renderer_gl_runtime.c
   src/renderers/renderer_gl_state.c
   src/renderers/renderer_gl_shadow_present.c
+  src/renderers/renderer_gl_shadow_present_present.c
   src/renderers/renderer_gl_upload.c
+  src/renderers/renderer_gl_upload_stream.c
   src/renderers/renderer_gl_upload_probe.c
   src/renderers/renderer_gl_wrappers.c
 )
 
-set(DB_DRIVERBENCH_SOURCES
+set(DB_RENDER_CORE_SOURCES
+  src/renderers/delta/renderer_frame_delta.c
+  src/renderers/delta/renderer_frame_delta_consumers.c
+  src/renderers/delta/renderer_frame_delta_producers.c
+  src/renderers/renderer_gl_runtime.c
+  src/renderers/opengl_gl1_5_gles1_1/renderer_opengl_gl1_5_gles1_1_damage.c
+  src/renderers/snake/renderer_snake_optimizer.c
+)
+
+set(DB_CLI_CORE_SOURCES
+  src/cli/cli_parse.c
+)
+
+set(DB_APP_SOURCES
   src/driverbench_cli.c
-  src/driverbench_main.c
-  src/displays/display_dispatch.c
   src/displays/display_gl_runtime_common.c
   src/displays/offscreen/display_offscreen.c
   src/renderers/cpu_renderer/renderer_cpu_renderer.c
-  ${DB_CORE_SOURCES}
   ${DB_GL_RENDERER_SOURCES}
 )
 set(DB_DRIVERBENCH_LIBS m)
@@ -87,13 +97,73 @@ function(db_finalize_driverbench_target)
     DEPENDS ${DB_EMBEDDED_SHADERS_HEADER}
   )
 
+  add_library(driverbench_core STATIC
+    ${DB_CORE_SOURCES}
+    src/displays/display_dispatch.c
+  )
+  db_apply_perf_options(driverbench_core)
+  target_compile_definitions(driverbench_core PRIVATE ${DB_DRIVERBENCH_DEFS})
+  target_link_libraries(driverbench_core PRIVATE ${DB_DRIVERBENCH_LIBS})
+  target_include_directories(driverbench_core
+    PUBLIC ${CMAKE_SOURCE_DIR}/src
+    PRIVATE ${DB_GENERATED_INCLUDE_DIR}
+  )
+
+  add_library(driverbench_render_core STATIC
+    ${DB_RENDER_CORE_SOURCES}
+  )
+  db_apply_perf_options(driverbench_render_core)
+  target_compile_definitions(driverbench_render_core PRIVATE ${DB_DRIVERBENCH_DEFS})
+  target_link_libraries(driverbench_render_core PRIVATE driverbench_core ${DB_DRIVERBENCH_LIBS})
+  target_include_directories(driverbench_render_core
+    PUBLIC ${CMAKE_SOURCE_DIR}/src
+    PRIVATE ${DB_GENERATED_INCLUDE_DIR}
+  )
+
+  add_library(driverbench_cli_core STATIC
+    ${DB_CLI_CORE_SOURCES}
+  )
+  db_apply_perf_options(driverbench_cli_core)
+  target_compile_definitions(driverbench_cli_core PRIVATE ${DB_DRIVERBENCH_DEFS})
+  target_link_libraries(driverbench_cli_core PRIVATE driverbench_core driverbench_render_core ${DB_DRIVERBENCH_LIBS})
+  target_include_directories(driverbench_cli_core
+    PUBLIC ${CMAKE_SOURCE_DIR}/src
+    PRIVATE ${DB_GENERATED_INCLUDE_DIR}
+  )
+
+  add_library(driverbench_app STATIC
+    ${DB_APP_SOURCES}
+  )
+  db_apply_perf_options(driverbench_app)
+  target_compile_definitions(driverbench_app PRIVATE ${DB_DRIVERBENCH_DEFS})
+  target_link_libraries(driverbench_app PRIVATE driverbench_core driverbench_render_core driverbench_cli_core ${DB_DRIVERBENCH_LIBS})
+  target_include_directories(driverbench_app
+    PUBLIC ${CMAKE_SOURCE_DIR}/src
+    PRIVATE ${DB_GENERATED_INCLUDE_DIR}
+  )
+  if(TARGET driverbench_vulkan_shaders)
+    add_dependencies(driverbench_app driverbench_vulkan_shaders)
+  endif()
+  if(TARGET driverbench_embedded_shaders)
+    add_dependencies(driverbench_app driverbench_embedded_shaders)
+  endif()
+
   add_executable(${DB_UNIFIED_TARGET}
-    ${DB_DRIVERBENCH_SOURCES}
+    src/driverbench_main.c
   )
   db_apply_perf_options(${DB_UNIFIED_TARGET})
+  db_apply_platform_executable_postbuild_options(${DB_UNIFIED_TARGET})
   target_compile_definitions(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_DEFS})
-  target_link_libraries(${DB_UNIFIED_TARGET} PRIVATE ${DB_DRIVERBENCH_LIBS})
-  target_include_directories(${DB_UNIFIED_TARGET} PRIVATE ${DB_GENERATED_INCLUDE_DIR})
+  target_link_libraries(${DB_UNIFIED_TARGET} PRIVATE
+    driverbench_app
+    driverbench_cli_core
+    driverbench_render_core
+    driverbench_core
+    ${DB_DRIVERBENCH_LIBS}
+  )
+  target_include_directories(${DB_UNIFIED_TARGET}
+    PRIVATE ${DB_GENERATED_INCLUDE_DIR} ${CMAKE_SOURCE_DIR}/src
+  )
   if(TARGET driverbench_vulkan_shaders)
     add_dependencies(${DB_UNIFIED_TARGET} driverbench_vulkan_shaders)
   endif()

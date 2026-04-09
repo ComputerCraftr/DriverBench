@@ -4,12 +4,14 @@
 #include <stddef.h>
 
 // 3) Wrapper APIs: buffer and VBO/VAO operations.
-int db_gl_vbo_bind(unsigned int buffer) {
+static int db_gl_vbo_bind(unsigned int buffer) {
     db_gl_require_upload_proc_table_loaded("db_gl_vbo_bind");
     if (g_upload_proc_table.bind_buffer == NULL) {
         return 0;
     }
     g_upload_proc_table.bind_buffer(GL_ARRAY_BUFFER, (GLuint)buffer);
+    g_bound_array_buffer = buffer;
+    g_bound_array_buffer_valid = 1;
     return 1;
 }
 
@@ -18,9 +20,35 @@ int db_gl_bind_array_buffer_cached(unsigned int buffer,
     if ((cached_buffer != NULL) && (*cached_buffer == buffer)) {
         return 1;
     }
+    if ((cached_buffer == NULL) && (g_bound_array_buffer_valid != 0) &&
+        (g_bound_array_buffer == buffer)) {
+        return 1;
+    }
     if (db_gl_vbo_bind(buffer) == 0) {
         return 0;
     }
+    if (cached_buffer != NULL) {
+        *cached_buffer = buffer;
+    }
+    return 1;
+}
+
+int db_gl_bind_unpack_buffer_cached(unsigned int buffer,
+                                    unsigned int *cached_buffer) {
+    db_gl_require_upload_proc_table_loaded("db_gl_bind_unpack_buffer_cached");
+    if ((cached_buffer != NULL) && (*cached_buffer == buffer)) {
+        return 1;
+    }
+    if ((cached_buffer == NULL) && (g_bound_unpack_buffer_valid != 0) &&
+        (g_bound_unpack_buffer == buffer)) {
+        return 1;
+    }
+    if (g_upload_proc_table.bind_buffer == NULL) {
+        return 0;
+    }
+    g_upload_proc_table.bind_buffer(GL_PIXEL_UNPACK_BUFFER, (GLuint)buffer);
+    g_bound_unpack_buffer = buffer;
+    g_bound_unpack_buffer_valid = 1;
     if (cached_buffer != NULL) {
         *cached_buffer = buffer;
     }
@@ -111,25 +139,4 @@ void db_gl_pbo_delete_if_valid(unsigned int pbo) {
     }
     const GLuint gl_pbo = (GLuint)pbo;
     g_upload_proc_table.delete_buffers(1, &gl_pbo);
-}
-
-void db_gl_pbo_unbind_unpack(void) {
-    db_gl_require_upload_proc_table_loaded("db_gl_pbo_unbind_unpack");
-    if (g_upload_proc_table.bind_buffer == NULL) {
-        return;
-    }
-    g_upload_proc_table.bind_buffer(GL_PIXEL_UNPACK_BUFFER, 0U);
-}
-
-unsigned int db_gl_pbo_create_if_usable(int prefer_unpack_pbo) {
-    db_gl_load_upload_proc_table();
-    if ((prefer_unpack_pbo == 0) ||
-        (db_gl_context_has_pbo_upload_procs() == 0)) {
-        return 0U;
-    }
-    const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();
-    if (db_gl_extensions_advertise_pbo(&runtime) == 0) {
-        return 0U;
-    }
-    return db_gl_pbo_create_or_zero();
 }

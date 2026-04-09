@@ -49,7 +49,7 @@ if(DB_BUILD_VULKAN)
 
   if(DB_BUILD_GLFW_WINDOW_DISPLAY AND DB_GLFW_LINK_LIB AND Vulkan_FOUND AND
      DB_VULKAN_LIB AND GLSLC)
-    list(APPEND DB_DRIVERBENCH_SOURCES
+    list(APPEND DB_APP_SOURCES
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_frame.c
       src/renderers/vulkan_1_2_multi_gpu/renderer_vulkan_1_2_multi_gpu_init.c

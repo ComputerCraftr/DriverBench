@@ -10,7 +10,7 @@ void db_gl_require_upload_proc_table_loaded(const char *func_name) {
     if (g_upload_proc_table.loaded == 0) {
         db_failf("renderer_gl_common",
                  "%s requires preloaded GL proc table; call "
-                 "db_gl_preload_upload_proc_table() during init",
+                 "db_gl_load_upload_proc_table() during init",
                  func_name);
     }
 }
@@ -30,7 +30,11 @@ db_gl_upload_ops_t db_gl_internal_get_upload_ops(void) {
     return (db_gl_upload_ops_t){
         .bind_buffer = g_upload_proc_table.bind_buffer,
         .buffer_data = g_upload_proc_table.buffer_data,
+        .buffer_storage = g_upload_proc_table.buffer_storage,
         .buffer_sub_data = g_upload_proc_table.buffer_sub_data,
+        .client_wait_sync = g_upload_proc_table.client_wait_sync,
+        .delete_sync = g_upload_proc_table.delete_sync,
+        .fence_sync = g_upload_proc_table.fence_sync,
         .map_buffer = g_upload_proc_table.map_buffer,
         .map_buffer_range = g_upload_proc_table.map_buffer_range,
         .unmap_buffer = g_upload_proc_table.unmap_buffer,
@@ -252,6 +256,8 @@ void db_gl_load_upload_proc_table(void) {
     g_upload_proc_table.enable_vertex_attrib_array =
         (db_gl_enable_vertex_attrib_array_fn_t)(db_gl_get_proc(
             "glEnableVertexAttribArray"));
+    g_upload_proc_table.fence_sync =
+        (db_gl_fence_sync_fn_t)(db_gl_get_proc("glFenceSync"));
     g_upload_proc_table.framebuffer_texture_2d =
         (db_gl_framebuffer_texture_2d_fn_t)(db_gl_get_proc(
             "glFramebufferTexture2D"));
@@ -287,6 +293,10 @@ void db_gl_load_upload_proc_table(void) {
             "glGetUniformLocation"));
     g_upload_proc_table.link_program =
         (db_gl_link_program_fn_t)(db_gl_get_proc("glLinkProgram"));
+    g_upload_proc_table.client_wait_sync =
+        (db_gl_client_wait_sync_fn_t)(db_gl_get_proc("glClientWaitSync"));
+    g_upload_proc_table.delete_sync =
+        (db_gl_delete_sync_fn_t)(db_gl_get_proc("glDeleteSync"));
     g_upload_proc_table.shader_source =
         (db_gl_shader_source_fn_t)(db_gl_get_proc("glShaderSource"));
     g_upload_proc_table.tex_coord_pointer =

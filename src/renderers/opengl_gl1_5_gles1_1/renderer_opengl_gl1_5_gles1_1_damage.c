@@ -75,10 +75,5 @@ int db_gl1_collect_current_snake_frame_blocks(
             out_compact_count) == 0) {
         return 0;
     }
-    if ((compact_blocks != NULL) && (compact_capacity > 0U) &&
-        (ctx->get_color_bits != NULL) && (*out_compact_count == 0U) &&
-        (*out_damage_count > 0U)) {
-        *out_frame_mode = DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED;
-    }
     return 1;
 }

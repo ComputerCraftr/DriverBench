@@ -25,6 +25,8 @@
 #include <gbm.h>
 #include <stdint.h>
 
+#include "../../renderers/renderer_benchmark_runtime.h"
+
 #define DRM_SRC_FP_SHIFT 16U
 #define LOG_MSG_CAPACITY 2048U
 #define BACKEND_NAME "display_linux_kms_atomic_runner"
@@ -95,6 +97,7 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     const char *backend;
+    db_benchmark_pixel_surface_t surface;
 } db_kms_atomic_cpu_frame_producer_t;
 
 typedef struct {
@@ -109,9 +112,9 @@ typedef struct {
     double *next_progress_log_due_ms;
 } db_kms_atomic_shared_loop_ctx_t;
 
-void failf(const char *fmt, ...);
-void die(const char *msg);
-void diex(const char *msg);
+void failf(const char *fmt, ...) __attribute__((noreturn));
+void die(const char *msg) __attribute__((noreturn));
+void diex(const char *msg) __attribute__((noreturn));
 void page_flip_handler(int fd, unsigned frame, unsigned sec, unsigned usec,
                        void *data);
 void db_kms_atomic_init_core(const char *card, struct kms_atomic *kms,

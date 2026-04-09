@@ -260,29 +260,46 @@ void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
     }
 }
 
+int db_format_benchmark_log(char *buffer, size_t buffer_size,
+                            const char *api_name, const char *renderer_name,
+                            const char *backend_name, uint64_t frames,
+                            uint32_t work_units, double elapsed_ms,
+                            const char *tag, const char *capability_mode) {
+    if (frames == 0U) {
+        return 0;
+    }
+
+    const double ms_per_frame = elapsed_ms / (double)frames;
+    const double fps = DB_MS_PER_SECOND / ms_per_frame;
+    const char *mode = (capability_mode != NULL) ? capability_mode : "default";
+    if (strcmp(tag, "progress") == 0) {
+        return db_snprintf(buffer, buffer_size,
+                           "%s benchmark (%s): frames=%llu total_ms=%.2f "
+                           "ms_per_frame=%.3f fps=%.2f\n",
+                           api_name, tag, (unsigned long long)frames,
+                           elapsed_ms, ms_per_frame, fps);
+    }
+    return db_snprintf(buffer, buffer_size,
+                       "%s benchmark (%s): renderer=%s backend=%s mode=%s "
+                       "frames=%llu work_units=%u total_ms=%.2f "
+                       "ms_per_frame=%.3f fps=%.2f\n",
+                       api_name, tag, renderer_name, backend_name, mode,
+                       (unsigned long long)frames, work_units, elapsed_ms,
+                       ms_per_frame, fps);
+}
+
 static void db_benchmark_log(const char *api_name, const char *renderer_name,
                              const char *backend_name, uint64_t frames,
                              uint32_t work_units, double elapsed_ms,
                              const char *tag, const char *capability_mode) {
-    if (frames == 0U) {
+    enum { DB_BENCHMARK_LOG_TEXT_SIZE = 256 };
+    char text[DB_BENCHMARK_LOG_TEXT_SIZE];
+    if (db_format_benchmark_log(text, sizeof(text), api_name, renderer_name,
+                                backend_name, frames, work_units, elapsed_ms,
+                                tag, capability_mode) <= 0) {
         return;
     }
-
-    double ms_per_frame = elapsed_ms / (double)frames;
-    double fps = DB_MS_PER_SECOND / ms_per_frame;
-    const char *mode = (capability_mode != NULL) ? capability_mode : "default";
-    if (strcmp(tag, "progress") == 0) {
-        printf("%s benchmark (%s): mode=%s frames=%llu total_ms=%.2f "
-               "ms_per_frame=%.3f fps=%.2f\n",
-               api_name, tag, mode, (unsigned long long)frames, elapsed_ms,
-               ms_per_frame, fps);
-        return;
-    }
-    printf("%s benchmark (%s): renderer=%s backend=%s mode=%s frames=%llu "
-           "work_units=%u total_ms=%.2f ms_per_frame=%.3f fps=%.2f\n",
-           api_name, tag, renderer_name, backend_name, mode,
-           (unsigned long long)frames, work_units, elapsed_ms, ms_per_frame,
-           fps);
+    fputs(text, stdout);
 }
 
 void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,

@@ -4,21 +4,24 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../renderer_benchmark_gradient.h"
+#include "../renderer_benchmark_types.h"
+
+typedef enum {
+    DB_CPU_RENDER_TARGET_PRESERVED_SURFACE = 0,
+    DB_CPU_RENDER_TARGET_REPLACE_SURFACE = 1,
+} db_cpu_render_target_mode_t;
 
 void db_renderer_cpu_renderer_init_with_hdr_float_bo(int use_hdr_float_bo);
-void db_renderer_cpu_renderer_render_frame(uint32_t frame_index);
+const db_damage_block_t *db_renderer_cpu_renderer_render_frame_to_surface_mode(
+    uint32_t frame_index, const db_benchmark_pixel_surface_t *surface,
+    db_cpu_render_target_mode_t target_mode, size_t *out_damage_count);
+const db_damage_block_t *db_renderer_cpu_renderer_render_frame_to_surface(
+    uint32_t frame_index, const db_benchmark_pixel_surface_t *surface,
+    size_t *out_damage_count);
 void db_renderer_cpu_renderer_shutdown(void);
 
 uint32_t db_renderer_cpu_renderer_work_unit_count(void);
 const char *db_renderer_cpu_renderer_capability_mode(void);
-int db_renderer_cpu_renderer_bo_uses_rgba16f(void);
-const uint32_t *db_renderer_cpu_renderer_pixels_rgba8(uint32_t *out_width,
-                                                      uint32_t *out_height);
-const uint16_t *db_renderer_cpu_renderer_pixels_rgba16f(uint32_t *out_width,
-                                                        uint32_t *out_height);
-const db_damage_block_t *
-db_renderer_cpu_renderer_damage_blocks(size_t *out_count);
 uint64_t db_renderer_cpu_renderer_state_hash(void);
 
 #endif

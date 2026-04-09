@@ -1,9 +1,7 @@
 #ifndef DRIVERBENCH_RENDERER_OPENGL_GL1_5_GLES1_1_INTERNAL_H
 #define DRIVERBENCH_RENDERER_OPENGL_GL1_5_GLES1_1_INTERNAL_H
 
-#include "renderer_opengl_gl1_5_gles1_1.h"
 #include "renderer_opengl_gl1_5_gles1_1_damage.h"
-#include "renderer_opengl_gl1_5_gles1_1_util.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -11,18 +9,12 @@
 #include <string.h>
 
 #include "../../config/benchmark_config.h"
-#include "../../core/db_alloc_policy.h"
-#include "../../core/db_buffer_convert.h"
-#include "../../core/db_core.h"
-#include "../../core/db_hash.h"
-#include "../../core/db_numeric.h"
 #include "../renderer_benchmark_gradient.h"
-#include "../renderer_gl_api.h"
 #include "../renderer_gl_common.h"
+#include "../renderer_gl_proc_runtime_internal.h"
 #include "../renderer_history_common.h"
 #include "../renderer_snake_emit.h"
 #include "../renderer_snake_shape_common.h"
-#include "../renderer_viewport_common.h"
 
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
 #define DB_GL1_GRADIENT_DIRTY_RANGE_CAP 2U
@@ -78,6 +70,7 @@ typedef struct {
     db_gl1_snake_compact_health_t snake_compact_health;
     db_gl1_shadow_sync_stats_t snake_shadow_stats;
     db_gl_buffer_cache_t buffers;
+    db_gl_upload_stream_t vertex_stream;
     db_gl_compact_vbo_state_t compact_vbo;
     float *snake_color_state;
     size_t snake_color_capacity;
@@ -107,6 +100,7 @@ typedef struct {
 typedef struct {
     db_snake_plan_t plan;
     db_snake_step_target_t target;
+    int rebuild_current_frame;
     int force_full_upload;
 } db_gl1_snake_frame_state_t;
 
@@ -169,12 +163,20 @@ void db_gl1_get_snake_color_bits(uint32_t row, uint32_t col, void *user_data,
 void db_gl1_init_snake_color_state_from_vertices(void);
 void db_gl1_ensure_shadow_framebuffer_capacity(uint32_t pixel_width,
                                                uint32_t pixel_height);
-void db_gl1_rebuild_shadow_framebuffer_full(uint32_t pixel_width,
-                                            uint32_t pixel_height);
+void db_gl1_rebuild_shadow_framebuffer_full(
+    uint32_t pixel_width, uint32_t pixel_height,
+    const db_benchmark_pixel_surface_t *mirror_surface);
 void db_gl1_update_shadow_framebuffer_from_snake_step(
     const db_gl1_snake_frame_state_t *snake_frame, uint32_t pixel_width,
-    uint32_t pixel_height);
+    uint32_t pixel_height, const db_benchmark_pixel_surface_t *mirror_surface);
 size_t db_gl1_build_shadow_upload_blocks_from_damage_blocks(
+    const db_grid_block_t *damage_blocks, size_t damage_block_count,
+    uint32_t pixel_width, uint32_t pixel_height);
+size_t db_gl1_build_shadow_upload_blocks_from_compact_blocks(
+    const db_snake_compact_block_t *compact_blocks, size_t compact_block_count,
+    uint32_t pixel_width, uint32_t pixel_height);
+size_t db_gl1_build_shadow_repair_blocks(
+    const db_snake_compact_block_t *compact_blocks, size_t compact_block_count,
     const db_grid_block_t *damage_blocks, size_t damage_block_count,
     uint32_t pixel_width, uint32_t pixel_height);
 int db_gl1_draw_shadow_framebuffer_once(const db_damage_block_t *blocks,
@@ -214,8 +216,7 @@ void db_gl1_draw_bands_compact(uint32_t cols, uint32_t band_count,
                                int viewport_h);
 void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
                                       uint32_t preserved_framebuffer_count,
-                                      int dirty_backbuffer_mode,
-                                      int has_viewport);
+                                      int dirty_backbuffer_mode);
 void db_gl1_render_snake_draw_pass(
     const db_gl1_snake_frame_state_t *snake_frame, int dirty_backbuffer_mode,
     int viewport_w, int viewport_h);

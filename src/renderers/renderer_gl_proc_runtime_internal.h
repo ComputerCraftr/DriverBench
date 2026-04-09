@@ -3,18 +3,12 @@
 
 #include "renderer_gl_api.h"
 #include "renderer_gl_common.h"
-#include "renderer_gl_upload_internal.h"
 
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "../core/db_buffer_convert.h"
-#include "../core/db_core.h"
-#include "../core/db_numeric.h"
-#include "renderer_benchmark_gradient.h"
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <dlfcn.h>
@@ -86,6 +80,10 @@ typedef void *(*db_gl_map_buffer_range_fn_t)(GLenum target, GLintptr offset,
 typedef void (*db_gl_pixel_storei_fn_t)(GLenum pname, GLint param);
 typedef void (*db_gl_buffer_storage_fn_t)(GLenum target, GLsizeiptr size,
                                           const void *data, GLbitfield flags);
+typedef GLsync (*db_gl_fence_sync_fn_t)(GLenum condition, GLbitfield flags);
+typedef GLenum (*db_gl_client_wait_sync_fn_t)(GLsync sync, GLbitfield flags,
+                                              GLuint64 timeout);
+typedef void (*db_gl_delete_sync_fn_t)(GLsync sync);
 typedef void (*db_gl_read_pixels_fn_t)(GLint x_px, GLint y_px, GLsizei width,
                                        GLsizei height, GLenum format,
                                        GLenum type, void *pixels);
@@ -158,6 +156,7 @@ typedef struct {
     db_gl_enable_client_state_fn_t enable_client_state;
     db_gl_enable_fn_t enable;
     db_gl_enable_vertex_attrib_array_fn_t enable_vertex_attrib_array;
+    db_gl_fence_sync_fn_t fence_sync;
     db_gl_framebuffer_texture_2d_fn_t framebuffer_texture_2d;
     db_gl_get_error_raw_fn_t get_error;
     db_gl_gen_buffers_fn_t gen_buffers;
@@ -182,6 +181,8 @@ typedef struct {
     db_gl_tex_parameteri_fn_t tex_parameteri;
     db_gl_tex_sub_image_2d_fn_t tex_sub_image_2d;
     db_gl_link_program_fn_t link_program;
+    db_gl_client_wait_sync_fn_t client_wait_sync;
+    db_gl_delete_sync_fn_t delete_sync;
     db_gl_shader_source_fn_t shader_source;
     db_gl_uniform_1i_fn_t uniform_1i;
     db_gl_uniform_1ui_fn_t uniform_1ui;
@@ -223,6 +224,10 @@ extern unsigned int g_bound_draw_framebuffer;
 extern int g_bound_draw_framebuffer_valid;
 extern unsigned int g_bound_read_framebuffer;
 extern int g_bound_read_framebuffer_valid;
+extern unsigned int g_bound_array_buffer;
+extern int g_bound_array_buffer_valid;
+extern unsigned int g_bound_unpack_buffer;
+extern int g_bound_unpack_buffer_valid;
 extern unsigned int g_bound_vertex_array;
 extern int g_bound_vertex_array_valid;
 extern unsigned int g_current_program;
@@ -234,6 +239,10 @@ extern unsigned int g_texture2d_enabled_state;
 extern int g_texture2d_enabled_state_valid;
 extern unsigned int g_active_texture_unit;
 extern int g_active_texture_unit_valid;
+extern int g_unpack_alignment_state;
+extern int g_unpack_alignment_state_valid;
+extern int g_unpack_row_length_state;
+extern int g_unpack_row_length_state_valid;
 
 void db_gl_require_upload_proc_table_loaded(const char *func_name);
 GLenum db_gl_get_error_value(void);
@@ -264,10 +273,17 @@ int db_gl_extensions_advertise_texture_float(
 int db_gl_extensions_advertise_vbo(const db_gl_runtime_metadata_t *runtime);
 int db_gl_context_has_pbo_upload_procs(void);
 int db_gl_context_advertises_vbo(void);
+int db_gl_bind_array_buffer_cached(unsigned int buffer,
+                                   unsigned int *cached_buffer);
+int db_gl_bind_unpack_buffer_cached(unsigned int buffer,
+                                    unsigned int *cached_buffer);
+int db_gl_vbo_create_or_zero(unsigned int *out_buffer);
+void db_gl_vbo_delete_if_valid(unsigned int buffer);
+int db_gl_vbo_init_data(size_t bytes, const void *data, unsigned int usage);
 void db_gl_quad_init(float *verts);
 unsigned int db_gl_pbo_create_or_zero(void);
 void db_gl_pbo_delete_if_valid(unsigned int pbo);
-void db_gl_pbo_unbind_unpack(void);
-unsigned int db_gl_pbo_create_if_usable(int prefer_unpack_pbo);
+void db_gl_upload_state_reset_unpack(void);
+void db_gl_upload_state_reset_present_arrays(void);
 
 #endif

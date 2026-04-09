@@ -53,7 +53,14 @@ uint64_t db_now_ns_monotonic(void);
 void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
                          double fps_cap);
 
-// Benchmark logging.
+// Benchmark logging contract:
+// - progress logs contain throughput fields only
+// - final logs may include static mode/config context
+int db_format_benchmark_log(char *buffer, size_t buffer_size,
+                            const char *api_name, const char *renderer_name,
+                            const char *backend_name, uint64_t frames,
+                            uint32_t work_units, double elapsed_ms,
+                            const char *tag, const char *capability_mode);
 void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
                                const char *backend_name, uint64_t frames,
                                uint32_t work_units, double elapsed_ms,

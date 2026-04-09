@@ -11,6 +11,7 @@
 #define DB_RUNTIME_OPT_HASH "hash"
 #define DB_RUNTIME_OPT_HASH_REPORT "hash_report"
 #define DB_RUNTIME_OPT_METRICS_MODE "metrics_mode"
+#define DB_RUNTIME_OPT_PRESENT_BUFFER_MODE "present_buffer_mode"
 #define DB_RUNTIME_OPT_RANDOM_SEED "random_seed"
 #define DB_RUNTIME_OPT_VK_ALLOW_CPU_WORKERS "vk_allow_cpu_workers"
 #define DB_RUNTIME_OPT_VK_MULTI_DEVICE_POLICY "vk_multi_device_policy"
@@ -19,6 +20,8 @@
 
 const char *db_runtime_option_get(const char *name);
 void db_runtime_option_set(const char *name, const char *value);
+void db_runtime_options_reset_all(void);
 void db_runtime_option_set_backbuffer_draw_full(int enabled);
+void db_runtime_option_set_present_buffer_mode(const char *mode);
 
 #endif

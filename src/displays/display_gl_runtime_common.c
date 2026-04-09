@@ -5,7 +5,9 @@
 #include "../config/benchmark_config.h"
 #include "../core/db_core.h"
 #include "../core/db_numeric.h"
+#include "../driverbench_config.h"
 #include "../renderers/renderer_gl_common.h"
+#include "../renderers/renderer_gl_proc_runtime_internal.h"
 #include "display_types.h"
 
 static void
@@ -109,7 +111,7 @@ db_display_prepare_gl_runtime_info(db_gl_proc_resolver_fn_t resolver,
     }
 
     db_gl_set_proc_resolver(resolver);
-    db_gl_preload_upload_proc_table();
+    db_gl_load_upload_proc_table();
 
     const char *version = db_gl_get_version_string();
     const db_display_gl_runtime_info_t runtime = {
@@ -133,6 +135,86 @@ db_display_gl_runtime_info_t db_display_require_gl_runtime_for_renderer(
                                                       runtime.is_gles);
     }
     return runtime;
+}
+
+int db_display_should_probe_default_framebuffer_preserve(
+    db_gl_renderer_t renderer, int true_offscreen_backend) {
+#ifdef __linux__
+    return (true_offscreen_backend == 0) &&
+           (renderer == DB_GL_RENDERER_GL1_5_GLES1_1);
+#else
+    (void)renderer;
+    (void)true_offscreen_backend;
+    return 0;
+#endif
+}
+
+db_display_default_framebuffer_preserve_info_t
+db_display_default_framebuffer_preserve_info_make(int has_probe,
+                                                  int preserve_supported,
+                                                  int preserve_stable,
+                                                  int first_reuse_distance) {
+    return (db_display_default_framebuffer_preserve_info_t){
+        .has_probe = (has_probe != 0) ? 1 : 0,
+        .preserve_supported = (preserve_supported != 0) ? 1 : 0,
+        .preserve_stable = (preserve_stable != 0) ? 1 : 0,
+        .first_reuse_distance =
+            (first_reuse_distance > 0) ? first_reuse_distance : 0,
+    };
+}
+
+const char *
+db_display_gl_policy_reason_text(db_display_gl_policy_reason_t reason_code) {
+    switch (reason_code) {
+    case DB_DISPLAY_GL_POLICY_REASON_NONE:
+        return NULL;
+    case DB_DISPLAY_GL_POLICY_REASON_DEFAULT_FB_PRESERVE_UNSUPPORTED:
+        return "forcing full backbuffer draw: default framebuffer preserve is "
+               "unavailable";
+    case DB_DISPLAY_GL_POLICY_REASON_DEFAULT_FB_PRESERVE_UNSTABLE:
+        return "forcing full backbuffer draw: default framebuffer preserve is "
+               "unstable";
+    default:
+        return NULL;
+    }
+}
+
+void db_display_resolve_opengl_display_policy(
+    db_gl_renderer_t renderer, const db_cli_config_t *cfg,
+    int true_offscreen_backend, uint32_t default_preserved_framebuffer_count,
+    const db_display_default_framebuffer_preserve_info_t *default_fb_preserve,
+    db_display_gl_policy_resolution_t *out) {
+    if (out == NULL) {
+        return;
+    }
+    *out = (db_display_gl_policy_resolution_t){
+        .effective_cfg = (cfg != NULL) ? *cfg : (db_cli_config_t){0},
+        .preserved_framebuffer_count = default_preserved_framebuffer_count,
+        .policy_reason_code = DB_DISPLAY_GL_POLICY_REASON_NONE,
+        .policy_reason_text = NULL,
+    };
+
+    if ((true_offscreen_backend != 0) ||
+        (renderer != DB_GL_RENDERER_GL1_5_GLES1_1) ||
+        (default_fb_preserve == NULL) ||
+        (default_fb_preserve->has_probe == 0)) {
+        return;
+    }
+
+    out->preserved_framebuffer_count =
+        (default_fb_preserve->preserve_stable != 0) ? 2U : 0U;
+    if ((out->effective_cfg.backbuffer_draw_full == 0) &&
+        (out->effective_cfg.backbuffer_draw_mode_explicit == 0) &&
+        (default_fb_preserve->preserve_stable == 0)) {
+        out->effective_cfg.backbuffer_draw_full = 1;
+        out->preserved_framebuffer_count = 0U;
+        out->policy_reason_code =
+            (default_fb_preserve->preserve_supported != 0)
+                ? DB_DISPLAY_GL_POLICY_REASON_DEFAULT_FB_PRESERVE_UNSTABLE
+                : DB_DISPLAY_GL_POLICY_REASON_DEFAULT_FB_PRESERVE_UNSUPPORTED;
+        out->policy_reason_text =
+            db_display_gl_policy_reason_text(out->policy_reason_code);
+    }
 }
 
 static void db_display_log_runtime_api(const char *backend,

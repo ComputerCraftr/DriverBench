@@ -47,7 +47,7 @@ static void db_gl_upload_buffer_span_target(
     const void *source, size_t total_bytes, size_t dst_offset_bytes,
     size_t size_bytes, db_gl_upload_target_t target, unsigned int target_buffer,
     int use_persistent_upload, void *persistent_mapped_ptr,
-    int use_map_range_upload, int use_map_buffer_upload) {
+    int use_map_range_upload, int use_map_buffer_upload, int storage_prepared) {
     if ((source == NULL) || (size_bytes == 0U) ||
         (dst_offset_bytes > (SIZE_MAX - size_bytes)) ||
         ((total_bytes != 0U) &&
@@ -73,7 +73,7 @@ static void db_gl_upload_buffer_span_target(
         return;
     }
 
-    if (is_vbo == 0) {
+    if ((is_vbo == 0) && (storage_prepared == 0)) {
         const size_t max_gl_buffer_bytes = PTRDIFF_MAX;
         if ((target_buffer == 0U) || (ops.bind_buffer == NULL) ||
             (ops.buffer_data == NULL) || (total_bytes > max_gl_buffer_bytes)) {
@@ -124,27 +124,6 @@ static void db_gl_upload_buffer_span_target(
                                        dst_offset_bytes, size_bytes);
 }
 
-void db_gl_upload_buffer_target(const void *source, size_t bytes,
-                                db_gl_upload_target_t target,
-                                unsigned int target_buffer,
-                                int use_persistent_upload,
-                                void *persistent_mapped_ptr,
-                                int use_map_range_upload,
-                                int use_map_buffer_upload) {
-    db_gl_upload_buffer_span_target(
-        source, bytes, 0U, bytes, target, target_buffer, use_persistent_upload,
-        persistent_mapped_ptr, use_map_range_upload, use_map_buffer_upload);
-}
-
-void db_gl_upload_buffer(const void *source, size_t bytes,
-                         int use_persistent_upload, void *persistent_mapped_ptr,
-                         int use_map_range_upload, int use_map_buffer_upload) {
-    db_gl_upload_buffer_target(source, bytes,
-                               DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, 0U,
-                               use_persistent_upload, persistent_mapped_ptr,
-                               use_map_range_upload, use_map_buffer_upload);
-}
-
 int db_gl_upload_compact_prepared(const db_gl_compact_vbo_state_t *compact,
                                   const db_gl_upload_probe_result_t *upload,
                                   size_t compact_bytes) {
@@ -160,14 +139,6 @@ int db_gl_upload_compact_prepared(const db_gl_compact_vbo_state_t *compact,
         compact->vbo_offset_bytes, compact_bytes,
         DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, 0U, upload->use_persistent_upload,
         upload->persistent_mapped_ptr, upload->use_map_range_upload,
-        upload->use_map_buffer_upload);
+        upload->use_map_buffer_upload, 0);
     return 1;
-}
-
-void db_gl_unmap_current_array_buffer(void) {
-    db_gl_internal_require_upload_ready("db_gl_unmap_current_array_buffer");
-    const db_gl_upload_ops_t ops = db_gl_internal_get_upload_ops();
-    if (ops.unmap_buffer != NULL) {
-        (void)ops.unmap_buffer(GL_ARRAY_BUFFER);
-    }
 }

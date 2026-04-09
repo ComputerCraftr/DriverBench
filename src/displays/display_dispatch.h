@@ -105,10 +105,6 @@ static inline int db_dispatch_api_is_compiled(db_api_t api) {
     return 0;
 }
 
-static inline int db_dispatch_display_is_compiled(db_display_t display) {
-    return db_dispatch_display_capabilities(display).compiled;
-}
-
 static inline int db_dispatch_display_supports_api(db_display_t display,
                                                    db_api_t api) {
     const db_display_backend_capabilities_t caps =

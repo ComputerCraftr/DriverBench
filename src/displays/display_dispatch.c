@@ -46,7 +46,7 @@ void db_dispatch_validate_backend_or_fail(const char *backend,
 
 int db_run_display_auto(db_display_t display, db_gl_renderer_t renderer,
                         const char *kms_card_path, const db_cli_config_t *cfg) {
-    if (db_dispatch_display_is_compiled(display) == 0) {
+    if (db_dispatch_display_capabilities(display).compiled == 0) {
         db_failf("display_dispatch",
                  "requested display is unavailable in this build "
                  "(display=%d)",
@@ -74,7 +74,7 @@ int db_run_display(db_display_t display, db_api_t api,
     char caps_text[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
     (void)db_dispatch_format_display_capabilities(display, caps_text,
                                                   sizeof(caps_text));
-    if (db_dispatch_display_is_compiled(display) == 0) {
+    if (db_dispatch_display_capabilities(display).compiled == 0) {
         db_failf("display_dispatch",
                  "requested display is unavailable in this build "
                  "(display=%d %s)",

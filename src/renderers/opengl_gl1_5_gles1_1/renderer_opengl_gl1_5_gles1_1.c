@@ -1,9 +1,10 @@
+#include "renderer_opengl_gl1_5_gles1_1.h"
 #include "../../config/benchmark_config.h"
 #include "../../core/db_core.h"
 #include "../renderer_benchmark_runtime.h"
 #include "../renderer_benchmark_types.h"
-#include "../renderer_gl_api.h"
 #include "../renderer_gl_common.h"
+#include "../renderer_gl_proc_runtime_internal.h"
 #include "../renderer_history_common.h"
 #include "../renderer_snake_collect.h"
 #include "../renderer_snake_shape_common.h"
@@ -145,8 +146,6 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         BACKEND_NAME, "gradient_row_y_ndc",
         (size_t)db_grid_rows_effective() + 1U, sizeof(float));
 
-    db_gl_upload_probe_result_t probe_result = {0};
-
     g_state.vertex.upload = (db_gl_upload_probe_result_t){0};
     g_state.buffers.vbo = 0U;
     g_state.backbuffer_valid = 0;
@@ -174,31 +173,13 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         db_gl_compact_vbo_init_standalone_or_fail(
             BACKEND_NAME, &g_state.compact_vbo, compact_only_vbo_bytes,
             g_state.vertex.vertex_stride);
-        unsigned int vbo_u32 = 0U;
-        if (db_gl_vbo_create_or_zero(&vbo_u32) != 0) {
-            g_state.buffers.vbo = vbo_u32;
-        }
-        if (g_state.buffers.vbo != 0U) {
-            if (db_gl_bind_array_buffer_cached(
-                    g_state.buffers.vbo, &g_state.buffers.bound_array_buffer) ==
-                0) {
-                db_gl_vbo_delete_if_valid(g_state.buffers.vbo);
-                g_state.buffers.vbo = 0U;
-            }
-        }
-        if (g_state.buffers.vbo != 0U) {
-            if (db_gl_vbo_init_data(compact_only_vbo_bytes, NULL,
-                                    GL_DYNAMIC_DRAW) == 0) {
-                db_gl_vbo_delete_if_valid(g_state.buffers.vbo);
-                g_state.buffers.vbo = 0U;
-            }
-        }
-        if (g_state.buffers.vbo != 0U) {
-            db_gl_context_probe_upload_capabilities(
-                compact_only_vbo_bytes,
-                (const void *)g_state.compact_vbo.scratch_vertices,
-                &probe_result);
-            g_state.vertex.upload = probe_result;
+        db_gl_geometry_stream_init_result_t stream_init = {0};
+        if (db_gl_geometry_stream_init(&g_state.vertex_stream, &stream_init,
+                                       BACKEND_NAME, compact_only_vbo_bytes,
+                                       g_state.compact_vbo.scratch_vertices,
+                                       NULL, 0U, 0) != 0) {
+            g_state.buffers.vbo = stream_init.buffer;
+            g_state.vertex.upload = stream_init.probe;
         }
         if (g_state.buffers.vbo != 0U) {
             g_state.vbo_arrays_configured = 0;
@@ -218,35 +199,15 @@ void db_renderer_opengl_gl1_5_gles1_1_init(void) {
         if (total_vbo_bytes == 0U) {
             failf("GL1 VBO size overflow");
         }
-        unsigned int vbo_u32 = 0U;
-        if (db_gl_vbo_create_or_zero(&vbo_u32) != 0) {
-            g_state.buffers.vbo = vbo_u32;
+        db_gl_geometry_stream_init_result_t stream_init = {0};
+        if (db_gl_geometry_stream_init(
+                &g_state.vertex_stream, &stream_init, BACKEND_NAME,
+                total_vbo_bytes, g_state.vertex.vertices,
+                g_state.vertex.vertices, full_mesh_bytes, 1) != 0) {
+            g_state.buffers.vbo = stream_init.buffer;
+            g_state.vertex.upload = stream_init.probe;
         }
         if (g_state.buffers.vbo != 0U) {
-            if (db_gl_bind_array_buffer_cached(
-                    g_state.buffers.vbo, &g_state.buffers.bound_array_buffer) ==
-                0) {
-                db_gl_vbo_delete_if_valid(g_state.buffers.vbo);
-                g_state.buffers.vbo = 0U;
-            }
-        }
-        if (g_state.buffers.vbo != 0U) {
-            if (db_gl_vbo_init_data(total_vbo_bytes, NULL, GL_DYNAMIC_DRAW) ==
-                0) {
-                db_gl_vbo_delete_if_valid(g_state.buffers.vbo);
-                g_state.buffers.vbo = 0U;
-            }
-        }
-        if (g_state.buffers.vbo != 0U) {
-            db_gl_context_probe_upload_capabilities(
-                full_mesh_bytes, (const void *)g_state.vertex.vertices,
-                &probe_result);
-            g_state.vertex.upload = probe_result;
-            db_gl_upload_buffer(g_state.vertex.vertices, full_mesh_bytes,
-                                g_state.vertex.upload.use_persistent_upload,
-                                g_state.vertex.upload.persistent_mapped_ptr,
-                                g_state.vertex.upload.use_map_range_upload,
-                                g_state.vertex.upload.use_map_buffer_upload);
             db_gl_compact_vbo_init_or_fail(BACKEND_NAME, &g_state.compact_vbo,
                                            full_mesh_bytes,
                                            g_state.vertex.vertex_stride);
@@ -295,14 +256,15 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(
         db_gl1_refresh_tile_positions_for_viewport(viewport_width_px,
                                                    viewport_height_px);
         db_gl1_refresh_gradient_row_ndc_cache(viewport_height_px);
-        db_history_invalidate_snake_backbuffer_on_resize(
-            preserved_framebuffer_count, &g_state.backbuffer_valid,
-            &previous_replay_marker, &g_state.snake_backbuffer_state);
+        db_history_invalidate_history_backbuffer_on_resize(
+            g_state.runtime.pattern, preserved_framebuffer_count,
+            &g_state.backbuffer_valid, &previous_replay_marker,
+            &g_state.snake_backbuffer_state);
         g_state.snake_replay.replay_mode = DB_GL1_SNAKE_REPLAY_NONE;
         g_state.snake_replay.prev_draw_block_count = 0U;
         g_state.snake_shadow_present.backing_valid = 0;
-        g_state.snake_shadow_present.texture_valid = 0;
-        g_state.snake_shadow_present.texture_needs_full_upload = 1;
+        db_gl_shadow_present_note_shadow_change(&g_state.snake_shadow_present,
+                                                1);
     }
 
     // When the display path advertises preserved backbuffer behavior, snake
@@ -315,12 +277,20 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(
     // cols/rows.
     const int viewport_w = viewport_state.viewport_width_px;
     const int viewport_h = viewport_state.viewport_height_px;
-    const int has_viewport = viewport_state.has_viewport;
+    const int wants_ring_coherent_present =
+        (g_state.runtime.backbuffer_draw_full != 0) ||
+        ((g_state.runtime_flags.uses_dirty_backbuffer_mode != 0) &&
+         (preserved_framebuffer_count >= 2U));
+    db_gl_shadow_present_set_preserve_mode(
+        &g_state.snake_shadow_present,
+        (wants_ring_coherent_present != 0)
+            ? DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT
+            : DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE);
     if (g_state.runtime_flags.is_snake_history_texture != 0) {
         db_gl1_snake_frame_state_t snake_frame = {0};
         db_gl1_prepare_snake_frame_state(
             &snake_frame, preserved_framebuffer_count,
-            g_state.runtime_flags.uses_dirty_backbuffer_mode, has_viewport);
+            g_state.runtime_flags.uses_dirty_backbuffer_mode);
         db_gl1_render_snake_draw_pass(
             &snake_frame, g_state.runtime_flags.uses_dirty_backbuffer_mode,
             viewport_w, viewport_h);
@@ -340,11 +310,7 @@ void db_renderer_opengl_gl1_5_gles1_1_render_frame(
 }
 
 void db_renderer_opengl_gl1_5_gles1_1_shutdown(void) {
-    if (g_state.vertex.upload.persistent_mapped_ptr != NULL) {
-        (void)db_gl_bind_array_buffer_cached(
-            g_state.buffers.vbo, &g_state.buffers.bound_array_buffer);
-        db_gl_unmap_current_array_buffer();
-    }
+    db_gl_upload_stream_shutdown(&g_state.vertex_stream);
     if (g_state.buffers.vbo != 0U) {
         db_gl_vbo_delete_if_valid(g_state.buffers.vbo);
         g_state.buffers.vbo = 0U;
@@ -382,10 +348,9 @@ uint64_t db_renderer_opengl_gl1_5_gles1_1_state_hash(void) {
     return g_state.frame.state_hash;
 }
 
-void db_renderer_opengl_gl1_5_gles1_1_draw_stats(uint64_t *full_draw_frames,
-                                                 uint64_t *dirty_draw_frames) {
-    db_history_copy_draw_stats(&g_state.frame, full_draw_frames,
-                               dirty_draw_frames);
+void db_renderer_opengl_gl1_5_gles1_1_draw_stats(
+    db_renderer_draw_path_stats_t *stats) {
+    db_history_copy_draw_path_stats(&g_state.frame, stats);
     if ((g_state.runtime_flags.is_snake_history_texture != 0) &&
         (g_state.runtime_flags.uses_dirty_backbuffer_mode != 0)) {
         db_infof(

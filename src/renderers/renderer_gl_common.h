@@ -10,23 +10,6 @@
 #define DB_GL_PROBE_PREFIX_BYTES 64U
 #define DB_GL_MAP_RANGE_PROBE_XOR_SEED 0xA5U
 #define DB_GL_CAPABILITY_MODE_MAX 128U
-#define DB_GL_CAP_DRAW_FF_RECT_FILL "ff_rect_fill"
-#define DB_GL_CAP_DRAW_HISTORY_DIRTY "history_dirty_draw"
-#define DB_GL_CAP_DRAW_TILES_FULL "tiles_full_draw"
-#define DB_GL_CAP_UPLOAD_CLIENT_ARRAY "upload=client_arrays"
-#define DB_GL_CAP_UPLOAD_NONE "upload=none"
-#define DB_GL_CAP_UPLOAD_VBO "upload=vbo"
-#define DB_GL_CAP_UPLOAD_VBO_MAP_BUFFER "upload=vbo_map_buffer"
-#define DB_GL_CAP_UPLOAD_VBO_MAP_RANGE "upload=vbo_map_range"
-#define DB_GL_CAP_UPLOAD_VBO_PERSISTENT "upload=vbo_persistent"
-#define DB_GL_CAP_MODE_OPENGL_SHADER_HISTORY_DIRTY_DRAW                        \
-    "opengl_shader_history_dirty_draw"
-#define DB_GL_CAP_MODE_OPENGL_SHADER_VBO "opengl_shader_vbo"
-#define DB_GL_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER                            \
-    "opengl_shader_vbo_map_buffer"
-#define DB_GL_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE "opengl_shader_vbo_map_range"
-#define DB_GL_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT                            \
-    "opengl_shader_vbo_persistent"
 #define DB_GL_HISTORY_TARGET_COUNT 2U
 #define DB_GL_COLOR_COMPONENT_COUNT DB_VERTEX_COLOR_FLOAT_COUNT
 #define DB_GL_COLOR_R_INDEX 0U
@@ -55,6 +38,57 @@ typedef enum {
     DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER = 1,
 } db_gl_upload_target_t;
 
+typedef enum {
+    DB_GL_STREAM_UPLOAD_STORAGE_CLIENT = 0,
+    DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT = 1,
+} db_gl_stream_upload_storage_t;
+
+typedef enum {
+    DB_GL_STREAM_UPLOAD_MODE_SUB_DATA = 0,
+    DB_GL_STREAM_UPLOAD_MODE_MAP_BUFFER = 1,
+    DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE = 2,
+    DB_GL_STREAM_UPLOAD_MODE_PERSISTENT = 3,
+} db_gl_stream_upload_mode_t;
+
+typedef enum {
+    DB_GL_UPLOAD_ROLE_GEOMETRY = 0,
+    DB_GL_UPLOAD_ROLE_PRESENT_FULL = 1,
+    DB_GL_UPLOAD_ROLE_PRESENT_PARTIAL = 2,
+    DB_GL_UPLOAD_ROLE_PRESENT_SLOT_REPAIR = 3,
+} db_gl_upload_role_t;
+
+typedef struct {
+    db_gl_upload_target_t target;
+    db_gl_stream_upload_storage_t requested_storage;
+    db_gl_stream_upload_storage_t supported_storage;
+    db_gl_stream_upload_storage_t effective_storage;
+    db_gl_stream_upload_mode_t requested_mode;
+    db_gl_stream_upload_mode_t supported_mode;
+    db_gl_stream_upload_mode_t effective_mode;
+    int sync_supported;
+    int sync_enabled;
+} db_gl_stream_upload_capability_t;
+
+typedef struct {
+    db_gl_upload_target_t target;
+    db_gl_stream_upload_capability_t capability;
+    unsigned int buffer;
+    void *client_storage;
+    void *persistent_mapping;
+    void *in_flight_sync;
+    size_t reserved_bytes;
+    size_t active_bytes;
+    int owns_storage;
+    int mapping_active;
+} db_gl_upload_stream_t;
+
+typedef struct {
+    db_gl_upload_probe_result_t probe;
+    db_gl_stream_upload_capability_t capability;
+    unsigned int buffer;
+    int uses_client_arrays;
+} db_gl_geometry_stream_init_result_t;
+
 typedef struct {
     float *vertices;
     size_t vertex_stride;
@@ -74,6 +108,78 @@ typedef enum {
     DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F = 1,
 } db_gl_shadow_present_texture_format_t;
 
+typedef enum {
+    DB_GL_RUNTIME_DRAW_FF_RECT_FILL = 0,
+    DB_GL_RUNTIME_DRAW_DIRTY_REPLAY = 1,
+    DB_GL_RUNTIME_DRAW_FULL_PRESENT = 2,
+    DB_GL_RUNTIME_DRAW_SHADOW_FALLBACK = 3,
+} db_gl_runtime_draw_mode_t;
+
+typedef enum {
+    DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS = 0,
+    DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE = 1,
+    DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT = 2,
+} db_gl_shadow_present_preserve_mode_t;
+
+typedef enum {
+    DB_GL_BACKBUFFER_DRAW_DIRTY = 0,
+    DB_GL_BACKBUFFER_DRAW_FULL = 1,
+} db_gl_backbuffer_draw_mode_t;
+
+typedef enum {
+    DB_GL_PRESENT_BUFFER_MODE_AUTO = 0,
+    DB_GL_PRESENT_BUFFER_MODE_REPLACE = 1,
+    DB_GL_PRESENT_BUFFER_MODE_SINGLE_SOURCE = 2,
+    DB_GL_PRESENT_BUFFER_MODE_RING = 3,
+} db_gl_present_buffer_mode_t;
+
+typedef struct {
+    db_gl_backbuffer_draw_mode_t requested_backbuffer_draw_mode;
+    db_gl_present_buffer_mode_t requested_present_buffer_mode;
+    int prefer_ring_for_preserved_draw;
+    uint32_t preserved_framebuffer_count;
+    db_gl_stream_upload_capability_t present_upload;
+} db_gl_present_mode_request_t;
+
+typedef struct {
+    int valid;
+    int downgraded;
+    db_gl_backbuffer_draw_mode_t effective_backbuffer_draw_mode;
+    db_gl_shadow_present_preserve_mode_t requested_preserve_mode;
+    db_gl_shadow_present_preserve_mode_t effective_preserve_mode;
+    db_gl_stream_upload_capability_t effective_present_upload;
+    const char *reason;
+} db_gl_present_mode_resolution_t;
+
+typedef struct {
+    db_gl_runtime_draw_mode_t draw_mode;
+    int geometry_upload_enabled;
+    int geometry_uses_client_arrays;
+    db_gl_stream_upload_capability_t geometry_upload;
+    db_gl_stream_upload_capability_t full_present_upload;
+    db_gl_stream_upload_capability_t partial_present_upload;
+    db_gl_shadow_present_preserve_mode_t preserve_mode;
+    int backbuffer_replay;
+} db_gl_runtime_mode_desc_t;
+
+typedef struct {
+    uint64_t full_present_frames;
+    uint64_t dirty_geometry_frames;
+    uint64_t shadow_fallback_frames;
+    uint64_t replay_only_frames;
+} db_renderer_draw_path_stats_t;
+
+enum {
+    DB_GL_SHADOW_PRESENT_UPLOAD_RING_SLOTS = 2U,
+};
+
+typedef struct {
+    db_gl_upload_stream_t stream;
+    int slot_valid;
+    int slot_matches_shadow;
+    int slot_matches_presented_texture;
+} db_gl_shadow_present_upload_slot_t;
+
 typedef struct {
     int initialized;
     int backing_valid;
@@ -82,8 +188,19 @@ typedef struct {
     int runtime_supports_unpack_row_length_upload;
     int runtime_supports_hdr_present;
     int uses_exact_size_texture;
+    db_gl_stream_upload_capability_t requested_full_upload_capability;
+    db_gl_stream_upload_capability_t effective_full_upload_capability;
+    db_gl_stream_upload_capability_t requested_partial_upload_capability;
+    db_gl_stream_upload_capability_t effective_partial_upload_capability;
+    db_gl_shadow_present_preserve_mode_t requested_preserve_mode;
+    db_gl_shadow_present_preserve_mode_t preserve_mode;
+    uint32_t slot_count;
+    uint32_t write_slot_index;
+    uint32_t present_slot_index;
     db_gl_shadow_present_texture_format_t selected_texture_format;
-    unsigned int unpack_pbo;
+    db_gl_upload_stream_t unpack_stream;
+    db_gl_shadow_present_upload_slot_t
+        upload_slots[DB_GL_SHADOW_PRESENT_UPLOAD_RING_SLOTS];
     unsigned int texture;
     uint32_t content_width;
     uint32_t content_height;
@@ -94,9 +211,14 @@ typedef struct {
     float colors[DB_RECT_VERTEX_COUNT * 4U];
 } db_gl_shadow_present_state_t;
 
-typedef void (*db_gl_shadow_present_prepare_upload_target_fn_t)(
-    db_gl_shadow_present_state_t *state, uint32_t pixel_width,
-    uint32_t pixel_height, void *user_data);
+typedef struct {
+    db_benchmark_pixel_surface_t pixel_surface;
+    size_t total_bytes;
+    int uses_pbo;
+    int preserve_contents;
+    int slot_surface_valid;
+    uint32_t slot_index;
+} db_gl_shadow_present_full_upload_target_t;
 
 typedef struct {
     db_gl_shadow_present_state_t *state;
@@ -106,8 +228,6 @@ typedef struct {
     const void *selected_pixels;
     const db_damage_block_t *damage_blocks;
     size_t damage_block_count;
-    db_gl_shadow_present_prepare_upload_target_fn_t prepare_upload_target_fn;
-    void *prepare_upload_target_user_data;
 } db_gl_shadow_present_frame_t;
 
 typedef struct {
@@ -142,27 +262,56 @@ int db_gl_version_text_at_least(const char *version_text, int req_major,
                                 int req_minor);
 int db_gl_is_es_context(const char *version_text);
 
-const char *db_gl_capability_mode_upload_from_probe(
-    int has_vbo, const db_gl_upload_probe_result_t *upload);
+db_gl_runtime_mode_desc_t db_gl_runtime_mode_desc_renderer(
+    int uses_ff_rect_draw_mode, int uses_history_draw, int has_vbo,
+    const db_gl_upload_probe_result_t *upload, int backbuffer_replay);
+db_gl_runtime_mode_desc_t db_gl_runtime_mode_desc_present(
+    const db_gl_shadow_present_state_t *state,
+    db_gl_shadow_present_preserve_mode_t preserve_mode);
+const char *db_gl_runtime_draw_mode_name(db_gl_runtime_draw_mode_t mode);
+const char *db_gl_shadow_present_preserve_mode_name(
+    db_gl_shadow_present_preserve_mode_t preserve_mode);
 const char *
-db_gl_capability_mode_gl3_shader(const db_gl_upload_probe_result_t *upload,
-                                 int uses_history_texture);
-const char *db_gl_capability_mode_draw_select(int uses_ff_rect_draw_mode,
-                                              int uses_history_draw,
-                                              int use_shader_history_draw_name);
-const char *db_gl_capability_mode_upload_select(int suppress_upload,
-                                                const char *upload_mode);
-void db_gl_capability_mode_compose(char *output, size_t output_size,
-                                   const char *draw_mode,
-                                   const char *upload_mode,
-                                   int backbuffer_replay);
+db_gl_stream_upload_storage_name(db_gl_stream_upload_storage_t storage);
+const char *db_gl_stream_upload_mode_name(db_gl_stream_upload_mode_t mode);
+const char *
+db_gl_stream_upload_name(const db_gl_stream_upload_capability_t *capability,
+                         int client_arrays, int upload_enabled);
+const char *db_gl_present_buffer_mode_name(db_gl_present_buffer_mode_t mode);
+int db_gl_present_buffer_mode_parse(const char *text,
+                                    db_gl_present_buffer_mode_t *out_mode);
+db_gl_stream_upload_capability_t db_gl_stream_upload_capability_from_probe(
+    db_gl_upload_target_t target, const db_gl_upload_probe_result_t *probe,
+    int enable_sync);
+db_gl_stream_upload_capability_t db_gl_stream_upload_capability_for_role(
+    db_gl_upload_target_t target, const db_gl_upload_probe_result_t *probe,
+    int enable_sync, db_gl_upload_role_t role,
+    db_gl_shadow_present_texture_format_t texture_format);
+void db_gl_stream_upload_force_client_fallback(
+    db_gl_stream_upload_capability_t *capability, int disable_sync);
+int db_gl_stream_upload_uses_buffer_object(
+    const db_gl_stream_upload_capability_t *capability);
+int db_gl_stream_upload_uses_map_range(
+    const db_gl_stream_upload_capability_t *capability);
+int db_gl_stream_upload_uses_map_buffer(
+    const db_gl_stream_upload_capability_t *capability);
+int db_gl_stream_upload_uses_persistent(
+    const db_gl_stream_upload_capability_t *capability);
+int db_gl_stream_upload_sync_enabled(
+    const db_gl_stream_upload_capability_t *capability);
+void db_gl_stream_upload_disable_persistent_for_target(
+    db_gl_stream_upload_capability_t *capability, db_gl_upload_target_t target);
+int db_gl_present_mode_validate_request(
+    int is_cpu_api, int is_glfw_window_display, int is_gl1_renderer,
+    db_gl_backbuffer_draw_mode_t backbuffer_draw_mode,
+    db_gl_present_buffer_mode_t present_buffer_mode, const char **out_reason);
+void db_gl_present_mode_resolve(const db_gl_present_mode_request_t *request,
+                                db_gl_present_mode_resolution_t *out);
+void db_gl_runtime_mode_format_renderer(char *output, size_t output_size,
+                                        const db_gl_runtime_mode_desc_t *mode);
+void db_gl_runtime_mode_format_present(char *output, size_t output_size,
+                                       const db_gl_runtime_mode_desc_t *mode);
 
-int db_gl_vbo_bind(unsigned int buffer);
-int db_gl_bind_array_buffer_cached(unsigned int buffer,
-                                   unsigned int *cached_buffer);
-int db_gl_vbo_create_or_zero(unsigned int *out_buffer);
-void db_gl_vbo_delete_if_valid(unsigned int buffer);
-int db_gl_vbo_init_data(size_t bytes, const void *data, unsigned int usage);
 int db_gl_context_probe_texture_float_support(void);
 int db_gl_context_probe_texture_float_present_support(void);
 void db_gl_shadow_present_init_runtime(db_gl_shadow_present_state_t *state,
@@ -171,15 +320,52 @@ void db_gl_shadow_present_init_runtime(db_gl_shadow_present_state_t *state,
 void db_gl_shadow_present_log_decision(
     const char *backend, const char *present_name, int content_uses_rgba16f,
     int hdr_explicit_requested, const db_gl_shadow_present_state_t *state);
+void db_gl_shadow_present_set_preserve_mode(
+    db_gl_shadow_present_state_t *state,
+    db_gl_shadow_present_preserve_mode_t preserve_mode);
+void db_gl_shadow_present_invalidate_presented_texture(
+    db_gl_shadow_present_state_t *state, int full_upload_required);
+void db_gl_shadow_present_note_shadow_change(
+    db_gl_shadow_present_state_t *state, int full_upload_required);
 void db_gl_shadow_present_shutdown(db_gl_shadow_present_state_t *state);
 void db_gl_shadow_present_prepare_texture(db_gl_shadow_present_state_t *state,
                                           const char *backend,
                                           uint32_t pixel_width,
                                           uint32_t pixel_height);
 void db_gl_shadow_present_upload_damage_blocks(
-    const db_gl_shadow_present_state_t *state, const char *backend,
+    db_gl_shadow_present_state_t *state, const char *backend,
     const void *selected_pixels, uint32_t pixel_width, uint32_t pixel_height,
     const db_damage_block_t *blocks, size_t block_count);
+int db_gl_shadow_present_begin_full_upload_target(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    uint32_t pixel_width, uint32_t pixel_height, int preserve_contents,
+    db_gl_shadow_present_full_upload_target_t *target);
+int db_gl_shadow_present_begin_full_upload_target_slot_offset(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    uint32_t pixel_width, uint32_t pixel_height, int preserve_contents,
+    uint32_t slot_offset, db_gl_shadow_present_full_upload_target_t *target);
+void db_gl_shadow_present_repair_full_upload_target(
+    db_gl_shadow_present_state_t *state,
+    const db_gl_shadow_present_full_upload_target_t *target,
+    const db_benchmark_pixel_surface_t *source_surface,
+    const db_damage_block_t *damage_blocks, size_t damage_block_count);
+void db_gl_shadow_present_sync_preserved_slots(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    uint32_t pixel_width, uint32_t pixel_height,
+    const db_benchmark_pixel_surface_t *source_surface,
+    const db_damage_block_t *damage_blocks, size_t damage_block_count,
+    const db_gl_shadow_present_full_upload_target_t *current_target);
+void db_gl_shadow_present_finish_full_upload_target(
+    db_gl_shadow_present_state_t *state,
+    const db_gl_shadow_present_full_upload_target_t *target);
+void db_gl_shadow_present_present_full_upload_target(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    uint32_t pixel_width, uint32_t pixel_height,
+    const db_gl_shadow_present_full_upload_target_t *target);
+void db_gl_shadow_present_present_replace_pixels(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    const void *selected_pixels, uint32_t pixel_width, uint32_t pixel_height,
+    const db_damage_block_t *damage_blocks, size_t damage_block_count);
 void db_gl_shadow_present_frame(const db_gl_shadow_present_frame_t *frame);
 void db_gl_shadow_present_draw(db_gl_shadow_present_state_t *state,
                                uint32_t pixel_width, uint32_t pixel_height);
@@ -189,12 +375,8 @@ int db_gl_texture_allocate_rgba(unsigned int texture, int width, int height,
                                 const void *pixels);
 int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
                               unsigned int internal_format, const void *pixels);
-int db_gl_texture_allocate_rgba8(unsigned int texture, int width, int height,
-                                 const void *pixels);
 int db_gl_texture_create_rgba8(unsigned int *out_texture, int width, int height,
                                const void *pixels);
-int db_gl_texture_allocate_rgba16f(unsigned int texture, int width, int height,
-                                   const void *pixels);
 int db_gl_texture_create_rgba16f(unsigned int *out_texture, int width,
                                  int height, const void *pixels);
 void db_gl_texture_delete_if_valid(unsigned int *texture);
@@ -211,6 +393,8 @@ void db_gl_set_depth_test_enabled(int enabled);
 void db_gl_set_dither_enabled(int enabled);
 void db_gl_set_pack_alignment_1(void);
 void db_gl_set_unpack_alignment_1(void);
+void db_gl_prepare_textured_present_state(void);
+void db_gl_finish_textured_present_state(void);
 void db_gl_read_pixels_rgba8(int x_px, int y_px, int width, int height,
                              void *pixels);
 void db_gl_read_pixels_rgba16f(int x_px, int y_px, int width, int height,
@@ -273,17 +457,35 @@ void db_gl_set_proc_resolver(db_gl_proc_resolver_fn_t resolver);
 void db_gl_context_probe_upload_capabilities(size_t bytes,
                                              const float *initial_vertices,
                                              db_gl_upload_probe_result_t *out);
-void db_gl_upload_buffer_target(const void *source, size_t bytes,
-                                db_gl_upload_target_t target,
-                                unsigned int target_buffer,
-                                int use_persistent_upload,
-                                void *persistent_mapped_ptr,
-                                int use_map_range_upload,
-                                int use_map_buffer_upload);
-
-void db_gl_upload_buffer(const void *source, size_t bytes,
-                         int use_persistent_upload, void *persistent_mapped_ptr,
-                         int use_map_range_upload, int use_map_buffer_upload);
+void db_gl_context_probe_stream_upload_capabilities(
+    db_gl_upload_target_t target, size_t bytes,
+    db_gl_upload_probe_result_t *out);
+void db_gl_upload_stream_init(db_gl_upload_stream_t *stream,
+                              db_gl_upload_target_t target,
+                              db_gl_stream_upload_capability_t capability,
+                              unsigned int buffer, int owns_storage);
+int db_gl_geometry_stream_init(db_gl_upload_stream_t *stream,
+                               db_gl_geometry_stream_init_result_t *result,
+                               const char *backend, size_t storage_bytes,
+                               const float *probe_seed_vertices,
+                               const void *initial_seed_data,
+                               size_t initial_seed_bytes,
+                               int allow_client_array_fallback);
+int db_gl_upload_stream_prepare_storage(db_gl_upload_stream_t *stream,
+                                        const char *backend,
+                                        size_t required_bytes);
+void *db_gl_upload_stream_begin_write(db_gl_upload_stream_t *stream,
+                                      size_t offset_bytes, size_t size_bytes);
+void db_gl_upload_stream_end_write(db_gl_upload_stream_t *stream);
+int db_gl_upload_stream_write(db_gl_upload_stream_t *stream,
+                              const char *backend, const void *source,
+                              size_t total_bytes, size_t dst_offset_bytes,
+                              size_t size_bytes);
+const void *db_gl_upload_stream_pointer(const db_gl_upload_stream_t *stream,
+                                        size_t byte_offset);
+void db_gl_upload_stream_wait(db_gl_upload_stream_t *stream);
+void db_gl_upload_stream_record_sync(db_gl_upload_stream_t *stream);
+void db_gl_upload_stream_shutdown(db_gl_upload_stream_t *stream);
 size_t db_gl_compact_vbo_total_bytes(size_t base_vbo_bytes);
 void db_gl_compact_vbo_init_or_fail(const char *backend_name,
                                     db_gl_compact_vbo_state_t *compact,
@@ -296,7 +498,6 @@ void db_gl_compact_vbo_free(db_gl_compact_vbo_state_t *compact);
 int db_gl_upload_compact_prepared(const db_gl_compact_vbo_state_t *compact,
                                   const db_gl_upload_probe_result_t *upload,
                                   size_t compact_bytes);
-void db_gl_unmap_current_array_buffer(void);
 
 int db_init_grid_vertices_common(db_gl_vertex_init_t *out_state,
                                  db_pattern_t pattern, size_t vertex_stride);
@@ -322,6 +523,5 @@ int db_init_vertices_for_runtime_common_with_stride(
 void db_update_grid_vertices_for_bands_rgb_stride(
     float *verts, uint32_t cols, uint32_t rows, uint32_t band_count,
     uint32_t frame_index, size_t stride_floats, size_t color_offset_floats);
-void db_gl_preload_upload_proc_table(void);
 
 #endif

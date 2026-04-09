@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "../../driverbench_config.h"
+#include "../../renderers/renderer_gl_common.h"
 #include "../display_types.h"
 
 typedef enum {
@@ -13,7 +14,7 @@ typedef enum {
 
 typedef struct {
     const char *(*capability_mode)(void);
-    void (*draw_stats)(uint64_t *full_draw_frames, uint64_t *dirty_draw_frames);
+    void (*draw_stats)(db_renderer_draw_path_stats_t *stats);
     void (*init)(void);
     void (*render_frame)(uint32_t frame_index,
                          uint32_t preserved_framebuffer_count);

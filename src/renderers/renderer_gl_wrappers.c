@@ -87,21 +87,10 @@ int db_gl_texture_create_rgba(unsigned int *out_texture, int width, int height,
         out_texture, width, height, internal_format, GL_UNSIGNED_BYTE, pixels);
 }
 
-int db_gl_texture_allocate_rgba8(unsigned int texture, int width, int height,
-                                 const void *pixels) {
-    return db_gl_texture_allocate_rgba(texture, width, height, GL_RGBA, pixels);
-}
-
 int db_gl_texture_create_rgba8(unsigned int *out_texture, int width, int height,
                                const void *pixels) {
     return db_gl_texture_create_rgba(out_texture, width, height, GL_RGBA,
                                      pixels);
-}
-
-int db_gl_texture_allocate_rgba16f(unsigned int texture, int width, int height,
-                                   const void *pixels) {
-    return db_gl_texture_allocate_rgba_typed(texture, width, height, GL_RGBA16F,
-                                             GL_HALF_FLOAT, pixels);
 }
 
 int db_gl_texture_create_rgba16f(unsigned int *out_texture, int width,
@@ -255,9 +244,46 @@ void db_gl_set_pack_alignment_1(void) {
 
 void db_gl_set_unpack_alignment_1(void) {
     db_gl_load_upload_proc_table();
+    if ((g_unpack_alignment_state_valid != 0) &&
+        (g_unpack_alignment_state == 1)) {
+        return;
+    }
     if (g_upload_proc_table.pixel_storei != NULL) {
         g_upload_proc_table.pixel_storei(GL_UNPACK_ALIGNMENT, 1);
+        g_unpack_alignment_state = 1;
+        g_unpack_alignment_state_valid = 1;
     }
+}
+
+void db_gl_prepare_textured_present_state(void) {
+    db_gl_set_depth_test_enabled(0);
+    db_gl_set_cull_face_enabled(0);
+    db_gl_set_blend_enabled(0);
+    db_gl_set_dither_enabled(0);
+    db_gl_set_texture_2d_enabled(1);
+    db_gl_set_unpack_alignment_1();
+    db_gl_set_unpack_row_length_pixels(0);
+    (void)db_gl_bind_array_buffer_cached(0U, NULL);
+    db_gl_set_client_state_vertex_array_enabled(1);
+    db_gl_set_client_state_color_array_enabled(1);
+    db_gl_set_client_state_texcoord_array_enabled(1);
+}
+
+void db_gl_finish_textured_present_state(void) {
+    db_gl_texture_bind_2d(0U);
+    db_gl_set_unpack_row_length_pixels(0);
+    db_gl_set_texture_2d_enabled(0);
+    db_gl_set_client_state_texcoord_array_enabled(0);
+}
+
+void db_gl_upload_state_reset_unpack(void) {
+    db_gl_set_unpack_alignment_1();
+    db_gl_set_unpack_row_length_pixels(0);
+    (void)db_gl_bind_unpack_buffer_cached(0U, NULL);
+}
+
+void db_gl_upload_state_reset_present_arrays(void) {
+    (void)db_gl_bind_array_buffer_cached(0U, NULL);
 }
 
 void db_gl_read_pixels_rgba8(int x_px, int y_px, int width, int height,
@@ -738,5 +764,3 @@ const char *db_gl_get_extensions_string(void) {
 }
 
 // 3) Wrapper APIs: query strings and proc preload.
-
-void db_gl_preload_upload_proc_table(void) { db_gl_load_upload_proc_table(); }

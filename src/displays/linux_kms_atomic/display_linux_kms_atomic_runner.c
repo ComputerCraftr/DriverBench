@@ -4,12 +4,15 @@
 #include <EGL/egl.h>
 
 #include <gbm.h>
+#include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <xf86drm.h>
 
 #include "../../core/db_core.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
+#include "../../renderers/renderer_benchmark_runtime.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../display_dispatch.h"
 #include "../display_gl_runtime_common.h"
@@ -114,10 +117,10 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     const db_kms_atomic_loop_run_result_t loop_result =
         db_kms_atomic_run_frame_loop_timed(&loop, &producer,
                                            db_kms_atomic_next_gl_fb);
-    db_display_log_draw_stats_with_fn(backend, renderer->draw_stats);
-    db_benchmark_log_final(db_dispatch_api_name(DB_API_OPENGL), renderer_name,
-                           backend, loop_result.frames, work_unit_count,
-                           loop_result.elapsed_ms, capability_mode);
+    db_display_log_renderer_final_summary(
+        db_dispatch_api_name(DB_API_OPENGL), renderer_name, backend,
+        capability_mode, loop_result.frames, work_unit_count,
+        loop_result.elapsed_ms, renderer->draw_stats);
 
     renderer->shutdown();
 
@@ -155,12 +158,39 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
     uint32_t height = 0U;
     db_kms_atomic_init_core(card, &kms, &gbm, &width, &height);
 
-    db_renderer_cpu_renderer_init_with_hdr_float_bo(
-        db_display_cpu_hdr_option_state().option_enables_hdr);
+    const int uses_rgba16f =
+        db_display_cpu_hdr_option_state().option_enables_hdr;
+    db_renderer_cpu_renderer_init_with_hdr_float_bo(uses_rgba16f);
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
     const db_display_runtime_config_t runtime_cfg =
         db_display_runtime_hash_config_from_cli(cfg, 0, 0).runtime;
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
+    const uint32_t surface_width = db_grid_cols_effective();
+    const uint32_t surface_height = db_grid_rows_effective();
+    const uint64_t surface_pixel_count =
+        (uint64_t)surface_width * (uint64_t)surface_height;
+    db_benchmark_pixel_surface_t cpu_surface = {
+        .pixel_width = surface_width,
+        .pixel_height = surface_height,
+        .pixels_rgba8 = NULL,
+        .pixels_rgba16f = NULL,
+        .uses_rgba16f = uses_rgba16f,
+    };
+    if ((surface_width == 0U) || (surface_height == 0U) ||
+        (surface_pixel_count == 0U)) {
+        db_failf(backend, "invalid CPU KMS render surface: %ux%u",
+                 surface_width, surface_height);
+    }
+    if (uses_rgba16f != 0) {
+        cpu_surface.pixels_rgba16f = (uint16_t *)db_alloc_aligned_array_or_fail(
+            backend, "kms_cpu_surface_rgba16f",
+            (size_t)surface_pixel_count * DB_RGBA16F_CHANNELS_PER_PIXEL,
+            sizeof(uint16_t), DB_CACHELINE_ALIGNMENT_BYTES);
+    } else {
+        cpu_surface.pixels_rgba8 = (uint32_t *)db_alloc_aligned_array_or_fail(
+            backend, "kms_cpu_surface_rgba8", (size_t)surface_pixel_count,
+            sizeof(uint32_t), DB_CACHELINE_ALIGNMENT_BYTES);
+    }
 
     struct fb *cur = NULL;
 
@@ -187,17 +217,21 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
         .width = width,
         .height = height,
         .backend = backend,
+        .surface = cpu_surface,
     };
     cur = db_kms_atomic_prime_first_frame_and_modeset(
         &kms, width, height, &producer, db_kms_atomic_next_cpu_fb);
     const db_kms_atomic_loop_run_result_t loop_result =
         db_kms_atomic_run_frame_loop_timed(&loop, &producer,
                                            db_kms_atomic_next_cpu_fb);
-    db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU), renderer_name,
-                           backend, loop_result.frames, work_unit_count,
-                           loop_result.elapsed_ms, capability_mode);
+    db_display_log_renderer_final_summary(
+        db_dispatch_api_name(DB_API_CPU), renderer_name, backend,
+        capability_mode, loop_result.frames, work_unit_count,
+        loop_result.elapsed_ms, NULL);
 
     db_renderer_cpu_renderer_shutdown();
+    free(producer.surface.pixels_rgba8);
+    free(producer.surface.pixels_rgba16f);
     fb_release(kms.fd, NULL, cur);
     db_kms_atomic_shutdown_core(&kms, gbm);
     return 0;

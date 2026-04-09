@@ -84,7 +84,7 @@ if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND DB_PLATFORM_IS_NON_APPLE_UNIX)
           src/displays/linux_kms_atomic/display_linux_kms_atomic_cpu.c
           src/displays/linux_kms_atomic/display_linux_kms_atomic.c
         )
-        list(APPEND DB_DRIVERBENCH_SOURCES ${DB_KMS_SOURCES})
+        list(APPEND DB_APP_SOURCES ${DB_KMS_SOURCES})
         db_set_source_include_directories("${DB_KMS_EXTRA_INCLUDE_DIRS}" ${DB_KMS_SOURCES})
         if(DB_TARGET_LINUX_32BIT AND (NOT DB_TARGET_LINUX_MUSL) AND
            DB_COMPILER_IS_CLANG)

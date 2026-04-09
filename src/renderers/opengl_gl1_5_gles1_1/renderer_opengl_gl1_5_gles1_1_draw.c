@@ -6,6 +6,7 @@
 #include "../renderer_benchmark_runtime.h"
 #include "../renderer_benchmark_types.h"
 #include "../renderer_gl_common.h"
+#include "../renderer_gl_proc_runtime_internal.h"
 #include "../renderer_snake_types.h"
 #include "renderer_opengl_gl1_5_gles1_1_internal.h"
 #include "renderer_opengl_gl1_5_gles1_1_util.h"

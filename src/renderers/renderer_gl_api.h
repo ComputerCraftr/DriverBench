@@ -13,6 +13,8 @@ typedef float GLfloat;
 typedef ptrdiff_t GLintptr;
 typedef ptrdiff_t GLsizeiptr;
 typedef unsigned char GLubyte;
+typedef unsigned long long GLuint64;
+typedef void *GLsync;
 
 #define GL_FALSE 0U
 #define GL_TRUE 1U
@@ -60,6 +62,12 @@ typedef unsigned char GLubyte;
 #define GL_RGBA16F 0x881AU
 #define GL_STATIC_DRAW 0x88E4U
 #define GL_STREAM_DRAW 0x88E0U
+#define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117U
+#define GL_ALREADY_SIGNALED 0x911AU
+#define GL_TIMEOUT_EXPIRED 0x911BU
+#define GL_CONDITION_SATISFIED 0x911CU
+#define GL_WAIT_FAILED 0x911DU
+#define GL_TIMEOUT_IGNORED 0xFFFFFFFFFFFFFFFFULL
 #define GL_TEXTURE0 0x84C0U
 #define GL_TEXTURE_2D 0x0DE1U
 #define GL_TEXTURE_COORD_ARRAY 0x8078U

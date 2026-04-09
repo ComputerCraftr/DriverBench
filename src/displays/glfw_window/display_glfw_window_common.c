@@ -162,7 +162,7 @@ static uint64_t db_glfw_probe_read_default_fb_hash_or_fail(
         1);
 }
 
-static void db_glfw_log_default_framebuffer_probe(
+void db_glfw_log_default_framebuffer_probe(
     const char *backend_name, const db_glfw_default_fb_probe_result_t *result) {
     if ((backend_name == NULL) || (result == NULL)) {
         return;
@@ -184,8 +184,8 @@ static void db_glfw_log_default_framebuffer_probe(
 }
 
 db_glfw_default_fb_probe_result_t
-db_glfw_probe_and_log_default_framebuffer_reuse(const char *backend_name,
-                                                GLFWwindow *window) {
+db_glfw_probe_default_framebuffer_reuse(const char *backend_name,
+                                        GLFWwindow *window) {
     static const float probe_colors[8][4] = {
         {1.0F, 0.0F, 0.0F, 1.0F},   {0.0F, 1.0F, 0.0F, 1.0F},
         {0.0F, 0.0F, 1.0F, 1.0F},   {1.0F, 1.0F, 0.0F, 1.0F},
@@ -245,7 +245,6 @@ db_glfw_probe_and_log_default_framebuffer_reuse(const char *backend_name,
         }
     }
     db_gl_hash_scratch_release(&scratch);
-    db_glfw_log_default_framebuffer_probe(backend_name, &result);
     return result;
 }
 

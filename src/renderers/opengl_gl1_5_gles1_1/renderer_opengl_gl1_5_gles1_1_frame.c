@@ -1,6 +1,8 @@
-#include "../../core/db_buffer_convert.h"
 #include "../../core/db_core.h"
 #include "../../core/db_numeric.h"
+#include "../delta/renderer_frame_delta.h"
+#include "../delta/renderer_frame_delta_consumers.h"
+#include "../delta/renderer_frame_delta_producers.h"
 #include "../renderer_benchmark_gradient.h"
 #include "../renderer_benchmark_runtime.h"
 #include "../renderer_benchmark_types.h"
@@ -14,6 +16,34 @@
 #include <stddef.h>
 #include <stdint.h>
 
+static db_benchmark_pixel_surface_t
+db_gl1_current_shadow_surface(uint32_t pixel_width, uint32_t pixel_height) {
+    return (db_benchmark_pixel_surface_t){
+        .pixel_width = pixel_width,
+        .pixel_height = pixel_height,
+        .pixels_rgba8 = g_state.snake_shadow_rgba8,
+        .pixels_rgba16f = g_state.snake_shadow_rgba16f,
+        .uses_rgba16f = db_gl1_shadow_backing_uses_rgba16f(),
+    };
+}
+
+static db_frame_delta_mode_t db_gl1_delta_mode_for_draw_blocks(
+    db_gl1_snake_frame_mode_t frame_mode,
+    const db_grid_block_t *draw_damage_blocks, size_t draw_damage_block_count,
+    const db_frame_delta_compact_block_t *draw_compact_blocks,
+    size_t draw_compact_block_count) {
+    if (frame_mode == DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) {
+        return DB_FRAME_DELTA_MODE_FULL_REBUILD;
+    }
+    if ((draw_compact_blocks != NULL) && (draw_compact_block_count > 0U)) {
+        return DB_FRAME_DELTA_MODE_COMPACT_GEOMETRY;
+    }
+    if ((draw_damage_blocks != NULL) && (draw_damage_block_count > 0U)) {
+        return DB_FRAME_DELTA_MODE_DAMAGE_ONLY;
+    }
+    return DB_FRAME_DELTA_MODE_NO_OP;
+}
+
 void db_gl1_render_snake_draw_pass(
     const db_gl1_snake_frame_state_t *snake_frame, int dirty_backbuffer_mode,
     int viewport_w, int viewport_h) {
@@ -23,9 +53,10 @@ void db_gl1_render_snake_draw_pass(
     const int allow_empty_dirty_draw = dirty_backbuffer_mode;
     const int must_force_full_draw =
         (g_state.runtime.backbuffer_draw_full != 0);
+    db_frame_delta_plan_t delta_plan = {0};
     const db_grid_block_t *draw_damage_blocks = NULL;
     size_t draw_damage_block_count = 0U;
-    const db_snake_compact_block_t *draw_compact_blocks = NULL;
+    const db_frame_delta_compact_block_t *draw_compact_blocks = NULL;
     size_t draw_compact_block_count = 0U;
     db_gl1_snake_frame_mode_t frame_mode = DB_GL1_SNAKE_FRAME_MODE_COMPACT;
     db_gl1_shadow_upload_intent_t shadow_upload_intent =
@@ -34,12 +65,13 @@ void db_gl1_render_snake_draw_pass(
     size_t shadow_upload_block_count = 0U;
     int shadow_used_recovery_source = 0;
     const int has_viewport = (viewport_w > 0) && (viewport_h > 0);
+    db_gl_shadow_present_full_upload_target_t direct_full_upload = {0};
+    int has_direct_full_upload = 0;
     const db_gl1_damage_collect_ctx_t collect_ctx = {
         .pattern = g_state.runtime.pattern,
         .cols = db_grid_cols_effective(),
         .rows = db_grid_rows_effective(),
-        .force_full_upload =
-            (must_force_full_draw != 0) ? 1 : snake_frame->force_full_upload,
+        .force_full_upload = snake_frame->rebuild_current_frame,
         .snake_plan = &snake_frame->plan,
         .pattern_seed = g_state.runtime.pattern_seed,
         .snake_scratch = &g_state.snake_scratch,
@@ -59,6 +91,22 @@ void db_gl1_render_snake_draw_pass(
             (draw_compact_block_count > 0U)) {
             draw_compact_blocks = g_state.snake_scratch.compact.blocks;
         }
+        delta_plan = (db_frame_delta_plan_t){
+            .benchmark_kind = g_state.runtime.pattern,
+            .mode = db_gl1_delta_mode_for_draw_blocks(
+                frame_mode, draw_damage_blocks, draw_damage_block_count,
+                draw_compact_blocks, draw_compact_block_count),
+            .logical_damage_blocks = draw_damage_blocks,
+            .logical_damage_block_count = draw_damage_block_count,
+            .compact_blocks = draw_compact_blocks,
+            .compact_block_count = draw_compact_block_count,
+            .replay_safe = 1,
+            .ring_repair_safe = 1,
+            .requires_full_seed =
+                (frame_mode == DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED)
+                    ? 1
+                    : 0,
+        };
     } else if ((g_state.snake_scratch.damage.blocks != NULL) &&
                (g_state.snake_scratch.damage.capacity > 0U)) {
         g_state.snake_scratch.damage.blocks[0] = db_grid_block_full(
@@ -72,24 +120,62 @@ void db_gl1_render_snake_draw_pass(
         (frame_mode == DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) ||
         ((draw_damage_blocks != NULL) && (draw_damage_block_count > 0U) &&
          (allow_empty_dirty_draw == 0));
+    const int has_incremental_regions =
+        ((draw_compact_blocks != NULL) && (draw_compact_block_count > 0U)) ||
+        ((draw_damage_blocks != NULL) && (draw_damage_block_count > 0U));
+    const int try_direct_full_upload = (must_force_full_draw != 0) &&
+                                       (has_viewport != 0) &&
+                                       (has_draw_work != 0);
+
+    if (try_direct_full_upload != 0) {
+        const uint32_t viewport_w_u32 =
+            db_checked_int_to_u32(BACKEND_NAME, "viewport_w", viewport_w);
+        const uint32_t viewport_h_u32 =
+            db_checked_int_to_u32(BACKEND_NAME, "viewport_h", viewport_h);
+        has_direct_full_upload = db_gl_shadow_present_begin_full_upload_target(
+            &g_state.snake_shadow_present, BACKEND_NAME, viewport_w_u32,
+            viewport_h_u32, 1, &direct_full_upload);
+    }
 
     if (has_viewport != 0) {
         const uint32_t viewport_w_u32 =
             db_checked_int_to_u32(BACKEND_NAME, "viewport_w", viewport_w);
         const uint32_t viewport_h_u32 =
             db_checked_int_to_u32(BACKEND_NAME, "viewport_h", viewport_h);
+        const db_benchmark_pixel_surface_t shadow_surface =
+            db_gl1_current_shadow_surface(viewport_w_u32, viewport_h_u32);
+        if ((frame_mode != DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) &&
+            (has_incremental_regions != 0)) {
+            delta_plan.repair_blocks = g_state.snake_shadow_upload_blocks;
+            delta_plan.repair_block_count =
+                db_frame_delta_build_repair_blocks_from_plan(
+                    &delta_plan, db_grid_cols_effective(),
+                    db_grid_rows_effective(), viewport_w_u32, viewport_h_u32,
+                    g_state.snake_shadow_upload_blocks,
+                    g_state.snake_shadow_upload_block_capacity);
+        }
         db_gl1_ensure_shadow_framebuffer_capacity(viewport_w_u32,
                                                   viewport_h_u32);
         if ((g_state.snake_shadow_present.backing_valid == 0) ||
-            (frame_mode == DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) ||
-            ((draw_damage_blocks == NULL) && (has_draw_work != 0))) {
-            db_gl1_rebuild_shadow_framebuffer_full(viewport_w_u32,
-                                                   viewport_h_u32);
+            (frame_mode == DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED)) {
+            db_gl1_rebuild_shadow_framebuffer_full(
+                viewport_w_u32, viewport_h_u32,
+                (has_direct_full_upload != 0)
+                    ? &direct_full_upload.pixel_surface
+                    : NULL);
             g_state.snake_shadow_stats.backing_rebuild_frames++;
-        } else if ((draw_damage_blocks != NULL) &&
-                   (draw_damage_block_count > 0U)) {
+        } else if (has_incremental_regions != 0) {
+            if ((has_direct_full_upload != 0) &&
+                (direct_full_upload.slot_surface_valid == 0)) {
+                db_gl_shadow_present_repair_full_upload_target(
+                    &g_state.snake_shadow_present, &direct_full_upload,
+                    &shadow_surface, NULL, 0U);
+            }
             db_gl1_update_shadow_framebuffer_from_snake_step(
-                snake_frame, viewport_w_u32, viewport_h_u32);
+                snake_frame, viewport_w_u32, viewport_h_u32,
+                (has_direct_full_upload != 0)
+                    ? &direct_full_upload.pixel_surface
+                    : NULL);
         }
     }
 
@@ -100,7 +186,34 @@ void db_gl1_render_snake_draw_pass(
         int used_compact_draw = 0;
         int used_fallback_draw = 0;
         const char *fallback_reason = NULL;
-        if ((draw_compact_blocks != NULL) && (draw_compact_block_count > 0U)) {
+        if ((must_force_full_draw != 0) && (has_direct_full_upload != 0) &&
+            (has_viewport != 0)) {
+            const uint32_t viewport_w_u32 =
+                db_checked_int_to_u32(BACKEND_NAME, "viewport_w", viewport_w);
+            const uint32_t viewport_h_u32 =
+                db_checked_int_to_u32(BACKEND_NAME, "viewport_h", viewport_h);
+            const db_benchmark_pixel_surface_t shadow_surface =
+                db_gl1_current_shadow_surface(viewport_w_u32, viewport_h_u32);
+            const db_damage_block_t *repair_blocks = NULL;
+            size_t repair_block_count = 0U;
+            if ((frame_mode !=
+                 DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) &&
+                (has_incremental_regions != 0)) {
+                repair_blocks = delta_plan.repair_blocks;
+                repair_block_count = delta_plan.repair_block_count;
+            }
+            db_gl_shadow_present_sync_preserved_slots(
+                &g_state.snake_shadow_present, BACKEND_NAME, viewport_w_u32,
+                viewport_h_u32, &shadow_surface, repair_blocks,
+                repair_block_count, &direct_full_upload);
+            db_gl_shadow_present_present_full_upload_target(
+                &g_state.snake_shadow_present, BACKEND_NAME, viewport_w_u32,
+                viewport_h_u32, &direct_full_upload);
+            g_state.snake_shadow_stats.texture_full_upload_frames++;
+            drew_frame = 1;
+        }
+        if ((drew_frame == 0) && (draw_compact_blocks != NULL) &&
+            (draw_compact_block_count > 0U)) {
             drew_frame = db_gl1_draw_compact_blocks_from_snake_colors_once(
                 draw_compact_blocks, draw_compact_block_count);
             if (drew_frame != 0) {
@@ -108,13 +221,14 @@ void db_gl1_render_snake_draw_pass(
             }
         }
         if (drew_frame == 0) {
-            if ((snake_frame->force_full_upload != 0) &&
+            if ((snake_frame->rebuild_current_frame != 0) &&
                 (dirty_backbuffer_mode != 0)) {
                 db_gl1_log_shadow_fallback_once(
                     DB_GL1_SNAKE_SHADOW_LOG_INVALID_RECOVERY,
                     "invalid_backbuffer_recovery");
                 fallback_reason = "invalid_backbuffer_recovery";
-            } else if (g_state.runtime_flags.is_snake_shapes != 0) {
+            } else if ((g_state.runtime_flags.is_snake_shapes != 0) &&
+                       (has_incremental_regions == 0)) {
                 db_gl1_log_shadow_fallback_once(
                     DB_GL1_SNAKE_SHADOW_LOG_SHAPE_FALLBACK, "shape_fallback");
                 fallback_reason = "shape_fallback";
@@ -131,39 +245,58 @@ void db_gl1_render_snake_draw_pass(
                     BACKEND_NAME, "viewport_h", viewport_h);
                 if ((frame_mode ==
                      DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) ||
-                    (draw_damage_blocks == NULL) ||
-                    (draw_damage_block_count == 0U)) {
-                    db_gl1_rebuild_shadow_framebuffer_full(viewport_w_u32,
-                                                           viewport_h_u32);
+                    (has_incremental_regions == 0)) {
+                    db_gl1_rebuild_shadow_framebuffer_full(
+                        viewport_w_u32, viewport_h_u32, NULL);
                     g_state.snake_shadow_stats.backing_rebuild_frames++;
                     shadow_upload_intent =
                         DB_GL1_SHADOW_UPLOAD_INTENT_FULL_UPLOAD;
                 } else {
-                    shadow_upload_block_count =
-                        db_gl1_build_shadow_upload_blocks_from_damage_blocks(
-                            draw_damage_blocks, draw_damage_block_count,
-                            viewport_w_u32, viewport_h_u32);
+                    shadow_upload_block_count = delta_plan.repair_block_count;
                     if (shadow_upload_block_count == 0U) {
-                        db_gl1_rebuild_shadow_framebuffer_full(viewport_w_u32,
-                                                               viewport_h_u32);
+                        db_gl1_rebuild_shadow_framebuffer_full(
+                            viewport_w_u32, viewport_h_u32, NULL);
                         g_state.snake_shadow_stats.backing_rebuild_frames++;
                         shadow_upload_intent =
                             DB_GL1_SHADOW_UPLOAD_INTENT_FULL_UPLOAD;
                     } else {
-                        shadow_upload_blocks =
-                            g_state.snake_shadow_upload_blocks;
+                        shadow_upload_blocks = delta_plan.repair_blocks;
                         shadow_upload_intent =
                             DB_GL1_SHADOW_UPLOAD_INTENT_PARTIAL_BLOCKS;
                     }
                 }
                 if (shadow_upload_intent ==
                     DB_GL1_SHADOW_UPLOAD_INTENT_FULL_UPLOAD) {
-                    g_state.snake_shadow_present.texture_valid = 0;
-                    g_state.snake_shadow_present.texture_needs_full_upload = 1;
+                    db_gl_shadow_present_invalidate_presented_texture(
+                        &g_state.snake_shadow_present, 1);
                     g_state.snake_shadow_stats.texture_full_upload_frames++;
                 } else if (shadow_upload_intent ==
                            DB_GL1_SHADOW_UPLOAD_INTENT_PARTIAL_BLOCKS) {
+                    db_gl_shadow_present_invalidate_presented_texture(
+                        &g_state.snake_shadow_present, 0);
                     g_state.snake_shadow_stats.texture_partial_upload_frames++;
+                }
+                if ((dirty_backbuffer_mode != 0) &&
+                    (g_state.snake_shadow_present.preserve_mode ==
+                     DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT) &&
+                    (g_state.snake_shadow_present.backing_valid != 0)) {
+                    const db_benchmark_pixel_surface_t current_shadow_surface =
+                        db_gl1_current_shadow_surface(viewport_w_u32,
+                                                      viewport_h_u32);
+                    const db_damage_block_t *repair_blocks =
+                        (shadow_upload_intent ==
+                         DB_GL1_SHADOW_UPLOAD_INTENT_PARTIAL_BLOCKS)
+                            ? shadow_upload_blocks
+                            : NULL;
+                    const size_t repair_block_count =
+                        (shadow_upload_intent ==
+                         DB_GL1_SHADOW_UPLOAD_INTENT_PARTIAL_BLOCKS)
+                            ? shadow_upload_block_count
+                            : 0U;
+                    db_gl_shadow_present_sync_preserved_slots(
+                        &g_state.snake_shadow_present, BACKEND_NAME,
+                        viewport_w_u32, viewport_h_u32, &current_shadow_surface,
+                        repair_blocks, repair_block_count, NULL);
                 }
                 if (fallback_reason != NULL) {
                     shadow_used_recovery_source = 1;
@@ -188,6 +321,14 @@ void db_gl1_render_snake_draw_pass(
                 &g_state.frame.full_draw_frames,
                 &g_state.frame.dirty_draw_frames,
                 (dirty_backbuffer_mode == 0) ? 1 : 0, 1U);
+            db_history_record_draw_path(
+                &g_state.frame.draw_paths,
+                ((must_force_full_draw != 0) && (has_direct_full_upload != 0) &&
+                 (used_fallback_draw == 0) && (used_compact_draw == 0))
+                    ? 1
+                    : 0,
+                (used_compact_draw != 0) ? 1 : 0,
+                (used_fallback_draw != 0) ? 1 : 0, 0, 1U);
         }
     }
     if (frame_mode == DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) {
@@ -217,8 +358,7 @@ void db_gl1_render_snake_draw_pass(
 
 void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
                                       uint32_t preserved_framebuffer_count,
-                                      int dirty_backbuffer_mode,
-                                      int has_viewport) {
+                                      int dirty_backbuffer_mode) {
     if (state == NULL) {
         return;
     }
@@ -229,46 +369,35 @@ void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
     state->target = eval.target;
     const db_snake_shape_kind_t shape_kind = eval.shape_kind;
 
-    const db_history_snake_backbuffer_action_t history_action =
+    const db_history_backbuffer_recovery_action_t history_action =
         db_history_eval_snake_backbuffer_action_io(
-            dirty_backbuffer_mode, preserved_framebuffer_count,
+            g_state.runtime.pattern, dirty_backbuffer_mode,
+            preserved_framebuffer_count,
             &g_state.snake_backbuffer_state.seed_frames_remaining,
             &g_state.snake_backbuffer_state.resync_frames_remaining,
             &g_state.snake_backbuffer_state.initial_seed_done,
-            &g_state.snake_backbuffer_state.backbuffer_valid);
+            &g_state.snake_backbuffer_state.backbuffer_valid,
+            &g_state.snake_backbuffer_state.authoritative_rebuild_pending);
 
     if (db_history_run_seed_clear_if_needed(
-            history_action.should_seed_now, &g_state.runtime,
+            history_action.should_seed_background_now, &g_state.runtime,
             db_gl1_seed_backbuffer_clear_cb, NULL) != 0) {
         db_history_record_draw_stats_for_work(&g_state.frame.full_draw_frames,
                                               &g_state.frame.dirty_draw_frames,
                                               1, 0, 1U);
+        db_history_record_draw_path(&g_state.frame.draw_paths, 1, 0, 0, 0, 1U);
         g_state.snake_replay.replay_mode = DB_GL1_SNAKE_REPLAY_NONE;
         g_state.snake_replay.prev_draw_block_count = 0U;
     }
-    if (history_action.should_force_full_upload != 0) {
+    state->rebuild_current_frame =
+        history_action.should_rebuild_current_frame_now;
+    if (history_action.should_force_full_upload_now != 0) {
         state->force_full_upload = 1;
     }
-    int collect_force_full_blocks = state->force_full_upload;
-    if ((g_state.runtime_flags.is_snake_grid != 0) &&
-        (state->force_full_upload != 0) && dirty_backbuffer_mode &&
-        has_viewport) {
-        // Grid fast-path on invalid backbuffer: clear to the pre-step base
-        // phase, then redraw the full non-base set (settled + active).
-        const int base_phase = (state->plan.phase_flag == 0) ? 1 : 0;
-        double base_rgb[3] = {0.0, 0.0, 0.0};
-        db_grid_target_color_rgb3(base_phase, base_rgb);
-        float base_rgb_f32[3] = {0.0F, 0.0F, 0.0F};
-        db_rgb_f64_to_f32_rgb3(base_rgb, base_rgb_f32);
-        db_gl_clear_color_rgba(base_rgb_f32[0], base_rgb_f32[1],
-                               base_rgb_f32[2], 1.0F);
-        db_gl_clear_color_buffer();
-        db_history_record_draw_stats_for_work(&g_state.frame.full_draw_frames,
-                                              &g_state.frame.dirty_draw_frames,
-                                              1, 0, 1U);
-        collect_force_full_blocks = 0;
+    if (state->rebuild_current_frame != 0) {
+        g_state.snake_replay.replay_mode = DB_GL1_SNAKE_REPLAY_NONE;
+        g_state.snake_replay.prev_draw_block_count = 0U;
     }
-    state->force_full_upload = collect_force_full_blocks;
     const int can_replay_snake = db_history_can_replay_previous_damage(
         preserved_framebuffer_count, dirty_backbuffer_mode,
         g_state.snake_backbuffer_state.backbuffer_valid,
@@ -294,8 +423,34 @@ void db_gl1_prepare_snake_frame_state(db_gl1_snake_frame_state_t *state,
 
 void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                                   uint32_t preserved_framebuffer_count) {
+    db_grid_block_t gradient_dirty_blocks[DB_GL1_GRADIENT_REPLAY_ROW_CAP] = {
+        {0U, 0U, 0U, 0U}, {0U, 0U, 0U, 0U}, {0U, 0U, 0U, 0U}, {0U, 0U, 0U, 0U}};
+    db_frame_delta_compact_block_t gradient_compact_blocks[2U] = {
+        {0U, 0U, 0U, 0U, {0U, 0U, 0U}},
+        {0U, 0U, 0U, 0U, {0U, 0U, 0U}},
+    };
+    db_frame_delta_plan_t gradient_delta = {0};
+    (void)db_frame_delta_produce_gradient(
+        &(const db_frame_delta_gradient_producer_t){
+            .pattern = g_state.runtime.pattern,
+            .head_row = g_state.runtime.gradient.head_row,
+            .direction_down = g_state.runtime.gradient.direction_down,
+            .cycle_index = g_state.runtime.gradient.cycle_index,
+            .head_step = db_u32_max(g_state.runtime.bench_speed_step, 1U),
+            .rows = db_grid_rows_effective(),
+            .cols = db_grid_cols_effective(),
+            .pixel_width = db_grid_cols_effective(),
+            .pixel_height = db_grid_rows_effective(),
+            .damage_blocks = gradient_dirty_blocks,
+            .damage_capacity = DB_GL1_GRADIENT_REPLAY_ROW_CAP,
+            .compact_blocks = gradient_compact_blocks,
+            .compact_capacity = 2U,
+            .repair_blocks = NULL,
+            .repair_capacity = 0U,
+        },
+        &gradient_delta);
     const db_gradient_damage_plan_t gradient_plan =
-        db_history_eval_gradient_step_from_runtime(&g_state.runtime);
+        gradient_delta.gradient_plan;
 
     // Render MUST use the plan's render_* state. The plan's next_* state is
     // only applied to the runtime AFTER we draw, matching CPU renderer
@@ -309,11 +464,8 @@ void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
     const uint32_t rows = db_grid_rows_effective();
     const uint32_t full_width_cols = db_grid_cols_effective();
 
-    db_grid_block_t gradient_dirty_blocks[DB_GL1_GRADIENT_REPLAY_ROW_CAP] = {
-        {0U, 0U, 0U, 0U}, {0U, 0U, 0U, 0U}, {0U, 0U, 0U, 0U}, {0U, 0U, 0U, 0U}};
-    const size_t gradient_dirty_count = db_gradient_collect_dirty_blocks(
-        &gradient_plan, rows, full_width_cols, gradient_dirty_blocks,
-        DB_GL1_GRADIENT_REPLAY_ROW_CAP);
+    const size_t gradient_dirty_count =
+        gradient_delta.logical_damage_block_count;
 
     // When bench_speed_step > 1, the head can advance by multiple rows. Plan
     // dirty ranges cover the new sweep window, but traversed rows can be
@@ -424,12 +576,14 @@ void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                 {0U, 0U, 0U, 0U},
                 {0U, 0U, 0U, 0U},
                 {0U, 0U, 0U, 0U}};
-            size_t curr_draw_count = db_gradient_build_curr_draw_blocks(
-                skipped_blocks, skipped_count, gradient_dirty_blocks,
-                gradient_dirty_count, full_width_cols, curr_draw_blocks,
-                DB_GL1_GRADIENT_REPLAY_ROW_CAP);
-            const int needs_full_seed = db_history_should_seed_full_on_invalid(
-                g_state.backbuffer_valid);
+            size_t curr_draw_count =
+                db_frame_delta_build_gradient_curr_draw_blocks(
+                    skipped_blocks, skipped_count, gradient_dirty_blocks,
+                    gradient_dirty_count, full_width_cols, curr_draw_blocks,
+                    DB_GL1_GRADIENT_REPLAY_ROW_CAP);
+            const db_history_backbuffer_recovery_action_t history_action =
+                db_history_eval_history_backbuffer_recovery_action(
+                    g_state.backbuffer_valid);
             const db_grid_block_t *persist_blocks = curr_draw_blocks;
             size_t persist_count = curr_draw_count;
             db_gradient_state_t persist_state = {
@@ -438,7 +592,7 @@ void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                 .direction_down = gradient_render_direction_down,
             };
 
-            if (needs_full_seed != 0) {
+            if (history_action.should_rebuild_current_frame_now != 0) {
                 g_state.backbuffer_valid = 1;
                 curr_draw_count = 1U;
                 curr_draw_blocks[0] = (db_grid_block_t){
@@ -469,7 +623,7 @@ void db_gl1_render_gradient_frame(int viewport_w, int viewport_h,
                 size_t replay_draw_count =
                     g_state.gradient_prev_frame.draw_count;
                 if ((has_replay != 0) && (has_current != 0)) {
-                    replay_draw_count = db_gradient_subtract_replay_blocks(
+                    replay_draw_count = db_frame_delta_subtract_replay_blocks(
                         g_state.gradient_prev_frame.draw_blocks,
                         g_state.gradient_prev_frame.draw_count,
                         curr_draw_blocks, curr_draw_count, replay_draw_blocks,

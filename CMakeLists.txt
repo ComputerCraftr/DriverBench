@@ -17,6 +17,7 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 include(CheckIncludeFile)
 include(CheckSymbolExists)
+include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchPlatform.cmake)
 
 set(DB_SOURCE_FILE_LINE_LIMIT 1000)
 
@@ -38,16 +39,6 @@ endif()
 set(DB_COMPILER_IS_GNU_LIKE OFF)
 if(DB_COMPILER_IS_CLANG OR DB_COMPILER_IS_GNU)
   set(DB_COMPILER_IS_GNU_LIKE ON)
-endif()
-
-set(DB_PLATFORM_IS_APPLE OFF)
-if(APPLE)
-  set(DB_PLATFORM_IS_APPLE ON)
-endif()
-
-set(DB_PLATFORM_IS_NON_APPLE_UNIX OFF)
-if(UNIX AND NOT APPLE)
-  set(DB_PLATFORM_IS_NON_APPLE_UNIX ON)
 endif()
 
 set(DB_CORE_SOURCES
@@ -79,6 +70,13 @@ set(DB_TARGET_LINUX_MUSL_SYSROOT "" CACHE PATH
 )
 option(DB_TARGET_LINUX_32BIT
   "Enable 32-bit target flags (-m32) for Linux cross-compilation" OFF)
+
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING
+    "Build type (defaulted to Release for renderer validation performance)"
+    FORCE
+  )
+endif()
 
 set(DB_IS_RELEASE_LIKE OFF)
 if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
@@ -117,163 +115,11 @@ add_compile_definitions(DB_HAVE_STDCKDINT=${DB_HAVE_STDCKDINT})
 message(STATUS "C23 stdckdint support: ${DB_HAVE_STDCKDINT}")
 
 set(DB_USE_LLD OFF)
-if(DB_EFFECTIVE_LTO AND DB_COMPILER_IS_CLANG)
-  if(DB_PLATFORM_IS_APPLE)
-    message(STATUS
-      "Apple build with LTO: keeping the platform linker; skipping ld.lld "
-      "to avoid known ld64.lld crashes on macOS arm64."
-    )
-  else()
-    find_program(DB_LLD_PROGRAM NAMES ld.lld lld)
-    if(DB_LLD_PROGRAM)
-      set(DB_USE_LLD ON)
-    endif()
-  endif()
-endif()
+db_configure_platform_linker_preference()
 
 set(DB_CROSS_COMPILE_FLAGS "")
 set(DB_CROSS_LINK_FLAGS "")
-
-if(DB_TARGET_LINUX_MUSL)
-  if(NOT DB_PLATFORM_IS_NON_APPLE_UNIX)
-    message(FATAL_ERROR
-      "DB_TARGET_LINUX_MUSL is only supported for non-Apple UNIX builds."
-    )
-  endif()
-
-  if(DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
-    set(DB_AUTO_MUSL_SYSROOT "/usr/${DB_TARGET_LINUX_MUSL_TRIPLE}")
-    if(EXISTS "${DB_AUTO_MUSL_SYSROOT}")
-      set(DB_TARGET_LINUX_MUSL_SYSROOT "${DB_AUTO_MUSL_SYSROOT}" CACHE PATH
-        "Optional sysroot path used when DB_TARGET_LINUX_MUSL is ON"
-        FORCE
-      )
-      message(STATUS
-        "DB_TARGET_LINUX_MUSL=ON: auto-detected musl sysroot at "
-        "${DB_TARGET_LINUX_MUSL_SYSROOT}"
-      )
-    endif()
-  endif()
-
-  if(DB_COMPILER_IS_CLANG)
-    list(APPEND DB_CROSS_COMPILE_FLAGS
-      "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}"
-    )
-    list(APPEND DB_CROSS_LINK_FLAGS
-      "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}"
-    )
-    if(NOT DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
-      list(APPEND DB_CROSS_COMPILE_FLAGS
-        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
-      )
-      list(APPEND DB_CROSS_LINK_FLAGS
-        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
-      )
-    endif()
-  elseif(DB_COMPILER_IS_GNU)
-    message(STATUS
-      "DB_TARGET_LINUX_MUSL is ON with GCC; ensure a musl-targeted GCC toolchain "
-      "(e.g. musl-gcc or <triple>-gcc) is selected."
-    )
-    if(NOT DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
-      list(APPEND DB_CROSS_COMPILE_FLAGS
-        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
-      )
-      list(APPEND DB_CROSS_LINK_FLAGS
-        "--sysroot=${DB_TARGET_LINUX_MUSL_SYSROOT}"
-      )
-    endif()
-  else()
-    message(FATAL_ERROR
-      "DB_TARGET_LINUX_MUSL is unsupported for compiler '${CMAKE_C_COMPILER_ID}'."
-    )
-  endif()
-  # Musl target binaries should be fully static by default.
-  list(APPEND DB_CROSS_LINK_FLAGS -static)
-  message(STATUS
-    "DB_TARGET_LINUX_MUSL=ON: enabling static linking (-static). Ensure all "
-    "required third-party libraries are available as static archives."
-  )
-
-  if(NOT DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
-    # Make CMake package/library discovery prefer the musl sysroot over host
-    # glibc locations so static musl dependencies can be resolved correctly.
-    list(PREPEND CMAKE_FIND_ROOT_PATH "${DB_TARGET_LINUX_MUSL_SYSROOT}")
-    list(PREPEND CMAKE_PREFIX_PATH
-      "${DB_TARGET_LINUX_MUSL_SYSROOT}"
-      "${DB_TARGET_LINUX_MUSL_SYSROOT}/usr"
-    )
-    set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-    set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-    set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-    set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-    set(CMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH OFF)
-    set(CMAKE_FIND_USE_PACKAGE_REGISTRY OFF)
-    set(CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY OFF)
-
-    # Force pkg-config lookup into the musl sysroot only.
-    set(ENV{PKG_CONFIG_DIR} "")
-    set(ENV{PKG_CONFIG_PATH} "")
-    set(DB_MUSL_PKGCONFIG_LIBDIRS "")
-    foreach(DB_PKG_DIR
-      "${DB_TARGET_LINUX_MUSL_SYSROOT}/lib/pkgconfig"
-      "${DB_TARGET_LINUX_MUSL_SYSROOT}/share/pkgconfig"
-      "${DB_TARGET_LINUX_MUSL_SYSROOT}/usr/lib/pkgconfig"
-      "${DB_TARGET_LINUX_MUSL_SYSROOT}/usr/share/pkgconfig")
-      if(EXISTS "${DB_PKG_DIR}")
-        list(APPEND DB_MUSL_PKGCONFIG_LIBDIRS "${DB_PKG_DIR}")
-      endif()
-    endforeach()
-    if(DB_MUSL_PKGCONFIG_LIBDIRS)
-      list(JOIN DB_MUSL_PKGCONFIG_LIBDIRS ":" DB_MUSL_PKGCONFIG_LIBDIR)
-      set(ENV{PKG_CONFIG_LIBDIR} "${DB_MUSL_PKGCONFIG_LIBDIR}")
-      set(ENV{PKG_CONFIG_SYSROOT_DIR} "${DB_TARGET_LINUX_MUSL_SYSROOT}")
-    endif()
-  endif()
-endif()
-
-if(DB_TARGET_LINUX_32BIT)
-  if(NOT DB_PLATFORM_IS_NON_APPLE_UNIX)
-    message(FATAL_ERROR
-      "DB_TARGET_LINUX_32BIT is only supported for non-Apple UNIX builds."
-    )
-  endif()
-  list(APPEND DB_CROSS_COMPILE_FLAGS -m32)
-  list(APPEND DB_CROSS_LINK_FLAGS -m32)
-  # Enforce conservative x86 SSE2-only baseline for 32-bit targets.
-  list(APPEND DB_CROSS_COMPILE_FLAGS
-    -march=pentium4
-    -mtune=generic
-    -msse2
-    -mfpmath=sse
-    -mno-sse3
-    -mno-ssse3
-    -mno-sse4.1
-    -mno-sse4.2
-    -mno-avx
-    -mno-avx2
-  )
-endif()
-
-if(DB_TARGET_LINUX_MUSL AND DB_TARGET_LINUX_32BIT AND
-   DB_TARGET_LINUX_MUSL_TRIPLE MATCHES "^x86_64-")
-  message(WARNING
-    "DB_TARGET_LINUX_32BIT is ON while DB_TARGET_LINUX_MUSL_TRIPLE is "
-    "'${DB_TARGET_LINUX_MUSL_TRIPLE}'. For 32-bit musl target consider "
-    "setting DB_TARGET_LINUX_MUSL_TRIPLE=i686-linux-musl."
-  )
-endif()
-
-if(DB_TARGET_LINUX_MUSL AND DB_TARGET_LINUX_32BIT)
-  if(DB_COMPILER_IS_CLANG AND
-     DB_TARGET_LINUX_MUSL_SYSROOT STREQUAL "")
-    message(FATAL_ERROR
-      "32-bit musl target requires a musl i686 sysroot when using clang. "
-      "Set DB_TARGET_LINUX_MUSL_SYSROOT to your i686 musl sysroot path, "
-      "or use an i686 musl GCC cross compiler (e.g. i686-linux-musl-gcc)."
-    )
-  endif()
-endif()
+include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchLinuxToolchain.cmake)
 
 function(db_apply_perf_options target_name)
   if(NOT TARGET ${target_name})
@@ -316,24 +162,6 @@ function(db_apply_perf_options target_name)
     target_link_options(${target_name} PRIVATE ${DB_CROSS_LINK_FLAGS})
   endif()
 
-  if(DB_PLATFORM_IS_NON_APPLE_UNIX)
-    target_compile_definitions(${target_name} PRIVATE _POSIX_C_SOURCE=200809L)
-  endif()
-
-  if(DB_ENABLE_SANITIZERS AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if(DB_COMPILER_IS_GNU_LIKE)
-      set(DB_SANITIZER_FLAGS -fsanitize=address,undefined)
-      if(NOT DB_PLATFORM_IS_APPLE)
-        list(APPEND DB_SANITIZER_FLAGS -fsanitize=leak)
-      endif()
-      target_compile_options(${target_name} PRIVATE
-        -fno-omit-frame-pointer
-        ${DB_SANITIZER_FLAGS}
-      )
-      target_link_options(${target_name} PRIVATE ${DB_SANITIZER_FLAGS})
-    endif()
-  endif()
-
   if(DB_IS_RELEASE_LIKE AND DB_ENABLE_AGGRESSIVE_OPT)
     if(DB_COMPILER_IS_GNU_LIKE)
       target_compile_options(${target_name} PRIVATE -O3)
@@ -354,30 +182,7 @@ function(db_apply_perf_options target_name)
     endif()
   endif()
 
-  if(DB_PLATFORM_IS_APPLE AND DB_ENABLE_DSYM)
-    if(CMAKE_BUILD_TYPE MATCHES "^(Debug|RelWithDebInfo)$")
-      find_program(DB_DSYMUTIL_PROGRAM NAMES dsymutil xcrun)
-      if(DB_DSYMUTIL_PROGRAM)
-        if(DB_DSYMUTIL_PROGRAM MATCHES ".*/xcrun$")
-          add_custom_command(TARGET ${target_name} POST_BUILD
-            COMMAND ${DB_DSYMUTIL_PROGRAM} dsymutil
-                    $<TARGET_FILE:${target_name}>
-                    -o $<TARGET_FILE:${target_name}>.dSYM
-            COMMENT "Generating dSYM for ${target_name}"
-            VERBATIM
-          )
-        else()
-          add_custom_command(TARGET ${target_name} POST_BUILD
-            COMMAND ${DB_DSYMUTIL_PROGRAM}
-                    $<TARGET_FILE:${target_name}>
-                    -o $<TARGET_FILE:${target_name}>.dSYM
-            COMMENT "Generating dSYM for ${target_name}"
-            VERBATIM
-          )
-        endif()
-      endif()
-    endif()
-  endif()
+  db_apply_platform_target_options(${target_name})
 endfunction()
 
 set(DB_UNIFIED_TARGET driverbench)

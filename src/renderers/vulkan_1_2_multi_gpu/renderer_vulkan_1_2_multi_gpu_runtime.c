@@ -1,7 +1,10 @@
 #include "../../core/db_core.h"
 #include "../../core/db_numeric.h"
+#include "../../displays/display_runtime_config_common.h"
 #include "../renderer_benchmark_runtime.h"
+#include "../renderer_gl_common.h"
 #include "../renderer_history_common.h"
+#include "renderer_vulkan_1_2_multi_gpu.h"
 #include "renderer_vulkan_1_2_multi_gpu_init_internal.h"
 #include "renderer_vulkan_1_2_multi_gpu_internal.h"
 #include "renderer_vulkan_1_2_multi_gpu_runtime_internal.h"
@@ -13,15 +16,16 @@ void db_renderer_vulkan_1_2_multi_gpu_shutdown(void) {
     if (!g_state.initialized) {
         return;
     }
-    uint64_t bench_end = db_now_ns_monotonic();
-    double bench_ms =
+    const uint64_t bench_end = db_now_ns_monotonic();
+    const double bench_ms =
         (double)(bench_end - g_state.bench_start_ns) / DB_NS_PER_MS;
-    db_benchmark_log_final(
+    db_display_log_renderer_final_summary(
         "Vulkan", RENDERER_NAME,
         (g_state.log_backend_name != NULL) ? g_state.log_backend_name
                                            : BACKEND_NAME,
-        g_state.bench_frames, g_state.runtime.work_unit_count, bench_ms,
-        g_state.capability_mode);
+        g_state.capability_mode, g_state.bench_frames,
+        g_state.runtime.work_unit_count, bench_ms,
+        db_renderer_vulkan_1_2_multi_gpu_draw_stats);
     double render_p50_ms = 0.0;
     double render_p95_ms = 0.0;
     double render_p99_ms = 0.0;
@@ -149,10 +153,7 @@ void db_renderer_vulkan_1_2_multi_gpu_set_output_hash_enabled(int enabled) {
     g_state.output_hash_enabled = (enabled != 0) ? 1 : 0;
 }
 
-void db_renderer_vulkan_1_2_multi_gpu_draw_stats(uint64_t *full_draw_frames,
-                                                 uint64_t *dirty_draw_frames) {
-    db_history_copy_draw_stats(&g_state.frame, full_draw_frames,
-                               dirty_draw_frames);
+void db_renderer_vulkan_1_2_multi_gpu_draw_stats(
+    db_renderer_draw_path_stats_t *stats) {
+    db_history_copy_draw_path_stats(&g_state.frame, stats);
 }
-
-// NOLINTEND(misc-include-cleaner)

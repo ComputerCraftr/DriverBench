@@ -48,8 +48,10 @@ void db_glfw_destroy_window(GLFWwindow *window);
 void db_glfw_poll_events(void);
 db_display_frame_loop_run_result_t db_glfw_run_loop(db_glfw_loop_t *loop);
 db_glfw_default_fb_probe_result_t
-db_glfw_probe_and_log_default_framebuffer_reuse(const char *backend_name,
-                                                GLFWwindow *window);
+db_glfw_probe_default_framebuffer_reuse(const char *backend_name,
+                                        GLFWwindow *window);
+void db_glfw_log_default_framebuffer_probe(
+    const char *backend_name, const db_glfw_default_fb_probe_result_t *result);
 int db_glfw_default_framebuffer_probe_is_stable(
     const db_glfw_default_fb_probe_result_t *result);
 

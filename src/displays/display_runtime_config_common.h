@@ -7,6 +7,7 @@
 #include "../config/runtime_options.h"
 #include "../core/db_core.h"
 #include "../driverbench_config.h"
+#include "../renderers/renderer_gl_common.h"
 #include "display_hash_common.h"
 
 typedef struct {
@@ -35,7 +36,6 @@ typedef struct {
 typedef struct {
     const char *api_name;
     const char *backend;
-    const char *capability_mode;
     const char *renderer_name;
     db_display_hash_tracker_t *output_hash_tracker;
     db_display_hash_tracker_t *state_hash_tracker;
@@ -124,15 +124,14 @@ db_display_runtime_hash_config_from_cli(const db_cli_config_t *cfg,
 }
 
 static inline db_display_frame_step_t db_display_frame_step_make(
-    const char *api_name, const char *backend, const char *capability_mode,
-    const char *renderer_name, db_display_hash_tracker_t *output_hash_tracker,
+    const char *api_name, const char *backend, const char *renderer_name,
+    db_display_hash_tracker_t *output_hash_tracker,
     db_display_hash_tracker_t *state_hash_tracker,
     double *next_progress_log_due_ms, uint32_t work_unit_count,
     int output_hash_enabled, int state_hash_enabled) {
     return (db_display_frame_step_t){
         .api_name = api_name,
         .backend = backend,
-        .capability_mode = capability_mode,
         .renderer_name = renderer_name,
         .output_hash_tracker = output_hash_tracker,
         .state_hash_tracker = state_hash_tracker,
@@ -218,9 +217,8 @@ db_display_cpu_frame_step(const db_display_frame_step_t *step,
     }
     db_benchmark_log_periodic(
         step->api_name, step->renderer_name, step->backend,
-        (uint64_t)frame_index + 1U, step->work_unit_count, elapsed_ms,
-        step->capability_mode, step->next_progress_log_due_ms,
-        BENCH_LOG_INTERVAL_MS);
+        (uint64_t)frame_index + 1U, step->work_unit_count, elapsed_ms, NULL,
+        step->next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS);
 }
 
 static inline void
@@ -243,30 +241,54 @@ db_display_gl_frame_step(const db_display_frame_step_t *step,
     }
     db_benchmark_log_periodic(
         step->api_name, step->renderer_name, step->backend,
-        (uint64_t)frame_index + 1U, step->work_unit_count, elapsed_ms,
-        step->capability_mode, step->next_progress_log_due_ms,
-        BENCH_LOG_INTERVAL_MS);
+        (uint64_t)frame_index + 1U, step->work_unit_count, elapsed_ms, NULL,
+        step->next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS);
 }
 
-static inline void db_display_log_draw_stats(const char *backend,
-                                             uint64_t full_draw_frames,
-                                             uint64_t dirty_draw_frames) {
-    db_infof(backend,
-             "draw stats: full_draw_frames=%llu dirty_draw_frames=%llu",
-             (unsigned long long)full_draw_frames,
-             (unsigned long long)dirty_draw_frames);
+static inline int
+db_display_format_draw_stats_log(char *buffer, size_t buffer_size,
+                                 const db_renderer_draw_path_stats_t *stats) {
+    const db_renderer_draw_path_stats_t safe_stats =
+        (stats != NULL) ? *stats : (db_renderer_draw_path_stats_t){0};
+    return db_snprintf(
+        buffer, buffer_size,
+        "draw stats: full_present_frames=%llu dirty_geometry_frames=%llu "
+        "shadow_fallback_frames=%llu replay_only_frames=%llu",
+        (unsigned long long)safe_stats.full_present_frames,
+        (unsigned long long)safe_stats.dirty_geometry_frames,
+        (unsigned long long)safe_stats.shadow_fallback_frames,
+        (unsigned long long)safe_stats.replay_only_frames);
 }
 
 static inline void
-db_display_log_draw_stats_with_fn(const char *backend,
-                                  void (*draw_stats)(uint64_t *, uint64_t *)) {
+db_display_log_draw_stats(const char *backend,
+                          const db_renderer_draw_path_stats_t *stats) {
+    enum { DB_DISPLAY_DRAW_STATS_TEXT_SIZE = 192 };
+    char text[DB_DISPLAY_DRAW_STATS_TEXT_SIZE];
+    (void)db_display_format_draw_stats_log(text, sizeof(text), stats);
+    db_infof(backend, "%s", text);
+}
+
+static inline void db_display_log_draw_stats_with_fn(
+    const char *backend, void (*draw_stats)(db_renderer_draw_path_stats_t *)) {
     if (draw_stats == NULL) {
         return;
     }
-    uint64_t full_draw_frames = 0U;
-    uint64_t dirty_draw_frames = 0U;
-    draw_stats(&full_draw_frames, &dirty_draw_frames);
-    db_display_log_draw_stats(backend, full_draw_frames, dirty_draw_frames);
+    db_renderer_draw_path_stats_t stats = {0};
+    draw_stats(&stats);
+    db_display_log_draw_stats(backend, &stats);
+}
+
+// Final summary contract:
+// - draw stats are emitted only from final summary ownership
+// - benchmark final logs are emitted only from the shared final summary path
+static inline void db_display_log_renderer_final_summary(
+    const char *api_name, const char *renderer_name, const char *backend,
+    const char *capability_mode, uint64_t frames, uint32_t work_unit_count,
+    double elapsed_ms, void (*draw_stats)(db_renderer_draw_path_stats_t *)) {
+    db_display_log_draw_stats_with_fn(backend, draw_stats);
+    db_benchmark_log_final(api_name, renderer_name, backend, frames,
+                           work_unit_count, elapsed_ms, capability_mode);
 }
 
 #endif

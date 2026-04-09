@@ -7,12 +7,17 @@ typedef struct {
     void (*bind_buffer)(GLenum target, GLuint buffer);
     void (*buffer_data)(GLenum target, GLsizeiptr size, const void *data,
                         GLenum usage);
+    void (*buffer_storage)(GLenum target, GLsizeiptr size, const void *data,
+                           GLbitfield flags);
     void (*buffer_sub_data)(GLenum target, GLintptr offset, GLsizeiptr size,
                             const void *data);
     void *(*map_buffer)(GLenum target, GLenum access);
     void *(*map_buffer_range)(GLenum target, GLintptr offset, GLsizeiptr length,
                               GLbitfield access);
     GLboolean (*unmap_buffer)(GLenum target);
+    GLsync (*fence_sync)(GLenum condition, GLbitfield flags);
+    GLenum (*client_wait_sync)(GLsync sync, GLbitfield flags, GLuint64 timeout);
+    void (*delete_sync)(GLsync sync);
 } db_gl_upload_ops_t;
 
 void db_gl_internal_require_upload_ready(const char *func_name);

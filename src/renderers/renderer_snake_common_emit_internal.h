@@ -259,6 +259,13 @@ static inline void db_snake_rgb_sink_write_tile(const db_snake_rgb_sink_t *sink,
                                       sink->pixel_surface.pixels_rgba16f,
                                       sink->pixel_surface.uses_rgba16f,
                                       (size_t)tile_index, rgb);
+        if (sink->mirror_pixel_surface_enabled != 0) {
+            db_rgb_pixels_write_index_f64(
+                sink->mirror_pixel_surface.pixels_rgba8,
+                sink->mirror_pixel_surface.pixels_rgba16f,
+                sink->mirror_pixel_surface.uses_rgba16f, (size_t)tile_index,
+                rgb);
+        }
         return;
     }
     db_damage_block_t pixel_block = {0U, 0U, 0U, 0U};
@@ -274,6 +281,16 @@ static inline void db_snake_rgb_sink_write_tile(const db_snake_rgb_sink_t *sink,
         sink->pixel_surface.uses_rgba16f, pixel_block.row_start,
         pixel_block.row_count, pixel_block.col_start, pixel_block.col_count,
         rgb);
+    if (sink->mirror_pixel_surface_enabled != 0) {
+        db_rgb_pixels_fill_damage_block_f64(
+            sink->mirror_pixel_surface.pixel_width,
+            sink->mirror_pixel_surface.pixel_height,
+            sink->mirror_pixel_surface.pixels_rgba8,
+            sink->mirror_pixel_surface.pixels_rgba16f,
+            sink->mirror_pixel_surface.uses_rgba16f, pixel_block.row_start,
+            pixel_block.row_count, pixel_block.col_start, pixel_block.col_count,
+            rgb);
+    }
 }
 
 static inline void db_snake_rgb_sink_fill_all(const db_snake_rgb_sink_t *sink,
@@ -299,6 +316,14 @@ static inline void db_snake_rgb_sink_fill_all(const db_snake_rgb_sink_t *sink,
         sink->pixel_surface.pixel_width, sink->pixel_surface.pixel_height,
         sink->pixel_surface.pixels_rgba8, sink->pixel_surface.pixels_rgba16f,
         sink->pixel_surface.uses_rgba16f, rgb);
+    if (sink->mirror_pixel_surface_enabled != 0) {
+        db_rgb_pixels_fill_solid_f64(sink->mirror_pixel_surface.pixel_width,
+                                     sink->mirror_pixel_surface.pixel_height,
+                                     sink->mirror_pixel_surface.pixels_rgba8,
+                                     sink->mirror_pixel_surface.pixels_rgba16f,
+                                     sink->mirror_pixel_surface.uses_rgba16f,
+                                     rgb);
+    }
 }
 
 static inline void db_snake_emit_step_rgb(

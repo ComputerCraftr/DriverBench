@@ -43,7 +43,19 @@ void db_runtime_option_set(const char *name, const char *value) {
     db_failf("runtime_options", "Runtime option capacity exceeded");
 }
 
+void db_runtime_options_reset_all(void) {
+    for (size_t i = 0U; i < DB_RUNTIME_OPTION_CAPACITY; i++) {
+        g_runtime_options[i].key = NULL;
+        g_runtime_options[i].value = NULL;
+    }
+}
+
 void db_runtime_option_set_backbuffer_draw_full(int enabled) {
     db_runtime_option_set(DB_RUNTIME_OPT_BACKBUFFER_DRAW_MODE,
                           (enabled != 0) ? "full" : "dirty");
+}
+
+void db_runtime_option_set_present_buffer_mode(const char *mode) {
+    db_runtime_option_set(DB_RUNTIME_OPT_PRESENT_BUFFER_MODE,
+                          (mode != NULL) ? mode : "auto");
 }

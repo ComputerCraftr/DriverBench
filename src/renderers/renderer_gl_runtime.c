@@ -136,77 +136,490 @@ void db_gl_upload_probe_fill_pattern(uint8_t *pattern, size_t count) {
     }
 }
 
-const char *db_gl_capability_mode_upload_from_probe(
-    int has_vbo, const db_gl_upload_probe_result_t *upload) {
-    if (has_vbo == 0) {
-        return DB_GL_CAP_UPLOAD_CLIENT_ARRAY;
+const char *db_gl_runtime_draw_mode_name(db_gl_runtime_draw_mode_t mode) {
+    switch (mode) {
+    case DB_GL_RUNTIME_DRAW_FF_RECT_FILL:
+        return "ff_rect_fill";
+    case DB_GL_RUNTIME_DRAW_DIRTY_REPLAY:
+        return "dirty_replay";
+    case DB_GL_RUNTIME_DRAW_SHADOW_FALLBACK:
+        return "shadow_fallback";
+    case DB_GL_RUNTIME_DRAW_FULL_PRESENT:
+    default:
+        return "full_present";
     }
-    if ((upload != NULL) && (upload->use_persistent_upload != 0)) {
-        return DB_GL_CAP_UPLOAD_VBO_PERSISTENT;
+}
+
+const char *db_gl_shadow_present_preserve_mode_name(
+    db_gl_shadow_present_preserve_mode_t preserve_mode) {
+    switch (preserve_mode) {
+    case DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS:
+        return "replace";
+    case DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE:
+        return "single_source";
+    case DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT:
+        return "ring";
+    default:
+        return "unknown";
     }
-    if ((upload != NULL) && (upload->use_map_range_upload != 0)) {
-        return DB_GL_CAP_UPLOAD_VBO_MAP_RANGE;
-    }
-    if ((upload != NULL) && (upload->use_map_buffer_upload != 0)) {
-        return DB_GL_CAP_UPLOAD_VBO_MAP_BUFFER;
-    }
-    return DB_GL_CAP_UPLOAD_VBO;
 }
 
 const char *
-db_gl_capability_mode_gl3_shader(const db_gl_upload_probe_result_t *upload,
-                                 int uses_history_texture) {
-    if (uses_history_texture != 0) {
-        return DB_GL_CAP_MODE_OPENGL_SHADER_HISTORY_DIRTY_DRAW;
+db_gl_stream_upload_storage_name(db_gl_stream_upload_storage_t storage) {
+    switch (storage) {
+    case DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT:
+        return "buffer_object";
+    case DB_GL_STREAM_UPLOAD_STORAGE_CLIENT:
+    default:
+        return "client";
     }
-    if ((upload != NULL) && (upload->use_persistent_upload != 0)) {
-        return DB_GL_CAP_MODE_OPENGL_SHADER_VBO_PERSISTENT;
+}
+
+const char *db_gl_stream_upload_mode_name(db_gl_stream_upload_mode_t mode) {
+    switch (mode) {
+    case DB_GL_STREAM_UPLOAD_MODE_PERSISTENT:
+        return "persistent";
+    case DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE:
+        return "map_range";
+    case DB_GL_STREAM_UPLOAD_MODE_MAP_BUFFER:
+        return "map_buffer";
+    case DB_GL_STREAM_UPLOAD_MODE_SUB_DATA:
+    default:
+        return "sub_data";
     }
-    if ((upload != NULL) && (upload->use_map_range_upload != 0)) {
-        return DB_GL_CAP_MODE_OPENGL_SHADER_VBO_MAP_RANGE;
-    }
-    if ((upload != NULL) && (upload->use_map_buffer_upload != 0)) {
-        return DB_GL_CAP_MODE_OPENGL_SHADER_VBO_MAP_BUFFER;
-    }
-    return DB_GL_CAP_MODE_OPENGL_SHADER_VBO;
 }
 
 const char *
-db_gl_capability_mode_draw_select(int uses_ff_rect_draw_mode,
-                                  int uses_history_draw,
-                                  int use_shader_history_draw_name) {
-    if (uses_ff_rect_draw_mode != 0) {
-        return DB_GL_CAP_DRAW_FF_RECT_FILL;
+db_gl_stream_upload_name(const db_gl_stream_upload_capability_t *capability,
+                         int client_arrays, int upload_enabled) {
+    if (upload_enabled == 0) {
+        return "none";
     }
-    if (uses_history_draw != 0) {
-        return (use_shader_history_draw_name != 0)
-                   ? DB_GL_CAP_MODE_OPENGL_SHADER_HISTORY_DIRTY_DRAW
-                   : DB_GL_CAP_DRAW_HISTORY_DIRTY;
+    if (client_arrays != 0) {
+        return "client_arrays";
     }
-    return DB_GL_CAP_DRAW_TILES_FULL;
+    if (db_gl_stream_upload_uses_buffer_object(capability) == 0) {
+        return "client_upload";
+    }
+    if (db_gl_stream_upload_uses_persistent(capability) != 0) {
+        return "persistent";
+    }
+    if (db_gl_stream_upload_uses_map_range(capability) != 0) {
+        return "map_range";
+    }
+    if (db_gl_stream_upload_uses_map_buffer(capability) != 0) {
+        return "map_buffer";
+    }
+    return "buffer_object";
 }
 
-const char *db_gl_capability_mode_upload_select(int suppress_upload,
-                                                const char *upload_mode) {
-    if (suppress_upload != 0) {
-        return DB_GL_CAP_UPLOAD_NONE;
+const char *db_gl_present_buffer_mode_name(db_gl_present_buffer_mode_t mode) {
+    switch (mode) {
+    case DB_GL_PRESENT_BUFFER_MODE_REPLACE:
+        return "replace";
+    case DB_GL_PRESENT_BUFFER_MODE_SINGLE_SOURCE:
+        return "single_source";
+    case DB_GL_PRESENT_BUFFER_MODE_RING:
+        return "ring";
+    case DB_GL_PRESENT_BUFFER_MODE_AUTO:
+    default:
+        return "auto";
     }
-    return (upload_mode != NULL) ? upload_mode : DB_GL_CAP_UPLOAD_NONE;
 }
 
-void db_gl_capability_mode_compose(char *output, size_t output_size,
-                                   const char *draw_mode,
-                                   const char *upload_mode,
-                                   int backbuffer_replay) {
-    if ((output == NULL) || (output_size == 0U)) {
+int db_gl_present_buffer_mode_parse(const char *text,
+                                    db_gl_present_buffer_mode_t *out_mode) {
+    if ((text == NULL) || (out_mode == NULL)) {
+        return 0;
+    }
+    if (strcmp(text, "auto") == 0) {
+        *out_mode = DB_GL_PRESENT_BUFFER_MODE_AUTO;
+        return 1;
+    }
+    if (strcmp(text, "replace") == 0) {
+        *out_mode = DB_GL_PRESENT_BUFFER_MODE_REPLACE;
+        return 1;
+    }
+    if (strcmp(text, "single_source") == 0) {
+        *out_mode = DB_GL_PRESENT_BUFFER_MODE_SINGLE_SOURCE;
+        return 1;
+    }
+    if (strcmp(text, "ring") == 0) {
+        *out_mode = DB_GL_PRESENT_BUFFER_MODE_RING;
+        return 1;
+    }
+    return 0;
+}
+
+db_gl_stream_upload_capability_t db_gl_stream_upload_capability_from_probe(
+    db_gl_upload_target_t target, const db_gl_upload_probe_result_t *probe,
+    int enable_sync) {
+    db_gl_stream_upload_capability_t capability = {
+        .target = target,
+        .requested_storage = DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT,
+        .supported_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+        .effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+        .requested_mode = DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE,
+        .supported_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+        .effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+        .sync_supported = (enable_sync != 0) ? 1 : 0,
+        .sync_enabled = 0,
+    };
+    if ((probe != NULL) && (probe->use_persistent_upload != 0)) {
+        capability.supported_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+        capability.effective_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+        capability.supported_mode = DB_GL_STREAM_UPLOAD_MODE_PERSISTENT;
+        capability.effective_mode = DB_GL_STREAM_UPLOAD_MODE_PERSISTENT;
+        capability.sync_enabled = capability.sync_supported;
+        db_gl_stream_upload_disable_persistent_for_target(&capability, target);
+        return capability;
+    }
+    if ((probe != NULL) && (probe->use_map_range_upload != 0)) {
+        capability.supported_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+        capability.effective_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+        capability.supported_mode = DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE;
+        capability.effective_mode = DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE;
+        capability.sync_enabled = capability.sync_supported;
+        return capability;
+    }
+    if ((probe != NULL) && (probe->use_map_buffer_upload != 0)) {
+        capability.supported_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+        capability.effective_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+        capability.supported_mode = DB_GL_STREAM_UPLOAD_MODE_MAP_BUFFER;
+        capability.effective_mode = DB_GL_STREAM_UPLOAD_MODE_MAP_BUFFER;
+        capability.sync_enabled = capability.sync_supported;
+        return capability;
+    }
+    if (target == DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER) {
+        capability.supported_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+        capability.effective_storage =
+            DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT;
+    }
+    return capability;
+}
+
+db_gl_stream_upload_capability_t db_gl_stream_upload_capability_for_role(
+    db_gl_upload_target_t target, const db_gl_upload_probe_result_t *probe,
+    int enable_sync, db_gl_upload_role_t role,
+    db_gl_shadow_present_texture_format_t texture_format) {
+    db_gl_stream_upload_capability_t capability =
+        db_gl_stream_upload_capability_from_probe(target, probe, enable_sync);
+#ifdef __APPLE__
+    if ((role == DB_GL_UPLOAD_ROLE_PRESENT_FULL) &&
+        (target == DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER) &&
+        (texture_format == DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)) {
+        capability.effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT;
+        capability.effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA;
+        capability.sync_enabled = 0;
+    }
+#else
+    (void)role;
+    (void)texture_format;
+#endif
+    return capability;
+}
+
+void db_gl_stream_upload_force_client_fallback(
+    db_gl_stream_upload_capability_t *capability, int disable_sync) {
+    if (capability == NULL) {
         return;
     }
-    const char *draw =
-        (draw_mode != NULL) ? draw_mode : DB_GL_CAP_DRAW_TILES_FULL;
-    const char *upload =
-        (upload_mode != NULL) ? upload_mode : DB_GL_CAP_UPLOAD_NONE;
-    (void)db_snprintf(output, output_size, "%s(%s,backbuffer_replay=%s)", draw,
-                      upload, (backbuffer_replay != 0) ? "yes" : "no");
+    capability->effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT;
+    capability->effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA;
+    if (disable_sync != 0) {
+        capability->sync_enabled = 0;
+    }
+}
+
+void db_gl_stream_upload_disable_persistent_for_target(
+    db_gl_stream_upload_capability_t *capability,
+    db_gl_upload_target_t target) {
+    if ((capability == NULL) ||
+        (target != DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER) ||
+        (capability->effective_mode != DB_GL_STREAM_UPLOAD_MODE_PERSISTENT)) {
+        return;
+    }
+    capability->effective_mode = DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE;
+    if (capability->supported_mode == DB_GL_STREAM_UPLOAD_MODE_PERSISTENT) {
+        capability->supported_mode = DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE;
+    }
+}
+
+int db_gl_stream_upload_uses_buffer_object(
+    const db_gl_stream_upload_capability_t *capability) {
+    return ((capability != NULL) && (capability->effective_storage ==
+                                     DB_GL_STREAM_UPLOAD_STORAGE_BUFFER_OBJECT))
+               ? 1
+               : 0;
+}
+
+int db_gl_stream_upload_uses_map_range(
+    const db_gl_stream_upload_capability_t *capability) {
+    return ((capability != NULL) &&
+            (capability->effective_mode == DB_GL_STREAM_UPLOAD_MODE_MAP_RANGE))
+               ? 1
+               : 0;
+}
+
+int db_gl_stream_upload_uses_map_buffer(
+    const db_gl_stream_upload_capability_t *capability) {
+    return ((capability != NULL) &&
+            (capability->effective_mode == DB_GL_STREAM_UPLOAD_MODE_MAP_BUFFER))
+               ? 1
+               : 0;
+}
+
+int db_gl_stream_upload_uses_persistent(
+    const db_gl_stream_upload_capability_t *capability) {
+    return ((capability != NULL) &&
+            (capability->effective_mode == DB_GL_STREAM_UPLOAD_MODE_PERSISTENT))
+               ? 1
+               : 0;
+}
+
+int db_gl_stream_upload_sync_enabled(
+    const db_gl_stream_upload_capability_t *capability) {
+    return ((capability != NULL) && (capability->sync_enabled != 0)) ? 1 : 0;
+}
+
+int db_gl_present_mode_validate_request(
+    int is_cpu_api, int is_glfw_window_display, int is_gl1_renderer,
+    db_gl_backbuffer_draw_mode_t backbuffer_draw_mode,
+    db_gl_present_buffer_mode_t present_buffer_mode, const char **out_reason) {
+    if (out_reason != NULL) {
+        *out_reason = NULL;
+    }
+    if (present_buffer_mode == DB_GL_PRESENT_BUFFER_MODE_AUTO) {
+        return 1;
+    }
+    if (is_cpu_api != 0) {
+        if (is_glfw_window_display == 0) {
+            if (out_reason != NULL) {
+                *out_reason = "--present-buffer-mode is only supported for CPU "
+                              "with --display glfw_window";
+            }
+            return 0;
+        }
+        if (present_buffer_mode != DB_GL_PRESENT_BUFFER_MODE_REPLACE) {
+            if (out_reason != NULL) {
+                *out_reason =
+                    "--present-buffer-mode for CPU GLFW must be replace";
+            }
+            return 0;
+        }
+        return 1;
+    }
+    if (is_glfw_window_display == 0) {
+        if (out_reason != NULL) {
+            *out_reason = "--present-buffer-mode is only supported for "
+                          "--display glfw_window";
+        }
+        return 0;
+    }
+    if (is_gl1_renderer == 0) {
+        if (out_reason != NULL) {
+            *out_reason = "--present-buffer-mode is only supported for "
+                          "--renderer gl1_5_gles1_1";
+        }
+        return 0;
+    }
+    if (present_buffer_mode == DB_GL_PRESENT_BUFFER_MODE_REPLACE) {
+        if (backbuffer_draw_mode != DB_GL_BACKBUFFER_DRAW_FULL) {
+            if (out_reason != NULL) {
+                *out_reason = "--present-buffer-mode replace requires "
+                              "--backbuffer-draw-mode full";
+            }
+            return 0;
+        }
+        if (out_reason != NULL) {
+            *out_reason = "--present-buffer-mode replace is incompatible with "
+                          "GL1 preserved full-present";
+        }
+        return 0;
+    }
+    return 1;
+}
+
+void db_gl_present_mode_resolve(const db_gl_present_mode_request_t *request,
+                                db_gl_present_mode_resolution_t *out) {
+    if (out == NULL) {
+        return;
+    }
+    *out = (db_gl_present_mode_resolution_t){0};
+    if (request == NULL) {
+        out->reason = "missing request";
+        return;
+    }
+    out->valid = 1;
+    out->effective_backbuffer_draw_mode =
+        request->requested_backbuffer_draw_mode;
+    out->effective_present_upload = request->present_upload;
+    switch (request->requested_present_buffer_mode) {
+    case DB_GL_PRESENT_BUFFER_MODE_REPLACE:
+        out->requested_preserve_mode = DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS;
+        out->effective_preserve_mode = DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS;
+        return;
+    case DB_GL_PRESENT_BUFFER_MODE_SINGLE_SOURCE:
+        out->requested_preserve_mode =
+            DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+        out->effective_preserve_mode =
+            DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+        return;
+    case DB_GL_PRESENT_BUFFER_MODE_RING:
+        out->requested_preserve_mode =
+            DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT;
+        if ((request->preserved_framebuffer_count > 1U) &&
+            (db_gl_stream_upload_uses_buffer_object(&request->present_upload) !=
+             0)) {
+            out->effective_preserve_mode =
+                DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT;
+            return;
+        }
+        out->effective_preserve_mode =
+            DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+        out->downgraded = 1;
+        out->reason = (request->preserved_framebuffer_count > 1U)
+                          ? "ring upload fallback required"
+                          : "preserved ring unavailable";
+        return;
+    case DB_GL_PRESENT_BUFFER_MODE_AUTO:
+    default:
+        out->requested_preserve_mode =
+            (request->prefer_ring_for_preserved_draw != 0)
+                ? DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT
+                : DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+        if ((out->requested_preserve_mode ==
+             DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT) &&
+            ((request->preserved_framebuffer_count <= 1U) ||
+             (db_gl_stream_upload_uses_buffer_object(
+                  &request->present_upload) == 0))) {
+            out->effective_preserve_mode =
+                DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+            out->downgraded = 1;
+            out->reason = (request->preserved_framebuffer_count > 1U)
+                              ? "client upload fallback"
+                              : "preserved ring unavailable";
+            return;
+        }
+        out->effective_preserve_mode = out->requested_preserve_mode;
+        return;
+    }
+}
+
+db_gl_runtime_mode_desc_t db_gl_runtime_mode_desc_renderer(
+    int uses_ff_rect_draw_mode, int uses_history_draw, int has_vbo,
+    const db_gl_upload_probe_result_t *upload, int backbuffer_replay) {
+    db_gl_runtime_draw_mode_t draw_mode = DB_GL_RUNTIME_DRAW_FULL_PRESENT;
+    if (uses_ff_rect_draw_mode != 0) {
+        draw_mode = DB_GL_RUNTIME_DRAW_FF_RECT_FILL;
+    } else if (uses_history_draw != 0) {
+        draw_mode = DB_GL_RUNTIME_DRAW_DIRTY_REPLAY;
+    }
+    return (db_gl_runtime_mode_desc_t){
+        .draw_mode = draw_mode,
+        .geometry_upload_enabled = 1,
+        .geometry_uses_client_arrays = (has_vbo == 0) ? 1 : 0,
+        .geometry_upload = db_gl_stream_upload_capability_from_probe(
+            DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, upload, 0),
+        .full_present_upload =
+            (db_gl_stream_upload_capability_t){
+                .target = DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
+                .requested_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                .supported_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                .effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                .requested_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                .supported_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                .effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+            },
+        .partial_present_upload =
+            (db_gl_stream_upload_capability_t){
+                .target = DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
+                .requested_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                .supported_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                .effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                .requested_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                .supported_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                .effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+            },
+        .preserve_mode = DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS,
+        .backbuffer_replay = (backbuffer_replay != 0) ? 1 : 0,
+    };
+}
+
+db_gl_runtime_mode_desc_t db_gl_runtime_mode_desc_present(
+    const db_gl_shadow_present_state_t *state,
+    db_gl_shadow_present_preserve_mode_t preserve_mode) {
+    db_gl_runtime_draw_mode_t draw_mode = DB_GL_RUNTIME_DRAW_SHADOW_FALLBACK;
+    if (preserve_mode == DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS) {
+        draw_mode = DB_GL_RUNTIME_DRAW_FULL_PRESENT;
+    } else if (preserve_mode == DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT) {
+        draw_mode = DB_GL_RUNTIME_DRAW_DIRTY_REPLAY;
+    }
+    return (db_gl_runtime_mode_desc_t){
+        .draw_mode = draw_mode,
+        .geometry_upload_enabled = 0,
+        .geometry_uses_client_arrays = 0,
+        .full_present_upload =
+            (state != NULL)
+                ? state->effective_full_upload_capability
+                : (db_gl_stream_upload_capability_t){
+                      .target = DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
+                      .requested_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                      .supported_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                      .effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                      .requested_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                      .supported_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                      .effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                  },
+        .partial_present_upload =
+            (state != NULL)
+                ? state->effective_partial_upload_capability
+                : (db_gl_stream_upload_capability_t){
+                      .target = DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER,
+                      .requested_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                      .supported_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                      .effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+                      .requested_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                      .supported_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                      .effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+                  },
+        .preserve_mode = preserve_mode,
+        .backbuffer_replay = 0,
+    };
+}
+
+void db_gl_runtime_mode_format_renderer(char *output, size_t output_size,
+                                        const db_gl_runtime_mode_desc_t *mode) {
+    if ((output == NULL) || (output_size == 0U) || (mode == NULL)) {
+        return;
+    }
+    (void)db_snprintf(
+        output, output_size, "draw=%s, geometry=%s, replay=%s",
+        db_gl_runtime_draw_mode_name(mode->draw_mode),
+        db_gl_stream_upload_name(&mode->geometry_upload,
+                                 mode->geometry_uses_client_arrays,
+                                 mode->geometry_upload_enabled),
+        (mode->backbuffer_replay != 0) ? "yes" : "no");
+}
+
+void db_gl_runtime_mode_format_present(char *output, size_t output_size,
+                                       const db_gl_runtime_mode_desc_t *mode) {
+    if ((output == NULL) || (output_size == 0U) || (mode == NULL)) {
+        return;
+    }
+    (void)db_snprintf(
+        output, output_size,
+        "full_present_upload=%s, partial_present_upload=%s, preserve=%s",
+        db_gl_stream_upload_name(&mode->full_present_upload, 0, 1),
+        db_gl_stream_upload_name(&mode->partial_present_upload, 0, 1),
+        db_gl_shadow_present_preserve_mode_name(mode->preserve_mode));
 }
 
 int db_gl_runtime_has_extension(const db_gl_runtime_metadata_t *runtime,

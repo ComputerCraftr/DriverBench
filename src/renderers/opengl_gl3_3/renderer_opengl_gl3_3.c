@@ -12,6 +12,7 @@
 #include "../renderer_benchmark_types.h"
 #include "../renderer_gl_api.h"
 #include "../renderer_gl_common.h"
+#include "../renderer_gl_proc_runtime_internal.h"
 #include "../renderer_history_common.h"
 #include "../renderer_snake_shape_common.h"
 #include "../renderer_snake_types.h"
@@ -55,6 +56,7 @@ typedef struct {
     unsigned int vao;
     unsigned int fallback_tex;
     db_gl_buffer_cache_t buffers;
+    db_gl_upload_stream_t vertex_stream;
 
     // Uniform locations
     int u_band_count;
@@ -133,13 +135,12 @@ static void db_gl3_seed_history_targets_clear_cb(const float *rgba,
 }
 
 static void db_gl3_refresh_capability_mode(void) {
-    const char *draw_mode = db_gl_capability_mode_draw_select(
-        0, g_state.runtime_flags.uses_history_pipeline, 1);
-    const char *upload_mode = db_gl_capability_mode_upload_select(
-        0, db_gl_capability_mode_upload_from_probe(1, &g_state.vertex.upload));
-    db_gl_capability_mode_compose(
-        g_state.capability_mode, sizeof(g_state.capability_mode), draw_mode,
-        upload_mode, db_runtime_backbuffer_replay_enabled(&g_state.runtime));
+    const db_gl_runtime_mode_desc_t mode = db_gl_runtime_mode_desc_renderer(
+        0, g_state.runtime_flags.uses_history_pipeline, 1,
+        &g_state.vertex.upload,
+        db_runtime_backbuffer_replay_enabled(&g_state.runtime));
+    db_gl_runtime_mode_format_renderer(g_state.capability_mode,
+                                       sizeof(g_state.capability_mode), &mode);
 }
 
 static void db_set_uniform1i_if_changed(int location, int *cache, int value) {
@@ -453,10 +454,17 @@ void db_renderer_opengl_gl3_3_init(void) {
     g_state.runtime_flags = db_history_runtime_mode_flags(&g_state.runtime);
 
     db_gl_gen_vertex_arrays(1, &g_state.vao);
-    unsigned int vbo_u32 = 0U;
-    if (db_gl_vbo_create_or_zero(&vbo_u32) != 0) {
-        g_state.buffers.vbo = vbo_u32;
+    g_state.buffers.vbo_bytes = (size_t)g_state.vertex.draw_vertex_count *
+                                DB_VERTEX_FLOAT_STRIDE * sizeof(float);
+    db_gl_geometry_stream_init_result_t stream_init = {0};
+    if (db_gl_geometry_stream_init(
+            &g_state.vertex_stream, &stream_init, BACKEND_NAME,
+            g_state.buffers.vbo_bytes, g_state.vertex.vertices,
+            g_state.vertex.vertices, g_state.buffers.vbo_bytes, 0) == 0) {
+        failf("failed to initialize GL3 vertex stream");
     }
+    g_state.buffers.vbo = stream_init.buffer;
+    g_state.vertex.upload = stream_init.probe;
     if (g_state.buffers.vbo == 0U) {
         failf("failed to create GL array buffer");
     }
@@ -465,33 +473,11 @@ void db_renderer_opengl_gl3_3_init(void) {
             g_state.buffers.vbo, &g_state.buffers.bound_array_buffer) == 0) {
         failf("failed to bind GL array buffer");
     }
-    g_state.buffers.vbo_bytes = (size_t)g_state.vertex.draw_vertex_count *
-                                DB_VERTEX_FLOAT_STRIDE * sizeof(float);
-    if (db_gl_vbo_init_data(g_state.buffers.vbo_bytes, NULL, GL_DYNAMIC_DRAW) ==
-        0) {
-        failf("failed to initialize GL array buffer");
-    }
-    db_gl_upload_buffer_target(g_state.vertex.vertices,
-                               g_state.buffers.vbo_bytes,
-                               DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER,
-                               g_state.buffers.vbo, 0, NULL, 0, 0);
 
     db_gl_enable_vertex_attrib_array(ATTR_POSITION_LOC);
     db_gl_enable_vertex_attrib_array(ATTR_COLOR_LOC);
     db_gl3_bind_main_vbo_layout();
 
-    g_state.vertex.upload = (db_gl_upload_probe_result_t){0};
-    db_gl_upload_probe_result_t probe_result = {0};
-    db_gl_context_probe_upload_capabilities(
-        g_state.buffers.vbo_bytes, g_state.vertex.vertices, &probe_result);
-    g_state.vertex.upload = probe_result;
-    db_gl_upload_buffer_target(
-        g_state.vertex.vertices, g_state.buffers.vbo_bytes,
-        DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, g_state.buffers.vbo,
-        g_state.vertex.upload.use_persistent_upload,
-        g_state.vertex.upload.persistent_mapped_ptr,
-        g_state.vertex.upload.use_map_range_upload,
-        g_state.vertex.upload.use_map_buffer_upload);
     db_gl3_refresh_capability_mode();
     db_log_renderer_capability_mode(BACKEND_NAME,
                                     db_renderer_opengl_gl3_3_capability_mode());
@@ -761,11 +747,7 @@ void db_renderer_opengl_gl3_3_render_frame(uint32_t frame_index,
 }
 
 void db_renderer_opengl_gl3_3_shutdown(void) {
-    if (g_state.vertex.upload.persistent_mapped_ptr != NULL) {
-        (void)db_gl_bind_array_buffer_cached(
-            g_state.buffers.vbo, &g_state.buffers.bound_array_buffer);
-        db_gl_unmap_current_array_buffer();
-    }
+    db_gl_upload_stream_shutdown(&g_state.vertex_stream);
     db_gl3_destroy_history_targets();
     db_gl_texture_delete_if_valid(&g_state.fallback_tex);
     db_gl_delete_program(g_state.program);
@@ -790,8 +772,6 @@ uint64_t db_renderer_opengl_gl3_3_state_hash(void) {
     return g_state.frame.state_hash;
 }
 
-void db_renderer_opengl_gl3_3_draw_stats(uint64_t *full_draw_frames,
-                                         uint64_t *dirty_draw_frames) {
-    db_history_copy_draw_stats(&g_state.frame, full_draw_frames,
-                               dirty_draw_frames);
+void db_renderer_opengl_gl3_3_draw_stats(db_renderer_draw_path_stats_t *stats) {
+    db_history_copy_draw_path_stats(&g_state.frame, stats);
 }

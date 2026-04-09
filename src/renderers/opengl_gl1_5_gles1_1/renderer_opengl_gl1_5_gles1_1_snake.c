@@ -8,6 +8,7 @@
 #include "../renderer_benchmark_runtime.h"
 #include "../renderer_benchmark_types.h"
 #include "../renderer_gl_common.h"
+#include "../renderer_gl_proc_runtime_internal.h"
 #include "../renderer_history_common.h"
 #include "../renderer_snake_emit.h"
 #include "../renderer_snake_shape_common.h"
@@ -91,27 +92,6 @@ void db_gl1_record_compact_health(int dirty_backbuffer_mode,
     }
     if (frame_mode == DB_GL1_SNAKE_FRAME_MODE_FULL_RECOVERY_REQUIRED) {
         g_state.snake_compact_health.full_recovery_frames++;
-    }
-
-    if (db_gl1_should_log_compact_event() == 0) {
-        return;
-    }
-    const uint64_t attempts = g_state.snake_compact_health.attempt_frames;
-    const uint64_t fallbacks = g_state.snake_compact_health.fallback_frames;
-    const uint64_t successes = g_state.snake_compact_health.success_frames;
-    if (attempts == 0U) {
-        return;
-    }
-    if ((attempts >= 16U) && (fallbacks > (attempts / 2U))) {
-        db_infof(
-            BACKEND_NAME,
-            "snake dirty_mode_compact_health frame[%u] compact_success=%llu "
-            "compact_fallback=%llu full_recovery=%llu attempts=%llu",
-            g_state.frame.frame_index, (unsigned long long)successes,
-            (unsigned long long)fallbacks,
-            (unsigned long long)
-                g_state.snake_compact_health.full_recovery_frames,
-            (unsigned long long)attempts);
     }
 }
 
@@ -263,6 +243,17 @@ static int db_gl1_has_snake_shadow_pixels(void) {
               (g_state.snake_shadow_rgba8 != NULL))));
 }
 
+static db_benchmark_pixel_surface_t
+db_gl1_shadow_backing_surface(uint32_t pixel_width, uint32_t pixel_height) {
+    return (db_benchmark_pixel_surface_t){
+        .pixel_width = pixel_width,
+        .pixel_height = pixel_height,
+        .pixels_rgba8 = g_state.snake_shadow_rgba8,
+        .pixels_rgba16f = g_state.snake_shadow_rgba16f,
+        .uses_rgba16f = db_gl1_shadow_backing_uses_rgba16f(),
+    };
+}
+
 static void
 db_gl1_shadow_fill_pixel_block_rgb_f64(const db_damage_block_t *block,
                                        const double *rgb) {
@@ -275,6 +266,20 @@ db_gl1_shadow_fill_pixel_block_rgb_f64(const db_damage_block_t *block,
         g_state.snake_shadow_pixel_width, g_state.snake_shadow_pixel_height,
         g_state.snake_shadow_rgba8, g_state.snake_shadow_rgba16f,
         db_gl1_shadow_backing_uses_rgba16f(), block->row_start,
+        block->row_count, block->col_start, block->col_count, rgb);
+}
+
+static void db_gl1_fill_pixel_block_rgb_f64_on_surface(
+    const db_benchmark_pixel_surface_t *surface, const db_damage_block_t *block,
+    const double *rgb) {
+    if ((surface == NULL) || (block == NULL) || (rgb == NULL) ||
+        (block->row_count == 0U) || (block->col_count == 0U) ||
+        (surface->pixel_width == 0U) || (surface->pixel_height == 0U)) {
+        return;
+    }
+    db_rgb_pixels_fill_damage_block_f64(
+        surface->pixel_width, surface->pixel_height, surface->pixels_rgba8,
+        surface->pixels_rgba16f, surface->uses_rgba16f, block->row_start,
         block->row_count, block->col_start, block->col_count, rgb);
 }
 
@@ -323,15 +328,16 @@ void db_gl1_ensure_shadow_framebuffer_capacity(uint32_t pixel_width,
         (g_state.snake_shadow_pixel_capacity < pixel_capacity)) {
         db_gl1_reserve_shadow_framebuffer_capacity(pixel_capacity);
         g_state.snake_shadow_present.backing_valid = 0;
-        g_state.snake_shadow_present.texture_valid = 0;
-        g_state.snake_shadow_present.texture_needs_full_upload = 1;
+        db_gl_shadow_present_note_shadow_change(&g_state.snake_shadow_present,
+                                                1);
     }
     g_state.snake_shadow_pixel_width = pixel_width;
     g_state.snake_shadow_pixel_height = pixel_height;
 }
 
-void db_gl1_rebuild_shadow_framebuffer_full(uint32_t pixel_width,
-                                            uint32_t pixel_height) {
+void db_gl1_rebuild_shadow_framebuffer_full(
+    uint32_t pixel_width, uint32_t pixel_height,
+    const db_benchmark_pixel_surface_t *mirror_surface) {
     if ((db_gl1_has_snake_color_state() == 0) ||
         (g_state.runtime.work_unit_count == 0U)) {
         return;
@@ -359,16 +365,17 @@ void db_gl1_rebuild_shadow_framebuffer_full(uint32_t pixel_width,
                                           (double)tile_color[1],
                                           (double)tile_color[2]};
         db_gl1_shadow_fill_pixel_block_rgb_f64(&pixel_block, tile_color_f64);
+        db_gl1_fill_pixel_block_rgb_f64_on_surface(mirror_surface, &pixel_block,
+                                                   tile_color_f64);
     }
     g_state.snake_shadow_present.backing_valid = 1;
-    g_state.snake_shadow_present.texture_valid = 0;
-    g_state.snake_shadow_present.texture_needs_full_upload = 1;
+    db_gl_shadow_present_note_shadow_change(&g_state.snake_shadow_present, 1);
 }
 
-static void
-db_gl1_apply_snake_step_to_shadow(const db_gl1_snake_frame_state_t *snake_frame,
-                                  const db_snake_shape_cache_t *shape_cache_ptr,
-                                  uint32_t pixel_width, uint32_t pixel_height) {
+static void db_gl1_apply_snake_step_to_shadow(
+    const db_gl1_snake_frame_state_t *snake_frame,
+    const db_snake_shape_cache_t *shape_cache_ptr, uint32_t pixel_width,
+    uint32_t pixel_height, const db_benchmark_pixel_surface_t *mirror_surface) {
     if ((snake_frame == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
         return;
     }
@@ -391,6 +398,10 @@ db_gl1_apply_snake_step_to_shadow(const db_gl1_snake_frame_state_t *snake_frame,
                 .pixels_rgba16f = g_state.snake_shadow_rgba16f,
                 .uses_rgba16f = db_gl1_shadow_backing_uses_rgba16f(),
             },
+        .mirror_pixel_surface = (mirror_surface != NULL)
+                                    ? *mirror_surface
+                                    : (db_benchmark_pixel_surface_t){0},
+        .mirror_pixel_surface_enabled = (mirror_surface != NULL) ? 1 : 0,
         .tile_rgb_f32 = NULL,
         .tile_count = 0U,
     };
@@ -402,7 +413,7 @@ db_gl1_apply_snake_step_to_shadow(const db_gl1_snake_frame_state_t *snake_frame,
 
 void db_gl1_update_shadow_framebuffer_from_snake_step(
     const db_gl1_snake_frame_state_t *snake_frame, uint32_t pixel_width,
-    uint32_t pixel_height) {
+    uint32_t pixel_height, const db_benchmark_pixel_surface_t *mirror_surface) {
     if ((snake_frame == NULL) || (pixel_width == 0U) || (pixel_height == 0U)) {
         return;
     }
@@ -425,10 +436,9 @@ void db_gl1_update_shadow_framebuffer_from_snake_step(
         }
     }
     db_gl1_apply_snake_step_to_shadow(snake_frame, shape_cache_ptr, pixel_width,
-                                      pixel_height);
+                                      pixel_height, mirror_surface);
     g_state.snake_shadow_present.backing_valid = 1;
-    g_state.snake_shadow_present.texture_valid = 0;
-    g_state.snake_shadow_present.texture_needs_full_upload = 0;
+    db_gl_shadow_present_note_shadow_change(&g_state.snake_shadow_present, 0);
     g_state.snake_shadow_stats.backing_incremental_frames++;
 }
 
@@ -457,6 +467,60 @@ size_t db_gl1_build_shadow_upload_blocks_from_damage_blocks(
     return out_count;
 }
 
+size_t db_gl1_build_shadow_upload_blocks_from_compact_blocks(
+    const db_snake_compact_block_t *compact_blocks, size_t compact_block_count,
+    uint32_t pixel_width, uint32_t pixel_height) {
+    if ((compact_blocks == NULL) ||
+        (g_state.snake_shadow_upload_blocks == NULL)) {
+        return 0U;
+    }
+    if (compact_block_count > g_state.snake_shadow_upload_block_capacity) {
+        return 0U;
+    }
+    size_t out_count = 0U;
+    for (size_t i = 0U; i < compact_block_count; i++) {
+        if (out_count >= g_state.snake_shadow_upload_block_capacity) {
+            return 0U;
+        }
+        const db_grid_block_t block = {
+            .row_start = compact_blocks[i].row_start,
+            .row_count = compact_blocks[i].row_count,
+            .col_start = compact_blocks[i].col_start,
+            .col_count = compact_blocks[i].col_count,
+        };
+        if (db_grid_block_to_pixel_block(
+                db_grid_cols_effective(), db_grid_rows_effective(), &block,
+                pixel_width, pixel_height,
+                &g_state.snake_shadow_upload_blocks[out_count]) != 0) {
+            out_count++;
+        }
+    }
+    return out_count;
+}
+
+size_t db_gl1_build_shadow_repair_blocks(
+    const db_snake_compact_block_t *compact_blocks, size_t compact_block_count,
+    const db_grid_block_t *damage_blocks, size_t damage_block_count,
+    uint32_t pixel_width, uint32_t pixel_height) {
+    if ((damage_blocks != NULL) && (damage_block_count > 0U)) {
+        const size_t damage_pixel_block_count =
+            db_gl1_build_shadow_upload_blocks_from_damage_blocks(
+                damage_blocks, damage_block_count, pixel_width, pixel_height);
+        if (damage_pixel_block_count > 0U) {
+            return damage_pixel_block_count;
+        }
+    }
+    if ((compact_blocks != NULL) && (compact_block_count > 0U)) {
+        const size_t compact_pixel_block_count =
+            db_gl1_build_shadow_upload_blocks_from_compact_blocks(
+                compact_blocks, compact_block_count, pixel_width, pixel_height);
+        if (compact_pixel_block_count > 0U) {
+            return compact_pixel_block_count;
+        }
+    }
+    return 0U;
+}
+
 int db_gl1_draw_shadow_framebuffer_once(const db_damage_block_t *blocks,
                                         size_t block_count,
                                         uint32_t pixel_width,
@@ -467,20 +531,20 @@ int db_gl1_draw_shadow_framebuffer_once(const db_damage_block_t *blocks,
     }
     (void)db_gl_bind_array_buffer_cached(0U,
                                          &g_state.buffers.bound_array_buffer);
-    const db_gl_shadow_present_frame_t present_frame = {
-        .state = &g_state.snake_shadow_present,
-        .backend = BACKEND_NAME,
-        .pixel_width = pixel_width,
-        .pixel_height = pixel_height,
-        .selected_pixels = (db_gl1_shadow_backing_uses_rgba16f() != 0)
-                               ? (const void *)g_state.snake_shadow_rgba16f
-                               : (const void *)g_state.snake_shadow_rgba8,
-        .damage_blocks = blocks,
-        .damage_block_count = block_count,
-        .prepare_upload_target_fn = NULL,
-        .prepare_upload_target_user_data = NULL,
-    };
-    db_gl_shadow_present_frame(&present_frame);
+    db_gl_shadow_present_full_upload_target_t target = {0};
+    if (db_gl_shadow_present_begin_full_upload_target(
+            &g_state.snake_shadow_present, BACKEND_NAME, pixel_width,
+            pixel_height, 0, &target) == 0) {
+        return 0;
+    }
+    const db_benchmark_pixel_surface_t shadow_surface =
+        db_gl1_shadow_backing_surface(pixel_width, pixel_height);
+    db_gl_shadow_present_repair_full_upload_target(
+        &g_state.snake_shadow_present, &target, &shadow_surface, blocks,
+        block_count);
+    db_gl_shadow_present_present_full_upload_target(
+        &g_state.snake_shadow_present, BACKEND_NAME, pixel_width, pixel_height,
+        &target);
     db_gl1_invalidate_array_pointer_cache();
     return 1;
 }
@@ -531,11 +595,9 @@ void db_gl1_refresh_tile_positions_for_viewport(int viewport_w,
         const size_t upload_bytes = (size_t)g_state.vertex.draw_vertex_count *
                                     g_state.vertex.vertex_stride *
                                     sizeof(float);
-        db_gl_upload_buffer(g_state.vertex.vertices, upload_bytes,
-                            g_state.vertex.upload.use_persistent_upload,
-                            g_state.vertex.upload.persistent_mapped_ptr,
-                            g_state.vertex.upload.use_map_range_upload,
-                            g_state.vertex.upload.use_map_buffer_upload);
+        (void)db_gl_upload_stream_write(&g_state.vertex_stream, BACKEND_NAME,
+                                        g_state.vertex.vertices, upload_bytes,
+                                        0U, upload_bytes);
     }
 }
 
@@ -616,15 +678,12 @@ void db_gl1_refresh_capability_mode(void) {
     const int uses_history_draw =
         (g_state.runtime_flags.is_snake_history_texture != 0) &&
         (g_state.runtime_flags.uses_dirty_backbuffer_mode != 0);
-    const char *draw_mode = db_gl_capability_mode_draw_select(
-        g_state.runtime_flags.uses_ff_rect_draw_mode, uses_history_draw, 0);
-    const char *upload_mode = db_gl_capability_mode_upload_select(
-        g_state.runtime_flags.uses_ff_rect_draw_mode,
-        db_gl_capability_mode_upload_from_probe(
-            (g_state.buffers.vbo != 0U) ? 1 : 0, &g_state.vertex.upload));
-    db_gl_capability_mode_compose(
-        g_state.capability_mode, sizeof(g_state.capability_mode), draw_mode,
-        upload_mode, db_runtime_backbuffer_replay_enabled(&g_state.runtime));
+    const db_gl_runtime_mode_desc_t mode = db_gl_runtime_mode_desc_renderer(
+        g_state.runtime_flags.uses_ff_rect_draw_mode, uses_history_draw,
+        (g_state.buffers.vbo != 0U) ? 1 : 0, &g_state.vertex.upload,
+        db_runtime_backbuffer_replay_enabled(&g_state.runtime));
+    db_gl_runtime_mode_format_renderer(g_state.capability_mode,
+                                       sizeof(g_state.capability_mode), &mode);
 }
 
 void db_gl1_log_backbuffer_strategy(void) {

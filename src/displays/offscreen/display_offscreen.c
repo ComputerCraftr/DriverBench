@@ -3,11 +3,12 @@
 #include <stdlib.h>
 
 #include "../../config/benchmark_config.h"
-#include "../../config/runtime_options.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/renderer_cpu_renderer.h"
+#include "../../renderers/renderer_benchmark_runtime.h"
+#include "../../renderers/renderer_benchmark_types.h"
 #include "../../renderers/renderer_gl_common.h"
 #include "../../renderers/renderer_identity.h"
 #ifdef DB_HAS_VULKAN_API
@@ -40,6 +41,7 @@ typedef struct {
 
 typedef struct {
     const db_display_frame_step_t *frame_step;
+    db_benchmark_pixel_surface_t surface;
 } db_offscreen_cpu_loop_ctx_t;
 
 #ifdef DB_HAS_VULKAN_API
@@ -52,29 +54,71 @@ typedef struct {
 } db_offscreen_vulkan_loop_ctx_t;
 #endif
 
-static uint64_t db_offscreen_cpu_bo_hash(void) {
-    uint32_t pixel_width = 0U;
-    uint32_t pixel_height = 0U;
-    if (db_renderer_cpu_renderer_bo_uses_rgba16f() != 0) {
-        const uint16_t *pixels = db_renderer_cpu_renderer_pixels_rgba16f(
-            &pixel_width, &pixel_height);
-        if (pixels == NULL) {
+static uint64_t
+db_offscreen_cpu_surface_hash(const db_benchmark_pixel_surface_t *surface) {
+    if ((surface == NULL) || (surface->pixel_width == 0U) ||
+        (surface->pixel_height == 0U)) {
+        db_failf(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
+                 "invalid offscreen cpu surface");
+    }
+    if (surface->uses_rgba16f != 0) {
+        if (surface->pixels_rgba16f == NULL) {
             db_failf(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
-                     "cpu renderer returned invalid HDR framebuffer");
+                     "cpu renderer returned invalid HDR surface");
         }
         return db_hash_rgba16f_pixels_canonical(
-            pixels, pixel_width, pixel_height,
-            (size_t)pixel_width * 4U * sizeof(uint16_t), 0);
+            surface->pixels_rgba16f, surface->pixel_width,
+            surface->pixel_height,
+            (size_t)surface->pixel_width * 4U * sizeof(uint16_t), 0);
     }
-    const uint32_t *pixels =
-        db_renderer_cpu_renderer_pixels_rgba8(&pixel_width, &pixel_height);
-    if (pixels == NULL) {
+    if (surface->pixels_rgba8 == NULL) {
         db_failf(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
-                 "cpu renderer returned invalid framebuffer");
+                 "cpu renderer returned invalid surface");
     }
-    return db_hash_rgba8_pixels_canonical((const uint8_t *)pixels, pixel_width,
-                                          pixel_height,
-                                          (size_t)pixel_width * 4U, 0);
+    return db_hash_rgba8_pixels_canonical(
+        (const uint8_t *)surface->pixels_rgba8, surface->pixel_width,
+        surface->pixel_height, (size_t)surface->pixel_width * 4U, 0);
+}
+
+static db_benchmark_pixel_surface_t
+db_offscreen_cpu_surface_create(int uses_rgba16f) {
+    const uint32_t pixel_width = db_grid_cols_effective();
+    const uint32_t pixel_height = db_grid_rows_effective();
+    const uint64_t pixel_count = (uint64_t)pixel_width * (uint64_t)pixel_height;
+    if ((pixel_width == 0U) || (pixel_height == 0U) || (pixel_count == 0U)) {
+        db_failf(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
+                 "invalid offscreen cpu surface size: %ux%u", pixel_width,
+                 pixel_height);
+    }
+    db_benchmark_pixel_surface_t surface = {
+        .pixel_width = pixel_width,
+        .pixel_height = pixel_height,
+        .pixels_rgba8 = NULL,
+        .pixels_rgba16f = NULL,
+        .uses_rgba16f = uses_rgba16f,
+    };
+    if (uses_rgba16f != 0) {
+        surface.pixels_rgba16f = (uint16_t *)db_alloc_aligned_array_or_fail(
+            DB_BACKEND_NAME_DISPLAY_OFFSCREEN, "offscreen_cpu_pixels_rgba16f",
+            (size_t)pixel_count * DB_RGBA16F_CHANNELS_PER_PIXEL,
+            sizeof(uint16_t), DB_CACHELINE_ALIGNMENT_BYTES);
+    } else {
+        surface.pixels_rgba8 = (uint32_t *)db_alloc_aligned_array_or_fail(
+            DB_BACKEND_NAME_DISPLAY_OFFSCREEN, "offscreen_cpu_pixels_rgba8",
+            (size_t)pixel_count, sizeof(uint32_t),
+            DB_CACHELINE_ALIGNMENT_BYTES);
+    }
+    return surface;
+}
+
+static void
+db_offscreen_cpu_surface_destroy(db_benchmark_pixel_surface_t *surface) {
+    if (surface == NULL) {
+        return;
+    }
+    free(surface->pixels_rgba8);
+    free(surface->pixels_rgba16f);
+    *surface = (db_benchmark_pixel_surface_t){0};
 }
 
 static db_display_frame_loop_result_t
@@ -84,10 +128,24 @@ db_offscreen_cpu_frame_step(void *user_data, uint32_t frame_index,
     if ((ctx == NULL) || (ctx->frame_step == NULL)) {
         return DB_DISPLAY_FRAME_LOOP_STOP;
     }
-    db_renderer_cpu_renderer_render_frame(frame_index);
-    db_display_cpu_frame_step(ctx->frame_step, frame_index, elapsed_ms,
-                              db_renderer_cpu_renderer_state_hash,
-                              db_offscreen_cpu_bo_hash);
+    (void)db_renderer_cpu_renderer_render_frame_to_surface(frame_index,
+                                                           &ctx->surface, NULL);
+    if ((ctx->frame_step->state_hash_enabled != 0) &&
+        (ctx->frame_step->state_hash_tracker != NULL)) {
+        db_display_hash_tracker_record(ctx->frame_step->state_hash_tracker,
+                                       db_renderer_cpu_renderer_state_hash());
+    }
+    if ((ctx->frame_step->output_hash_enabled != 0) &&
+        (ctx->frame_step->output_hash_tracker != NULL)) {
+        db_display_hash_tracker_record(
+            ctx->frame_step->output_hash_tracker,
+            db_offscreen_cpu_surface_hash(&ctx->surface));
+    }
+    db_benchmark_log_periodic(
+        ctx->frame_step->api_name, ctx->frame_step->renderer_name,
+        ctx->frame_step->backend, (uint64_t)frame_index + 1U,
+        ctx->frame_step->work_unit_count, elapsed_ms, NULL,
+        ctx->frame_step->next_progress_log_due_ms, BENCH_LOG_INTERVAL_MS);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
 
@@ -165,9 +223,6 @@ static int db_run_offscreen_vulkan(const db_cli_config_t *cfg) {
         loop_result.frame_ema_ms, loop_result.jitter_ema_ms,
         loop_result.frame_p50_ms, loop_result.frame_p95_ms,
         loop_result.frame_p99_ms, loop_result.retries);
-    db_display_log_draw_stats_with_fn(
-        DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
-        db_renderer_vulkan_1_2_multi_gpu_draw_stats);
     db_renderer_vulkan_1_2_multi_gpu_shutdown();
     db_display_dual_hash_trackers_log_final(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
                                             &hash_trackers);
@@ -279,10 +334,10 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
     double next_progress_log_due_ms = 0.0;
     const db_display_frame_step_t frame_step = db_display_frame_step_make(
         db_dispatch_api_name(DB_API_OPENGL),
-        DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, capability_mode,
-        renderer_ops.renderer_name, &hash_trackers.output, &hash_trackers.state,
-        &next_progress_log_due_ms, work_unit_count,
-        hash_settings.output_hash_enabled, hash_settings.state_hash_enabled);
+        DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, renderer_ops.renderer_name,
+        &hash_trackers.output, &hash_trackers.state, &next_progress_log_due_ms,
+        work_unit_count, hash_settings.output_hash_enabled,
+        hash_settings.state_hash_enabled);
     db_offscreen_gl3_loop_ctx_t loop_ctx = {
         .frame_step = &frame_step,
         .renderer_ops = &renderer_ops,
@@ -318,10 +373,10 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
 
     const double total_ms =
         (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
-    db_benchmark_log_final(db_dispatch_api_name(DB_API_OPENGL),
-                           renderer_ops.renderer_name,
-                           DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, frames,
-                           work_unit_count, total_ms, capability_mode);
+    db_display_log_renderer_final_summary(
+        db_dispatch_api_name(DB_API_OPENGL), renderer_ops.renderer_name,
+        DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, capability_mode, frames,
+        work_unit_count, total_ms, renderer_ops.draw_stats);
     db_display_dual_hash_trackers_log_final(
         DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, &hash_trackers);
 
@@ -348,8 +403,9 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     const db_display_hash_settings_t hash_settings =
         runtime_hash_cfg.hash_settings;
 
-    db_renderer_cpu_renderer_init_with_hdr_float_bo(
-        db_display_cpu_hdr_option_state().option_enables_hdr);
+    const int uses_rgba16f =
+        db_display_cpu_hdr_option_state().option_enables_hdr;
+    db_renderer_cpu_renderer_init_with_hdr_float_bo(uses_rgba16f);
     const char *capability_mode = db_renderer_cpu_renderer_capability_mode();
     const uint32_t work_unit_count = db_renderer_cpu_renderer_work_unit_count();
 
@@ -360,11 +416,12 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
             DB_DISPLAY_HASH_KEY_STATE, DB_DISPLAY_HASH_KEY_BO);
     const db_display_frame_step_t frame_step = db_display_frame_step_make(
         db_dispatch_api_name(DB_API_CPU), DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
-        capability_mode, db_renderer_name_cpu(), &hash_trackers.output,
-        &hash_trackers.state, &next_progress_log_due_ms, work_unit_count,
+        db_renderer_name_cpu(), &hash_trackers.output, &hash_trackers.state,
+        &next_progress_log_due_ms, work_unit_count,
         hash_settings.output_hash_enabled, hash_settings.state_hash_enabled);
     db_offscreen_cpu_loop_ctx_t loop_ctx = {
         .frame_step = &frame_step,
+        .surface = db_offscreen_cpu_surface_create(uses_rgba16f),
     };
     const db_display_frame_loop_t loop = {
         .backend = DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
@@ -381,16 +438,21 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
 
     db_display_dual_hash_trackers_finalize(&hash_trackers, &hash_settings,
                                            db_renderer_cpu_renderer_state_hash,
-                                           db_offscreen_cpu_bo_hash);
+                                           NULL);
+    if (hash_settings.output_hash_enabled != 0) {
+        hash_trackers.output.final_hash =
+            db_offscreen_cpu_surface_hash(&loop_ctx.surface);
+    }
 
     const double total_ms =
         (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
-    db_benchmark_log_final(db_dispatch_api_name(DB_API_CPU),
-                           db_renderer_name_cpu(),
-                           DB_BACKEND_NAME_DISPLAY_OFFSCREEN, frames,
-                           work_unit_count, total_ms, capability_mode);
+    db_display_log_renderer_final_summary(
+        db_dispatch_api_name(DB_API_CPU), db_renderer_name_cpu(),
+        DB_BACKEND_NAME_DISPLAY_OFFSCREEN, capability_mode, frames,
+        work_unit_count, total_ms, NULL);
     db_display_dual_hash_trackers_log_final(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
                                             &hash_trackers);
+    db_offscreen_cpu_surface_destroy(&loop_ctx.surface);
     db_renderer_cpu_renderer_shutdown();
     return EXIT_SUCCESS;
 }
