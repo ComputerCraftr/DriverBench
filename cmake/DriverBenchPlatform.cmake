@@ -14,6 +14,15 @@ function(db_configure_platform_linker_preference)
     return()
   endif()
 
+  if(DB_TARGET_LINUX_32BIT)
+    message(STATUS
+      "32-bit Linux target with LTO: keeping the platform linker; skipping "
+      "ld.lld because common multilib setups lack the lld-specific 32-bit "
+      "runtime archive layout."
+    )
+    return()
+  endif()
+
   if(DB_PLATFORM_IS_APPLE)
     message(STATUS
       "Apple build with LTO: keeping the platform linker; skipping ld.lld "
@@ -25,6 +34,9 @@ function(db_configure_platform_linker_preference)
   find_program(DB_LLD_PROGRAM NAMES ld.lld lld)
   if(DB_LLD_PROGRAM)
     set(DB_USE_LLD ON PARENT_SCOPE)
+    if(DB_LTO_MODE STREQUAL "thin")
+      message(STATUS "Clang ThinLTO enabled with lld")
+    endif()
   endif()
 endfunction()
 

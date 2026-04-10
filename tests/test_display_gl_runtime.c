@@ -76,6 +76,31 @@ db_test_default_framebuffer_probe_translation(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_INT(state, (int)info.first_reuse_distance, 2);
 }
 
+static void
+db_test_hidden_glfw_offscreen_full_draw_policy(db_test_state_t *state) {
+    db_cli_config_t implicit_cfg = {0};
+
+#ifdef __linux__
+    db_cli_config_t explicit_cfg = {
+        .backbuffer_draw_mode_explicit = 1,
+    };
+
+    DB_TEST_EXPECT_TRUE(state,
+                        db_display_should_force_hidden_glfw_offscreen_full_draw(
+                            DB_GL_RENDERER_GL1_5_GLES1_1, &implicit_cfg) != 0);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_display_should_force_hidden_glfw_offscreen_full_draw(
+                            DB_GL_RENDERER_GL1_5_GLES1_1, &explicit_cfg) == 0);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_display_should_force_hidden_glfw_offscreen_full_draw(
+                            DB_GL_RENDERER_GL3_3, &implicit_cfg) == 0);
+#else
+    DB_TEST_EXPECT_TRUE(state,
+                        db_display_should_force_hidden_glfw_offscreen_full_draw(
+                            DB_GL_RENDERER_GL1_5_GLES1_1, &implicit_cfg) == 0);
+#endif
+}
+
 unsigned db_display_gl_runtime_test_run_all(void) {
     static const db_test_case_t cases[] = {
         {"glfw_policy_forces_full_draw_on_unstable_probe",
@@ -86,6 +111,8 @@ unsigned db_display_gl_runtime_test_run_all(void) {
          db_test_default_framebuffer_probe_policy_visibility},
         {"default_framebuffer_probe_translation",
          db_test_default_framebuffer_probe_translation},
+        {"hidden_glfw_offscreen_full_draw_policy",
+         db_test_hidden_glfw_offscreen_full_draw_policy},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

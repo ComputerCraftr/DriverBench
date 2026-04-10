@@ -10,7 +10,7 @@ Checks: >
   -readability-function-cognitive-complexity,
   -readability-isolate-declaration
 
-HeaderFilterRegex: ".*"
+HeaderFilterRegex: "^(?!.*third_party/).*$"
 WarningsAsErrors: "misc-include-cleaner,misc-no-recursion"
 CheckOptions:
   - key: readability-identifier-length.MinimumVariableNameLength

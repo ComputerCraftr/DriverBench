@@ -9,7 +9,7 @@ if(DB_BUILD_VULKAN)
     set(DB_VULKAN_LIB "${Vulkan_LIBRARY}")
   endif()
 
-  if(DB_TARGET_LINUX_MUSL AND DB_VULKAN_LIB)
+  if(DB_LINUX_REQUIRE_STATIC_ARCHIVES AND DB_VULKAN_LIB)
     set(DB_VULKAN_LOCATION "")
     if(TARGET Vulkan::Vulkan)
       get_target_property(DB_VULKAN_IMPORTED_LOCATION
@@ -39,7 +39,7 @@ if(DB_BUILD_VULKAN)
 
     if(DB_VULKAN_LOCATION MATCHES "\\.so(\\.|$)")
       message(WARNING
-        "DB_TARGET_LINUX_MUSL=ON with static link: Vulkan library resolves to "
+        "Linux static-link mode requires archive Vulkan linkage, but Vulkan resolves to "
         "shared library '${DB_VULKAN_LOCATION}'. Disabling Vulkan renderer "
         "for this build."
       )

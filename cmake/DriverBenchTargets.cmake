@@ -159,6 +159,7 @@ function(db_finalize_driverbench_target)
     driverbench_cli_core
     driverbench_render_core
     driverbench_core
+    driverbench_app
     ${DB_DRIVERBENCH_LIBS}
   )
   target_include_directories(${DB_UNIFIED_TARGET}

@@ -1,13 +1,31 @@
 cmake_minimum_required(VERSION 3.21)
 
-# Prefer Clang for better default LTO support when no compiler is specified.
+# Prefer musl-targeted GCC when a musl preset requests it and a matching cross
+# compiler is available. Otherwise prefer Clang for better default LTO support.
 if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
-  find_program(DB_DEFAULT_CLANG NAMES clang)
-  if(DB_DEFAULT_CLANG)
-    set(CMAKE_C_COMPILER "${DB_DEFAULT_CLANG}" CACHE FILEPATH
-      "C compiler selected by DriverBench default preference (clang)"
-    )
-    message(STATUS "No C compiler specified; defaulting to clang: ${DB_DEFAULT_CLANG}")
+  if(DEFINED DB_TARGET_LINUX_MUSL AND DB_TARGET_LINUX_MUSL AND
+     DEFINED DB_TARGET_LINUX_MUSL_TRIPLE AND
+     NOT "${DB_TARGET_LINUX_MUSL_TRIPLE}" STREQUAL "")
+    find_program(DB_DEFAULT_MUSL_GCC
+      NAMES "${DB_TARGET_LINUX_MUSL_TRIPLE}-gcc")
+    if(DB_DEFAULT_MUSL_GCC)
+      set(CMAKE_C_COMPILER "${DB_DEFAULT_MUSL_GCC}" CACHE FILEPATH
+        "C compiler selected by DriverBench default preference (musl-targeted GCC)"
+      )
+      message(STATUS
+        "No C compiler specified; defaulting to musl-targeted GCC: ${DB_DEFAULT_MUSL_GCC}")
+    endif()
+  endif()
+
+  if(NOT DEFINED CMAKE_C_COMPILER)
+    find_program(DB_DEFAULT_CLANG NAMES clang)
+    if(DB_DEFAULT_CLANG)
+      set(CMAKE_C_COMPILER "${DB_DEFAULT_CLANG}" CACHE FILEPATH
+        "C compiler selected by DriverBench default preference (clang)"
+      )
+      message(STATUS
+        "No C compiler specified; defaulting to clang: ${DB_DEFAULT_CLANG}")
+    endif()
   endif()
 endif()
 
@@ -51,23 +69,42 @@ set(DB_CORE_SOURCES
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_GLFW_WINDOW_DISPLAY "Build GLFW window display backend" ON)
+option(DB_GLFW_REQUIRED
+  "Fail configure if a requested GLFW provider is unavailable instead of disabling GLFW-backed displays"
+  OFF)
 option(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY
   "Build Linux KMS atomic display backend" ON)
+set(DB_GLFW_PROVIDER "vendored" CACHE STRING
+  "GLFW provider: vendored, system, or off"
+)
+set_property(CACHE DB_GLFW_PROVIDER PROPERTY STRINGS vendored system off)
 option(DB_ENABLE_AGGRESSIVE_OPT "Enable aggressive compile optimization flags" ON)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
-option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" ON)
+option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" OFF)
 option(DB_ENABLE_LTO_RELWITHDEBINFO
   "Enable LTO specifically for RelWithDebInfo builds" OFF)
+set(DB_LTO_MODE "full" CACHE STRING
+  "LTO mode: full or thin"
+)
+set_property(CACHE DB_LTO_MODE PROPERTY STRINGS full thin)
 option(DB_ENABLE_SANITIZERS "Enable sanitizers for debug builds" ON)
 option(DB_ENABLE_DSYM "Generate dSYM bundles for Apple debug-like builds" ON)
+set(DB_TEST_ALTERNATE_RELEASE_ROOTS "" CACHE STRING
+  "Optional semicolon-separated alternate release suites in the form lane=build_dir"
+)
 option(DB_TARGET_LINUX_MUSL
   "Enable Linux musl target flags for cross-compilation" OFF)
 set(DB_TARGET_LINUX_MUSL_TRIPLE "x86_64-linux-musl" CACHE STRING
   "Target triple used when DB_TARGET_LINUX_MUSL is ON (for clang-style --target)"
 )
-set(DB_TARGET_LINUX_MUSL_SYSROOT "" CACHE PATH
-  "Optional sysroot path used when DB_TARGET_LINUX_MUSL is ON"
+set(DB_TARGET_LINUX_ROOT "" CACHE PATH
+  "Optional root/sysroot path used for Linux cross-compilation discovery"
 )
+set(DB_TARGET_LINUX_MUSL_SYSROOT "" CACHE PATH
+  "Deprecated legacy musl sysroot path; prefer DB_TARGET_LINUX_ROOT"
+)
+option(DB_TARGET_LINUX_MUSL_STATIC_LINK
+  "Enable static linking (-static) for Linux musl target builds" OFF)
 option(DB_TARGET_LINUX_32BIT
   "Enable 32-bit target flags (-m32) for Linux cross-compilation" OFF)
 
@@ -84,6 +121,7 @@ if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo|MinSizeRel)$")
 endif()
 
 set(DB_EFFECTIVE_LTO OFF)
+set(DB_EFFECTIVE_LTO_FLAG "")
 if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LTO)
   if(CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" AND
      NOT DB_ENABLE_LTO_RELWITHDEBINFO)
@@ -91,11 +129,31 @@ if(DB_IS_RELEASE_LIKE AND DB_ENABLE_LTO)
       "RelWithDebInfo build: disabling LTO by default to preserve profiler symbols "
       "(set DB_ENABLE_LTO_RELWITHDEBINFO=ON to override)."
     )
+  elseif((NOT DB_LTO_MODE STREQUAL "full") AND
+         (NOT DB_LTO_MODE STREQUAL "thin"))
+    message(FATAL_ERROR
+      "Invalid DB_LTO_MODE='${DB_LTO_MODE}'. Expected full or thin."
+    )
   elseif(DB_COMPILER_IS_CLANG)
     set(DB_EFFECTIVE_LTO ON)
+    if(DB_LTO_MODE STREQUAL "thin")
+      set(DB_EFFECTIVE_LTO_FLAG "-flto=thin")
+    else()
+      set(DB_EFFECTIVE_LTO_FLAG "-flto")
+    endif()
+  elseif(DB_COMPILER_IS_GNU)
+    if(DB_LTO_MODE STREQUAL "thin")
+      message(FATAL_ERROR
+        "DB_LTO_MODE=thin requested for GCC, but GCC does not support ThinLTO. "
+        "Use -DDB_LTO_MODE=full for GCC."
+      )
+    endif()
+    set(DB_EFFECTIVE_LTO ON)
+    set(DB_EFFECTIVE_LTO_FLAG "-flto")
   else()
     message(WARNING
-      "DB_ENABLE_LTO is ON, but compiler '${CMAKE_C_COMPILER_ID}' is not Clang; "
+      "DB_ENABLE_LTO is ON, but compiler '${CMAKE_C_COMPILER_ID}' does not "
+      "have configured LTO support in this build; "
       "disabling LTO for this configure."
     )
   endif()
@@ -175,8 +233,8 @@ function(db_apply_perf_options target_name)
   endif()
 
   if(DB_EFFECTIVE_LTO)
-    target_compile_options(${target_name} PRIVATE -flto)
-    target_link_options(${target_name} PRIVATE -flto)
+    target_compile_options(${target_name} PRIVATE ${DB_EFFECTIVE_LTO_FLAG})
+    target_link_options(${target_name} PRIVATE ${DB_EFFECTIVE_LTO_FLAG})
     if(DB_USE_LLD)
       target_link_options(${target_name} PRIVATE -fuse-ld=lld)
     endif()

@@ -224,9 +224,22 @@ db_x86_assume_aligned256(const void *ptr) {
     return (const __m256i *)DB_ASSUME_ALIGNED(ptr, 32U);
 }
 
-DB_HASH_TARGET_AVX2 static inline __m256i *
-db_x86_assume_aligned256_mut(void *ptr) {
-    return (__m256i *)DB_ASSUME_ALIGNED(ptr, 32U);
+DB_HASH_TARGET_SSE41 static inline void
+db_x86_store128_aligned_u32x4(uint32_t out_hashes[DB_BLOCK_HASH_VECTOR_WIDTH],
+                              __m128i lane_hash) {
+    _mm_store_si128((__m128i *)DB_ASSUME_ALIGNED(out_hashes, 16U), lane_hash);
+}
+
+DB_HASH_TARGET_AVX2 static inline __m256i db_x86_load256_aligned_u32x8(
+    const uint32_t in_hashes[DB_BLOCK_HASH_VECTOR_WIDTH_AVX2]) {
+    return _mm256_load_si256(db_x86_assume_aligned256(in_hashes));
+}
+
+DB_HASH_TARGET_AVX2 static inline void db_x86_store256_aligned_u64x4(
+    uint64_t out_packed[DB_BLOCK_HASH_VECTOR_WIDTH_AVX2 / 2U],
+    __m256i hashes_vec) {
+    _mm256_store_si256((__m256i *)DB_ASSUME_ALIGNED(out_packed, 32U),
+                       hashes_vec);
 }
 
 DB_HASH_TARGET_SSE41 static inline __m128i db_x86_load128_any(const void *ptr) {
@@ -315,7 +328,7 @@ DB_HASH_TARGET_SSE41 static inline void db_fnv1a32_4x64_sse41(
     }
 
     alignas(16) uint32_t lane_results[DB_BLOCK_HASH_VECTOR_WIDTH];
-    _mm_store_si128((__m128i *)lane_results, lane_hash);
+    db_x86_store128_aligned_u32x4(lane_results, lane_hash);
     db_copy_u32_buffer(out_hashes, lane_results, DB_BLOCK_HASH_VECTOR_WIDTH);
 }
 
@@ -344,7 +357,8 @@ DB_HASH_TARGET_AVX2 static inline void db_fnv1a32_8x64_avx2(
     }
 
     alignas(32) uint32_t lane_results[DB_BLOCK_HASH_VECTOR_WIDTH_AVX2];
-    _mm256_store_si256((__m256i *)lane_results, lane_hash);
+    _mm256_store_si256((__m256i *)DB_ASSUME_ALIGNED(lane_results, 32U),
+                       lane_hash);
     for (size_t lane_index = 0U; lane_index < DB_BLOCK_HASH_VECTOR_WIDTH_AVX2;
          lane_index++) {
         out_hashes[lane_index] = lane_results[lane_index];
@@ -356,10 +370,8 @@ DB_HASH_TARGET_AVX2 static inline void
 db_x86_pack8_u32_to4_u64_avx2(const uint32_t *in_hashes, uint64_t *out_packed) {
     // Callers pass local alignas(32) lane/result arrays, so aligned AVX loads
     // and stores are valid in this hot pack path.
-    const __m256i hashes_vec =
-        _mm256_load_si256(db_x86_assume_aligned256((const void *)in_hashes));
-    _mm256_store_si256(db_x86_assume_aligned256_mut((void *)out_packed),
-                       hashes_vec);
+    const __m256i hashes_vec = db_x86_load256_aligned_u32x8(in_hashes);
+    db_x86_store256_aligned_u64x4(out_packed, hashes_vec);
 }
 
 DB_HASH_TARGET_SSE41 static inline void
@@ -368,10 +380,21 @@ db_x86_pack4_u32_to2_u64_sse41(const uint32_t *in_hashes,
     // Callers pass local alignas(16) lane/result arrays, so aligned SSE loads
     // are valid in this hot pack path.
     const __m128i hashes_vec =
-        _mm_load_si128(db_x86_assume_aligned128((const void *)in_hashes));
+        _mm_load_si128(db_x86_assume_aligned128(in_hashes));
     const __m128i upper_vec = _mm_srli_si128(hashes_vec, 8);
+#if defined(__x86_64__) || defined(_M_X64)
     out_packed[DB_BLOCK_HASH_LANE_0] = (uint64_t)_mm_cvtsi128_si64(hashes_vec);
     out_packed[DB_BLOCK_HASH_LANE_1] = (uint64_t)_mm_cvtsi128_si64(upper_vec);
+#else
+    out_packed[DB_BLOCK_HASH_LANE_0] =
+        (uint64_t)(uint32_t)_mm_cvtsi128_si32(hashes_vec) |
+        ((uint64_t)(uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(hashes_vec, 4))
+         << 32U);
+    out_packed[DB_BLOCK_HASH_LANE_1] =
+        (uint64_t)(uint32_t)_mm_cvtsi128_si32(upper_vec) |
+        ((uint64_t)(uint32_t)_mm_cvtsi128_si32(_mm_srli_si128(upper_vec, 4))
+         << 32U);
+#endif
 }
 
 static int db_hash_select_x86_kernel(void) {

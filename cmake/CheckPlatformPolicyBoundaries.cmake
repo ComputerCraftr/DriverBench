@@ -120,13 +120,19 @@ elseif(RULE_SET STREQUAL "cmake_platform_policy")
   set(DB_PP_ALLOWED_FILES
     "${SOURCE_ROOT}/cmake/DriverBenchPlatform.cmake"
     "${SOURCE_ROOT}/cmake/DriverBenchLinuxToolchain.cmake"
-    "${SOURCE_ROOT}/cmake/DriverBenchTestPlatform.cmake"
+    "${SOURCE_ROOT}/cmake/DriverBenchTestCapabilities.cmake"
+    "${SOURCE_ROOT}/cmake/DriverBenchAlternateSuites.cmake"
     "${SOURCE_ROOT}/cmake/CheckPlatformPolicyBoundaries.cmake")
 
   db_pp_check_forbidden_outside_allowlist(
     DB_PP_SCAN_FILES DB_PP_ALLOWED_FILES
     "(^|[^A-Za-z0-9_])(APPLE|CMAKE_SYSTEM_NAME)([^A-Za-z0-9_]|$)"
     "direct platform branching must live only in approved platform/test-policy CMake modules")
+
+  db_pp_check_forbidden_outside_allowlist(
+    DB_PP_SCAN_FILES DB_PP_ALLOWED_FILES
+    "/usr/lib32|/usr/i686-pc-linux-gnu|/usr/[A-Za-z0-9._+-]+-linux-musl|NO_CMAKE_FIND_ROOT_PATH"
+    "host-specific Linux cross root/library path forcing must live only in the Linux toolchain policy module")
 
 elseif(RULE_SET STREQUAL "logging_policy")
   set(DB_PP_PROGRESS_FILES

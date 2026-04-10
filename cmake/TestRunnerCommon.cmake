@@ -58,12 +58,13 @@ function(db_test_run_command out_output out_skip_reason out_status args_string f
   endif()
 endfunction()
 
-function(db_test_extract_hash_or_fail output hash_key out_hash_value)
-  string(REGEX MATCH "${hash_key}=0x[0-9a-fA-F]+" hash_match "${output}")
+function(db_test_extract_hash_or_fail output_var_name hash_key out_hash_value)
+  set(output_text "${${output_var_name}}")
+  string(REGEX MATCH "${hash_key}=0x[0-9a-fA-F]+" hash_match "${output_text}")
   if(hash_match STREQUAL "")
     message(FATAL_ERROR
       "Hash key '${hash_key}' not found in output.\n"
-      "output:\n${output}\n")
+      "output:\n${output_text}\n")
   endif()
   string(REGEX REPLACE "^${hash_key}=" "" hash_value "${hash_match}")
   set(${out_hash_value} "${hash_value}" PARENT_SCOPE)

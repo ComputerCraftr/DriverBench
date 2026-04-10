@@ -21,8 +21,8 @@ if(NOT "${skip_reason_b}" STREQUAL "")
   return()
 endif()
 
-db_test_extract_hash_or_fail("${output_a}" "${TEST_HASH_KEY}" hash_a)
-db_test_extract_hash_or_fail("${output_b}" "${TEST_HASH_KEY}" hash_b)
+db_test_extract_hash_or_fail("output_a" "${TEST_HASH_KEY}" hash_a)
+db_test_extract_hash_or_fail("output_b" "${TEST_HASH_KEY}" hash_b)
 
 if(hash_a STREQUAL hash_b)
   message(FATAL_ERROR

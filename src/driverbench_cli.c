@@ -62,7 +62,14 @@ static void db_usage(void) {
     fputs(glfw_caps, stderr);
     fputs("\n  linux_kms_atomic: ", stderr);
     fputs(kms_caps, stderr);
-    fputs("\n", stderr);
+    fputs("\n\nBuild-time GLFW provider: " DB_GLFW_PROVIDER_TEXT "\n", stderr);
+#ifdef DB_HAS_GLFW
+    fputs(
+        "GLFW-backed paths: enabled (glfw_window + OpenGL offscreen routes)\n",
+        stderr);
+#else
+    fputs("GLFW-backed paths: disabled in this build\n", stderr);
+#endif
 }
 
 void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {

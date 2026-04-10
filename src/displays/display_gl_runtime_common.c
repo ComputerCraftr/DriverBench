@@ -149,6 +149,18 @@ int db_display_should_probe_default_framebuffer_preserve(
 #endif
 }
 
+int db_display_should_force_hidden_glfw_offscreen_full_draw(
+    db_gl_renderer_t renderer, const db_cli_config_t *cfg) {
+#ifdef __linux__
+    return (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) &&
+           ((cfg == NULL) || (cfg->backbuffer_draw_mode_explicit == 0));
+#else
+    (void)renderer;
+    (void)cfg;
+    return 0;
+#endif
+}
+
 db_display_default_framebuffer_preserve_info_t
 db_display_default_framebuffer_preserve_info_make(int has_probe,
                                                   int preserve_supported,

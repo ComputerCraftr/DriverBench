@@ -31,7 +31,7 @@ if(DEFINED TEST_ARGS_C AND NOT "${TEST_ARGS_C}" STREQUAL "")
   list(APPEND run_arg_sets "${TEST_ARGS_C}")
 endif()
 
-set(run_outputs "")
+set(run_output_count 0)
 foreach(run_args IN LISTS run_arg_sets)
   db_test_run_command(run_output skip_reason run_status "${run_args}"
     "Determinism run failed")
@@ -40,10 +40,14 @@ foreach(run_args IN LISTS run_arg_sets)
       "Determinism test skipped: ${skip_reason}\n${run_output}")
     return()
   endif()
-  list(APPEND run_outputs "${run_output}")
+  set(run_output_${run_output_count} "${run_output}")
+  math(EXPR run_output_count "${run_output_count} + 1")
 endforeach()
 
-list(GET run_outputs 0 reference_output)
+if(run_output_count EQUAL 0)
+  message(FATAL_ERROR "No determinism runs were executed")
+endif()
+set(reference_output_var "run_output_0")
 
 set(hash_summary "")
 foreach(hash_check IN LISTS TEST_HASH_CHECKS)
@@ -57,25 +61,24 @@ foreach(hash_check IN LISTS TEST_HASH_CHECKS)
     string(SUBSTRING "${hash_check}" ${expected_start} -1 expected_hash)
   endif()
 
-  db_test_extract_hash_or_fail("${reference_output}" "${hash_key}" reference_hash)
-  set(candidate_outputs "${run_outputs}")
-  list(REMOVE_AT candidate_outputs 0)
+  db_test_extract_hash_or_fail("${reference_output_var}" "${hash_key}" reference_hash)
   set(run_index 1)
-  foreach(run_output IN LISTS candidate_outputs)
-    db_test_extract_hash_or_fail("${run_output}" "${hash_key}" candidate_hash)
+  while(run_index LESS run_output_count)
+    set(candidate_output_var "run_output_${run_index}")
+    db_test_extract_hash_or_fail("${candidate_output_var}" "${hash_key}" candidate_hash)
     if(NOT reference_hash STREQUAL candidate_hash)
       message(FATAL_ERROR
         "Determinism mismatch for ${TEST_BIN} key '${hash_key}': ${reference_hash} != ${candidate_hash}\n"
-        "reference:\n${reference_output}\n"
-        "candidate #${run_index}:\n${run_output}\n")
+        "reference:\n${${reference_output_var}}\n"
+        "candidate #${run_index}:\n${${candidate_output_var}}\n")
     endif()
     math(EXPR run_index "${run_index} + 1")
-  endforeach()
+  endwhile()
 
   if(NOT "${expected_hash}" STREQUAL "" AND NOT reference_hash STREQUAL expected_hash)
     message(FATAL_ERROR
       "Golden hash mismatch for ${TEST_BIN} key '${hash_key}': expected ${expected_hash}, got ${reference_hash}\n"
-      "run output:\n${reference_output}\n")
+      "run output:\n${${reference_output_var}}\n")
   endif()
 
   list(APPEND hash_summary "${hash_key}=${reference_hash}")
