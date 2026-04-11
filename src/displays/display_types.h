@@ -8,9 +8,9 @@ typedef enum {
 } db_api_t;
 
 typedef enum {
-    DB_DISPLAY_GLFW_WINDOW = 0,
-    DB_DISPLAY_LINUX_KMS_ATOMIC = 1,
-    DB_DISPLAY_OFFSCREEN = 2,
+    DB_GLFW_WINDOW_DISPLAY = 0,
+    DB_KMS_DISPLAY = 1,
+    DB_OFFSCREEN_DISPLAY = 2,
 } db_display_t;
 
 typedef enum {

@@ -1,0 +1,50 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+#if defined(VULKAN) || defined(GL_KHR_vulkan_glsl)
+layout(set = 0, binding = 0) uniform sampler2D source_image;
+layout(std430, set = 0, binding = 1) writeonly buffer PackedPixels {
+    uint words[];
+};
+#else
+layout(binding = 0) uniform sampler2D source_image;
+layout(std430, binding = 1) writeonly buffer PackedPixels {
+    uint words[];
+};
+#endif
+
+#if defined(VULKAN) || defined(GL_KHR_vulkan_glsl)
+layout(push_constant) uniform PackConstants {
+    ivec2 source_origin;
+    uvec2 extent;
+    uint row_words;
+    uint word_offset;
+    uint rgba16f;
+} pc;
+#else
+layout(std140, binding = 2) uniform PackConstants {
+    ivec2 source_origin;
+    uvec2 extent;
+    uint row_words;
+    uint word_offset;
+    uint rgba16f;
+} pc;
+#endif
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(p, pc.extent))) {
+        return;
+    }
+
+    vec4 value = texelFetch(source_image, pc.source_origin + ivec2(p), 0);
+    uint index = pc.word_offset + (p.y * pc.row_words);
+    if (pc.rgba16f != 0) {
+        index += p.x * 2;
+        words[index] = packHalf2x16(value.rg);
+        words[index + 1] = packHalf2x16(value.ba);
+    } else {
+        words[index + p.x] = packUnorm4x8(value);
+    }
+}

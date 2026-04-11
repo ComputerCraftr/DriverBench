@@ -1,3 +1,4 @@
+#include "core/db_core.h"
 #include "displays/display_dispatch.h"
 #include "displays/display_types.h"
 #include "driverbench_cli.h"
@@ -5,7 +6,9 @@
 
 int main(int argc, char **argv) {
     db_cli_config_t cfg = {0};
-    db_cli_parse_or_exit(argc, argv, &cfg);
+    db_cli_parse_or_exit(
+        db_checked_int_to_size("driverbench_main", "argc", argc),
+        (const char *const *)argv, &cfg);
 
     if (cfg.api_is_auto != 0) {
         return db_run_display_auto(cfg.display, cfg.renderer, cfg.kms_card,

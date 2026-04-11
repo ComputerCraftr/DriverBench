@@ -5,8 +5,8 @@
 
 #include "driverbench_config.h"
 
-int db_cli_try_parse(int argc, char **argv, db_cli_config_t *out_cfg,
-                     int *out_show_help, int *out_print_usage, char *error,
-                     size_t error_size);
+int db_cli_try_parse(size_t argc, const char *const *argv,
+                     db_cli_config_t *out_cfg, int *out_show_help,
+                     int *out_print_usage, char *error, size_t error_size);
 
 #endif

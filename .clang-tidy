@@ -7,11 +7,13 @@ Checks: >
   portability-*,
   readability-*,
   -bugprone-easily-swappable-parameters,
+  -clang-analyzer-security.VAList,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
   -readability-function-cognitive-complexity,
   -readability-isolate-declaration
 
 HeaderFilterRegex: "^(?!.*third_party/).*$"
-WarningsAsErrors: "misc-include-cleaner,misc-no-recursion"
+WarningsAsErrors: "*"
 CheckOptions:
   - key: readability-identifier-length.MinimumVariableNameLength
     value: "2"

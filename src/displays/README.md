@@ -2,6 +2,32 @@
 
 Display modules are runtime backends used by the single `driverbench` binary.
 
+Displays resolve runtime policy plus one presentation contract and drive an
+opaque frame source. The benchmark engine publishes immutable canonical frame
+plans; displays neither own nor inspect its mode/simulation state. Renderers use
+a fixed logical raster; GLFW framebuffer and KMS mode extents are destinations
+for the shared nearest-neighbor presentation transform. Display resize does not
+rebuild canonical renderer targets. Displays do not mutate published plans,
+own renderer geometry history, or reconstruct benchmark state.
+
+Working `rgba8|rgba16f` precision is separate from native `sdr|hdr` output.
+Float texture/FBO support is not evidence of HDR presentation. A backend may
+report HDR only after verifying the native format, colorspace, transfer
+function, and metadata path.
+
+Verified HDR10 paths are KMS CPU/GL1/GL3 and GLFW Vulkan. KMS requires sink
+EDID PQ/BT.2020 support, XRGB2101010 scanout, connector colorspace and metadata
+properties, sufficient `max bpc`, and a successful atomic test commit. Vulkan
+requires an HDR10 ST2084 10-bit surface format and `VK_EXT_hdr_metadata`.
+GL1 pre-encodes linear working pixels into packed BT.2020/PQ RGB10A2 on the
+CPU, uploads transient damage through PBOs when available, and presents with
+fixed-function texturing; no shading-language support is required. GL3 and
+Vulkan perform conversion in their presentation shaders, while KMS CPU writes
+encoded XRGB2101010 scanout pixels directly.
+GLFW CPU/OpenGL and offscreen are SDR-only. All renderers retain canonical
+logical backing dimensions and use the same nearest-neighbor destination
+transform; presenter capability, not renderer working precision, decides HDR.
+
 Each module now exports a `db_run_*()` entrypoint (no standalone `main`).
 Top-level dispatch is handled by `src/driverbench_main.c`.
 
@@ -52,9 +78,9 @@ GLFW provider/build policy:
 Shared display constants/options:
 
 - `../config/benchmark_config.h`
+- `../config/runtime_options.h` (runtime option keys)
 - `display_dispatch.h`
-- `src/core/db_core.h` (runtime option keys)
-- `display_gl_runtime_common.[ch]` (GL runtime prepare/validate helpers)
+- `gl_display_runtime.[ch]` (GL runtime prepare/validate helpers)
 
 Backend capability validation is centralized in `display_dispatch.h` via:
 

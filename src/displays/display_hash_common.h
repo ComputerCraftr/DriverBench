@@ -26,13 +26,14 @@ typedef struct {
 #define DB_DISPLAY_HASH_KEY_FBO "fbo_hash"
 #define DB_DISPLAY_HASH_KEY_FRAMEBUFFER "framebuffer_hash"
 #define DB_DISPLAY_HASH_KEY_BO "bo_hash"
+#define DB_DISPLAY_HASH_KEY_WORKING "working_hash"
 
 static inline db_display_hash_settings_t
 db_display_resolve_hash_settings(int default_state_hash_enabled,
                                  int default_output_hash_enabled,
                                  const char *hash_mode) {
-    int state_hash_enabled = default_state_hash_enabled != 0;
-    int output_hash_enabled = default_output_hash_enabled != 0;
+    int state_hash_enabled = DB_BOOL(default_state_hash_enabled);
+    int output_hash_enabled = DB_BOOL(default_output_hash_enabled);
     if ((hash_mode == NULL) || (hash_mode[0] == '\0') ||
         (strcmp(hash_mode, "none") == 0)) {
         return (db_display_hash_settings_t){
@@ -50,10 +51,10 @@ db_display_resolve_hash_settings(int default_state_hash_enabled,
         state_hash_enabled = 1;
         output_hash_enabled = 1;
     } else {
-        db_infof("display_hash_common",
-                 "Invalid %s='%s'; using defaults (expected: "
-                 "none|state|pixel|both)",
-                 DB_RUNTIME_OPT_HASH, hash_mode);
+        DB_RUNTIME_STATUS("display_hash_common",
+                          "Invalid %s='%s'; using defaults (expected: "
+                          "none|state|pixel|both)",
+                          DB_RUNTIME_OPT_HASH, hash_mode);
     }
     return (db_display_hash_settings_t){
         .state_hash_enabled = state_hash_enabled,
@@ -87,10 +88,10 @@ db_display_hash_tracker_create(const char *backend, int enabled,
         return tracker;
     }
     if (backend != NULL) {
-        db_infof(backend,
-                 "Invalid %s='%s'; using hash report mode 'both' "
-                 "(expected: final|aggregate|both)",
-                 DB_RUNTIME_OPT_HASH_REPORT, report_mode);
+        DB_RUNTIME_STATUS(backend,
+                          "Invalid %s='%s'; using hash report mode 'both' "
+                          "(expected: final|aggregate|both)",
+                          DB_RUNTIME_OPT_HASH_REPORT, report_mode);
     }
     return tracker;
 }
@@ -113,20 +114,21 @@ db_display_hash_tracker_log_final(const char *backend,
         return;
     }
     const char *key = (tracker->hash_key != NULL) ? tracker->hash_key : "hash";
-    if ((tracker->report_final != 0) && (tracker->report_aggregate != 0)) {
-        db_infof(backend, "%s_final=0x%016llx %s_aggregate=0x%016llx", key,
-                 (unsigned long long)tracker->final_hash, key,
-                 (unsigned long long)tracker->aggregate_hash);
-        return;
-    }
+    char final_key[64] = {0};
+    char aggregate_key[64] = {0};
+    (void)db_snprintf(final_key, sizeof(final_key), "%s_final", key);
+    (void)db_snprintf(aggregate_key, sizeof(aggregate_key), "%s_aggregate",
+                      key);
+    db_log_field_t fields[3] = {DB_LOG_TOKEN("kind", key)};
+    size_t field_count = 1U;
     if (tracker->report_final != 0) {
-        db_infof(backend, "%s_final=0x%016llx", key,
-                 (unsigned long long)tracker->final_hash);
+        fields[field_count++] = DB_LOG_HEX64(final_key, tracker->final_hash);
     }
     if (tracker->report_aggregate != 0) {
-        db_infof(backend, "%s_aggregate=0x%016llx", key,
-                 (unsigned long long)tracker->aggregate_hash);
+        fields[field_count++] =
+            DB_LOG_HEX64(aggregate_key, tracker->aggregate_hash);
     }
+    db_log_info(backend, "hash_result", fields, field_count);
 }
 
 #endif

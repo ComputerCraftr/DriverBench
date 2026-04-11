@@ -1,0 +1,31 @@
+include("${CMAKE_CURRENT_LIST_DIR}/TestRunnerCommon.cmake")
+
+db_test_require_defined(TEST_BIN)
+set(args
+    "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --benchmark-mode snake_grid --frame-limit 20 --backbuffer-draw-mode dirty"
+)
+db_test_run_command(output skip_reason status "${args}"
+                    "Buffer-age deduplication command failed")
+if(NOT "${skip_reason}" STREQUAL "")
+    message(STATUS "Buffer-age deduplication skipped: ${skip_reason}")
+    return()
+endif()
+
+string(REPLACE "\r" "" output "${output}")
+string(REPLACE "\n" ";" lines "${output}")
+set(previous_age "")
+set(age_count 0)
+foreach(line IN LISTS lines)
+    if(NOT line MATCHES " event=presentation_buffer_age ")
+        continue()
+    endif()
+    math(EXPR age_count "${age_count} + 1")
+    if("${line}" STREQUAL "${previous_age}")
+        message(FATAL_ERROR "Repeated unchanged buffer-age event:\n${line}")
+    endif()
+    set(previous_age "${line}")
+endforeach()
+if(age_count EQUAL 0)
+    message(FATAL_ERROR "No presentation_buffer_age event was emitted")
+endif()
+message(STATUS "Buffer-age logging is change-driven: events=${age_count}")

@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "db_buffer_convert.h"
 #include "db_core.h"
 
 static inline size_t db_size_grow_capacity_3_2(size_t current_capacity,
@@ -57,10 +56,11 @@ static inline uint32_t db_u32_grow_capacity_3_2(uint32_t current_capacity,
     return capacity;
 }
 
-static inline void db_reserve_array_capacity_or_fail(
-    void **buffer, size_t *capacity, size_t required_capacity,
-    size_t minimum_capacity, size_t element_size, size_t preserve_count,
-    const char *backend, const char *field_name) {
+static inline void
+db_reserve_array_capacity_or_fail(void **buffer, size_t *capacity,
+                                  size_t required_capacity,
+                                  size_t minimum_capacity, size_t element_size,
+                                  const char *backend, const char *field_name) {
     if ((buffer == NULL) || (capacity == NULL)) {
         db_failf((backend != NULL) ? backend : "alloc_policy",
                  "%s reserve target is null",
@@ -76,8 +76,8 @@ static inline void db_reserve_array_capacity_or_fail(
                  (field_name != NULL) ? field_name : "buffer");
     }
     if (*buffer == NULL) {
-        *buffer = db_alloc_array_or_fail(backend, field_name, new_capacity,
-                                         element_size);
+        *buffer =
+            db_malloc_or_fail(backend, field_name, new_capacity, element_size);
         *capacity = new_capacity;
         return;
     }
@@ -88,7 +88,6 @@ static inline void db_reserve_array_capacity_or_fail(
     }
     *buffer = grown;
     *capacity = new_capacity;
-    (void)preserve_count;
 }
 
 static inline void db_reserve_aligned_array_capacity_or_fail(
@@ -109,10 +108,10 @@ static inline void db_reserve_aligned_array_capacity_or_fail(
         db_failf(backend, "%s aligned reserve capacity overflow",
                  (field_name != NULL) ? field_name : "buffer");
     }
-    void *const new_buffer = db_alloc_aligned_array_or_fail(
+    void *const new_buffer = db_calloc_or_fail(
         backend, field_name, new_capacity, element_size, alignment);
     if ((*buffer != NULL) && (preserve_count > 0U)) {
-        db_copy_bytes(new_buffer, *buffer, preserve_count * element_size);
+        memcpy(new_buffer, *buffer, preserve_count * element_size);
     }
     free(*buffer);
     *buffer = new_buffer;

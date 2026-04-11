@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "db_render_types.h"
+
 #define DB_U32_GOLDEN_RATIO 0x9E3779B9U
 #define DB_U32_SALT_COLOR_R 0x27D4EB2FU
 #define DB_U32_SALT_COLOR_G 0x165667B1U
@@ -14,6 +16,18 @@
 #define DB_FNV1A32_PRIME UINT32_C(16777619)
 #define DB_FNV1A64_OFFSET UINT64_C(14695981039346656037)
 #define DB_FNV1A64_PRIME UINT64_C(1099511628211)
+
+typedef struct {
+    size_t mismatch_count;
+    uint32_t first_x;
+    uint32_t first_y;
+    uint32_t min_x;
+    uint32_t min_y;
+    uint32_t max_x;
+    uint32_t max_y;
+    uint8_t expected_rgba[4];
+    uint8_t actual_rgba[4];
+} db_rgba8_pixel_diff_t;
 
 uint64_t db_fnv1a64_extend(uint64_t hash, const void *data, size_t size);
 uint64_t db_fnv1a64_bytes(const void *data, size_t size);
@@ -27,9 +41,26 @@ uint64_t db_fnv_blockhash_u64(const void *data, size_t len_bytes,
 uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
                                         uint32_t height, size_t stride_bytes,
                                         int rows_bottom_to_top);
+// Normalizes an SDR presentation readback to logical top-down opaque RGBA8.
+// The source bytes are already in the resolved SDR transfer representation.
+uint64_t db_hash_sdr_framebuffer_rgba8_canonical(
+    const void *pixels, uint32_t framebuffer_width, uint32_t framebuffer_height,
+    size_t stride_bytes, int rows_bottom_to_top, uint32_t canonical_width,
+    uint32_t canonical_height);
 uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
                                           uint32_t width, uint32_t height,
                                           size_t stride_bytes,
                                           int rows_bottom_to_top);
+uint64_t db_hash_working_rgba8(const void *pixels, db_pixel_format_t format,
+                               uint32_t width, uint32_t height,
+                               size_t stride_bytes, int rows_bottom_to_top);
+int db_working_rgba8_canonicalize(const void *pixels, db_pixel_format_t format,
+                                  uint32_t width, uint32_t height,
+                                  size_t stride_bytes, int rows_bottom_to_top,
+                                  uint8_t *destination,
+                                  size_t destination_size);
+db_rgba8_pixel_diff_t db_rgba8_pixel_diff(const uint8_t *expected,
+                                          const uint8_t *actual, uint32_t width,
+                                          uint32_t height);
 
 #endif

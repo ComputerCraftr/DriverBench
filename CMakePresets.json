@@ -2,7 +2,7 @@
     "version": 3,
     "cmakeMinimumRequired": {
         "major": 3,
-        "minor": 21,
+        "minor": 24,
         "patch": 0
     },
     "configurePresets": [
@@ -27,8 +27,7 @@
             "inherits": "base-native-release-like",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release",
-                "DB_ENABLE_LTO": "ON",
-                "DB_LTO_MODE": "full"
+                "DB_ENABLE_LTO": "ON"
             }
         },
         {
@@ -38,8 +37,7 @@
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "gcc",
                 "CMAKE_BUILD_TYPE": "Release",
-                "DB_ENABLE_LTO": "ON",
-                "DB_LTO_MODE": "full"
+                "DB_ENABLE_LTO": "ON"
             }
         },
         {
@@ -129,9 +127,7 @@
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang",
                 "CMAKE_C_COMPILER_TARGET": "i686-pc-linux-gnu",
-                "DB_TARGET_LINUX_32BIT": "ON",
-                "DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY": "OFF",
-                "DB_BUILD_VULKAN": "OFF"
+                "DB_TARGET_LINUX_32BIT": "ON"
             }
         },
         {
@@ -141,7 +137,8 @@
             "binaryDir": "${sourceDir}/build/musl-x86_64",
             "cacheVariables": {
                 "DB_TARGET_LINUX_MUSL": "ON",
-                "DB_TARGET_LINUX_MUSL_TRIPLE": "x86_64-linux-musl"
+                "DB_TARGET_LINUX_MUSL_TRIPLE": "x86_64-linux-musl",
+                "DB_GLFW_REQUIRED": "OFF"
             }
         },
         {
@@ -152,7 +149,12 @@
             "cacheVariables": {
                 "DB_TARGET_LINUX_MUSL": "ON",
                 "DB_TARGET_LINUX_MUSL_TRIPLE": "x86_64-linux-musl",
-                "DB_TARGET_LINUX_MUSL_STATIC_LINK": "ON"
+                "DB_TARGET_LINUX_MUSL_STATIC_LINK": "ON",
+                "DB_BUILD_GLFW_WINDOW_DISPLAY": "OFF",
+                "DB_GLFW_PROVIDER": "off",
+                "DB_GLFW_REQUIRED": "OFF",
+                "DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY": "OFF",
+                "DB_BUILD_VULKAN": "OFF"
             }
         },
         {
@@ -164,8 +166,7 @@
                 "DB_TARGET_LINUX_MUSL": "ON",
                 "DB_TARGET_LINUX_32BIT": "ON",
                 "DB_TARGET_LINUX_MUSL_TRIPLE": "i686-linux-musl",
-                "DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY": "OFF",
-                "DB_BUILD_VULKAN": "OFF"
+                "DB_GLFW_REQUIRED": "OFF"
             }
         },
         {
@@ -179,80 +180,11 @@
                 "DB_TARGET_LINUX_MUSL_TRIPLE": "i686-linux-musl",
                 "DB_TARGET_LINUX_MUSL_STATIC_LINK": "ON",
                 "DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY": "OFF",
-                "DB_BUILD_VULKAN": "OFF"
+                "DB_BUILD_VULKAN": "OFF",
+                "DB_BUILD_GLFW_WINDOW_DISPLAY": "OFF",
+                "DB_GLFW_PROVIDER": "off",
+                "DB_GLFW_REQUIRED": "OFF"
             }
-        }
-    ],
-    "buildPresets": [
-        {
-            "name": "base-ninja-build",
-            "hidden": true,
-            "jobs": 8
-        },
-        {
-            "name": "ninja-linux-native-clang-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-native-clang-release"
-        },
-        {
-            "name": "ninja-linux-native-clang-debug",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-native-clang-debug"
-        },
-        {
-            "name": "ninja-linux-native-gcc-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-native-gcc-release"
-        },
-        {
-            "name": "ninja-linux-native-gcc-debug",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-native-gcc-debug"
-        },
-        {
-            "name": "ninja-linux-native-clang-relwithdebinfo",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-native-clang-relwithdebinfo"
-        },
-        {
-            "name": "ninja-macos-native-clang-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-macos-native-clang-release"
-        },
-        {
-            "name": "ninja-macos-native-clang-debug",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-macos-native-clang-debug"
-        },
-        {
-            "name": "ninja-native-system-glfw-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-native-system-glfw-release"
-        },
-        {
-            "name": "ninja-linux-gnu-i686-clang-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-gnu-i686-clang-release"
-        },
-        {
-            "name": "ninja-linux-musl-x86_64-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-musl-x86_64-release"
-        },
-        {
-            "name": "ninja-linux-musl-x86_64-static-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-musl-x86_64-static-release"
-        },
-        {
-            "name": "ninja-linux-musl-i686-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-musl-i686-release"
-        },
-        {
-            "name": "ninja-linux-musl-i686-static-release",
-            "inherits": "base-ninja-build",
-            "configurePreset": "ninja-linux-musl-i686-static-release"
         }
     ]
 }

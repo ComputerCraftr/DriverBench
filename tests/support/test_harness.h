@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_TEST_HARNESS_H
 #define DRIVERBENCH_TEST_HARNESS_H
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,22 +14,16 @@ typedef struct {
 
 enum { DB_TEST_FAIL_PREFIX_SIZE = 128 };
 
-static inline void db_test_failf_impl(db_test_state_t *state, const char *file,
-                                      int line, const char *fmt, ...) {
+static inline __attribute__((format(printf, 4, 5))) void
+db_test_failf_impl(db_test_state_t *state, const char *file, int line,
+                   const char *fmt, ...) {
     va_list args;
     char prefix[DB_TEST_FAIL_PREFIX_SIZE];
     state->failures++;
     (void)db_snprintf(prefix, sizeof(prefix), "%s:%d: ", file, line);
     fputs(prefix, stderr);
     va_start(args, fmt);
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wformat-nonliteral"
-#endif
     vfprintf(stderr, fmt, args);
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
     va_end(args);
     fputc('\n', stderr);
 }
@@ -54,6 +49,17 @@ static inline void db_test_failf_impl(db_test_state_t *state, const char *file,
         }                                                                      \
     } while (0)
 
+#define DB_TEST_EXPECT_EQ_U64(state, a, b)                                     \
+    do {                                                                       \
+        const uint64_t _a = (uint64_t)(a);                                     \
+        const uint64_t _b = (uint64_t)(b);                                     \
+        if (_a != _b) {                                                        \
+            DB_TEST_FAILF((state),                                             \
+                          "expected %s == %s (0x%016llx != 0x%016llx)", #a,    \
+                          #b, (unsigned long long)_a, (unsigned long long)_b); \
+        }                                                                      \
+    } while (0)
+
 #define DB_TEST_EXPECT_EQ_INT(state, a, b)                                     \
     do {                                                                       \
         const int _a = (int)(a);                                               \
@@ -74,6 +80,16 @@ static inline void db_test_failf_impl(db_test_state_t *state, const char *file,
         }                                                                      \
     } while (0)
 
+#define DB_TEST_EXPECT_DOUBLE_EQUAL(state, a, b)                               \
+    do {                                                                       \
+        const double _a = (double)(a);                                         \
+        const double _b = (double)(b);                                         \
+        if (fabs(_a - _b) > 0.000001) {                                        \
+            DB_TEST_FAILF((state), "expected %s == %s (%f != %f)", #a, #b, _a, \
+                          _b);                                                 \
+        }                                                                      \
+    } while (0)
+
 #define DB_TEST_EXPECT_STR_EQ(state, a, b)                                     \
     do {                                                                       \
         const char *_a = (a);                                                  \
@@ -85,6 +101,18 @@ static inline void db_test_failf_impl(db_test_state_t *state, const char *file,
         }                                                                      \
     } while (0)
 
+#define DB_TEST_EXPECT_STR_CONTAINS(state, haystack, needle)                   \
+    do {                                                                       \
+        const char *_haystack = (haystack);                                    \
+        const char *_needle = (needle);                                        \
+        if (((_haystack) == NULL) || ((_needle) == NULL) ||                    \
+            (strstr(_haystack, _needle) == NULL)) {                            \
+            DB_TEST_FAILF((state), "expected string '%s' to contain '%s'",     \
+                          (_haystack != NULL) ? _haystack : "(null)",          \
+                          (_needle != NULL) ? _needle : "(null)");             \
+        }                                                                      \
+    } while (0)
+
 typedef void (*db_test_fn_t)(db_test_state_t *state);
 
 typedef struct {
@@ -92,13 +120,18 @@ typedef struct {
     db_test_fn_t fn;
 } db_test_case_t;
 
+unsigned db_benchmark_seeding_test_run_all(void);
+unsigned db_benchmark_emitters_test_run_all(void);
 unsigned db_cli_test_run_all(void);
 unsigned db_core_logging_test_run_all(void);
+unsigned db_damage_trace_test_run_all(void);
 unsigned db_display_gl_runtime_test_run_all(void);
-unsigned db_frame_delta_test_run_all(void);
 unsigned db_gl_shadow_present_test_run_all(void);
-unsigned db_snake_history_test_run_all(void);
-unsigned db_snake_optimizer_test_run_all(void);
+unsigned db_hash_test_run_all(void);
+unsigned db_numeric_test_run_all(void);
+unsigned db_poll_policy_test_run_all(void);
+unsigned db_sort_test_run_all(void);
+unsigned db_vk_scheduler_test_run_all(void);
 
 static inline unsigned db_test_run_cases(const db_test_case_t *cases,
                                          size_t case_count) {

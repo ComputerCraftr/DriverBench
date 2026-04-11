@@ -17,46 +17,54 @@ static void db_usage(void) {
     char glfw_caps[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
     char kms_caps[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
     (void)db_dispatch_format_display_capabilities(
-        DB_DISPLAY_OFFSCREEN, offscreen_caps, sizeof(offscreen_caps));
-    (void)db_dispatch_format_display_capabilities(DB_DISPLAY_GLFW_WINDOW,
+        DB_OFFSCREEN_DISPLAY, offscreen_caps, sizeof(offscreen_caps));
+    (void)db_dispatch_format_display_capabilities(DB_GLFW_WINDOW_DISPLAY,
                                                   glfw_caps, sizeof(glfw_caps));
-    (void)db_dispatch_format_display_capabilities(DB_DISPLAY_LINUX_KMS_ATOMIC,
-                                                  kms_caps, sizeof(kms_caps));
+    (void)db_dispatch_format_display_capabilities(DB_KMS_DISPLAY, kms_caps,
+                                                  sizeof(kms_caps));
     fputs("Usage: driverbench [dispatch options] [runtime options]\n"
           "\nDispatch options:\n"
           "  --api <auto|cpu|opengl|vulkan>\n"
           "  --renderer <",
           stderr);
     fputs(renderer_usage, stderr);
-    fputs(">\n"
-          "  --display <offscreen|glfw_window|linux_kms_atomic>  (required)\n"
-          "  --renderer requires --api opengl when explicitly set\n"
-          "  --kms-card <path>\n"
-          "\nRuntime options:\n"
-          "  --allow-remote-display <0|1>\n"
-          "  --backbuffer-draw-mode <dirty|full>\n"
-          "  --benchmark-mode "
-          "<gradient_sweep|bands|snake_grid|gradient_fill|snake_rect|snake_"
-          "shapes>\n"
-          "  --bench-speed <value>\n"
-          "  --debug-clear-default-framebuffer <0|1>\n"
-          "  --cpu-hdr <0|1>\n"
-          "  --fps-cap <value>\n"
-          "  --hash <none|state|pixel|both>\n"
-          "  --frame-limit <value>\n"
-          "  --glfw-hidden-window <0|1>\n"
-          "  --hash-report <final|aggregate|both>\n"
-          "  --metrics-mode <basic|dual>\n"
-          "  --present-buffer-mode <auto|replace|single_source|ring>\n"
-          "  --random-seed <value>\n"
-          "  --vk-allow-cpu-workers <0|1>\n"
-          "  --vk-multi-device-policy <auto|group_only|independent_ok>\n"
-          "  --vk-no-present <0|1>\n"
-          "  --vsync <0|1|on|off|true|false>\n"
-          "  --help\n"
-          "\nDisplay capability summary:\n"
-          "  offscreen: ",
-          stderr);
+    fputs(
+        ">\n"
+        "  --display <offscreen|glfw_window|linux_kms_atomic>  (required)\n"
+        "  --renderer requires --api opengl when explicitly set\n"
+        "  --kms-card <path>\n"
+        "\nRuntime options:\n"
+        "  --allow-remote-display <0|1>\n"
+        "  --backbuffer-draw-mode <dirty|full>\n"
+        "  --benchmark-mode "
+        "<gradient_sweep|bands|snake_grid|gradient_fill|snake_rect|snake_"
+        "shapes>\n"
+        "  --bench-speed <value>\n"
+        "  --debug-clear-default-framebuffer <0|1>\n"
+        "  --working-format <rgba8|rgba16f>\n"
+        "  --output-format <auto|sdr|hdr>  hdr requires verified KMS or "
+        "Vulkan WSI HDR10\n"
+        "  --fps-cap <value>\n"
+        "  --hash <none|state|pixel|both>\n"
+        "  --frame-limit <value>\n"
+        "  --glfw-hidden-window <0|1>\n"
+        "  --hash-report <final|aggregate|both>\n"
+        "  --metrics-mode <basic|dual>\n"
+        "  --present-buffer-mode <auto|replace|single_source|ring>\n"
+        "  --random-seed <value>\n"
+        "  --resize-at-frame <FRAME:WIDTHxHEIGHT>\n"
+        "  --vk-allow-cpu-workers <0|1>\n"
+        "  --vk-multi-device-policy <auto|group_only|independent_ok>\n"
+        "  --vk-no-present <0|1>\n"
+        "  --trace-damage <0|1|2|3>     1=summary, 2=bounded, 3=all blocks\n"
+        "  --trace-shadow-upload <0|1|2|3> 1=summary, 2=bounded, 3=all spans\n"
+        "  --trace-vulkan <0|1|2>       1=phases, 2=attempt details\n"
+        "  --trace-gl-errors <0|1>       capture structured GL errors\n"
+        "  --vsync <0|1|on|off|true|false>\n"
+        "  --help\n"
+        "\nDisplay capability summary:\n"
+        "  offscreen: ",
+        stderr);
     fputs(offscreen_caps, stderr);
     fputs("\n  glfw_window: ", stderr);
     fputs(glfw_caps, stderr);
@@ -72,7 +80,8 @@ static void db_usage(void) {
 #endif
 }
 
-void db_cli_parse_or_exit(int argc, char **argv, db_cli_config_t *out_cfg) {
+void db_cli_parse_or_exit(size_t argc, const char *const *argv,
+                          db_cli_config_t *out_cfg) {
     char error[DB_DRIVERBENCH_CLI_ERROR_TEXT_SIZE] = {0};
     int show_help = 0;
     int print_usage = 0;

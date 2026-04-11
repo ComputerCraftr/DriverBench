@@ -1,35 +1,23 @@
 function(db_configure_test_runtime_capabilities)
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set(DB_TEST_RUNTIME_GL1_OFFSCREEN_ARGS
-      "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS} --backbuffer-draw-mode full"
-      PARENT_SCOPE
-    )
-    set(DB_TEST_RUNTIME_GL1_OFFSCREEN_HASH_CHECKS
-      "${DB_DETERMINISM_GL1_OFFSCREEN_FULL_GOLDEN_HASH_CHECKS}"
-      PARENT_SCOPE
-    )
-  else()
-    set(DB_TEST_RUNTIME_GL1_OFFSCREEN_ARGS
-      "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS}"
-      PARENT_SCOPE
-    )
-    set(DB_TEST_RUNTIME_GL1_OFFSCREEN_HASH_CHECKS
-      "${DB_DETERMINISM_GL1_OFFSCREEN_DIRTY_GOLDEN_HASH_CHECKS}"
-      PARENT_SCOPE
-    )
-  endif()
-
-  if(APPLE)
-    set(DB_TEST_RUNTIME_GL1_DIRTY_VARIANT_ARGS
-      "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} ${DB_DETERMINISM_HASH} ${DB_DETERMINISM_HASH_REPORT} ${DB_DETERMINISM_SNAKE_ARGS} --backbuffer-draw-mode dirty"
-      PARENT_SCOPE
-    )
-    set(DB_TEST_RUNTIME_GL1_DIRTY_VARIANT_HASH_CHECKS
-      "${DB_DETERMINISM_GL1_OFFSCREEN_DIRTY_GOLDEN_HASH_CHECKS}"
-      PARENT_SCOPE
-    )
-  else()
-    set(DB_TEST_RUNTIME_GL1_DIRTY_VARIANT_ARGS "" PARENT_SCOPE)
-    set(DB_TEST_RUNTIME_GL1_DIRTY_VARIANT_HASH_CHECKS "" PARENT_SCOPE)
-  endif()
+    if(APPLE)
+        set(DB_TEST_RUNTIME_GL1_DIRTY_TRACE_ARGS
+            "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} --bench-speed 1024 --frame-limit 3 --backbuffer-draw-mode dirty --trace-gl-errors 1 --trace-damage 1 --trace-shadow-upload 1"
+            PARENT_SCOPE)
+        set(DB_TEST_RUNTIME_GL1_FULL_TRACE_ARGS
+            "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} --bench-speed 1024 --frame-limit 5 --backbuffer-draw-mode full --trace-gl-errors 1 --trace-damage 1 --trace-shadow-upload 1"
+            PARENT_SCOPE)
+        set(DB_TEST_RUNTIME_GL1_DIRTY_SNAKE_SHAPES_CONTRACT_ARGS
+            "${DB_DETERMINISM_GL1_OFFSCREEN_PREFIX} --benchmark-mode snake_shapes ${DB_DETERMINISM_COMMON_ARGS} --bench-speed 1024 --frame-limit 4 --backbuffer-draw-mode dirty"
+            PARENT_SCOPE)
+    else()
+        set(DB_TEST_RUNTIME_GL1_DIRTY_TRACE_ARGS
+            ""
+            PARENT_SCOPE)
+        set(DB_TEST_RUNTIME_GL1_FULL_TRACE_ARGS
+            ""
+            PARENT_SCOPE)
+        set(DB_TEST_RUNTIME_GL1_DIRTY_SNAKE_SHAPES_CONTRACT_ARGS
+            ""
+            PARENT_SCOPE)
+    endif()
 endfunction()

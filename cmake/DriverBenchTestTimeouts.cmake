@@ -1,0 +1,23 @@
+# Test-runner deadlines are intentionally separate from runtime wait profiles.
+set(DB_TEST_TIMEOUT_ALTERNATE_PROBE_SECONDS 10)
+set(DB_TEST_TIMEOUT_DETERMINISM_SHORT_SECONDS 10)
+set(DB_TEST_TIMEOUT_DETERMINISM_GPU_SECONDS 15)
+set(DB_TEST_TIMEOUT_LINT_SECONDS 60)
+
+function(db_test_timeout_seconds out_var profile)
+    if(profile STREQUAL "alternate_probe")
+        set(db_seconds "${DB_TEST_TIMEOUT_ALTERNATE_PROBE_SECONDS}")
+    elseif(profile STREQUAL "determinism_short")
+        set(db_seconds "${DB_TEST_TIMEOUT_DETERMINISM_SHORT_SECONDS}")
+    elseif(profile STREQUAL "determinism_gpu")
+        set(db_seconds "${DB_TEST_TIMEOUT_DETERMINISM_GPU_SECONDS}")
+    elseif(profile STREQUAL "lint")
+        set(db_seconds "${DB_TEST_TIMEOUT_LINT_SECONDS}")
+    else()
+        message(
+            FATAL_ERROR "Unknown DriverBench test timeout profile: ${profile}")
+    endif()
+    set(${out_var}
+        "${db_seconds}"
+        PARENT_SCOPE)
+endfunction()

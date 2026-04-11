@@ -1,4 +1,8 @@
 #include "db_core.h"
+#include "db_log.h"
+#include "db_numeric.h"
+#include "db_poll_policy.h"
+#include "db_trace.h"
 
 #include "../config/runtime_options.h"
 
@@ -9,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/signal.h>
 #include <time.h>
 
 #define DB_MAX_SLEEP_NS 100000000.0
@@ -16,6 +21,8 @@
 #define DISPLAY_LOOPBACK_PREFIX "127.0.0.1:"
 
 static volatile sig_atomic_t db_stop_requested = 0;
+
+enum { DB_LEGACY_LOG_MESSAGE_CAPACITY = 4096U };
 
 static int db_ascii_ieq_char(char lhs, char rhs) {
     if ((lhs >= 'A') && (lhs <= 'Z')) {
@@ -60,28 +67,33 @@ static void db_signal_handler(int signum) {
 }
 
 void db_failf(const char *backend, const char *fmt, ...) {
+    char message[DB_LEGACY_LOG_MESSAGE_CAPACITY] = {0};
     va_list ap;
-    fputs("[", stderr);
-    fputs(backend, stderr);
-    fputs("][error] ", stderr);
     va_start(ap, fmt);
-    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
-    (void)vfprintf(stderr, fmt, ap);
+    (void)db_vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
-    fputc('\n', stderr);
-    exit(EXIT_FAILURE);
+    const db_log_field_t fields[] = {DB_LOG_STRING("message", message)};
+    db_log_fail(backend, "fatal_error", fields, DB_LOG_FIELD_COUNT(fields));
+}
+
+void db_errorf(const char *backend, const char *fmt, ...) {
+    char message[DB_LEGACY_LOG_MESSAGE_CAPACITY] = {0};
+    va_list ap;
+    va_start(ap, fmt);
+    (void)db_vsnprintf(message, sizeof(message), fmt, ap);
+    va_end(ap);
+    const db_log_field_t fields[] = {DB_LOG_STRING("message", message)};
+    db_log_error(backend, "error_message", fields, DB_LOG_FIELD_COUNT(fields));
 }
 
 void db_infof(const char *backend, const char *fmt, ...) {
+    char message[DB_LEGACY_LOG_MESSAGE_CAPACITY] = {0};
     va_list ap;
-    fputs("[", stdout);
-    fputs(backend, stdout);
-    fputs("][info] ", stdout);
     va_start(ap, fmt);
-    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
-    (void)vfprintf(stdout, fmt, ap);
+    (void)db_vsnprintf(message, sizeof(message), fmt, ap);
     va_end(ap);
-    fputc('\n', stdout);
+    const db_log_field_t fields[] = {DB_LOG_STRING("message", message)};
+    db_log_info(backend, "info_message", fields, DB_LOG_FIELD_COUNT(fields));
 }
 
 int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt,
@@ -89,22 +101,7 @@ int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt,
 #ifdef __STDC_LIB_EXT1__
     return vsnprintf_s(buffer, buffer_size, _TRUNCATE, fmt, ap);
 #else
-    // Fallback for platforms without Annex K bounds-checked APIs. Use a local
-    // copy so the formatting boundary is explicit to the analyzer and to
-    // preserve the caller's va_list state.
-    va_list ap_copy;
-    // NOLINTNEXTLINE(clang-analyzer-valist.Uninitialized)
-    va_copy(ap_copy, ap);
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wformat-nonliteral"
-#endif
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    const int written = vsnprintf(buffer, buffer_size, fmt, ap_copy);
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
-    va_end(ap_copy);
+    const int written = vsnprintf(buffer, buffer_size, fmt, ap);
     return written;
 #endif
 }
@@ -144,6 +141,21 @@ int db_parse_bool_text(const char *value, int *out_value) {
         return 1;
     }
     return 0;
+}
+
+int db_parse_int_text(const char *value, int *out_value) {
+    if ((value == NULL) || (value[0] == '\0')) {
+        return 0;
+    }
+    char *endptr = NULL;
+    const long parsed = strtol(value, &endptr, 10);
+    if ((endptr == value) || (*endptr != '\0')) {
+        return 0;
+    }
+    if (out_value != NULL) {
+        *out_value = (int)parsed;
+    }
+    return 1;
 }
 
 int db_parse_fps_cap_text(const char *value, double *out_value) {
@@ -194,6 +206,19 @@ static int db_is_forwarded_x11_display(void) {
                     strlen(DISPLAY_LOOPBACK_PREFIX)) == 0);
 }
 
+int db_runtime_is_linux_x11(void) {
+#ifdef __linux__
+    const char *session_type = getenv("XDG_SESSION_TYPE");
+    if (session_type != NULL) {
+        return DB_BOOL(strcmp(session_type, "x11") == 0);
+    }
+    // Fallback: if DISPLAY is set but WAYLAND_DISPLAY is not, assume X11.
+    return (getenv("DISPLAY") != NULL) && (getenv("WAYLAND_DISPLAY") == NULL);
+#else
+    return 0;
+#endif
+}
+
 void db_validate_runtime_environment(const char *backend,
                                      const char *remote_override_option) {
     const char *display = getenv("DISPLAY");
@@ -209,23 +234,22 @@ void db_validate_runtime_environment(const char *backend,
 }
 
 void db_install_signal_handlers(void) {
-    // NOLINTNEXTLINE(misc-include-cleaner)
     struct sigaction sa = {0};
-    // NOLINTNEXTLINE(misc-include-cleaner)
     sa.sa_handler = db_signal_handler;
     (void)sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
 
     (void)sigaction(SIGINT, &sa, NULL);
     (void)sigaction(SIGTERM, &sa, NULL);
-    // NOLINTNEXTLINE(misc-include-cleaner)
     (void)sigaction(SIGHUP, &sa, NULL);
 }
 
-int db_should_stop(void) { return db_stop_requested != 0; }
+int db_should_stop(void) { return DB_BOOL(db_stop_requested); }
 
 uint64_t db_now_ns_monotonic(void) {
     struct timespec ts = {0};
+    // CLOCK_MONOTONIC is provided by <time.h>; include-cleaner reports the
+    // libc internal provider instead of the public feature-test-gated header.
     // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ((uint64_t)ts.tv_sec * DB_NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
@@ -238,11 +262,14 @@ void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
     }
 
     const double frame_budget_ns = DB_NS_PER_SECOND / fps_cap;
-    double remaining_ns =
-        frame_budget_ns - (double)(db_now_ns_monotonic() - frame_start_ns);
-    while (remaining_ns > 0.0) {
-        const double sleep_ns =
-            (remaining_ns > DB_MAX_SLEEP_NS) ? DB_MAX_SLEEP_NS : remaining_ns;
+    const uint64_t budget_ns = (uint64_t)frame_budget_ns;
+    const db_deadline_t deadline = db_deadline_after(frame_start_ns, budget_ns);
+    uint64_t remaining_ns =
+        db_deadline_remaining_ns(&deadline, db_now_ns_monotonic());
+    while (remaining_ns > 0U) {
+        const double sleep_ns = ((double)remaining_ns > DB_MAX_SLEEP_NS)
+                                    ? DB_MAX_SLEEP_NS
+                                    : (double)remaining_ns;
         const long sleep_ns_long =
             db_checked_double_to_long(backend, "sleep_ns", sleep_ns);
         if (sleep_ns_long <= 0L) {
@@ -251,12 +278,15 @@ void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
 
         struct timespec request = {0};
         request.tv_nsec = sleep_ns_long;
+        struct timespec unslept = {0};
+        // EINTR is provided by <errno.h>; include-cleaner attributes the token
+        // to an architecture-specific internal errno header.
         // NOLINTNEXTLINE(misc-include-cleaner)
-        if ((nanosleep(&request, NULL) != 0) && (errno != EINTR)) {
+        if ((nanosleep(&request, &unslept) != 0) && (errno != EINTR)) {
             break;
         }
         remaining_ns =
-            frame_budget_ns - (double)(db_now_ns_monotonic() - frame_start_ns);
+            db_deadline_remaining_ns(&deadline, db_now_ns_monotonic());
     }
 }
 
@@ -264,49 +294,72 @@ int db_format_benchmark_log(char *buffer, size_t buffer_size,
                             const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
                             uint32_t work_units, double elapsed_ms,
-                            const char *tag, const char *capability_mode) {
+                            const char *tag) {
     if (frames == 0U) {
         return 0;
     }
 
     const double ms_per_frame = elapsed_ms / (double)frames;
     const double fps = DB_MS_PER_SECOND / ms_per_frame;
-    const char *mode = (capability_mode != NULL) ? capability_mode : "default";
+    enum {
+        DB_BENCHMARK_LOG_BASE_FIELD_COUNT = 6,
+        DB_BENCHMARK_LOG_FIELD_CAPACITY = 16,
+    };
+    db_log_field_t fields[DB_BENCHMARK_LOG_FIELD_CAPACITY] = {
+        DB_LOG_TOKEN("api", api_name),
+        DB_LOG_U64("frames", frames),
+        DB_LOG_U64("work_units", work_units),
+        DB_LOG_DOUBLE("total_ms", elapsed_ms),
+        DB_LOG_DOUBLE("ms_per_frame", ms_per_frame),
+        DB_LOG_DOUBLE("fps", fps),
+    };
+    size_t field_count = DB_BENCHMARK_LOG_BASE_FIELD_COUNT;
+    const char *event = "benchmark_progress";
     if (strcmp(tag, "progress") == 0) {
-        return db_snprintf(buffer, buffer_size,
-                           "%s benchmark (%s): frames=%llu total_ms=%.2f "
-                           "ms_per_frame=%.3f fps=%.2f\n",
-                           api_name, tag, (unsigned long long)frames,
-                           elapsed_ms, ms_per_frame, fps);
+        return db_log_format_line(
+            buffer, buffer_size, DB_LOG_LEVEL_INFO,
+            &(const db_log_event_t){"benchmark", event, fields, field_count});
     }
-    return db_snprintf(buffer, buffer_size,
-                       "%s benchmark (%s): renderer=%s backend=%s mode=%s "
-                       "frames=%llu work_units=%u total_ms=%.2f "
-                       "ms_per_frame=%.3f fps=%.2f\n",
-                       api_name, tag, renderer_name, backend_name, mode,
-                       (unsigned long long)frames, work_units, elapsed_ms,
-                       ms_per_frame, fps);
+    event = "benchmark_final";
+    fields[field_count++] = DB_LOG_TOKEN("renderer", renderer_name);
+    fields[field_count++] = DB_LOG_TOKEN("backend", backend_name);
+    const db_run_log_identity_t identity = db_run_log_identity_current();
+    if (identity.benchmark_mode != NULL) {
+        fields[field_count++] =
+            DB_LOG_TOKEN("benchmark_mode", identity.benchmark_mode);
+        fields[field_count++] = DB_LOG_TOKEN("presenter", identity.presenter);
+        fields[field_count++] =
+            DB_LOG_TOKEN("execution_strategy", identity.execution_strategy);
+        fields[field_count++] =
+            DB_LOG_TOKEN("working_format", identity.working_format);
+        fields[field_count++] =
+            DB_LOG_TOKEN("native_format", identity.native_format);
+        fields[field_count++] =
+            DB_LOG_TOKEN("present_method", identity.present_method);
+    }
+    return db_log_format_line(
+        buffer, buffer_size, DB_LOG_LEVEL_INFO,
+        &(const db_log_event_t){"benchmark", event, fields, field_count});
 }
 
 static void db_benchmark_log(const char *api_name, const char *renderer_name,
                              const char *backend_name, uint64_t frames,
                              uint32_t work_units, double elapsed_ms,
-                             const char *tag, const char *capability_mode) {
-    enum { DB_BENCHMARK_LOG_TEXT_SIZE = 256 };
+                             const char *tag) {
+    enum { DB_BENCHMARK_LOG_TEXT_SIZE = 1024 };
     char text[DB_BENCHMARK_LOG_TEXT_SIZE];
     if (db_format_benchmark_log(text, sizeof(text), api_name, renderer_name,
                                 backend_name, frames, work_units, elapsed_ms,
-                                tag, capability_mode) <= 0) {
+                                tag) <= 0) {
         return;
     }
     fputs(text, stdout);
 }
 
-void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
-                               const char *backend_name, uint64_t frames,
-                               uint32_t work_units, double elapsed_ms,
-                               const char *capability_mode,
-                               double *next_log_due_ms, double interval_ms) {
+void db_log_progress_periodic(const char *api_name, const char *renderer_name,
+                              const char *backend_name, uint64_t frames,
+                              uint32_t work_units, double elapsed_ms,
+                              double *next_log_due_ms, double interval_ms) {
     if ((next_log_due_ms == NULL) || (interval_ms <= 0.0)) {
         return;
     }
@@ -319,7 +372,7 @@ void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
     }
 
     db_benchmark_log(api_name, renderer_name, backend_name, frames, work_units,
-                     elapsed_ms, "progress", capability_mode);
+                     elapsed_ms, "progress");
     do {
         *next_log_due_ms += interval_ms;
     } while (elapsed_ms >= *next_log_due_ms);
@@ -327,8 +380,7 @@ void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
 
 void db_benchmark_log_final(const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
-                            uint32_t work_units, double elapsed_ms,
-                            const char *capability_mode) {
+                            uint32_t work_units, double elapsed_ms) {
     db_benchmark_log(api_name, renderer_name, backend_name, frames, work_units,
-                     elapsed_ms, "final", capability_mode);
+                     elapsed_ms, "final");
 }

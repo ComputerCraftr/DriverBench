@@ -17,10 +17,10 @@ typedef struct {
 #define DB_DISPLAY_CAPABILITY_TEXT_MAX 128U
 
 typedef enum {
-    DB_DISPLAY_OFFSCREEN_GL_ROUTE_NONE = 0,
-    DB_DISPLAY_OFFSCREEN_GL_ROUTE_GLFW_HIDDEN = 1,
-    DB_DISPLAY_OFFSCREEN_GL_ROUTE_GL3_FBO = 2,
-} db_display_offscreen_gl_route_t;
+    DB_OFFSCREEN_GL_ROUTE_NONE = 0,
+    DB_OFFSCREEN_GL_ROUTE_GLFW_HIDDEN = 1,
+    DB_OFFSCREEN_GL_ROUTE_GL3_FBO = 2,
+} db_offscreen_gl_route_t;
 
 static inline const char *db_dispatch_api_name(db_api_t api) {
     if (api == DB_API_CPU) {
@@ -49,7 +49,7 @@ db_dispatch_gl_renderer_name(db_gl_renderer_t renderer) {
 static inline db_display_backend_capabilities_t
 db_dispatch_display_capabilities(db_display_t display) {
     db_display_backend_capabilities_t caps = {0};
-    if (display == DB_DISPLAY_OFFSCREEN) {
+    if (display == DB_OFFSCREEN_DISPLAY) {
         caps.compiled = 1;
         caps.supports_cpu = 1;
 #ifdef DB_HAS_VULKAN_API
@@ -62,7 +62,7 @@ db_dispatch_display_capabilities(db_display_t display) {
 #endif
         return caps;
     }
-    if (display == DB_DISPLAY_GLFW_WINDOW) {
+    if (display == DB_GLFW_WINDOW_DISPLAY) {
 #ifdef DB_HAS_GLFW
         caps.compiled = 1;
         caps.supports_cpu = 1;
@@ -75,7 +75,7 @@ db_dispatch_display_capabilities(db_display_t display) {
 #endif
         return caps;
     }
-    if (display == DB_DISPLAY_LINUX_KMS_ATOMIC) {
+    if (display == DB_KMS_DISPLAY) {
 #ifdef DB_HAS_LINUX_KMS_ATOMIC
         caps.compiled = 1;
         caps.supports_cpu = 1;
@@ -173,23 +173,23 @@ db_dispatch_display_preferred_auto_api(db_display_t display) {
     return DB_API_CPU;
 }
 
-static inline db_display_offscreen_gl_route_t
+static inline db_offscreen_gl_route_t
 db_dispatch_offscreen_gl_route(db_gl_renderer_t renderer) {
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
 #ifdef DB_HAS_GLFW
-        return DB_DISPLAY_OFFSCREEN_GL_ROUTE_GLFW_HIDDEN;
+        return DB_OFFSCREEN_GL_ROUTE_GLFW_HIDDEN;
 #else
-        return DB_DISPLAY_OFFSCREEN_GL_ROUTE_NONE;
+        return DB_OFFSCREEN_GL_ROUTE_NONE;
 #endif
     }
     if (renderer == DB_GL_RENDERER_GL3_3) {
 #ifdef DB_HAS_GLFW
-        return DB_DISPLAY_OFFSCREEN_GL_ROUTE_GL3_FBO;
+        return DB_OFFSCREEN_GL_ROUTE_GL3_FBO;
 #else
-        return DB_DISPLAY_OFFSCREEN_GL_ROUTE_NONE;
+        return DB_OFFSCREEN_GL_ROUTE_NONE;
 #endif
     }
-    return DB_DISPLAY_OFFSCREEN_GL_ROUTE_NONE;
+    return DB_OFFSCREEN_GL_ROUTE_NONE;
 }
 
 int db_dispatch_format_display_capabilities(db_display_t display, char *buffer,

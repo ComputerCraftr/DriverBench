@@ -1,0 +1,953 @@
+#include "core/db_format_contract.h"
+#include "core/db_log.h"
+#ifdef DB_HAS_VULKAN_API
+#define GLFW_INCLUDE_VULKAN
+#include <vulkan/vulkan_core.h>
+#endif
+#include <GLFW/glfw3.h>
+
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "../../config/runtime_options.h"
+#include "../../core/db_core.h"
+#include "../../core/db_frame_plan.h"
+#include "../../core/db_frame_source.h"
+#include "../../core/db_geometry.h"
+#include "../../core/db_hash.h"
+#include "../../core/db_numeric.h"
+#include "../../core/db_trace.h"
+#include "../../driverbench_config.h"
+#include "../../renderers/cpu_renderer/cpu_renderer.h"
+#include "../../renderers/damage_trace.h"
+#include "../../renderers/gl_common.h"
+#include "../../renderers/renderer_identity.h"
+#include "core/db_render_types.h"
+#ifdef DB_HAS_VULKAN_API
+#include "../../renderers/vulkan_1_2_multi_gpu/vk_renderer.h"
+#endif
+#include "../../config/benchmark_config.h"
+#include "../../renderers/gl_hash_readback.h"
+#include "../display_dispatch.h"
+#include "../display_frame_loop_common.h"
+#include "../display_gl_renderer_select_common.h"
+#include "../display_hash_common.h"
+#include "../display_presentation_policy.h"
+#include "../display_runtime_config_common.h"
+#include "../display_types.h"
+#include "../gl_display_runtime.h"
+#include "glfw_window_common.h"
+
+enum {
+    DB_PRESENTATION_BUFFER_AGE_QUALIFICATION_FRAMES = 4U,
+};
+
+#ifdef DB_HAS_VULKAN_API
+typedef struct {
+    const char *backend_name;
+    db_display_hash_tracker_t *state_hash_tracker;
+    db_display_hash_tracker_t *output_hash_tracker;
+    int state_hash_enabled;
+    int output_hash_enabled;
+    db_frame_source_t *core;
+    GLFWwindow *window;
+} db_glfw_vulkan_loop_ctx_t;
+#endif
+
+typedef struct {
+    db_gl_shadow_present_state_t shared;
+    uint32_t last_viewport_w;
+    uint32_t last_viewport_h;
+} db_cpu_present_gl_state_t;
+
+typedef struct {
+    const char *api_name;
+    const char *capability_mode;
+    double next_progress_log_due_ms;
+    db_display_frame_step_t frame_step;
+    db_display_hash_tracker_t *state_hash_tracker;
+    db_display_hash_tracker_t *framebuffer_hash_tracker;
+    db_pixel_format_t framebuffer_hash_format;
+    db_gl_framebuffer_hash_scratch_t *hash_scratch;
+    int state_hash_enabled;
+    int output_hash_enabled;
+    int debug_clear_default_framebuffer;
+    db_cpu_present_gl_state_t *present;
+    uint32_t work_unit_count;
+    GLFWwindow *window;
+    db_frame_source_t *core;
+} db_glfw_cpu_loop_ctx_t;
+
+typedef struct {
+    char capability_mode[DB_GL_CAPABILITY_MODE_MAX];
+} db_glfw_cpu_present_mode_t;
+
+typedef struct {
+    const char *backend_name;
+    const char *capability_mode;
+    const char *renderer_name;
+    db_display_gl_renderer_ops_t renderer_ops;
+    db_display_frame_step_t frame_step;
+    db_display_hash_tracker_t *state_hash_tracker;
+    db_display_hash_tracker_t *framebuffer_hash_tracker;
+    db_pixel_format_t framebuffer_hash_format;
+    db_gl_framebuffer_hash_scratch_t *hash_scratch;
+    double next_progress_log_due_ms;
+    int state_hash_enabled;
+    int output_hash_enabled;
+    int uses_native_buffer_age;
+    int debug_clear_default_framebuffer;
+    uint32_t renderer_preserved_framebuffer_count;
+    db_presentation_buffer_age_t last_buffer_age;
+    db_presentation_damage_history_t damage_history;
+    db_grid_block_t
+        presentation_logical[DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME];
+    db_damage_block_t
+        presentation_pixels[DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME];
+    uint32_t last_framebuffer_width;
+    uint32_t last_framebuffer_height;
+    int buffer_age_logged;
+    int buffer_age_qualified;
+    int buffer_age_validation_pending;
+    uint32_t buffer_age_validation_count;
+    uint64_t buffer_age_expected_hash;
+    uint32_t work_unit_count;
+    GLFWwindow *window;
+    db_frame_source_t *core;
+} db_glfw_opengl_loop_ctx_t;
+
+static int
+db_glfw_buffer_age_changed(const db_presentation_buffer_age_t *previous,
+                           const db_presentation_buffer_age_t *current) {
+    return DB_BOOL(
+        (previous->provider != current->provider) ||
+        (previous->raw_age != current->raw_age) ||
+        (previous->effective_replay_depth != current->effective_replay_depth) ||
+        (previous->history_capacity != current->history_capacity) ||
+        (previous->valid != current->valid) ||
+        (previous->force_full_repair != current->force_full_repair) ||
+        (strcmp(previous->fallback_reason, current->fallback_reason) != 0));
+}
+
+static void db_glfw_log_buffer_age_if_needed(
+    db_glfw_opengl_loop_ctx_t *ctx,
+    const db_presentation_buffer_age_t *buffer_age) {
+    const int trace_each_frame = DB_BOOL(db_trace_config_current().damage > 0);
+    if ((ctx->buffer_age_logged == 0) || (trace_each_frame != 0) ||
+        (db_glfw_buffer_age_changed(&ctx->last_buffer_age, buffer_age) != 0)) {
+        db_glfw_log_presentation_buffer_age(ctx->backend_name, buffer_age);
+    }
+    ctx->last_buffer_age = *buffer_age;
+    ctx->buffer_age_logged = 1;
+}
+
+static const db_native_output_capability_t g_glfw_native_output_capability = {
+    .native_hdr_verified = 0,
+    .hdr_format = DB_NATIVE_OUTPUT_XRGB2101010,
+    .hdr_colorspace = DB_OUTPUT_COLORSPACE_BT2020,
+    .hdr_transfer = DB_OUTPUT_TRANSFER_PQ,
+    .unavailable_reason = "glfw_native_hdr_chain_unavailable",
+};
+
+static GLFWwindow *db_glfw_create_renderer_window(
+    const char *backend_name, const db_display_gl_context_policy_t *policy,
+    int swap_interval, db_glfw_window_visibility_t visibility,
+    int *out_context_is_gles) {
+    if (policy == NULL) {
+        return NULL;
+    }
+    if (policy->allow_gles1_1_fallback != 0) {
+        return db_glfw_create_gl1_5_or_gles1_1_window(
+            backend_name, "OpenGL 1.5/GLES1.1 GLFW DriverBench",
+            BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
+            policy->requested_gl_major, policy->requested_gl_minor,
+            swap_interval, out_context_is_gles, visibility);
+    }
+    if (out_context_is_gles != NULL) {
+        *out_context_is_gles = 0;
+    }
+    return db_glfw_create_opengl_window(
+        backend_name, "OpenGL 3.3 Shader GLFW DriverBench",
+        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX,
+        policy->requested_gl_major, policy->requested_gl_minor, 1,
+        swap_interval, visibility);
+}
+
+static void db_glfw_cpu_present_surface(GLFWwindow *window,
+                                        db_cpu_present_gl_state_t *state,
+                                        const db_frame_plan_t *plan,
+                                        int debug_clear_default_framebuffer) {
+    if ((window == NULL) || (state == NULL) || (plan == NULL)) {
+        return;
+    }
+    db_glfw_framebuffer_extent_t extent = db_glfw_get_framebuffer_extent(
+        window, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU);
+    if (extent.valid == 0) {
+        extent = (db_glfw_framebuffer_extent_t){
+            .width = plan->pixel_width,
+            .height = plan->pixel_height,
+            .valid = 1,
+        };
+    }
+
+    const int viewport_changed = (state->last_viewport_w != extent.width) ||
+                                 (state->last_viewport_h != extent.height);
+
+    if (viewport_changed != 0) {
+        state->last_viewport_w = extent.width;
+        state->last_viewport_h = extent.height;
+        db_gl_set_viewport_px(
+            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                                  "framebuffer_width_px", extent.width),
+            db_checked_u32_to_i32(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                                  "framebuffer_height_px", extent.height));
+    }
+
+    db_display_gl_debug_clear_default_framebuffer_if_enabled(
+        debug_clear_default_framebuffer != 0);
+    db_gl_shadow_present_full_upload_target_t target = {0};
+    const uint32_t pixel_width = plan->pixel_width;
+    const uint32_t pixel_height = plan->pixel_height;
+    if (db_gl_shadow_present_begin_full_upload_target(
+            &state->shared, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+            pixel_width, pixel_height, 0, &target) == 0) {
+        DB_RUNTIME_FAIL(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                        "failed to acquire cpu GLFW upload surface");
+    }
+    (void)db_cpu_render_frame_to_surface_mode(
+        plan, &target.pixel_surface, DB_CPU_RENDER_TARGET_REPLACE_SURFACE,
+        NULL);
+    db_gl_shadow_present_present_full_upload_target(
+        &state->shared, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, pixel_width,
+        pixel_height, &target);
+}
+
+static uint64_t db_glfw_hash_native_default_framebuffer_or_fail(
+    const char *backend_name, GLFWwindow *window, db_pixel_format_t format,
+    db_gl_framebuffer_hash_scratch_t *scratch) {
+    if ((backend_name == NULL) || (window == NULL)) {
+        DB_RUNTIME_FAIL("display_glfw_window",
+                        "invalid presented default-framebuffer hash inputs");
+    }
+
+    const db_glfw_framebuffer_extent_t extent =
+        db_glfw_get_framebuffer_extent(window, backend_name);
+    if (extent.valid == 0) {
+        DB_RUNTIME_FAIL(backend_name, "invalid GLFW framebuffer extent");
+    }
+    if (format == DB_PIXEL_FORMAT_RGBA16F) {
+        return db_gl_hash_framebuffer_rgba16f_or_fail(
+            backend_name, extent.width, extent.height, scratch, 1);
+    }
+    const uint8_t *pixels = db_gl_read_framebuffer_rgba8_or_fail(
+        backend_name, extent.width, extent.height, scratch);
+    const size_t stride_bytes = db_checked_mul_size(
+        backend_name, "fb_row_bytes",
+        db_checked_u32_to_size(backend_name, "fb_row_pixels", extent.width),
+        DB_RGBA8_BYTES_PER_PIXEL);
+    const uint64_t hash = db_hash_rgba8_pixels_canonical(
+        pixels, extent.width, extent.height, stride_bytes, 1);
+    (void)db_gl_upload_stream_end_read(&scratch->stream, backend_name);
+    return hash;
+}
+
+static uint64_t db_glfw_hash_canonical_default_framebuffer_or_fail(
+    const char *backend_name, GLFWwindow *window, uint32_t canonical_width,
+    uint32_t canonical_height, db_gl_framebuffer_hash_scratch_t *scratch) {
+    if ((backend_name == NULL) || (window == NULL) || (scratch == NULL)) {
+        DB_RUNTIME_FAIL("display_glfw_window",
+                        "invalid canonical framebuffer hash inputs");
+    }
+    const db_glfw_framebuffer_extent_t extent =
+        db_glfw_get_framebuffer_extent(window, backend_name);
+    if (extent.valid == 0) {
+        DB_RUNTIME_FAIL(backend_name, "invalid GLFW framebuffer extent");
+    }
+    const uint8_t *pixels = db_gl_read_framebuffer_rgba8_or_fail(
+        backend_name, extent.width, extent.height, scratch);
+    const size_t stride_bytes = db_checked_mul_size(
+        backend_name, "canonical_fb_row_bytes",
+        db_checked_u32_to_size(backend_name, "canonical_fb_row_pixels",
+                               extent.width),
+        DB_RGBA8_BYTES_PER_PIXEL);
+    const uint64_t hash = db_hash_sdr_framebuffer_rgba8_canonical(
+        pixels, extent.width, extent.height, stride_bytes, 1, canonical_width,
+        canonical_height);
+    (void)db_gl_upload_stream_end_read(&scratch->stream, backend_name);
+    return hash;
+}
+
+static db_glfw_cpu_present_mode_t db_glfw_cpu_present_mode_or_fail(
+    const db_cpu_present_gl_state_t *present,
+    const db_display_resolved_format_config_t *format) {
+    if ((present == NULL) || (format == NULL)) {
+        DB_RUNTIME_FAIL(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                        "missing cpu GLFW present state");
+    }
+    db_glfw_cpu_present_mode_t mode = {
+        .capability_mode = {0},
+    };
+    const db_gl_runtime_mode_desc_t present_desc =
+        db_gl_runtime_mode_desc_present(&present->shared,
+                                        present->shared.preserve_mode);
+    char present_mode[DB_GL_CAPABILITY_MODE_MAX] = {0};
+    db_gl_runtime_mode_format_present(present_mode, sizeof(present_mode),
+                                      &present_desc);
+    (void)db_snprintf(
+        mode.capability_mode, sizeof(mode.capability_mode),
+        "cpu_renderer, %s, format=%s", present_mode,
+        db_display_pixel_format_name(format->surface_pixel_format));
+    return mode;
+}
+
+static db_display_frame_loop_result_t
+db_glfw_cpu_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
+    db_glfw_cpu_loop_ctx_t *ctx = (db_glfw_cpu_loop_ctx_t *)user_data;
+    if (ctx == NULL || ctx->core == NULL) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
+    db_frame_plan_t plan;
+    db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
+    db_glfw_cpu_present_surface(ctx->window, ctx->present, &plan,
+                                ctx->debug_clear_default_framebuffer);
+    uint64_t output_hash_value = 0U;
+    if (ctx->frame_step.output_hash_enabled != 0) {
+        output_hash_value = db_glfw_hash_canonical_default_framebuffer_or_fail(
+            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, ctx->window,
+            plan.grid_cols, plan.grid_rows, ctx->hash_scratch);
+        db_frame_source_commit_success_with_hash(ctx->core, &plan,
+                                                 output_hash_value);
+    } else {
+        db_frame_source_commit_success(ctx->core, &plan);
+    }
+    glfwSwapBuffers(ctx->window);
+
+    db_display_gl_frame_step(&ctx->frame_step, frame_index, elapsed_ms, 1,
+                             plan.expected_state_hash, 1, output_hash_value);
+    return DB_DISPLAY_FRAME_LOOP_CONTINUE;
+}
+
+static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
+    db_validate_runtime_environment(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+                                    DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
+    db_install_signal_handlers();
+
+    const int swap_interval = DB_BOOL((cfg != NULL) && (cfg->vsync_enabled));
+    db_display_renderer_runtime_t resolved_runtime =
+        db_display_renderer_runtime_from_cli(
+            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, cfg, 0U, 0, 0,
+            DB_NATIVE_OUTPUT_RESOLVE_IMMEDIATE);
+
+    db_frame_source_t core;
+    db_frame_source_init(
+        &core, &(const db_frame_source_config_t){
+                   .benchmark_configuration = &resolved_runtime.benchmark,
+                   .working_format =
+                       resolved_runtime.renderer.format.surface_pixel_format,
+               });
+
+    const int gl_legacy_context_major = 2;
+    const int gl_legacy_context_minor = 1;
+    int is_gles = 0;
+    GLFWwindow *window = db_glfw_create_gl1_5_or_gles1_1_window(
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+        "CPU Renderer GLFW DriverBench", BENCH_WINDOW_WIDTH_PX,
+        BENCH_WINDOW_HEIGHT_PX, gl_legacy_context_major,
+        gl_legacy_context_minor, swap_interval, &is_gles,
+        ((cfg != NULL) && (cfg->glfw_window_hidden != 0))
+            ? DB_GLFW_WINDOW_HIDDEN
+            : DB_GLFW_WINDOW_VISIBLE);
+    (void)db_display_require_gl_runtime_for_renderer(
+        (db_gl_proc_resolver_fn_t)glfwGetProcAddress,
+        DB_GL_RENDERER_GL1_5_GLES1_1, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+        is_gles);
+    db_display_apply_native_output_capability_or_fail(
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, &resolved_runtime,
+        &g_glfw_native_output_capability);
+    const db_glfw_framebuffer_extent_t initial_extent =
+        db_glfw_get_framebuffer_extent(window,
+                                       DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU);
+    resolved_runtime.presentation = db_display_presentation_transform(
+        initial_extent.width, initial_extent.height);
+    db_display_log_presentation_contract(
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, &resolved_runtime,
+        &resolved_runtime.presentation);
+    db_cpu_present_gl_state_t present = {0};
+    db_gl_shadow_present_init_runtime(&present.shared, 1, 1,
+                                      &resolved_runtime.renderer.format, 1U);
+    db_gl_shadow_present_set_preserve_mode(
+        &present.shared, DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS);
+    const db_glfw_cpu_present_mode_t present_mode =
+        db_glfw_cpu_present_mode_or_fail(&present,
+                                         &resolved_runtime.renderer.format);
+    db_cpu_init(&resolved_runtime.renderer);
+
+    db_gl_shadow_present_log_decision(
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, "cpu present",
+        &resolved_runtime.renderer.format, &present.shared);
+
+    const uint32_t work_unit_count = db_cpu_work_unit_count();
+    const uint64_t bench_start_ns = db_now_ns_monotonic();
+    db_display_dual_hash_trackers_t hash_trackers =
+        db_display_dual_hash_trackers_create_from_resolved_runtime(
+            DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, &resolved_runtime,
+            DB_DISPLAY_HASH_KEY_STATE, DB_DISPLAY_HASH_KEY_FRAMEBUFFER);
+    db_gl_framebuffer_hash_scratch_t hash_scratch = {0};
+    db_glfw_cpu_loop_ctx_t loop_ctx = {
+        .api_name = db_dispatch_api_name(DB_API_CPU),
+        .capability_mode = present_mode.capability_mode,
+        .next_progress_log_due_ms = 0.0,
+        .frame_step = {0},
+        .state_hash_tracker = &hash_trackers.state,
+        .framebuffer_hash_tracker = &hash_trackers.output,
+        .framebuffer_hash_format =
+            resolved_runtime.renderer.format.framebuffer_hash_format,
+        .hash_scratch = &hash_scratch,
+        .state_hash_enabled = resolved_runtime.hash_settings.state_hash_enabled,
+        .output_hash_enabled =
+            resolved_runtime.hash_settings.output_hash_enabled,
+        .debug_clear_default_framebuffer =
+            resolved_runtime.display.debug_clear_default_framebuffer,
+        .present = &present,
+        .work_unit_count = work_unit_count,
+        .window = window,
+        .core = &core,
+    };
+    loop_ctx.frame_step = db_display_frame_step_make(
+        loop_ctx.api_name, DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+        db_renderer_name_cpu(), loop_ctx.framebuffer_hash_tracker,
+        loop_ctx.state_hash_tracker, &loop_ctx.next_progress_log_due_ms,
+        loop_ctx.work_unit_count, loop_ctx.output_hash_enabled,
+        loop_ctx.state_hash_enabled);
+    db_glfw_loop_t loop = {
+        .backend = DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
+        .frame_fn = db_glfw_cpu_frame,
+        .fps_cap = resolved_runtime.display.fps_cap,
+        .frame_limit = resolved_runtime.display.frame_limit,
+        .user_data = &loop_ctx,
+        .window = window,
+        .resolved_runtime = &resolved_runtime,
+    };
+    const db_display_frame_loop_run_result_t loop_result =
+        db_glfw_run_loop(&loop);
+    const uint64_t frames = loop_result.frames;
+
+    const double bench_ms =
+        (double)(db_now_ns_monotonic() - bench_start_ns) / DB_NS_PER_MS;
+    db_display_log_renderer_final_summary(
+        db_dispatch_api_name(DB_API_CPU), db_renderer_name_cpu(),
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, frames, work_unit_count,
+        bench_ms, NULL);
+    db_display_dual_hash_trackers_log_final(
+        DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, &hash_trackers);
+
+    db_gl_hash_scratch_release(&hash_scratch);
+    db_frame_source_shutdown(&core);
+    db_cpu_shutdown();
+    db_gl_shadow_present_shutdown(&present.shared);
+    db_glfw_destroy_window(window);
+    return 0;
+}
+
+static db_display_frame_loop_result_t
+db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
+    db_glfw_opengl_loop_ctx_t *ctx = (db_glfw_opengl_loop_ctx_t *)user_data;
+    if (ctx == NULL || ctx->core == NULL) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
+    const db_glfw_framebuffer_extent_t extent =
+        db_glfw_get_framebuffer_extent(ctx->window, ctx->backend_name);
+    if (extent.valid == 0) {
+        DB_RUNTIME_FAIL(ctx->backend_name, "invalid GLFW framebuffer extent");
+    }
+    const db_display_gl_renderer_ops_t *renderer_ops = &ctx->renderer_ops;
+    db_frame_plan_request_t plan_request = {0};
+    db_presentation_buffer_age_t buffer_age =
+        db_presentation_buffer_age_resolve(
+            DB_PRESENTATION_BUFFER_AGE_UNAVAILABLE, 0U,
+            ctx->renderer_preserved_framebuffer_count);
+    if ((renderer_ops->renderer == DB_GL_RENDERER_GL1_5_GLES1_1) &&
+        (ctx->uses_native_buffer_age != 0)) {
+        buffer_age = db_glfw_query_presentation_buffer_age(
+            ctx->window, ctx->renderer_preserved_framebuffer_count);
+        if (buffer_age.provider == DB_PRESENTATION_BUFFER_AGE_UNAVAILABLE) {
+            ctx->uses_native_buffer_age = 0;
+            db_presentation_damage_history_reset(&ctx->damage_history);
+        } else if ((ctx->buffer_age_qualified == 0) &&
+                   (ctx->buffer_age_validation_pending != 0) &&
+                   (buffer_age.valid != 0) && (buffer_age.raw_age == 1U)) {
+            const uint64_t acquired_hash =
+                db_glfw_hash_native_default_framebuffer_or_fail(
+                    ctx->backend_name, ctx->window,
+                    ctx->framebuffer_hash_format, ctx->hash_scratch);
+            if (acquired_hash == ctx->buffer_age_expected_hash) {
+                ctx->buffer_age_validation_count++;
+                ctx->buffer_age_qualified =
+                    DB_BOOL(ctx->buffer_age_validation_count >=
+                            DB_PRESENTATION_BUFFER_AGE_QUALIFICATION_FRAMES);
+            } else {
+                ctx->uses_native_buffer_age = 0;
+                db_presentation_damage_history_reset(&ctx->damage_history);
+                buffer_age.valid = 0;
+                buffer_age.force_full_repair = 1;
+                buffer_age.fallback_reason = "content_validation_failed";
+            }
+            ctx->buffer_age_validation_pending = 0;
+        }
+        if ((ctx->uses_native_buffer_age != 0) &&
+            (ctx->buffer_age_qualified == 0)) {
+            buffer_age.valid = 0;
+            buffer_age.force_full_repair = 1;
+            buffer_age.fallback_reason = "content_validation_pending";
+        }
+        db_glfw_log_buffer_age_if_needed(ctx, &buffer_age);
+    }
+    // Do not clear before buffer-age qualification. The acquired back buffer
+    // is the evidence used to decide whether damage-only presentation is safe.
+    db_display_gl_debug_clear_default_framebuffer_if_enabled(
+        ctx->debug_clear_default_framebuffer);
+    const int framebuffer_resized =
+        DB_BOOL((ctx->last_framebuffer_width != 0U) &&
+                ((ctx->last_framebuffer_width != extent.width) ||
+                 (ctx->last_framebuffer_height != extent.height)));
+    if (framebuffer_resized != 0) {
+        db_presentation_damage_history_reset(&ctx->damage_history);
+        ctx->buffer_age_qualified = 0;
+        ctx->buffer_age_validation_pending = 0;
+        ctx->buffer_age_validation_count = 0U;
+        buffer_age.force_full_repair = 1;
+        buffer_age.valid = 0;
+        buffer_age.fallback_reason = "framebuffer_resized";
+    }
+    ctx->last_framebuffer_width = extent.width;
+    ctx->last_framebuffer_height = extent.height;
+    db_frame_plan_t plan;
+    db_frame_source_generate(ctx->core, frame_index, &plan_request, &plan);
+    db_pixel_block_view_t presentation_damage = {0};
+    int force_full_presentation = 1;
+    if (renderer_ops->renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
+        const size_t logical_count = db_presentation_damage_history_resolve(
+            &ctx->damage_history, &buffer_age, plan.geometry.logical_damage,
+            plan.grid_rows, plan.grid_cols, ctx->presentation_logical,
+            DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME, &force_full_presentation);
+        size_t pixel_count = 0U;
+        for (size_t index = 0U;
+             (index < logical_count) &&
+             (pixel_count < DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME);
+             index++) {
+            if (db_grid_block_to_pixel_block(
+                    plan.grid_cols, plan.grid_rows,
+                    &ctx->presentation_logical[index], extent.width,
+                    extent.height,
+                    &ctx->presentation_pixels[pixel_count]) != 0) {
+                pixel_count++;
+            }
+        }
+        presentation_damage = (db_pixel_block_view_t){
+            .blocks = ctx->presentation_pixels,
+            .count = pixel_count,
+        };
+    }
+    const db_gl_presentation_frame_t presentation = {
+        .destination_width = extent.width,
+        .destination_height = extent.height,
+        .damage = presentation_damage,
+        .buffer_age = buffer_age,
+        .force_full = force_full_presentation,
+        .repair_reason = buffer_age.fallback_reason,
+    };
+    db_display_gl_render_frame(renderer_ops->renderer, &plan, &presentation);
+
+    const int trace_damage = db_damage_trace_enabled();
+    uint64_t output_hash_value = 0U;
+    uint64_t pre_swap_hash = 0U;
+    if (ctx->frame_step.output_hash_enabled != 0) {
+        output_hash_value = db_glfw_hash_canonical_default_framebuffer_or_fail(
+            ctx->backend_name, ctx->window, plan.grid_cols, plan.grid_rows,
+            ctx->hash_scratch);
+    }
+    const int seed_buffer_age_validation = DB_BOOL(
+        (ctx->uses_native_buffer_age != 0) && (ctx->buffer_age_qualified == 0));
+    if ((trace_damage != 0) || (seed_buffer_age_validation != 0)) {
+        pre_swap_hash = db_glfw_hash_native_default_framebuffer_or_fail(
+            ctx->backend_name, ctx->window, ctx->framebuffer_hash_format,
+            ctx->hash_scratch);
+    }
+    if (seed_buffer_age_validation != 0) {
+        ctx->buffer_age_expected_hash = pre_swap_hash;
+        ctx->buffer_age_validation_pending = 1;
+    }
+    if (ctx->frame_step.output_hash_enabled != 0) {
+        db_frame_source_commit_success_with_hash(ctx->core, &plan,
+                                                 output_hash_value);
+    } else {
+        db_frame_source_commit_success(ctx->core, &plan);
+    }
+    if (trace_damage != 0) {
+        const db_damage_block_t full_block =
+            db_damage_block_full(extent.height, extent.width);
+        (void)db_damage_trace_emit(&(const db_damage_trace_event_t){
+            .frame_index = frame_index,
+            .backend = DB_DAMAGE_TRACE_BACKEND_DISPLAY,
+            .stage = DB_DAMAGE_TRACE_STAGE_RENDER_TARGET,
+            .operation = DB_DAMAGE_TRACE_OP_READBACK,
+            .source = DB_DAMAGE_TRACE_BUFFER_GL_DEFAULT_FRAMEBUFFER,
+            .destination = DB_DAMAGE_TRACE_BUFFER_GL_DEFAULT_FRAMEBUFFER,
+            .space = DB_DAMAGE_TRACE_SPACE_PIXEL,
+            .width = extent.width,
+            .height = extent.height,
+            .pixel_format = ctx->framebuffer_hash_format,
+            .blocks = &full_block,
+            .block_count = 1U,
+            .destination_hash = pre_swap_hash,
+            .mode = "pre_swap",
+            .result = DB_DAMAGE_TRACE_RESULT_EXECUTED,
+        });
+    }
+
+    db_display_gl_frame_step(
+        &ctx->frame_step, frame_index, elapsed_ms, 1, plan.expected_state_hash,
+        ctx->frame_step.output_hash_enabled, output_hash_value);
+    glfwSwapBuffers(ctx->window);
+    return DB_DISPLAY_FRAME_LOOP_CONTINUE;
+}
+
+static int db_glfw_run_opengl_renderer_loop(
+    GLFWwindow *window, const char *backend_name,
+    const db_display_gl_renderer_ops_t *renderer_ops,
+    const db_display_renderer_runtime_t *resolved_runtime,
+    int uses_native_buffer_age) {
+    if ((window == NULL) || (backend_name == NULL) || (renderer_ops == NULL) ||
+        (resolved_runtime == NULL)) {
+        return 0;
+    }
+
+    renderer_ops->init(&resolved_runtime->renderer);
+    const char *capability_mode = renderer_ops->runtime_capability_mode();
+    const uint32_t work_unit_count = renderer_ops->work_unit_count();
+    const char *renderer_name = renderer_ops->renderer_name;
+    const uint64_t bench_start_ns = db_now_ns_monotonic();
+    db_display_dual_hash_trackers_t hash_trackers =
+        db_display_dual_hash_trackers_create_from_resolved_runtime(
+            backend_name, resolved_runtime, DB_DISPLAY_HASH_KEY_STATE,
+            DB_DISPLAY_HASH_KEY_FRAMEBUFFER);
+    db_gl_framebuffer_hash_scratch_t hash_scratch = {0};
+
+    db_frame_source_t core;
+    db_frame_source_init(
+        &core, &(const db_frame_source_config_t){
+                   .benchmark_configuration = &resolved_runtime->benchmark,
+                   .working_format =
+                       resolved_runtime->renderer.format.surface_pixel_format,
+               });
+
+    db_glfw_opengl_loop_ctx_t loop_ctx = {
+        .backend_name = backend_name,
+        .capability_mode = capability_mode,
+        .renderer_name = renderer_name,
+        .frame_step = {0},
+        .state_hash_tracker = &hash_trackers.state,
+        .framebuffer_hash_tracker = &hash_trackers.output,
+        .framebuffer_hash_format =
+            resolved_runtime->renderer.format.framebuffer_hash_format,
+        .hash_scratch = &hash_scratch,
+        .renderer_ops = *renderer_ops,
+        .next_progress_log_due_ms = 0.0,
+        .state_hash_enabled =
+            resolved_runtime->hash_settings.state_hash_enabled,
+        .output_hash_enabled =
+            resolved_runtime->hash_settings.output_hash_enabled,
+        .uses_native_buffer_age = uses_native_buffer_age,
+        .debug_clear_default_framebuffer =
+            resolved_runtime->display.debug_clear_default_framebuffer,
+        .renderer_preserved_framebuffer_count =
+            resolved_runtime->renderer.preserved_framebuffer_count,
+        .work_unit_count = work_unit_count,
+        .window = window,
+        .core = &core,
+    };
+    loop_ctx.frame_step = db_display_frame_step_make(
+        db_dispatch_api_name(DB_API_OPENGL), loop_ctx.backend_name,
+        loop_ctx.renderer_name, loop_ctx.framebuffer_hash_tracker,
+        loop_ctx.state_hash_tracker, &loop_ctx.next_progress_log_due_ms,
+        loop_ctx.work_unit_count, loop_ctx.output_hash_enabled,
+        loop_ctx.state_hash_enabled);
+    db_glfw_loop_t loop = {
+        .backend = backend_name,
+        .frame_fn = db_glfw_opengl_frame,
+        .fps_cap = resolved_runtime->display.fps_cap,
+        .frame_limit = resolved_runtime->display.frame_limit,
+        .user_data = &loop_ctx,
+        .window = window,
+        .resolved_runtime = resolved_runtime,
+    };
+    const db_display_frame_loop_run_result_t loop_result =
+        db_glfw_run_loop(&loop);
+    const uint64_t frames = loop_result.frames;
+
+    const double bench_ms =
+        (double)(db_now_ns_monotonic() - bench_start_ns) / DB_NS_PER_MS;
+    db_display_log_renderer_final_summary(
+        db_dispatch_api_name(DB_API_OPENGL), renderer_name, backend_name,
+        frames, work_unit_count, bench_ms, renderer_ops->draw_stats);
+    db_frame_source_shutdown(&core);
+    db_display_dual_hash_trackers_log_final(backend_name, &hash_trackers);
+
+    renderer_ops->shutdown();
+    db_gl_hash_scratch_release(&hash_scratch);
+    return 0;
+}
+
+static int db_run_glfw_window_opengl(db_gl_renderer_t renderer,
+                                     const db_cli_config_t *cfg) {
+    db_cli_config_t effective_cfg = (cfg != NULL) ? *cfg : (db_cli_config_t){0};
+    const db_glfw_window_visibility_t visibility =
+        (effective_cfg.glfw_window_hidden != 0) ? DB_GLFW_WINDOW_HIDDEN
+                                                : DB_GLFW_WINDOW_VISIBLE;
+    const int true_offscreen_backend =
+        DB_BOOL(effective_cfg.display == DB_OFFSCREEN_DISPLAY);
+    const char *backend_name = (true_offscreen_backend != 0)
+                                   ? DB_BACKEND_NAME_DISPLAY_OFFSCREEN
+                                   : DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_GL;
+    db_validate_runtime_environment(backend_name,
+                                    DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
+    db_install_signal_handlers();
+    const int swap_interval = DB_BOOL(effective_cfg.vsync_enabled);
+    int context_is_gles = 0;
+    const db_display_gl_renderer_ops_t renderer_ops =
+        db_display_gl_select_renderer_ops(renderer);
+    const db_display_gl_context_policy_t context_policy =
+        db_display_gl_context_policy_for_renderer(renderer);
+    const uint32_t max_preserved_framebuffer_count =
+        db_display_gl_max_preserved_framebuffer_count(renderer);
+    const uint32_t default_preserved_framebuffer_count =
+        (true_offscreen_backend != 0)
+            ? DB_MIN(2U, max_preserved_framebuffer_count)
+            : max_preserved_framebuffer_count;
+    db_display_gl_policy_resolution_t policy_resolution = {
+        .effective_cfg = effective_cfg,
+        .preserved_framebuffer_count = default_preserved_framebuffer_count,
+        .policy_reason_code = DB_DISPLAY_GL_POLICY_REASON_NONE,
+        .policy_reason_text = NULL,
+    };
+    const db_display_default_framebuffer_preserve_info_t default_fb_preserve = {
+        0};
+
+    db_display_resolve_opengl_display_policy(
+        renderer, &effective_cfg, true_offscreen_backend,
+        default_preserved_framebuffer_count, max_preserved_framebuffer_count,
+        &default_fb_preserve, &policy_resolution);
+    effective_cfg = policy_resolution.effective_cfg;
+    if (policy_resolution.policy_reason_text != NULL) {
+        const db_log_field_t fields[] = {
+            DB_LOG_TOKEN("action", "force_full_draw"),
+            DB_LOG_I64("reason", policy_resolution.policy_reason_code),
+            DB_LOG_U64("preserved_framebuffer_count",
+                       policy_resolution.preserved_framebuffer_count),
+        };
+        db_log_info(backend_name, "display_policy", fields,
+                    DB_LOG_FIELD_COUNT(fields));
+    }
+
+    db_display_renderer_runtime_t resolved_runtime =
+        db_display_renderer_runtime_from_cli(
+            backend_name, &effective_cfg,
+            policy_resolution.preserved_framebuffer_count, 0, 0,
+            DB_NATIVE_OUTPUT_RESOLVE_IMMEDIATE);
+
+    GLFWwindow *window = db_glfw_create_renderer_window(
+        backend_name, &context_policy, swap_interval, visibility,
+        &context_is_gles);
+
+    (void)db_display_require_gl_runtime_for_renderer(
+        (db_gl_proc_resolver_fn_t)glfwGetProcAddress, renderer, backend_name,
+        (context_policy.allow_gles1_1_fallback != 0) ? context_is_gles : -1);
+    db_display_apply_native_output_capability_or_fail(
+        backend_name, &resolved_runtime, &g_glfw_native_output_capability);
+    const db_glfw_framebuffer_extent_t initial_extent =
+        db_glfw_get_framebuffer_extent(window, backend_name);
+    const db_presentation_transform_t presentation =
+        db_display_presentation_transform(initial_extent.width,
+                                          initial_extent.height);
+    resolved_runtime.presentation = presentation;
+    db_display_log_presentation_contract(backend_name, &resolved_runtime,
+                                         &presentation);
+    const int run_status = db_glfw_run_opengl_renderer_loop(
+        window, backend_name, &renderer_ops, &resolved_runtime,
+        DB_BOOL(true_offscreen_backend == 0));
+    db_glfw_destroy_window(window);
+    return run_status;
+}
+
+#ifdef DB_HAS_VULKAN_API
+static const char *const *
+db_glfw_vk_required_instance_extensions(uint32_t *count) {
+    return glfwGetRequiredInstanceExtensions(count);
+}
+
+static VkResult db_glfw_vk_create_surface(VkInstance instance,
+                                          void *window_handle,
+                                          VkSurfaceKHR *surface) {
+    return glfwCreateWindowSurface(instance, (GLFWwindow *)window_handle, NULL,
+                                   surface);
+}
+
+static void db_glfw_vk_get_framebuffer_size(void *window_handle, int *width,
+                                            int *height) {
+    glfwGetFramebufferSize((GLFWwindow *)window_handle, width, height);
+}
+
+static db_display_frame_loop_result_t
+db_glfw_vulkan_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
+    (void)elapsed_ms;
+    db_glfw_vulkan_loop_ctx_t *ctx = (db_glfw_vulkan_loop_ctx_t *)user_data;
+    if (ctx == NULL || ctx->core == NULL) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
+    db_frame_plan_t plan;
+    db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
+    const db_vk_frame_result_t frame_result = db_vk_render_frame(&plan);
+    uint64_t output_hash = 0U;
+    if (frame_result == DB_VK_FRAME_OK) {
+        if (ctx->output_hash_enabled != 0) {
+            output_hash = db_vk_output_hash();
+            db_frame_source_commit_success_with_hash(ctx->core, &plan,
+                                                     output_hash);
+        } else {
+            db_frame_source_commit_success(ctx->core, &plan);
+        }
+    }
+    if ((ctx->state_hash_enabled != 0) && (frame_result == DB_VK_FRAME_OK)) {
+        db_display_hash_tracker_record(ctx->state_hash_tracker,
+                                       plan.expected_state_hash);
+    }
+    if ((ctx->output_hash_enabled != 0) && (frame_result == DB_VK_FRAME_OK)) {
+        db_display_hash_tracker_record(ctx->output_hash_tracker, output_hash);
+    }
+    if (frame_result == DB_VK_FRAME_STOP) {
+        DB_RUNTIME_STATUS(ctx->backend_name, "renderer requested stop");
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
+    if (frame_result == DB_VK_FRAME_RETRY) {
+        return DB_DISPLAY_FRAME_LOOP_RETRY;
+    }
+    return DB_DISPLAY_FRAME_LOOP_CONTINUE;
+}
+
+static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
+    const db_glfw_window_visibility_t visibility =
+        ((cfg != NULL) && (cfg->glfw_window_hidden != 0))
+            ? DB_GLFW_WINDOW_HIDDEN
+            : DB_GLFW_WINDOW_VISIBLE;
+    const int true_offscreen_backend =
+        DB_BOOL((cfg != NULL) && (cfg->display == DB_OFFSCREEN_DISPLAY));
+    const char *backend_name = (true_offscreen_backend != 0)
+                                   ? DB_BACKEND_NAME_DISPLAY_OFFSCREEN
+                                   : DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_VK;
+    db_validate_runtime_environment(backend_name,
+                                    DB_RUNTIME_OPT_ALLOW_REMOTE_DISPLAY);
+    db_install_signal_handlers();
+    db_display_renderer_runtime_t resolved_runtime =
+        db_display_renderer_runtime_from_cli(
+            backend_name, cfg, 0U, 0, 0,
+            DB_NATIVE_OUTPUT_RESOLVE_AFTER_PRESENTER_PROBE);
+
+    GLFWwindow *window = db_glfw_create_no_api_window(
+        backend_name, "Vulkan 1.2 opportunistic multi-GPU (device groups)",
+        BENCH_WINDOW_WIDTH_PX, BENCH_WINDOW_HEIGHT_PX, visibility);
+    uint32_t runtime_api_version = VK_API_VERSION_1_0;
+    const VkResult version_result =
+        vkEnumerateInstanceVersion(&runtime_api_version);
+    if (version_result != VK_SUCCESS) {
+        runtime_api_version = VK_API_VERSION_1_0;
+    }
+    db_display_log_vulkan_runtime_api(backend_name, runtime_api_version,
+                                      "(selected by renderer)");
+    const db_glfw_framebuffer_extent_t initial_extent =
+        db_glfw_get_framebuffer_extent(window, backend_name);
+    const db_presentation_transform_t presentation =
+        db_display_presentation_transform(initial_extent.width,
+                                          initial_extent.height);
+    resolved_runtime.presentation = presentation;
+
+    const db_vk_wsi_config_t wsi_config = {
+        .backend_name = backend_name,
+        .window_handle = window,
+        .get_required_instance_extensions =
+            db_glfw_vk_required_instance_extensions,
+        .create_window_surface = db_glfw_vk_create_surface,
+        .get_framebuffer_size = db_glfw_vk_get_framebuffer_size,
+    };
+    const db_native_output_capability_t vk_capability = db_vk_init(
+        &wsi_config,
+        (cfg != NULL) ? cfg->vsync_enabled : BENCH_DEFAULT_VSYNC_ENABLED,
+        &resolved_runtime.renderer);
+    db_display_apply_native_output_capability_or_fail(
+        backend_name, &resolved_runtime, &vk_capability);
+    resolved_runtime.renderer.format.hdr_conversion =
+        (resolved_runtime.renderer.format.native_hdr_enabled != 0)
+            ? DB_HDR_CONVERSION_VULKAN_SHADER
+            : DB_HDR_CONVERSION_NONE;
+    db_display_log_presentation_contract(backend_name, &resolved_runtime,
+                                         &presentation);
+    db_vk_set_output_hash_enabled(
+        resolved_runtime.hash_settings.output_hash_enabled);
+    db_frame_source_t core;
+    db_frame_source_init(
+        &core, &(const db_frame_source_config_t){
+                   .benchmark_configuration = &resolved_runtime.benchmark,
+                   .working_format =
+                       resolved_runtime.renderer.format.surface_pixel_format,
+               });
+    db_display_dual_hash_trackers_t hash_trackers =
+        db_display_dual_hash_trackers_create_from_resolved_runtime(
+            backend_name, &resolved_runtime, DB_DISPLAY_HASH_KEY_STATE,
+            DB_DISPLAY_HASH_KEY_FRAMEBUFFER);
+    db_glfw_vulkan_loop_ctx_t loop_ctx = {
+        .backend_name = backend_name,
+        .state_hash_tracker = &hash_trackers.state,
+        .output_hash_tracker = &hash_trackers.output,
+        .state_hash_enabled = resolved_runtime.hash_settings.state_hash_enabled,
+        .output_hash_enabled =
+            resolved_runtime.hash_settings.output_hash_enabled,
+        .core = &core,
+        .window = window,
+    };
+    db_glfw_loop_t loop = {
+        .backend = backend_name,
+        .frame_fn = db_glfw_vulkan_frame,
+        .fps_cap = resolved_runtime.display.fps_cap,
+        .frame_limit = resolved_runtime.display.frame_limit,
+        .user_data = &loop_ctx,
+        .window = window,
+        .resolved_runtime = &resolved_runtime,
+    };
+    const db_display_frame_loop_run_result_t loop_result =
+        db_glfw_run_loop(&loop);
+    db_vk_set_present_metrics(
+        loop_result.frame_ema_ms, loop_result.jitter_ema_ms,
+        loop_result.frame_p50_ms, loop_result.frame_p95_ms,
+        loop_result.frame_p99_ms, loop_result.retries);
+    db_vk_shutdown();
+    db_frame_source_shutdown(&core);
+    db_display_dual_hash_trackers_log_final(backend_name, &hash_trackers);
+    db_glfw_destroy_window(window);
+    return 0;
+}
+#endif
+
+int db_run_glfw_window(db_api_t api, db_gl_renderer_t renderer,
+                       const db_cli_config_t *cfg) {
+    db_dispatch_validate_backend_or_fail(DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_GL,
+                                         DB_GLFW_WINDOW_DISPLAY, api, renderer);
+    if (api == DB_API_CPU) {
+        return db_run_glfw_window_cpu(cfg);
+    }
+#ifdef DB_HAS_VULKAN_API
+    if (api == DB_API_VULKAN) {
+        return db_run_glfw_window_vulkan(cfg);
+    }
+#endif
+    return db_run_glfw_window_opengl(renderer, cfg);
+}

@@ -9,7 +9,10 @@
 #include "../config/runtime_options.h"
 #include "../core/db_alloc_policy.h"
 #include "../core/db_core.h"
+#include "../core/db_log.h"
 #include "../core/db_numeric.h"
+#include "../core/db_poll_policy.h"
+#include "../core/db_sort.h"
 
 typedef enum {
     DB_DISPLAY_FRAME_LOOP_CONTINUE = 0,
@@ -27,6 +30,7 @@ typedef struct {
     const char *backend;
     double fps_cap;
     uint32_t frame_limit;
+    uint32_t initial_frame_index;
     void *user_data;
     db_display_frame_loop_should_continue_fn_t should_continue_fn;
     db_display_frame_loop_pre_frame_fn_t pre_frame_fn;
@@ -55,8 +59,14 @@ typedef struct {
 static inline int db_display_dual_metrics_enabled(void) {
     const char *const metrics_mode =
         db_runtime_option_get(DB_RUNTIME_OPT_METRICS_MODE);
-    return ((metrics_mode != NULL) && (strcmp(metrics_mode, "dual") == 0)) ? 1
-                                                                           : 0;
+    return (metrics_mode != NULL) && (strcmp(metrics_mode, "dual") == 0);
+}
+
+static inline uint32_t db_display_frame_index_u32(const char *backend,
+                                                  uint64_t frame_index) {
+    return db_checked_u64_to_u32((backend != NULL) ? backend
+                                                   : "display_frame_loop",
+                                 "frame_index", frame_index);
 }
 
 static inline double db_display_percentile_sorted(const double *samples,
@@ -72,7 +82,7 @@ static inline double db_display_percentile_sorted(const double *samples,
     }
     const double rank = ((pct / 100.0) * (double)(count - 1U));
     const size_t index = (size_t)rank;
-    const size_t next = (index + 1U < count) ? (index + 1U) : index;
+    const size_t next = DB_MIN(index + 1U, count - 1U);
     const double frac = rank - (double)index;
     return (samples[index] * (1.0 - frac)) + (samples[next] * frac);
 }
@@ -102,12 +112,13 @@ db_display_run_frame_loop(const db_display_frame_loop_t *loop) {
     }
     double *samples = NULL;
     if (sample_capacity > 0U) {
-        samples = (double *)db_alloc_array_or_fail(
+        samples = (double *)db_malloc_or_fail(
             (loop->backend != NULL) ? loop->backend : "display_frame_loop",
             "display_frame_time_samples", sample_capacity, sizeof(double));
     }
 
     const uint64_t bench_start_ns = db_now_ns_monotonic();
+    db_retry_tracker_t retry_tracker = {0};
     while (!db_should_stop()) {
         if ((loop->frame_limit > 0U) && (result.frames >= loop->frame_limit)) {
             break;
@@ -118,13 +129,15 @@ db_display_run_frame_loop(const db_display_frame_loop_t *loop) {
         }
 
         const uint64_t frame_start_ns = db_now_ns_monotonic();
+        const uint32_t frame_index = db_display_frame_index_u32(
+            loop->backend, (uint64_t)loop->initial_frame_index + result.frames);
         if (loop->pre_frame_fn != NULL) {
-            loop->pre_frame_fn(loop->user_data, (uint32_t)result.frames);
+            loop->pre_frame_fn(loop->user_data, frame_index);
         }
         const double elapsed_ms =
             (double)(frame_start_ns - bench_start_ns) / DB_NS_PER_MS;
-        const db_display_frame_loop_result_t frame_result = loop->frame_fn(
-            loop->user_data, (uint32_t)result.frames, elapsed_ms);
+        const db_display_frame_loop_result_t frame_result =
+            loop->frame_fn(loop->user_data, frame_index, elapsed_ms);
         if (frame_result == DB_DISPLAY_FRAME_LOOP_STOP) {
             break;
         }
@@ -151,14 +164,14 @@ db_display_run_frame_loop(const db_display_frame_loop_t *loop) {
                     sample_capacity, sample_count + 1U,
                     DB_DISPLAY_FRAME_SAMPLE_INIT_CAPACITY);
                 if (new_capacity <= sample_capacity) {
-                    db_failf((loop->backend != NULL) ? loop->backend
-                                                     : "display_frame_loop",
-                             "display frame sample capacity overflow");
+                    DB_RUNTIME_FAIL((loop->backend != NULL)
+                                        ? loop->backend
+                                        : "display_frame_loop",
+                                    "display frame sample capacity overflow");
                 }
                 db_reserve_array_capacity_or_fail(
                     (void **)&samples, &sample_capacity, new_capacity,
                     DB_DISPLAY_FRAME_SAMPLE_INIT_CAPACITY, sizeof(double),
-                    sample_count,
                     (loop->backend != NULL) ? loop->backend
                                             : "display_frame_loop",
                     "display_frame_samples");
@@ -166,16 +179,31 @@ db_display_run_frame_loop(const db_display_frame_loop_t *loop) {
             samples[sample_count++] = frame_total_ms;
         }
         if (frame_result != DB_DISPLAY_FRAME_LOOP_RETRY) {
+            db_retry_tracker_reset(&retry_tracker);
             result.frames++;
         } else {
             result.retries++;
+            const uint64_t retry_now_ns = db_now_ns_monotonic();
+            if (db_retry_tracker_record(&retry_tracker, DB_PROGRESS_FRAME_RETRY,
+                                        retry_now_ns) == 0) {
+                db_sync_wait_result_t retry_result = db_sync_wait_result_make(
+                    DB_SYNC_WAIT_TIMEOUT, retry_tracker.consecutive_retries,
+                    retry_now_ns - retry_tracker.deadline.started_ns, 0U,
+                    "no_frame_progress");
+                retry_result.policy_id = DB_PROGRESS_FRAME_RETRY;
+                db_progress_log_outcome(
+                    (loop->backend != NULL) ? loop->backend
+                                            : "display_frame_loop",
+                    "frame_retry", DB_PROGRESS_FRAME_RETRY, &retry_result);
+                break;
+            }
         }
     }
 
     result.elapsed_ms =
         (double)(db_now_ns_monotonic() - bench_start_ns) / DB_NS_PER_MS;
     if ((samples != NULL) && (sample_count > 0U)) {
-        qsort(samples, sample_count, sizeof(double), db_qsort_compare_f64);
+        (void)db_sort_f64_ascending(samples, sample_count);
         result.frame_p50_ms = db_display_percentile_sorted(
             samples, sample_count, DB_DISPLAY_PERCENTILE_P50);
         result.frame_p95_ms = db_display_percentile_sorted(

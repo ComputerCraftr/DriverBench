@@ -1,10 +1,13 @@
 #include "db_buffer_convert.h"
 
-#include <stdatomic.h>
+#include "db_core.h"
+#include "db_format_contract.h"
+#include "db_numeric.h"
+
+#include <math.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
-
-#include "db_numeric.h"
 
 // Format/layout constants used by all fill/convert helpers in this unit.
 #define DB_CONVERT_CHANNEL_R 0U
@@ -14,6 +17,132 @@
 #define DB_CONVERT_F16_LUT_SIZE (UINT16_MAX + 1U)
 #define DB_CONVERT_RGBA16F_PIXEL_STRIDE 4U
 #define DB_CONVERT_RGBA8_PIXEL_STRIDE 4U
+
+enum {
+    DB_HDR10_CODE_MAX = 1023,
+    DB_HDR10_GREEN_SHIFT = 10,
+    DB_HDR10_RED_SHIFT = 20,
+    DB_HDR10_ALPHA_SHIFT = 30,
+    DB_HDR10_ALPHA_OPAQUE = 3,
+};
+
+static const double db_hdr10_round_to_nearest_offset = 0.5;
+
+static double db_hdr10_finite_nonnegative(double value) {
+    return (isfinite(value) && (value > 0.0)) ? value : 0.0;
+}
+
+double db_hdr10_pq_encode_nits(double luminance_nits) {
+    static const double m1 = 2610.0 / 16384.0;
+    static const double m2 = 2523.0 / 32.0;
+    static const double c1 = 3424.0 / 4096.0;
+    static const double c2 = 2413.0 / 128.0;
+    static const double c3 = 2392.0 / 128.0;
+    const double normalized =
+        DB_MIN(db_hdr10_finite_nonnegative(luminance_nits), 10000.0) / 10000.0;
+    const double powered = pow(normalized, m1);
+    return pow((c1 + (c2 * powered)) / (1.0 + (c3 * powered)), m2);
+}
+
+void db_hdr10_linear_srgb_to_bt2020_pq(const double *linear_srgb,
+                                       double *encoded_bt2020_pq) {
+    if ((linear_srgb == NULL) || (encoded_bt2020_pq == NULL)) {
+        return;
+    }
+    const double red = db_hdr10_finite_nonnegative(linear_srgb[0]);
+    const double green = db_hdr10_finite_nonnegative(linear_srgb[1]);
+    const double blue = db_hdr10_finite_nonnegative(linear_srgb[2]);
+    const double bt2020[] = {
+        (0.6274038959 * red) + (0.3292830384 * green) + (0.0433130657 * blue),
+        (0.0690972894 * red) + (0.9195403951 * green) + (0.0113623156 * blue),
+        (0.0163914389 * red) + (0.0880133079 * green) + (0.8955952532 * blue),
+    };
+    for (size_t channel = 0U; channel < 3U; channel++) {
+        const double nits =
+            DB_MIN(bt2020[channel] * DB_HDR10_REFERENCE_WHITE_NITS,
+                   DB_HDR10_MASTERING_MAX_NITS);
+        encoded_bt2020_pq[channel] = db_hdr10_pq_encode_nits(nits);
+    }
+}
+
+static uint32_t db_hdr10_quantize_10(double value) {
+    const double clamped = DB_MAX(0.0, DB_MIN(value, 1.0));
+    return (uint32_t)((clamped * (double)DB_HDR10_CODE_MAX) +
+                      db_hdr10_round_to_nearest_offset);
+}
+
+uint32_t db_pack_xrgb2101010_from_linear_srgb(const double *linear_srgb) {
+    double encoded[3] = {0.0, 0.0, 0.0};
+    db_hdr10_linear_srgb_to_bt2020_pq(linear_srgb, encoded);
+    return (db_hdr10_quantize_10(encoded[0]) << DB_HDR10_RED_SHIFT) |
+           (db_hdr10_quantize_10(encoded[1]) << DB_HDR10_GREEN_SHIFT) |
+           db_hdr10_quantize_10(encoded[2]);
+}
+
+uint32_t db_pack_xrgb2101010_from_rgba8888(uint32_t packed_rgba) {
+    double rgb[3] = {0.0, 0.0, 0.0};
+    db_unpack_rgba8888_rgb01(packed_rgba, rgb);
+    return db_pack_xrgb2101010_from_linear_srgb(rgb);
+}
+
+uint32_t db_pack_xrgb2101010_from_rgb16f3(const uint16_t *rgb16f3) {
+    if (rgb16f3 == NULL) {
+        return 0U;
+    }
+    const double rgb[] = {db_f16_to_double(rgb16f3[0]),
+                          db_f16_to_double(rgb16f3[1]),
+                          db_f16_to_double(rgb16f3[2])};
+    return db_pack_xrgb2101010_from_linear_srgb(rgb);
+}
+
+uint32_t db_pack_rgb10a2_bt2020_pq_from_rgba8888(uint32_t packed_rgba) {
+    return db_pack_xrgb2101010_from_rgba8888(packed_rgba) |
+           ((uint32_t)DB_HDR10_ALPHA_OPAQUE << DB_HDR10_ALPHA_SHIFT);
+}
+
+uint32_t db_pack_rgb10a2_bt2020_pq_from_rgb16f3(const uint16_t *rgb16f3) {
+    return db_pack_xrgb2101010_from_rgb16f3(rgb16f3) |
+           ((uint32_t)DB_HDR10_ALPHA_OPAQUE << DB_HDR10_ALPHA_SHIFT);
+}
+
+void db_convert_rgba8_to_rgb10a2_bt2020_pq_tight(
+    uint32_t *dst, const uint32_t *src, size_t src_stride_pixels,
+    uint32_t row_start, uint32_t row_count, uint32_t col_start,
+    uint32_t col_count) {
+    if ((dst == NULL) || (src == NULL)) {
+        return;
+    }
+    for (uint32_t row = 0U; row < row_count; row++) {
+        const uint32_t *const src_row =
+            src + (((size_t)row_start + row) * src_stride_pixels) + col_start;
+        uint32_t *const dst_row = dst + ((size_t)row * col_count);
+        for (uint32_t col = 0U; col < col_count; col++) {
+            dst_row[col] =
+                db_pack_rgb10a2_bt2020_pq_from_rgba8888(src_row[col]);
+        }
+    }
+}
+
+void db_convert_rgba16f_to_rgb10a2_bt2020_pq_tight(
+    uint32_t *dst, const uint16_t *src, size_t src_stride_pixels,
+    uint32_t row_start, uint32_t row_count, uint32_t col_start,
+    uint32_t col_count) {
+    if ((dst == NULL) || (src == NULL)) {
+        return;
+    }
+    for (uint32_t row = 0U; row < row_count; row++) {
+        const uint16_t *const src_row =
+            src +
+            (((((size_t)row_start + row) * src_stride_pixels) + col_start) *
+             DB_CONVERT_RGBA16F_PIXEL_STRIDE);
+        uint32_t *const dst_row = dst + ((size_t)row * col_count);
+        for (uint32_t col = 0U; col < col_count; col++) {
+            dst_row[col] = db_pack_rgb10a2_bt2020_pq_from_rgb16f3(
+                src_row + ((size_t)col * DB_CONVERT_RGBA16F_PIXEL_STRIDE));
+        }
+    }
+}
+
 enum {
     DB_PIXEL_ILP_LANES = 8U,
     DB_PIXEL_ILP_INDEX_0 = 0U,
@@ -28,30 +157,33 @@ enum {
 
 // F16->U8 lookup table used by RGBA16F conversion entry points.
 static uint8_t g_f16_to_u8_lut[DB_CONVERT_F16_LUT_SIZE];
-static atomic_bool g_f16_to_u8_lut_ready = false;
-static atomic_flag g_f16_to_u8_lut_lock = ATOMIC_FLAG_INIT;
+// pthread.h is the public provider; macOS attributes the typedef to a private
+// sys/_pthread header that applications must not include directly.
+static pthread_once_t g_f16_to_u8_lut_once = // NOLINT(misc-include-cleaner)
+    PTHREAD_ONCE_INIT;
+
+static void db_f16_to_u8_lut_initialize(void) {
+    for (uint32_t value = 0U; value < DB_CONVERT_F16_LUT_SIZE; value++) {
+        const double as_double = db_f16_to_double((uint16_t)value);
+        g_f16_to_u8_lut[value] = db_double01_to_u8_clamped(as_double);
+    }
+}
 
 static void db_f16_to_u8_lut_init_once(void) {
-    if (atomic_load_explicit(&g_f16_to_u8_lut_ready, memory_order_acquire)) {
-        return;
+    const int once_result =
+        pthread_once(&g_f16_to_u8_lut_once, db_f16_to_u8_lut_initialize);
+    if (once_result != 0) {
+        db_failf("buffer_convert", "failed to initialize f16 conversion LUT");
     }
-
-    while (atomic_flag_test_and_set_explicit(&g_f16_to_u8_lut_lock,
-                                             memory_order_acquire)) {
-    }
-    if (!atomic_load_explicit(&g_f16_to_u8_lut_ready, memory_order_relaxed)) {
-        for (uint32_t value = 0U; value < DB_CONVERT_F16_LUT_SIZE; value++) {
-            const double as_double = db_f16_to_double((uint16_t)value);
-            g_f16_to_u8_lut[value] = db_double01_to_u8_clamped(as_double);
-        }
-        atomic_store_explicit(&g_f16_to_u8_lut_ready, true,
-                              memory_order_release);
-    }
-    atomic_flag_clear_explicit(&g_f16_to_u8_lut_lock, memory_order_release);
 }
 
 static inline uint8_t db_f16_to_u8_lut_value(uint16_t value) {
     return g_f16_to_u8_lut[(uint32_t)value];
+}
+
+uint8_t db_f16_to_u8_clamped(uint16_t value) {
+    db_f16_to_u8_lut_init_once();
+    return db_f16_to_u8_lut_value(value);
 }
 
 static inline uint32_t
@@ -84,51 +216,31 @@ uint32_t db_pack_xrgb8888_from_rgb16f3(const uint16_t *rgb16f3) {
     return db_pack_xrgb8888_from_rgb16f3_lut(rgb16f3);
 }
 
-// Low-level copy/move primitives.
-void db_copy_bytes(void *dst, const void *src, size_t byte_count) {
-    if ((dst == NULL) || (src == NULL) || (byte_count == 0U)) {
-        return;
-    }
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    memcpy(dst, src, byte_count);
-}
-
-void db_move_bytes(void *dst, const void *src, size_t byte_count) {
-    if ((dst == NULL) || (src == NULL) || (byte_count == 0U)) {
-        return;
-    }
-    // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling)
-    memmove(dst, src, byte_count);
-}
-
-void db_copy_f32_vec2(float *dst, const float *src) {
-    db_copy_bytes(dst, src, 2U * sizeof(float));
-}
-
-void db_copy_f32_rgb3(float *dst, const float *src) {
-    db_copy_bytes(dst, src, 3U * sizeof(float));
-}
-
-void db_copy_f32_rgba4(float *dst, const float *src) {
-    db_copy_bytes(dst, src, 4U * sizeof(float));
-}
-
-void db_copy_f64_rgb3(double *dst, const double *src) {
-    db_copy_bytes(dst, src, 3U * sizeof(double));
-}
-
-void db_copy_u32_rgb3(uint32_t *dst, const uint32_t *src) {
-    db_copy_u32_buffer(dst, src, 3U);
-}
-
-void db_copy_u32_buffer(uint32_t *dst, const uint32_t *src,
-                        size_t element_count) {
-    db_copy_bytes(dst, src, element_count * sizeof(uint32_t));
-}
-
 // Shared fill helpers (used by CPU renderer and display upload paths).
 void db_fill_u32_buffer(uint32_t *dst, uint32_t element_count,
                         uint32_t fill_value) {
+    if ((dst == NULL) || (element_count == 0U)) {
+        return;
+    }
+    uint32_t index = 0U;
+    for (; (index + (DB_PIXEL_ILP_LANES - 1U)) < element_count;
+         index += DB_PIXEL_ILP_LANES) {
+        dst[index + DB_PIXEL_ILP_INDEX_0] = fill_value;
+        dst[index + DB_PIXEL_ILP_INDEX_1] = fill_value;
+        dst[index + DB_PIXEL_ILP_INDEX_2] = fill_value;
+        dst[index + DB_PIXEL_ILP_INDEX_3] = fill_value;
+        dst[index + DB_PIXEL_ILP_INDEX_4] = fill_value;
+        dst[index + DB_PIXEL_ILP_INDEX_5] = fill_value;
+        dst[index + DB_PIXEL_ILP_INDEX_6] = fill_value;
+        dst[index + DB_PIXEL_ILP_INDEX_7] = fill_value;
+    }
+    for (; index < element_count; index++) {
+        dst[index] = fill_value;
+    }
+}
+
+void db_fill_u64_buffer(uint64_t *dst, uint32_t element_count,
+                        uint64_t fill_value) {
     if ((dst == NULL) || (element_count == 0U)) {
         return;
     }
@@ -175,30 +287,17 @@ void db_fill_rgba8_byte_pattern(uint8_t *dst, uint32_t pixel_count,
     }
 }
 
-void db_fill_rgba16f_buffer(uint16_t *dst, uint32_t pixel_count,
+void db_fill_rgba16f_buffer(void *dst, uint32_t pixel_count,
                             const uint16_t *rgba_f16) {
     if ((dst == NULL) || (rgba_f16 == NULL) || (pixel_count == 0U)) {
         return;
     }
-    uint32_t pixel = 0U;
-    for (; (pixel + (DB_PIXEL_ILP_LANES - 1U)) < pixel_count;
-         pixel += DB_PIXEL_ILP_LANES) {
-        for (uint32_t lane = 0U; lane < DB_PIXEL_ILP_LANES; lane++) {
-            const size_t base =
-                ((size_t)(pixel + lane) * DB_CONVERT_RGBA16F_PIXEL_STRIDE);
-            dst[base + DB_CONVERT_CHANNEL_R] = rgba_f16[DB_CONVERT_CHANNEL_R];
-            dst[base + DB_CONVERT_CHANNEL_G] = rgba_f16[DB_CONVERT_CHANNEL_G];
-            dst[base + DB_CONVERT_CHANNEL_B] = rgba_f16[DB_CONVERT_CHANNEL_B];
-            dst[base + DB_CONVERT_CHANNEL_A] = rgba_f16[DB_CONVERT_CHANNEL_A];
-        }
-    }
-    for (; pixel < pixel_count; pixel++) {
-        const size_t base = ((size_t)pixel * DB_CONVERT_RGBA16F_PIXEL_STRIDE);
-        dst[base + DB_CONVERT_CHANNEL_R] = rgba_f16[DB_CONVERT_CHANNEL_R];
-        dst[base + DB_CONVERT_CHANNEL_G] = rgba_f16[DB_CONVERT_CHANNEL_G];
-        dst[base + DB_CONVERT_CHANNEL_B] = rgba_f16[DB_CONVERT_CHANNEL_B];
-        dst[base + DB_CONVERT_CHANNEL_A] = rgba_f16[DB_CONVERT_CHANNEL_A];
-    }
+    const uint64_t packed_pixel =
+        ((uint64_t)rgba_f16[DB_CONVERT_CHANNEL_R]) |
+        ((uint64_t)rgba_f16[DB_CONVERT_CHANNEL_G] << 16U) |
+        ((uint64_t)rgba_f16[DB_CONVERT_CHANNEL_B] << 32U) |
+        ((uint64_t)rgba_f16[DB_CONVERT_CHANNEL_A] << 48U);
+    db_fill_u64_buffer((uint64_t *)dst, pixel_count, packed_pixel);
 }
 
 void db_unpack_rgba8888_rgb_u8(uint32_t packed_rgba, uint32_t *rgb_u8_out) {

@@ -1,4 +1,5 @@
 #include "display_dispatch.h"
+#include "core/db_log.h"
 #include <stddef.h>
 
 #include "../core/db_core.h"
@@ -22,11 +23,19 @@ int db_dispatch_format_display_capabilities(db_display_t display, char *buffer,
 
 void db_dispatch_log_display_capabilities(const char *backend,
                                           db_display_t display) {
-    char caps_text[DB_DISPLAY_CAPABILITY_TEXT_MAX] = {0};
-    (void)db_dispatch_format_display_capabilities(display, caps_text,
-                                                  sizeof(caps_text));
-    db_infof((backend != NULL) ? backend : "display_dispatch",
-             "display capabilities: display=%d %s", (int)display, caps_text);
+    const db_display_backend_capabilities_t caps =
+        db_dispatch_display_capabilities(display);
+    const db_log_field_t fields[] = {
+        DB_LOG_I64("display", display),
+        DB_LOG_BOOL("compiled", caps.compiled),
+        DB_LOG_BOOL("cpu", caps.supports_cpu),
+        DB_LOG_BOOL("opengl", caps.supports_opengl),
+        DB_LOG_BOOL("vulkan", caps.supports_vulkan),
+        DB_LOG_BOOL("gl1", caps.supports_gl1),
+        DB_LOG_BOOL("gl3", caps.supports_gl3),
+    };
+    db_log_info((backend != NULL) ? backend : "display_dispatch",
+                "display_capability", fields, DB_LOG_FIELD_COUNT(fields));
 }
 
 void db_dispatch_validate_backend_or_fail(const char *backend,
@@ -36,28 +45,29 @@ void db_dispatch_validate_backend_or_fail(const char *backend,
     (void)db_dispatch_format_display_capabilities(display, caps_text,
                                                   sizeof(caps_text));
     if (db_dispatch_display_supports_backend(display, api, renderer) == 0) {
-        db_failf((backend != NULL) ? backend : "display_dispatch",
-                 "requested display/api/renderer combination is unavailable "
-                 "in this build (display=%d api=%d renderer=%s %s)",
-                 (int)display, (int)api, db_dispatch_gl_renderer_name(renderer),
-                 caps_text);
+        DB_RUNTIME_FAIL(
+            (backend != NULL) ? backend : "display_dispatch",
+            "requested display/api/renderer combination is unavailable "
+            "in this build (display=%d api=%d renderer=%s %s)",
+            (int)display, (int)api, db_dispatch_gl_renderer_name(renderer),
+            caps_text);
     }
 }
 
 int db_run_display_auto(db_display_t display, db_gl_renderer_t renderer,
                         const char *kms_card_path, const db_cli_config_t *cfg) {
     if (db_dispatch_display_capabilities(display).compiled == 0) {
-        db_failf("display_dispatch",
-                 "requested display is unavailable in this build "
-                 "(display=%d)",
-                 (int)display);
+        DB_RUNTIME_FAIL("display_dispatch",
+                        "requested display is unavailable in this build "
+                        "(display=%d)",
+                        (int)display);
     }
 
     if (db_dispatch_display_has_any_api(display) == 0) {
-        db_failf("display_dispatch",
-                 "no compatible api for selected display in this build "
-                 "(display=%d)",
-                 (int)display);
+        DB_RUNTIME_FAIL("display_dispatch",
+                        "no compatible api for selected display in this build "
+                        "(display=%d)",
+                        (int)display);
     }
 
     return db_run_display(display,
@@ -75,38 +85,40 @@ int db_run_display(db_display_t display, db_api_t api,
     (void)db_dispatch_format_display_capabilities(display, caps_text,
                                                   sizeof(caps_text));
     if (db_dispatch_display_capabilities(display).compiled == 0) {
-        db_failf("display_dispatch",
-                 "requested display is unavailable in this build "
-                 "(display=%d %s)",
-                 (int)display, caps_text);
+        DB_RUNTIME_FAIL("display_dispatch",
+                        "requested display is unavailable in this build "
+                        "(display=%d %s)",
+                        (int)display, caps_text);
     }
 
     db_dispatch_validate_backend_or_fail("display_dispatch", display, api,
                                          renderer);
     db_dispatch_log_display_capabilities("display_dispatch", display);
 
-    if (display == DB_DISPLAY_OFFSCREEN) {
+    if (display == DB_OFFSCREEN_DISPLAY) {
         return db_run_offscreen(api, renderer, cfg);
     }
 
-    if (display == DB_DISPLAY_GLFW_WINDOW) {
+    if (display == DB_GLFW_WINDOW_DISPLAY) {
 #ifdef DB_HAS_GLFW
         return db_run_glfw_window(api, renderer, cfg);
 #else
-        db_failf("display_dispatch",
-                 "requested glfw_window display is unavailable in this build");
+        DB_RUNTIME_FAIL(
+            "display_dispatch",
+            "requested glfw_window display is unavailable in this build");
 #endif
     }
 
-    if (display == DB_DISPLAY_LINUX_KMS_ATOMIC) {
+    if (display == DB_KMS_DISPLAY) {
 #ifdef DB_HAS_LINUX_KMS_ATOMIC
         return db_run_linux_kms_atomic(api, renderer, kms_card_path, cfg);
 #else
-        db_failf(
+        DB_RUNTIME_FAIL(
             "display_dispatch",
             "requested linux_kms_atomic display is unavailable in this build");
 #endif
     }
 
-    db_failf("display_dispatch", "unknown display selector: %d", (int)display);
+    DB_RUNTIME_FAIL("display_dispatch", "unknown display selector: %d",
+                    (int)display);
 }

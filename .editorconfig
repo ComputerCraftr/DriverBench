@@ -23,3 +23,15 @@ indent_style = tab
 
 [*.md]
 trim_trailing_whitespace = false
+
+[*.{c,h}]
+indent_style = unset
+indent_size = unset
+
+[CMakeLists.txt]
+indent_style = space
+indent_size = 4
+
+[*.cmake]
+indent_style = space
+indent_size = 4

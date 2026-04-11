@@ -8,11 +8,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#ifdef DB_HAVE_STDCKDINT
-#if DB_HAVE_STDCKDINT
+#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
 #include <stdckdint.h>
-#define DB_CAN_USE_STDCKDINT 1
-#endif
 #endif
 #define DB_MS_PER_SECOND 1000.0
 #define DB_NS_PER_MS 1000000.0
@@ -34,17 +31,22 @@
 // Logging and diagnostics.
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
+void db_errorf(const char *backend, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 void db_infof(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3)));
-int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt, va_list ap);
+int db_vsnprintf(char *buffer, size_t buffer_size, const char *fmt, va_list ap)
+    __attribute__((format(printf, 3, 0)));
 int db_snprintf(char *buffer, size_t buffer_size, const char *fmt, ...)
     __attribute__((format(printf, 3, 4)));
 
 // Runtime option parsing and process lifecycle.
 int db_parse_bool_text(const char *value, int *out_value);
+int db_parse_int_text(const char *value, int *out_value);
 int db_parse_fps_cap_text(const char *value, double *out_value);
 uint32_t db_fold_u64_to_u32(uint64_t value);
 uint32_t db_mix_u32(uint32_t value);
+int db_runtime_is_linux_x11(void);
 void db_validate_runtime_environment(const char *backend,
                                      const char *remote_override_option);
 void db_install_signal_handlers(void);
@@ -60,16 +62,19 @@ int db_format_benchmark_log(char *buffer, size_t buffer_size,
                             const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
                             uint32_t work_units, double elapsed_ms,
-                            const char *tag, const char *capability_mode);
-void db_benchmark_log_periodic(const char *api_name, const char *renderer_name,
-                               const char *backend_name, uint64_t frames,
-                               uint32_t work_units, double elapsed_ms,
-                               const char *capability_mode,
-                               double *next_log_due_ms, double interval_ms);
+                            const char *tag);
+void db_log_progress_periodic(const char *api_name, const char *renderer_name,
+                              const char *backend_name, uint64_t frames,
+                              uint32_t work_units, double elapsed_ms,
+                              double *next_log_due_ms, double interval_ms);
 void db_benchmark_log_final(const char *api_name, const char *renderer_name,
                             const char *backend_name, uint64_t frames,
-                            uint32_t work_units, double elapsed_ms,
-                            const char *capability_mode);
+                            uint32_t work_units, double elapsed_ms);
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-macros"
+#endif
 
 #define DB_LOG_CAPACITY_EXCEEDED_ONCE(backend, tag, required, capacity)        \
     do {                                                                       \
@@ -86,11 +91,32 @@ void db_benchmark_log_final(const char *api_name, const char *renderer_name,
         }                                                                      \
     } while (0)
 
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
+
 // Helper naming contract:
 // - db_checked_*: checked arithmetic, conversion, or allocation helpers only.
 // - db_*_or_fail: domain or precondition wrappers that may fail for semantic,
 //   object-level, or contract reasons beyond a single numeric check.
 // - plain db_*: total or otherwise non-failing utility helpers.
+static inline int db_checked_long_to_int(const char *backend,
+                                         const char *field_name, long value) {
+    if ((value < (long)INT_MIN) || (value > (long)INT_MAX)) {
+        db_failf(backend, "%s out of int range: %ld", field_name, value);
+    }
+    return (int)value;
+}
+
+static inline int db_checked_u32_to_int(const char *backend,
+                                        const char *field_name,
+                                        uint32_t value) {
+    if (value > (uint32_t)INT_MAX) {
+        db_failf(backend, "%s out of int range: %u", field_name, value);
+    }
+    return (int)value;
+}
+
 static inline int32_t db_checked_u32_to_i32(const char *backend,
                                             const char *field_name,
                                             uint32_t value) {
@@ -114,6 +140,23 @@ db_checked_int_to_u32(const char *backend, const char *field_name, int value) {
         db_failf(backend, "%s out of u32 range: %d", field_name, value);
     }
     return (uint32_t)value;
+}
+
+static inline uint32_t db_checked_i32_to_u32(const char *backend,
+                                             const char *field_name,
+                                             int32_t value) {
+    if (value < 0) {
+        db_failf(backend, "%s out of u32 range: %d", field_name, value);
+    }
+    return (uint32_t)value;
+}
+
+static inline size_t db_checked_u32_to_size(const char *backend,
+                                            const char *field_name,
+                                            uint32_t value) {
+    (void)backend;
+    (void)field_name;
+    return (size_t)value;
 }
 
 static inline size_t db_checked_int_to_size(const char *backend,
@@ -181,10 +224,10 @@ static inline size_t db_checked_u64_to_size(const char *backend,
     return (size_t)value;
 }
 
-static inline void *db_alloc_array_or_fail(const char *backend,
-                                           const char *field_name,
-                                           size_t element_count,
-                                           size_t element_size) {
+static inline void *db_malloc_or_fail(const char *backend,
+                                      const char *field_name,
+                                      size_t element_count,
+                                      size_t element_size) {
     if (element_size == 0U) {
         db_failf(backend, "%s element_size is zero", field_name);
     }
@@ -200,11 +243,10 @@ static inline void *db_alloc_array_or_fail(const char *backend,
     return memory;
 }
 
-static inline void *db_alloc_aligned_array_or_fail(const char *backend,
-                                                   const char *field_name,
-                                                   size_t element_count,
-                                                   size_t element_size,
-                                                   size_t alignment) {
+static inline void *db_calloc_or_fail(const char *backend,
+                                      const char *field_name,
+                                      size_t element_count, size_t element_size,
+                                      size_t alignment) {
     if (element_size == 0U) {
         db_failf(backend, "%s element_size is zero", field_name);
     }
@@ -254,11 +296,20 @@ static inline uint32_t db_checked_double_to_u32(const char *backend,
     return (uint32_t)value;
 }
 
+static inline uint64_t db_checked_double_to_u64(const char *backend,
+                                                const char *field_name,
+                                                double value) {
+    if (!isfinite(value) || (value < 0.0) || (value >= (double)UINT64_MAX)) {
+        db_failf(backend, "%s out of u64 range: %.3f", field_name, value);
+    }
+    return (uint64_t)value;
+}
+
 static inline uint32_t db_checked_add_u32(const char *backend,
                                           const char *field_name, uint32_t lhs,
                                           uint32_t rhs) {
     uint32_t out = 0U;
-#ifdef DB_CAN_USE_STDCKDINT
+#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
     if (ckd_add(&out, lhs, rhs)) {
         db_failf(backend, "%s u32 add overflow: %u + %u", field_name, lhs, rhs);
     }
@@ -275,7 +326,7 @@ static inline uint32_t db_checked_sub_u32(const char *backend,
                                           const char *field_name, uint32_t lhs,
                                           uint32_t rhs) {
     uint32_t out = 0U;
-#ifdef DB_CAN_USE_STDCKDINT
+#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
     if (ckd_sub(&out, lhs, rhs)) {
         db_failf(backend, "%s u32 sub underflow: %u - %u", field_name, lhs,
                  rhs);
@@ -294,7 +345,7 @@ static inline uint32_t db_checked_mul_u32(const char *backend,
                                           const char *field_name, uint32_t lhs,
                                           uint32_t rhs) {
     uint32_t out = 0U;
-#ifdef DB_CAN_USE_STDCKDINT
+#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
     if (ckd_mul(&out, lhs, rhs)) {
         db_failf(backend, "%s u32 mul overflow: %u * %u", field_name, lhs, rhs);
     }
@@ -307,11 +358,28 @@ static inline uint32_t db_checked_mul_u32(const char *backend,
     return out;
 }
 
+static inline uint64_t db_checked_add_u64(const char *backend,
+                                          const char *field_name, uint64_t lhs,
+                                          uint64_t rhs) {
+    uint64_t out = 0U;
+#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
+    if (ckd_add(&out, lhs, rhs)) {
+        db_failf(backend, "%s u64 add overflow", field_name);
+    }
+#else
+    if (rhs > (UINT64_MAX - lhs)) {
+        db_failf(backend, "%s u64 add overflow", field_name);
+    }
+    out = lhs + rhs;
+#endif
+    return out;
+}
+
 static inline size_t db_checked_mul_size(const char *backend,
                                          const char *field_name, size_t lhs,
                                          size_t rhs) {
     size_t out = 0U;
-#ifdef DB_CAN_USE_STDCKDINT
+#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
     if (ckd_mul(&out, lhs, rhs)) {
         db_failf(backend, "%s size mul overflow: %zu * %zu", field_name, lhs,
                  rhs);
