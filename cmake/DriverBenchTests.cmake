@@ -351,6 +351,12 @@ function(db_register_driverbench_tests)
             ${CMAKE_SOURCE_DIR}/cmake/CheckPlatformPolicyBoundaries.cmake)
     set_tests_properties(source_sorting_policy PROPERTIES LABELS "regression")
 
+    add_test(NAME source_hash_tree_policy
+             COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
+                     ${CMAKE_SOURCE_DIR}/cmake/CheckHashTreePolicy.cmake)
+    set_tests_properties(source_hash_tree_policy PROPERTIES LABELS
+                                                            "regression;hash")
+
     add_test(NAME source_vulkan_multi_gpu_policy
              COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
                      ${CMAKE_SOURCE_DIR}/cmake/CheckVulkanMultiGpuPolicy.cmake)
@@ -425,6 +431,70 @@ function(db_register_driverbench_tests)
         driverbench_unit_tests
         PRIVATE driverbench_app driverbench_cli_core driverbench_render_core
                 driverbench_core driverbench_app ${DB_DRIVERBENCH_LIBS})
+
+    add_executable(driverbench_hash_conformance tests/hash_conformance.c)
+    db_apply_perf_options(driverbench_hash_conformance)
+    target_include_directories(driverbench_hash_conformance
+                               PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(driverbench_hash_conformance PRIVATE driverbench_core)
+    add_test(NAME hash_conformance_native_host
+             COMMAND driverbench_hash_conformance auto)
+    set_tests_properties(hash_conformance_native_host PROPERTIES LABELS
+                                                                 "unit;hash")
+
+    db_test_timeout_seconds(db_qemu_hash_timeout qemu_hash)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$" AND CMAKE_SIZEOF_VOID_P
+                                                             EQUAL 8)
+        find_program(DB_QEMU_X86_64_EXECUTABLE NAMES qemu-x86_64)
+        if(DB_QEMU_X86_64_EXECUTABLE)
+            add_test(
+                NAME hash_conformance_qemu_host_x86_64_sse2
+                COMMAND
+                    ${DB_QEMU_X86_64_EXECUTABLE} -cpu
+                    qemu64,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2
+                    $<TARGET_FILE:driverbench_hash_conformance> sse2)
+            add_test(
+                NAME hash_conformance_qemu_host_x86_64_avx2
+                COMMAND ${DB_QEMU_X86_64_EXECUTABLE} -cpu Haswell,-hle,-rtm
+                        $<TARGET_FILE:driverbench_hash_conformance> avx2)
+            set_tests_properties(
+                hash_conformance_qemu_host_x86_64_sse2
+                hash_conformance_qemu_host_x86_64_avx2
+                PROPERTIES LABELS "unit;hash;qemu" TIMEOUT
+                           "${db_qemu_hash_timeout}")
+        else()
+            message(
+                STATUS
+                    "QEMU hash SSE2/AVX2 tests skipped: qemu-x86_64 not found")
+        endif()
+    endif()
+
+    find_program(DB_QEMU_HASH_PYTHON NAMES python3)
+    if(DB_QEMU_HASH_PYTHON)
+        foreach(db_qemu_hash_arch IN ITEMS aarch64 i686)
+            if(db_qemu_hash_arch STREQUAL "aarch64")
+                set(db_qemu_hash_test_name
+                    hash_conformance_qemu_linux_aarch64_neon)
+            else()
+                set(db_qemu_hash_test_name
+                    hash_conformance_qemu_linux_i686_sse2)
+            endif()
+            add_test(
+                NAME ${db_qemu_hash_test_name}
+                COMMAND
+                    ${DB_QEMU_HASH_PYTHON}
+                    ${CMAKE_SOURCE_DIR}/scripts/run_qemu_hash_conformance.py
+                    --arch ${db_qemu_hash_arch} --source-root
+                    ${CMAKE_SOURCE_DIR} --build-root
+                    ${CMAKE_BINARY_DIR}/qemu-hash/${db_qemu_hash_arch})
+            set_tests_properties(
+                ${db_qemu_hash_test_name}
+                PROPERTIES LABELS "unit;hash;qemu" SKIP_RETURN_CODE 77 TIMEOUT
+                           "${db_qemu_hash_timeout}")
+        endforeach()
+    else()
+        message(STATUS "QEMU hash cross tests skipped: python3 not found")
+    endif()
 
     set(DB_DETERMINISM_CPU_OFFSCREEN_PREFIX "--api cpu --display offscreen")
     set(DB_DETERMINISM_GL1_OFFSCREEN_PREFIX

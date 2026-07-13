@@ -13,6 +13,7 @@ typedef struct {
     int enabled;
     uint64_t final_hash;
     const char *hash_key;
+    const char *hash_algorithm;
     int report_aggregate;
     int report_final;
 } db_display_hash_tracker_t;
@@ -69,6 +70,11 @@ db_display_hash_tracker_create(const char *backend, int enabled,
     db_display_hash_tracker_t tracker = {0};
     tracker.enabled = enabled;
     tracker.hash_key = hash_key;
+    tracker.hash_algorithm =
+        ((hash_key != NULL) &&
+         (strcmp(hash_key, DB_DISPLAY_HASH_KEY_STATE) == 0))
+            ? DB_FNV1A64_SERIAL_ALGORITHM
+            : DB_FNV1A64_TREE_ALGORITHM;
     tracker.final_hash = 0U;
     tracker.aggregate_hash = DB_FNV1A64_OFFSET;
     tracker.report_final = 1;
@@ -119,8 +125,12 @@ db_display_hash_tracker_log_final(const char *backend,
     (void)db_snprintf(final_key, sizeof(final_key), "%s_final", key);
     (void)db_snprintf(aggregate_key, sizeof(aggregate_key), "%s_aggregate",
                       key);
-    db_log_field_t fields[3] = {DB_LOG_TOKEN("kind", key)};
-    size_t field_count = 1U;
+    db_log_field_t fields[5] = {
+        DB_LOG_TOKEN("kind", key),
+        DB_LOG_TOKEN("hash_algorithm", tracker->hash_algorithm),
+        DB_LOG_TOKEN("aggregate_algorithm", DB_FNV1A64_SERIAL_ALGORITHM),
+    };
+    size_t field_count = 3U;
     if (tracker->report_final != 0) {
         fields[field_count++] = DB_LOG_HEX64(final_key, tracker->final_hash);
     }

@@ -28,6 +28,7 @@
 #include "../display_frame_loop_common.h"
 #include "../display_presentation_policy.h"
 #include "../display_runtime_config_common.h"
+#include "../display_types.h"
 
 #ifdef __linux__
 #ifndef GLX_BACK_BUFFER_AGE_EXT

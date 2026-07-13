@@ -206,7 +206,7 @@ db_damage_trace_summarize(const db_damage_trace_event_t *event) {
         }
     }
     summary.duplicate_units = summed_units - summary.covered_units;
-    summary.union_hash = db_fnv_blockhash_u64(
+    summary.union_hash = db_fnv1a64_tree(
         coverage, map_size, DB_U32_SALT_PALETTE, DB_FNV1A64_OFFSET);
     free(coverage);
     return summary;

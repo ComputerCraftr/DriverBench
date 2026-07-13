@@ -412,6 +412,24 @@ cmake --build build --target update_canonical_goldens
 The update target fails without modifying the manifest when any renderer,
 display strategy, or equal-work schedule diverges.
 
+Canonical pixel and presentation hashes use the versioned
+`fnv1a64_tree_v1` contract: domain-separated 1024-byte leaves and typed binary
+tree nodes hashed with FNV-1a64. State hashes and per-run aggregate folding use
+serial `fnv1a64_serial_v1`. These are deterministic integrity hashes, not
+cryptographic hashes.
+
+Fast ISA conformance tests verify identical tree digests and runtime dispatch
+under QEMU without starting a display or renderer:
+
+```bash
+ctest --test-dir build -R 'hash_conformance|qemu_hash' --output-on-failure
+```
+
+SSE2, AVX2, and AArch64 NEON tests run when their QEMU executable and cross
+runtime are available. The supplementary i686 SSE2 test skips cleanly when a
+32-bit compiler runtime is not installed. QEMU validates instruction safety and
+digest equivalence, not performance.
+
 Alternate release coverage is opt-in and runs the same suite against already-built
 binaries that are directly executable on the current host.
 

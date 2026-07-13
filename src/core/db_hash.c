@@ -31,8 +31,7 @@ static inline uint8_t *db_hash_reserve_canonical_bytes(size_t bytes) {
     if (bytes == 0U) {
         return NULL;
     }
-    // Hash canonical scratch is cacheline-aligned by construction, so SIMD
-    // block-hash code can safely treat it as an aligned input buffer.
+    // Canonical scratch stays cacheline-aligned for SIMD tree-leaf processing.
     db_reserve_aligned_array_capacity_or_fail(
         (void **)&g_hash_canonical_bytes, &g_hash_canonical_capacity, bytes,
         bytes, sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES, 0U, "db_hash",
@@ -72,8 +71,8 @@ uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
     }
 
     if ((rows_bottom_to_top == 0) && (stride_bytes == row_bytes)) {
-        return db_fnv_blockhash_u64(pixels, packed_bytes, DB_U32_SALT_PALETTE,
-                                    DB_FNV1A64_OFFSET);
+        return db_fnv1a64_tree(pixels, packed_bytes, DB_U32_SALT_PALETTE,
+                               DB_FNV1A64_OFFSET);
     }
 
     const uint8_t *src_bytes = (const uint8_t *)pixels;
@@ -86,7 +85,7 @@ uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
         const size_t dst_offset = (size_t)row * row_bytes;
         memcpy(canonical_bytes + dst_offset, src_bytes + src_offset, row_bytes);
     }
-    const uint64_t hash = db_fnv_blockhash_u64(
+    const uint64_t hash = db_fnv1a64_tree(
         canonical_bytes, packed_bytes, DB_U32_SALT_PALETTE, DB_FNV1A64_OFFSET);
     return hash;
 }
@@ -140,8 +139,8 @@ uint64_t db_hash_sdr_framebuffer_rgba8_canonical(
             destination_row[destination_base + 3U] = UINT8_MAX;
         }
     }
-    return db_fnv_blockhash_u64(canonical, canonical_bytes, DB_U32_SALT_PALETTE,
-                                DB_FNV1A64_OFFSET);
+    return db_fnv1a64_tree(canonical, canonical_bytes, DB_U32_SALT_PALETTE,
+                           DB_FNV1A64_OFFSET);
 }
 
 uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
@@ -160,8 +159,8 @@ uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
     }
 
     if ((rows_bottom_to_top == 0) && (stride_bytes == row_bytes)) {
-        return db_fnv_blockhash_u64((const void *)pixels, packed_bytes,
-                                    DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
+        return db_fnv1a64_tree((const void *)pixels, packed_bytes,
+                               DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
     }
 
     const uint8_t *src_bytes = (const uint8_t *)pixels;
@@ -175,8 +174,8 @@ uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
         memcpy(canonical_bytes + dst_offset, src_bytes + src_offset, row_bytes);
     }
     const uint64_t hash =
-        db_fnv_blockhash_u64((const void *)canonical_bytes, packed_bytes,
-                             DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
+        db_fnv1a64_tree((const void *)canonical_bytes, packed_bytes,
+                        DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
     return hash;
 }
 
@@ -214,8 +213,8 @@ uint64_t db_hash_working_rgba8(const void *pixels, db_pixel_format_t format,
             (void)fclose(dump);
         }
     }
-    return db_fnv_blockhash_u64(canonical, packed_bytes, DB_U32_SALT_PALETTE,
-                                DB_FNV1A64_OFFSET);
+    return db_fnv1a64_tree(canonical, packed_bytes, DB_U32_SALT_PALETTE,
+                           DB_FNV1A64_OFFSET);
 }
 
 int db_working_rgba8_canonicalize(const void *pixels, db_pixel_format_t format,
