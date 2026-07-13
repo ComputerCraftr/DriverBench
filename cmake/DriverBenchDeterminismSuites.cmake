@@ -120,11 +120,11 @@ function(db_register_snake_grid_family test_prefix test_bin golden_labels
          regression_labels glfw_enabled)
     db_register_canonical_matrix("${test_prefix}" "${test_bin}" snake_grid
                                  "${golden_labels}" "${glfw_enabled}")
-    db_register_cross_renderer_damage_trace_contract(
-        "${test_prefix}" "${test_bin}" "${regression_labels}" snake_grid)
     if(NOT glfw_enabled)
         return()
     endif()
+    db_register_cross_renderer_damage_trace_contract(
+        "${test_prefix}" "${test_bin}" "${regression_labels}" snake_grid)
 
     db_suite_make_test_name(db_test_name "${test_prefix}"
                             "regression_gl3_snake_grid_damage_stages")
@@ -206,16 +206,20 @@ function(db_register_snake_rect_family test_prefix test_bin golden_labels
          regression_labels glfw_enabled)
     db_register_canonical_matrix("${test_prefix}" "${test_bin}" snake_rect
                                  "${golden_labels}" "${glfw_enabled}")
-    db_register_cross_renderer_damage_trace_contract(
-        "${test_prefix}" "${test_bin}" "${regression_labels}" snake_rect)
+    if(glfw_enabled)
+        db_register_cross_renderer_damage_trace_contract(
+            "${test_prefix}" "${test_bin}" "${regression_labels}" snake_rect)
+    endif()
 endfunction()
 
 function(db_register_snake_shapes_family test_prefix test_bin golden_labels
          regression_labels glfw_enabled)
     db_register_canonical_matrix("${test_prefix}" "${test_bin}" snake_shapes
                                  "${golden_labels}" "${glfw_enabled}")
-    db_register_cross_renderer_damage_trace_contract(
-        "${test_prefix}" "${test_bin}" "${regression_labels}" snake_shapes)
+    if(glfw_enabled)
+        db_register_cross_renderer_damage_trace_contract(
+            "${test_prefix}" "${test_bin}" "${regression_labels}" snake_shapes)
+    endif()
     if(glfw_enabled
        AND NOT DB_TEST_RUNTIME_GL1_DIRTY_SNAKE_SHAPES_CONTRACT_ARGS STREQUAL "")
         db_suite_make_test_name(

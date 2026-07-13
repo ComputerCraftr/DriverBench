@@ -482,12 +482,10 @@ db_test_shadow_upload_trace_does_not_mark_execution_before_upload_runs(
 static void
 db_test_repair_full_upload_target_copies_full_surface_for_fresh_target(
     db_test_state_t *state) {
-    enum {
-        db_test_src_pixel0 = 0x11223344U,
-        db_test_src_pixel1 = 0x55667788U,
-        db_test_src_pixel2 = 0x99AABBCCU,
-        db_test_src_pixel3 = 0xDDEEFF00U,
-    };
+    const uint32_t db_test_src_pixel0 = UINT32_C(0x11223344);
+    const uint32_t db_test_src_pixel1 = UINT32_C(0x55667788);
+    const uint32_t db_test_src_pixel2 = UINT32_C(0x99AABBCC);
+    const uint32_t db_test_src_pixel3 = UINT32_C(0xDDEEFF00);
     uint32_t src_pixels[4] = {db_test_src_pixel0, db_test_src_pixel1,
                               db_test_src_pixel2, db_test_src_pixel3};
     uint32_t dst_pixels[4] = {0};

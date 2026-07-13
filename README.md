@@ -107,6 +107,7 @@ Optional build toggles (defaults shown):
 - `-DDB_ENABLE_LOOP_HINTS=ON`
 - `-DDB_ENABLE_SANITIZERS=ON`
 - `-DDB_ENABLE_DSYM=ON`
+- `-DDB_TEST_HEADLESS_ONLY=OFF`
 - `-DDB_TARGET_LINUX_32BIT=OFF`
 - `-DDB_TARGET_LINUX_MUSL=OFF`
 - `-DDB_TARGET_LINUX_MUSL_TRIPLE=x86_64-linux-musl`
@@ -510,6 +511,28 @@ ctest --test-dir build-alt-musl -L alternate -j
 GLFW-dependent CTests use hidden windows. Tests that do not require GLFW WSI
 use `--display offscreen`; the resize contract retains a hidden GLFW surface
 because it specifically validates native window/framebuffer resize behavior.
+
+For display-server-independent CI, keep the normal renderer build enabled but
+register only tests that cannot create native windows or require a graphics
+runtime:
+
+```bash
+cmake -S . -B build/ci-headless -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DDB_GLFW_PROVIDER=vendored \
+  -DDB_GLFW_REQUIRED=ON \
+  -DDB_TEST_HEADLESS_ONLY=ON \
+  -DDB_ENABLE_LTO=OFF
+cmake --build build/ci-headless --parallel
+ctest --test-dir build/ci-headless --output-on-failure --parallel 4
+```
+
+This mode still compiles the host-supported renderer and presenter code. It
+runs unit tests, source policies, hash conformance, CLI contracts, CPU
+offscreen regressions, and CPU canonical determinism matrices. It omits GLFW,
+OpenGL, Vulkan WSI, KMS runtime, resize, and cross-renderer tests that need a
+native graphics environment. `.github/workflows/headless.yml` runs this lane
+on the current GitHub-hosted Ubuntu and macOS runner images.
 
 Header-only clang-tidy diagnostics are checked separately because
 `run-clang-tidy` schedules compilation-database source files, not headers as

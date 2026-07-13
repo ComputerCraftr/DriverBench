@@ -61,20 +61,20 @@ enum {
 // libdrm exposes these through one of two distro-dependent public include
 // paths. Keep the include-cleaner exception at this compatibility boundary.
 // NOLINTBEGIN(misc-include-cleaner)
-enum {
-    DB_DRM_OBJECT_CONNECTOR = DRM_MODE_OBJECT_CONNECTOR,
-    DB_DRM_OBJECT_PLANE = DRM_MODE_OBJECT_PLANE,
-    DB_DRM_OBJECT_CRTC = DRM_MODE_OBJECT_CRTC,
-    DB_DRM_PROPERTY_ENUM = DRM_MODE_PROP_ENUM,
-    DB_DRM_PROPERTY_RANGE = DRM_MODE_PROP_RANGE,
-    DB_DRM_CLIENT_UNIVERSAL_PLANES = DRM_CLIENT_CAP_UNIVERSAL_PLANES,
-    DB_DRM_CLIENT_ATOMIC = DRM_CLIENT_CAP_ATOMIC,
-    DB_DRM_ATOMIC_ALLOW_MODESET = DRM_MODE_ATOMIC_ALLOW_MODESET,
-    DB_DRM_ATOMIC_TEST_ONLY = DRM_MODE_ATOMIC_TEST_ONLY,
-    DB_DRM_ATOMIC_NONBLOCK = DRM_MODE_ATOMIC_NONBLOCK,
-    DB_DRM_PAGE_FLIP_EVENT = DRM_MODE_PAGE_FLIP_EVENT,
-    DB_DRM_CONNECTED = DRM_MODE_CONNECTED,
-};
+static const uint32_t db_drm_object_connector = DRM_MODE_OBJECT_CONNECTOR;
+static const uint32_t db_drm_object_plane = DRM_MODE_OBJECT_PLANE;
+static const uint32_t db_drm_object_crtc = DRM_MODE_OBJECT_CRTC;
+static const uint32_t db_drm_property_enum = DRM_MODE_PROP_ENUM;
+static const uint32_t db_drm_property_range = DRM_MODE_PROP_RANGE;
+static const uint64_t db_drm_client_universal_planes =
+    DRM_CLIENT_CAP_UNIVERSAL_PLANES;
+static const uint64_t db_drm_client_atomic = DRM_CLIENT_CAP_ATOMIC;
+static const uint32_t db_drm_atomic_allow_modeset =
+    DRM_MODE_ATOMIC_ALLOW_MODESET;
+static const uint32_t db_drm_atomic_test_only = DRM_MODE_ATOMIC_TEST_ONLY;
+static const uint32_t db_drm_atomic_nonblock = DRM_MODE_ATOMIC_NONBLOCK;
+static const uint32_t db_drm_page_flip_event = DRM_MODE_PAGE_FLIP_EVENT;
+static const drmModeConnection db_drm_connected = DRM_MODE_CONNECTED;
 typedef struct hdr_output_metadata db_kms_hdr_output_metadata_t;
 // NOLINTEND(misc-include-cleaner)
 
@@ -209,7 +209,7 @@ int db_kms_edid_bytes_support_hdr10(const uint8_t *bytes, size_t length) {
 static int kms_edid_supports_hdr10(const struct kms_atomic *kms) {
     uint64_t blob_id = 0U;
     drmModePropertyRes *property = find_object_property(
-        kms->fd, kms->conn_id, DB_DRM_OBJECT_CONNECTOR, "EDID", &blob_id);
+        kms->fd, kms->conn_id, db_drm_object_connector, "EDID", &blob_id);
     if ((property == NULL) || (blob_id == 0U)) {
         drmModeFreeProperty(property);
         return 0;
@@ -310,7 +310,7 @@ static drmModeConnector *pick_connected_connector(struct kms_atomic *kms) {
         if (connector == NULL) {
             continue;
         }
-        if ((connector->connection == DB_DRM_CONNECTED) &&
+        if ((connector->connection == db_drm_connected) &&
             (connector->count_modes > 0)) {
             return connector;
         }
@@ -364,7 +364,7 @@ static uint32_t pick_primary_plane_for_crtc(struct kms_atomic *kms,
         }
 
         drmModeObjectProperties *props =
-            drmModeObjectGetProperties(kms->fd, plane_id, DB_DRM_OBJECT_PLANE);
+            drmModeObjectGetProperties(kms->fd, plane_id, db_drm_object_plane);
         if (props == NULL) {
             runtime_errno_fail("drmModeObjectGetProperties plane");
         }
@@ -377,7 +377,7 @@ static uint32_t pick_primary_plane_for_crtc(struct kms_atomic *kms,
                 continue;
             }
             if ((strcmp(prop->name, "type") == 0) &&
-                ((prop->flags & DB_DRM_PROPERTY_ENUM) != 0)) {
+                ((prop->flags & db_drm_property_enum) != 0)) {
                 for (int e = 0; e < prop->count_enums; e++) {
                     if (strcmp(prop->enums[e].name, "Primary") == 0) {
                         if (props->prop_values[j] == prop->enums[e].value) {
@@ -410,10 +410,10 @@ static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
         runtime_errno_fail("open DRM card");
     }
 
-    if (drmSetClientCap(kms->fd, DB_DRM_CLIENT_UNIVERSAL_PLANES, 1) != 0) {
+    if (drmSetClientCap(kms->fd, db_drm_client_universal_planes, 1) != 0) {
         runtime_errno_fail("drmSetClientCap UNIVERSAL_PLANES");
     }
-    if (drmSetClientCap(kms->fd, DB_DRM_CLIENT_ATOMIC, 1) != 0) {
+    if (drmSetClientCap(kms->fd, db_drm_client_atomic, 1) != 0) {
         runtime_errno_fail("drmSetClientCap ATOMIC");
     }
 
@@ -450,10 +450,10 @@ static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
     }
 
     kms->conn_prop_crtc_id =
-        get_prop_id(kms->fd, kms->conn_id, DB_DRM_OBJECT_CONNECTOR, "CRTC_ID");
+        get_prop_id(kms->fd, kms->conn_id, db_drm_object_connector, "CRTC_ID");
     kms->conn_colorspace_bt2020_rgb = UINT64_MAX;
     drmModePropertyRes *colorspace =
-        find_object_property(kms->fd, kms->conn_id, DB_DRM_OBJECT_CONNECTOR,
+        find_object_property(kms->fd, kms->conn_id, db_drm_object_connector,
                              "Colorspace", &kms->conn_initial_colorspace);
     if (colorspace != NULL) {
         kms->conn_prop_colorspace = colorspace->prop_id;
@@ -467,18 +467,18 @@ static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
         drmModeFreeProperty(colorspace);
     }
     drmModePropertyRes *hdr_metadata =
-        find_object_property(kms->fd, kms->conn_id, DB_DRM_OBJECT_CONNECTOR,
+        find_object_property(kms->fd, kms->conn_id, db_drm_object_connector,
                              "HDR_OUTPUT_METADATA", NULL);
     if (hdr_metadata != NULL) {
         kms->conn_prop_hdr_metadata = hdr_metadata->prop_id;
         drmModeFreeProperty(hdr_metadata);
     }
     drmModePropertyRes *max_bpc =
-        find_object_property(kms->fd, kms->conn_id, DB_DRM_OBJECT_CONNECTOR,
+        find_object_property(kms->fd, kms->conn_id, db_drm_object_connector,
                              "max bpc", &kms->conn_initial_max_bpc);
     if (max_bpc != NULL) {
         kms->conn_prop_max_bpc = max_bpc->prop_id;
-        if (((max_bpc->flags & DB_DRM_PROPERTY_RANGE) != 0U) &&
+        if (((max_bpc->flags & db_drm_property_range) != 0U) &&
             (max_bpc->count_values >= 2)) {
             kms->conn_max_bpc_supported = max_bpc->values[1];
         }
@@ -486,30 +486,30 @@ static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
     }
 
     kms->crtc_prop_mode_id =
-        get_prop_id(kms->fd, kms->crtc_id, DB_DRM_OBJECT_CRTC, "MODE_ID");
+        get_prop_id(kms->fd, kms->crtc_id, db_drm_object_crtc, "MODE_ID");
     kms->crtc_prop_active =
-        get_prop_id(kms->fd, kms->crtc_id, DB_DRM_OBJECT_CRTC, "ACTIVE");
+        get_prop_id(kms->fd, kms->crtc_id, db_drm_object_crtc, "ACTIVE");
 
     kms->plane_prop_fb_id =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "FB_ID");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "FB_ID");
     kms->plane_prop_crtc_id =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "CRTC_ID");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_ID");
     kms->plane_prop_src_x =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "SRC_X");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_X");
     kms->plane_prop_src_y =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "SRC_Y");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_Y");
     kms->plane_prop_src_w =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "SRC_W");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_W");
     kms->plane_prop_src_h =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "SRC_H");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_H");
     kms->plane_prop_crtc_x =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "CRTC_X");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_X");
     kms->plane_prop_crtc_y =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "CRTC_Y");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_Y");
     kms->plane_prop_crtc_w =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "CRTC_W");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_W");
     kms->plane_prop_crtc_h =
-        get_prop_id(kms->fd, kms->plane_id, DB_DRM_OBJECT_PLANE, "CRTC_H");
+        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_H");
 }
 
 struct fb *fb_from_bo(int fd, struct gbm_bo *bo, int is_surface_buffer) {
@@ -630,8 +630,8 @@ db_kms_atomic_verify_hdr_capability(struct kms_atomic *kms,
         kms_atomic_add_modeset_props(request, kms, width, height,
                                      framebuffer->fb_id);
         verified = DB_BOOL(drmModeAtomicCommit(kms->fd, request,
-                                               DB_DRM_ATOMIC_ALLOW_MODESET |
-                                                   DB_DRM_ATOMIC_TEST_ONLY,
+                                               db_drm_atomic_allow_modeset |
+                                                   db_drm_atomic_test_only,
                                                NULL) == 0);
         drmModeAtomicFree(request);
     }
@@ -656,12 +656,12 @@ static void kms_atomic_commit_modeset(const struct kms_atomic *kms,
     kms_atomic_add_modeset_props(req, kms, width, height, fb_id);
     if ((kms->hdr_enabled != 0) &&
         (drmModeAtomicCommit(kms->fd, req,
-                             DB_DRM_ATOMIC_ALLOW_MODESET |
-                                 DB_DRM_ATOMIC_TEST_ONLY,
+                             db_drm_atomic_allow_modeset |
+                                 db_drm_atomic_test_only,
                              NULL) != 0)) {
         runtime_errno_fail("drmModeAtomicCommit HDR TEST_ONLY");
     }
-    if (drmModeAtomicCommit(kms->fd, req, DB_DRM_ATOMIC_ALLOW_MODESET, NULL) !=
+    if (drmModeAtomicCommit(kms->fd, req, db_drm_atomic_allow_modeset, NULL) !=
         0) {
         runtime_errno_fail("drmModeAtomicCommit modeset");
     }
@@ -729,7 +729,7 @@ static void kms_atomic_flip_to_fb(const struct kms_atomic *kms, uint32_t fb_id,
                              fb_id);
 
     int waiting = 1;
-    const uint32_t flip_flags = DB_DRM_ATOMIC_NONBLOCK | DB_DRM_PAGE_FLIP_EVENT;
+    const uint32_t flip_flags = db_drm_atomic_nonblock | db_drm_page_flip_event;
     if (drmModeAtomicCommit(kms->fd, commit_req, flip_flags, &waiting) != 0) {
         runtime_errno_fail("drmModeAtomicCommit flip");
     }

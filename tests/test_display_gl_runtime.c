@@ -35,14 +35,15 @@ enum {
     TEST_RGBA8_LAST_MISMATCH_VALUE = 9U,
     TEST_PRESENTATION_EXTENT = 100U,
     TEST_STALE_SCANOUT_SERIAL = 11U,
-    TEST_RGB10A2_ALPHA_MASK = 0xC0000000U,
-    TEST_RGB10A2_ALPHA_OPAQUE = 0xC0000000U,
     TEST_HDR_BLOCK_SOURCE_WIDTH = 3U,
     TEST_HDR_BLOCK_SOURCE_HEIGHT = 2U,
     TEST_HDR_BLOCK_ROW = 1U,
     TEST_HDR_BLOCK_COL = 1U,
     TEST_HDR_BLOCK_COL_COUNT = 2U,
 };
+
+static const uint32_t test_rgb10a2_alpha_mask = UINT32_C(0xC0000000);
+static const uint32_t test_rgb10a2_alpha_opaque = UINT32_C(0xC0000000);
 
 static void
 db_test_hash_sampling_respects_report_cadence(db_test_state_t *state) {
@@ -589,8 +590,8 @@ static void db_test_hdr10_tight_block_conversion_preserves_region_and_format(
         db_pack_rgb10a2_bt2020_pq_from_rgba8888(
             rgba8[(TEST_HDR_BLOCK_ROW * TEST_HDR_BLOCK_SOURCE_WIDTH) +
                   TEST_HDR_BLOCK_COL + 1U]));
-    DB_TEST_EXPECT_EQ_U32(state, encoded_rgba8[0] & TEST_RGB10A2_ALPHA_MASK,
-                          TEST_RGB10A2_ALPHA_OPAQUE);
+    DB_TEST_EXPECT_EQ_U32(state, encoded_rgba8[0] & test_rgb10a2_alpha_mask,
+                          test_rgb10a2_alpha_opaque);
 
     uint16_t rgba16f[TEST_HDR_BLOCK_SOURCE_WIDTH *
                      TEST_HDR_BLOCK_SOURCE_HEIGHT *
@@ -609,8 +610,8 @@ static void db_test_hdr10_tight_block_conversion_preserves_region_and_format(
         state, encoded_rgba16f,
         db_pack_rgb10a2_bt2020_pq_from_rgb16f3(
             &rgba16f[selected_pixel * DB_RGBA16F_CHANNELS_PER_PIXEL]));
-    DB_TEST_EXPECT_EQ_U32(state, encoded_rgba16f & TEST_RGB10A2_ALPHA_MASK,
-                          TEST_RGB10A2_ALPHA_OPAQUE);
+    DB_TEST_EXPECT_EQ_U32(state, encoded_rgba16f & test_rgb10a2_alpha_mask,
+                          test_rgb10a2_alpha_opaque);
 }
 
 #ifdef DB_HAS_LINUX_KMS_ATOMIC

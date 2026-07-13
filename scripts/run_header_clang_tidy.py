@@ -7,11 +7,12 @@ import argparse
 import concurrent.futures
 import json
 import os
-from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,6 +100,11 @@ def run_one(
     return header, result.returncode, result.stdout
 
 
+def contains_diagnostic(output: str) -> bool:
+    """Distinguish real clang diagnostics from platform-specific summaries."""
+    return re.search(r"\b(?:warning|error):", output) is not None
+
+
 def main() -> int:
     args = parse_args()
     source_root = args.source_root.resolve()
@@ -158,7 +164,7 @@ def main() -> int:
         ]
         for future in concurrent.futures.as_completed(futures):
             header, returncode, output = future.result()
-            if returncode != 0 or output.strip():
+            if returncode != 0 or contains_diagnostic(output):
                 failures.append((header, returncode, output))
 
     if failures:

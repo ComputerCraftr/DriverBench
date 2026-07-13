@@ -524,8 +524,16 @@ function(db_register_driverbench_tests)
 
     set(DB_TEST_SUITE_IDS "")
     set(db_native_glfw_enabled OFF)
-    if(DB_BUILD_GLFW_WINDOW_DISPLAY AND NOT (DB_GLFW_LINK_LIB STREQUAL ""))
+    if(NOT DB_TEST_HEADLESS_ONLY
+       AND DB_BUILD_GLFW_WINDOW_DISPLAY
+       AND NOT (DB_GLFW_LINK_LIB STREQUAL ""))
         set(db_native_glfw_enabled ON)
+    endif()
+    if(DB_TEST_HEADLESS_ONLY)
+        message(
+            STATUS
+                "Headless CTest registration enabled: native-window and graphics-runtime tests are omitted"
+        )
     endif()
     find_program(DB_GOLDEN_UPDATE_PYTHON NAMES python3)
     if(DB_GOLDEN_UPDATE_PYTHON)
@@ -556,13 +564,18 @@ function(db_register_driverbench_tests)
 
     foreach(db_alt_lane_id IN LISTS DB_TEST_ALTERNATE_LANE_IDS)
         if(DB_TEST_ALT_${db_alt_lane_id}_ENABLED)
+            set(db_alt_glfw_enabled
+                "${DB_TEST_ALT_${db_alt_lane_id}_GLFW_AVAILABLE}")
+            if(DB_TEST_HEADLESS_ONLY)
+                set(db_alt_glfw_enabled OFF)
+            endif()
             db_define_release_suite(
                 "${db_alt_lane_id}"
                 "alt_${db_alt_lane_id}_"
                 "${DB_TEST_ALT_${db_alt_lane_id}_BINARY}"
                 "${DB_TEST_ALT_${db_alt_lane_id}_UNIT_BINARY}"
                 "alternate;${db_alt_lane_id}"
-                "${DB_TEST_ALT_${db_alt_lane_id}_GLFW_AVAILABLE}")
+                "${db_alt_glfw_enabled}")
         endif()
     endforeach()
 

@@ -421,6 +421,25 @@ elseif(RULE_SET STREQUAL "numeric_boundary_policy")
         "${SOURCE_ROOT}/src/*/*/*.c"
         "${SOURCE_ROOT}/src/*/*/*.h")
 
+    db_pp_collect_files(
+        DB_PP_ENUM_SCAN_FILES
+        "${SOURCE_ROOT}/src/*.c"
+        "${SOURCE_ROOT}/src/*.h"
+        "${SOURCE_ROOT}/src/*/*.c"
+        "${SOURCE_ROOT}/src/*/*.h"
+        "${SOURCE_ROOT}/src/*/*/*.c"
+        "${SOURCE_ROOT}/src/*/*/*.h"
+        "${SOURCE_ROOT}/tests/*.c"
+        "${SOURCE_ROOT}/tests/*.h"
+        "${SOURCE_ROOT}/tests/*/*.c"
+        "${SOURCE_ROOT}/tests/*/*.h")
+
+    db_pp_check_forbidden_in_files(
+        DB_PP_ENUM_SCAN_FILES
+        "enum[^{;]*\\{[^}]*0[xX][89AaBbCcDdEeFf][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]"
+        "ISO C enum values must fit in int; use an explicitly typed constant for high-bit data values"
+    )
+
     set(DB_PP_ALLOWED_FLOAT_CAST_FILES "${SOURCE_ROOT}/src/core/db_numeric.h")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES

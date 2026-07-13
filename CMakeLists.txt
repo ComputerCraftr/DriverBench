@@ -106,6 +106,10 @@ option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" OFF)
 option(DB_ENABLE_SANITIZERS "Enable sanitizers for debug builds" ON)
 option(DB_ENABLE_DSYM "Generate dSYM bundles for Apple debug-like builds" ON)
+option(
+    DB_TEST_HEADLESS_ONLY
+    "Register only CTests that do not create native windows or require a graphics runtime"
+    OFF)
 set(DB_TEST_ALTERNATE_RELEASE_ROOTS
     ""
     CACHE
