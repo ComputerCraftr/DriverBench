@@ -11,6 +11,7 @@
 #include "core/db_numeric.h"
 #include "core/db_render_types.h"
 #include "displays/display_cpu_present_common.h"
+#include "displays/display_hash_common.h"
 #include "displays/display_presentation_policy.h"
 
 #include "benchmarks/db_benchmark_runtime_internal.h"
@@ -42,6 +43,32 @@ enum {
     TEST_HDR_BLOCK_COL = 1U,
     TEST_HDR_BLOCK_COL_COUNT = 2U,
 };
+
+static void
+db_test_hash_sampling_respects_report_cadence(db_test_state_t *state) {
+    const db_display_hash_tracker_t final_tracker =
+        db_display_hash_tracker_create(
+            "test", 1, DB_DISPLAY_HASH_KEY_FRAMEBUFFER, "final");
+    const db_display_hash_tracker_t aggregate_tracker =
+        db_display_hash_tracker_create(
+            "test", 1, DB_DISPLAY_HASH_KEY_FRAMEBUFFER, "aggregate");
+
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_display_hash_tracker_should_sample(&final_tracker, 0U, 40U),
+        0);
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_display_hash_tracker_should_sample(&final_tracker, 38U, 40U),
+        0);
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_display_hash_tracker_should_sample(&final_tracker, 39U, 40U),
+        1);
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_display_hash_tracker_should_sample(&final_tracker, 0U, 0U),
+        1);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_display_hash_tracker_should_sample(&aggregate_tracker, 0U, 40U), 1);
+}
 
 static void
 db_test_glfw_policy_forces_full_draw_on_unstable_probe(db_test_state_t *state) {
@@ -199,6 +226,18 @@ db_test_default_framebuffer_probe_policy_visibility(db_test_state_t *state) {
                         db_display_should_probe_default_framebuffer_preserve(
                             DB_GL_RENDERER_GL1_5_GLES1_1, 0) == 0);
 #endif
+}
+
+static void
+db_test_default_framebuffer_history_is_gl1_only(db_test_state_t *state) {
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_display_gl_uses_default_framebuffer_history(
+                              DB_GL_RENDERER_GL1_5_GLES1_1),
+                          1);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_display_gl_uses_default_framebuffer_history(DB_GL_RENDERER_GL3_3),
+        0);
 }
 
 static void
@@ -791,6 +830,8 @@ static void db_test_gl_runtime_mode_desc_reports_dirty_replay_when_requested(
 
 unsigned db_display_gl_runtime_test_run_all(void) {
     static const db_test_case_t cases[] = {
+        {"hash_sampling_respects_report_cadence",
+         db_test_hash_sampling_respects_report_cadence},
         {"glfw_policy_forces_full_draw_on_unstable_probe",
          db_test_glfw_policy_forces_full_draw_on_unstable_probe},
         {"glfw_policy_keeps_explicit_backbuffer_mode",
@@ -803,6 +844,8 @@ unsigned db_display_gl_runtime_test_run_all(void) {
          db_test_glfw_policy_clamps_preserved_chain_depth},
         {"default_framebuffer_probe_policy_visibility",
          db_test_default_framebuffer_probe_policy_visibility},
+        {"default_framebuffer_history_is_gl1_only",
+         db_test_default_framebuffer_history_is_gl1_only},
         {"default_framebuffer_probe_translation",
          db_test_default_framebuffer_probe_translation},
         {"presentation_buffer_age_sequences",

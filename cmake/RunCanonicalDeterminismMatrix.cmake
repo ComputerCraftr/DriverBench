@@ -93,112 +93,137 @@ function(
 endfunction()
 
 function(db_matrix_run_strategies checkpoint expected_state
-         expected_framebuffer)
-    foreach(schedule IN LISTS ARGN)
-        string(REPLACE ":" ";" schedule_parts "${schedule}")
-        list(GET schedule_parts 0 schedule_speed)
-        list(GET schedule_parts 1 schedule_frames)
-        set(suffix
-            "${checkpoint}_speed${schedule_speed}_frames${schedule_frames}")
+         expected_framebuffer schedule_speed schedule_frames)
+    set(suffix "${checkpoint}_speed${schedule_speed}_frames${schedule_frames}")
+    db_matrix_run(
+        "${checkpoint}"
+        "cpu_offscreen_${suffix}"
+        "--api cpu --display offscreen"
+        ${schedule_speed}
+        ${schedule_frames}
+        "${expected_state}"
+        "${expected_framebuffer}")
+    if(TEST_GLFW_ENABLED)
         db_matrix_run(
             "${checkpoint}"
-            "cpu_offscreen_${suffix}"
-            "--api cpu --display offscreen"
+            "cpu_glfw_${suffix}"
+            "--api cpu --display glfw_window --glfw-hidden-window 1 --vsync 0"
             ${schedule_speed}
             ${schedule_frames}
             "${expected_state}"
             "${expected_framebuffer}")
-        if(TEST_GLFW_ENABLED)
-            db_matrix_run(
-                "${checkpoint}"
-                "cpu_glfw_${suffix}"
-                "--api cpu --display glfw_window --glfw-hidden-window 1 --vsync 0"
-                ${schedule_speed}
-                ${schedule_frames}
-                "${expected_state}"
-                "${expected_framebuffer}")
-            db_matrix_run(
-                "${checkpoint}"
-                "gl1_offscreen_dirty_${suffix}"
-                "--api opengl --renderer gl1_5_gles1_1 --display offscreen --vsync 0 --backbuffer-draw-mode dirty"
-                ${schedule_speed}
-                ${schedule_frames}
-                "${expected_state}"
-                "${expected_framebuffer}")
-            db_matrix_run(
-                "${checkpoint}"
-                "gl1_offscreen_full_${suffix}"
-                "--api opengl --renderer gl1_5_gles1_1 --display offscreen --vsync 0 --backbuffer-draw-mode full"
-                ${schedule_speed}
-                ${schedule_frames}
-                "${expected_state}"
-                "${expected_framebuffer}")
-            db_matrix_run(
-                "${checkpoint}"
-                "gl1_glfw_dirty_single_source_${suffix}"
-                "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --vsync 0 --backbuffer-draw-mode dirty --present-buffer-mode single_source"
-                ${schedule_speed}
-                ${schedule_frames}
-                "${expected_state}"
-                "${expected_framebuffer}")
-            db_matrix_run(
-                "${checkpoint}"
-                "gl1_glfw_dirty_ring_${suffix}"
-                "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --vsync 0 --backbuffer-draw-mode dirty --present-buffer-mode ring"
-                ${schedule_speed}
-                ${schedule_frames}
-                "${expected_state}"
-                "${expected_framebuffer}")
-            db_matrix_run(
-                "${checkpoint}"
-                "gl1_glfw_full_ring_${suffix}"
-                "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --vsync 0 --backbuffer-draw-mode full --present-buffer-mode ring"
-                ${schedule_speed}
-                ${schedule_frames}
-                "${expected_state}"
-                "${expected_framebuffer}")
-            foreach(gl3_display IN ITEMS offscreen glfw_window)
-                set(gl3_visibility "")
-                if(gl3_display STREQUAL "glfw_window")
-                    set(gl3_visibility "--glfw-hidden-window 1")
-                endif()
-                foreach(draw_mode IN ITEMS dirty full)
-                    db_matrix_run(
-                        "${checkpoint}"
-                        "gl3_${gl3_display}_${draw_mode}_${suffix}"
-                        "--api opengl --renderer gl3_3 --display ${gl3_display} ${gl3_visibility} --vsync 0 --backbuffer-draw-mode ${draw_mode}"
-                        ${schedule_speed}
-                        ${schedule_frames}
-                        "${expected_state}"
-                        "${expected_framebuffer}")
-                endforeach()
-            endforeach()
-            if(TEST_VULKAN_ENABLED)
-                foreach(draw_mode IN ITEMS dirty full)
-                    db_matrix_run(
-                        "${checkpoint}"
-                        "vulkan_glfw_${draw_mode}_${suffix}"
-                        "--api vulkan --display glfw_window --glfw-hidden-window 1 --vsync 0 --vk-multi-device-policy auto --backbuffer-draw-mode ${draw_mode}"
-                        ${schedule_speed}
-                        ${schedule_frames}
-                        "${expected_state}"
-                        "${expected_framebuffer}")
-                endforeach()
+        db_matrix_run(
+            "${checkpoint}"
+            "gl1_offscreen_dirty_${suffix}"
+            "--api opengl --renderer gl1_5_gles1_1 --display offscreen --vsync 0 --backbuffer-draw-mode dirty"
+            ${schedule_speed}
+            ${schedule_frames}
+            "${expected_state}"
+            "${expected_framebuffer}")
+        db_matrix_run(
+            "${checkpoint}"
+            "gl1_offscreen_full_${suffix}"
+            "--api opengl --renderer gl1_5_gles1_1 --display offscreen --vsync 0 --backbuffer-draw-mode full"
+            ${schedule_speed}
+            ${schedule_frames}
+            "${expected_state}"
+            "${expected_framebuffer}")
+        db_matrix_run(
+            "${checkpoint}"
+            "gl1_glfw_dirty_single_source_${suffix}"
+            "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --vsync 0 --backbuffer-draw-mode dirty --present-buffer-mode single_source"
+            ${schedule_speed}
+            ${schedule_frames}
+            "${expected_state}"
+            "${expected_framebuffer}")
+        db_matrix_run(
+            "${checkpoint}"
+            "gl1_glfw_dirty_ring_${suffix}"
+            "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --vsync 0 --backbuffer-draw-mode dirty --present-buffer-mode ring"
+            ${schedule_speed}
+            ${schedule_frames}
+            "${expected_state}"
+            "${expected_framebuffer}")
+        db_matrix_run(
+            "${checkpoint}"
+            "gl1_glfw_full_ring_${suffix}"
+            "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --vsync 0 --backbuffer-draw-mode full --present-buffer-mode ring"
+            ${schedule_speed}
+            ${schedule_frames}
+            "${expected_state}"
+            "${expected_framebuffer}")
+        foreach(gl3_display IN ITEMS offscreen glfw_window)
+            set(gl3_visibility "")
+            if(gl3_display STREQUAL "glfw_window")
+                set(gl3_visibility "--glfw-hidden-window 1")
             endif()
+            foreach(draw_mode IN ITEMS dirty full)
+                db_matrix_run(
+                    "${checkpoint}"
+                    "gl3_${gl3_display}_${draw_mode}_${suffix}"
+                    "--api opengl --renderer gl3_3 --display ${gl3_display} ${gl3_visibility} --vsync 0 --backbuffer-draw-mode ${draw_mode}"
+                    ${schedule_speed}
+                    ${schedule_frames}
+                    "${expected_state}"
+                    "${expected_framebuffer}")
+            endforeach()
+        endforeach()
+        if(TEST_VULKAN_ENABLED)
+            foreach(draw_mode IN ITEMS dirty full)
+                db_matrix_run(
+                    "${checkpoint}"
+                    "vulkan_glfw_${draw_mode}_${suffix}"
+                    "--api vulkan --display glfw_window --glfw-hidden-window 1 --vsync 0 --vk-multi-device-policy auto --backbuffer-draw-mode ${draw_mode}"
+                    ${schedule_speed}
+                    ${schedule_frames}
+                    "${expected_state}"
+                    "${expected_framebuffer}")
+            endforeach()
         endif()
-    endforeach()
+    endif()
 endfunction()
 
-db_matrix_run_strategies(
-    low "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LOW_STATE}"
-    "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LOW_FRAMEBUFFER}" "1:40" "20:2"
-    "40:1")
+set(low_state "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LOW_STATE}")
+set(low_framebuffer "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LOW_FRAMEBUFFER}")
+
+# Speed associativity belongs to benchmark planning, so exercise all equal-work
+# schedules once through the canonical CPU surface instead of multiplying them
+# by every renderer and presentation strategy.
+db_matrix_run(
+    low
+    cpu_offscreen_low_speed1_frames40
+    "--api cpu --display offscreen"
+    1
+    40
+    "${low_state}"
+    "${low_framebuffer}")
+db_matrix_run(
+    low
+    cpu_offscreen_low_speed20_frames2
+    "--api cpu --display offscreen"
+    20
+    2
+    "${low_state}"
+    "${low_framebuffer}")
+db_matrix_run(
+    low
+    cpu_offscreen_low_speed40_frames1
+    "--api cpu --display offscreen"
+    40
+    1
+    "${low_state}"
+    "${low_framebuffer}")
+
+# Every strategy still validates startup/dirty history at a low-frame checkpoint
+# and validates the benchmark's long canonical checkpoint, without a redundant
+# speed-by-backend cross product.
+db_matrix_run_strategies(low "${low_state}" "${low_framebuffer}" 20 2)
 db_matrix_run_strategies(
     long
     "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_STATE}"
     "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_FRAMEBUFFER}"
-    "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_SPEED}:${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_FRAMES}"
-)
+    "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_SPEED}"
+    "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_FRAMES}")
 
 if(TEST_CAPTURE_GOLDEN)
     get_property(low_state GLOBAL PROPERTY DB_MATRIX_LOW_STATE)

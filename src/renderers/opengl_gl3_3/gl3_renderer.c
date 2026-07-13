@@ -152,6 +152,10 @@ db_gl3_upload_canonical_geometry(db_colored_f64_block_view_t blocks) {
     if ((blocks.blocks == NULL) || (blocks.count == 0U)) {
         return 0U;
     }
+    if (db_gl_upload_stream_wait(&g_state.geometry.stream) == 0) {
+        DB_RUNTIME_FAIL(BACKEND_NAME,
+                        "canonical GL3 geometry stream reuse timed out");
+    }
     const size_t stride = DB_VERTEX_FLOAT_STRIDE;
     const size_t floats_per_rect = db_checked_mul_size(
         BACKEND_NAME, "floats_per_rect", (size_t)DB_RECT_VERTEX_COUNT, stride);
@@ -165,9 +169,22 @@ db_gl3_upload_canonical_geometry(db_colored_f64_block_view_t blocks) {
         const db_colored_f64_block_t *const block = &blocks.blocks[index];
         float rgb[3] = {0};
         db_rgb_f64_quantize_f16_to_f32_rgb3(block->rgb, rgb);
+        const db_grid_block_t grid_block = {
+            .row_start = block->row_start,
+            .row_count = block->row_count,
+            .col_start = block->col_start,
+            .col_count = block->col_count,
+        };
+        float x0 = 0.0F;
+        float y0 = 0.0F;
+        float x1 = 0.0F;
+        float y1 = 0.0F;
+        db_grid_block_bounds_ndc_for_extent(g_state.runtime.grid_cols,
+                                            g_state.runtime.grid_rows,
+                                            &grid_block, &x0, &y0, &x1, &y1);
         float *const vertices =
             &g_state.geometry.vertex.vertices[index * floats_per_rect];
-        db_fill_rect_unit_pos(vertices, -1.0F, -1.0F, 1.0F, 1.0F, stride);
+        db_fill_rect_unit_pos(vertices, x0, y0, x1, y1, stride);
         db_set_rect_unit_rgb(vertices, stride, DB_VERTEX_POSITION_FLOAT_COUNT,
                              rgb);
     }
@@ -195,37 +212,12 @@ db_gl3_draw_canonical_geometry(db_colored_f64_block_view_t blocks) {
     if (vertex_count == 0U) {
         return 0U;
     }
-    const uint32_t grid_cols = g_state.runtime.grid_cols;
-    const uint32_t grid_rows = g_state.runtime.grid_rows;
-    const uint32_t backing_width = db_checked_int_to_u32(
-        BACKEND_NAME, "backing_width", g_state.target.width);
-    const uint32_t backing_height = db_checked_int_to_u32(
-        BACKEND_NAME, "backing_height", g_state.target.height);
-    db_gl_set_scissor_enabled(1);
-    for (size_t index = 0U; index < blocks.count; index++) {
-        const db_colored_f64_block_t *const block = &blocks.blocks[index];
-        const db_grid_block_t grid_block = {
-            .col_start = block->col_start,
-            .row_start = block->row_start,
-            .col_count = block->col_count,
-            .row_count = block->row_count,
-        };
-        db_damage_block_t pixel_block = {0};
-        if (db_grid_block_to_pixel_block(grid_cols, grid_rows, &grid_block,
-                                         backing_width, backing_height,
-                                         &pixel_block) == 0) {
-            continue;
-        }
-        db_gl_set_scissor(pixel_block.col_start,
-                          backing_height - pixel_block.row_start -
-                              pixel_block.row_count,
-                          pixel_block.col_count, pixel_block.row_count);
-        db_gl_draw_arrays_triangles(
-            db_checked_size_to_u32(BACKEND_NAME, "canonical_first_vertex",
-                                   index * DB_RECT_VERTEX_COUNT),
-            DB_RECT_VERTEX_COUNT);
-    }
+    // Presentation damage may leave scissoring enabled. Canonical geometry
+    // already carries exact logical bounds, so the backing draw owns a full
+    // target raster state rather than inheriting presentation clipping.
     db_gl_set_scissor_enabled(0);
+    db_gl_draw_arrays_triangles(0U, vertex_count);
+    db_gl_upload_stream_record_sync(&g_state.geometry.stream);
     return vertex_count;
 }
 
@@ -442,7 +434,7 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
             &g_state.geometry.stream, &stream_init, BACKEND_NAME,
             g_state.geometry.buffers.vbo_bytes,
             g_state.geometry.vertex.vertices, g_state.geometry.vertex.vertices,
-            g_state.geometry.buffers.vbo_bytes, 0) == 0) {
+            g_state.geometry.buffers.vbo_bytes, 1, 0) == 0) {
         runtime_failf("failed to initialize GL3 vertex stream");
     }
     if (g_state.geometry.stream.buffer == 0U) {

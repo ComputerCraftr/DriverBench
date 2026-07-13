@@ -22,6 +22,26 @@ static inline void db_grid_tile_bounds_ndc_for_extent(uint32_t cols,
     *y0 = db_double_to_f32(1.0 - (2.0 * (double)(row + 1U) * inv_rows));
 }
 
+static inline void
+db_grid_block_bounds_ndc_for_extent(uint32_t cols, uint32_t rows,
+                                    const db_grid_block_t *block, float *x0,
+                                    float *y0, float *x1, float *y1) {
+    if ((cols == 0U) || (rows == 0U) || (block == NULL) || (x0 == NULL) ||
+        (y0 == NULL) || (x1 == NULL) || (y1 == NULL)) {
+        return;
+    }
+    const uint32_t col_end =
+        db_grid_block_col_end_or_fail("raster_col_end", block);
+    const uint32_t row_end =
+        db_grid_block_row_end_or_fail("raster_row_end", block);
+    const double inv_cols = 1.0 / (double)cols;
+    const double inv_rows = 1.0 / (double)rows;
+    *x0 = db_double_to_f32((2.0 * (double)block->col_start * inv_cols) - 1.0);
+    *x1 = db_double_to_f32((2.0 * (double)col_end * inv_cols) - 1.0);
+    *y1 = db_double_to_f32(1.0 - (2.0 * (double)block->row_start * inv_rows));
+    *y0 = db_double_to_f32(1.0 - (2.0 * (double)row_end * inv_rows));
+}
+
 static inline void db_fill_rect_unit_pos(float *unit, float x0, float y0,
                                          float x1, float y1, size_t stride) {
     unit[0] = x0;

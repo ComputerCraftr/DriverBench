@@ -113,6 +113,21 @@ db_display_hash_tracker_record(db_display_hash_tracker_t *tracker,
         db_fnv1a64_mix_u64(tracker->aggregate_hash, state_hash);
 }
 
+static inline int
+db_display_hash_tracker_should_sample(const db_display_hash_tracker_t *tracker,
+                                      uint32_t frame_index,
+                                      uint32_t frame_limit) {
+    if ((tracker == NULL) || (tracker->enabled == 0)) {
+        return 0;
+    }
+    if ((tracker->report_aggregate != 0) || (frame_limit == 0U)) {
+        return 1;
+    }
+    return DB_BOOL(frame_index == db_checked_sub_u32("display_hash_common",
+                                                     "last_frame", frame_limit,
+                                                     1U));
+}
+
 static inline void
 db_display_hash_tracker_log_final(const char *backend,
                                   const db_display_hash_tracker_t *tracker) {

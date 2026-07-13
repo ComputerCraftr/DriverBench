@@ -647,7 +647,7 @@ int db_gl_geometry_stream_init(db_gl_upload_stream_t *stream,
                                const char *backend, size_t storage_bytes,
                                const float *probe_seed_vertices,
                                const float *initial_vertices,
-                               size_t initial_seed_bytes,
+                               size_t initial_seed_bytes, int enable_sync,
                                int allow_client_array_fallback);
 int db_gl_upload_stream_prepare_storage(db_gl_upload_stream_t *stream,
                                         const char *backend,

@@ -70,6 +70,7 @@ typedef struct {
     db_display_hash_tracker_t *output_hash_tracker;
     db_display_hash_tracker_t *state_hash_tracker;
     double *next_progress_log_due_ms;
+    uint32_t frame_limit;
     uint32_t work_unit_count;
     int output_hash_enabled;
     int state_hash_enabled;
@@ -522,7 +523,7 @@ static inline db_display_frame_step_t db_display_frame_step_make(
     db_display_hash_tracker_t *output_hash_tracker,
     db_display_hash_tracker_t *state_hash_tracker,
     double *next_progress_log_due_ms, uint32_t work_unit_count,
-    int output_hash_enabled, int state_hash_enabled) {
+    int output_hash_enabled, int state_hash_enabled, uint32_t frame_limit) {
     return (db_display_frame_step_t){
         .api_name = api_name,
         .backend = backend,
@@ -530,10 +531,29 @@ static inline db_display_frame_step_t db_display_frame_step_make(
         .output_hash_tracker = output_hash_tracker,
         .state_hash_tracker = state_hash_tracker,
         .next_progress_log_due_ms = next_progress_log_due_ms,
+        .frame_limit = frame_limit,
         .work_unit_count = work_unit_count,
         .output_hash_enabled = output_hash_enabled,
         .state_hash_enabled = state_hash_enabled,
     };
+}
+
+static inline int
+db_display_frame_step_should_hash_output(const db_display_frame_step_t *step,
+                                         uint32_t frame_index) {
+    return DB_BOOL(
+        (step != NULL) && (step->output_hash_enabled != 0) &&
+        db_display_hash_tracker_should_sample(step->output_hash_tracker,
+                                              frame_index, step->frame_limit));
+}
+
+static inline int
+db_display_frame_step_should_hash_state(const db_display_frame_step_t *step,
+                                        uint32_t frame_index) {
+    return DB_BOOL(
+        (step != NULL) && (step->state_hash_enabled != 0) &&
+        db_display_hash_tracker_should_sample(step->state_hash_tracker,
+                                              frame_index, step->frame_limit));
 }
 
 static inline db_display_dual_hash_trackers_t

@@ -58,6 +58,7 @@ db_display_gl_runtime_info_t db_display_require_gl_runtime_for_renderer(
     const char *backend, int context_is_gles);
 int db_display_should_probe_default_framebuffer_preserve(
     db_gl_renderer_t renderer, int true_offscreen_backend);
+int db_display_gl_uses_default_framebuffer_history(db_gl_renderer_t renderer);
 int db_display_should_force_hidden_glfw_offscreen_full_draw(
     db_gl_renderer_t renderer, const db_cli_config_t *cfg);
 db_display_default_framebuffer_preserve_info_t

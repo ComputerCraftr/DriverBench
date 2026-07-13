@@ -151,6 +151,10 @@ int db_display_should_probe_default_framebuffer_preserve(
 #endif
 }
 
+int db_display_gl_uses_default_framebuffer_history(db_gl_renderer_t renderer) {
+    return DB_BOOL(renderer == DB_GL_RENDERER_GL1_5_GLES1_1);
+}
+
 int db_display_should_force_hidden_glfw_offscreen_full_draw(
     db_gl_renderer_t renderer, const db_cli_config_t *cfg) {
 #ifdef __linux__

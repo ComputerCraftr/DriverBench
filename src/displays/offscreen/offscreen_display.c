@@ -54,8 +54,7 @@ typedef struct {
     const char *backend_name;
     db_display_hash_tracker_t *state_hash_tracker;
     db_display_hash_tracker_t *output_hash_tracker;
-    int state_hash_enabled;
-    int output_hash_enabled;
+    uint32_t frame_limit;
     db_frame_source_t *core;
 } db_offscreen_vulkan_loop_ctx_t;
 #endif
@@ -127,21 +126,22 @@ db_offscreen_cpu_frame_step(void *user_data, uint32_t frame_index,
     db_frame_plan_t plan;
     db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
     (void)db_cpu_render_frame_to_surface(&plan, &ctx->surface, NULL);
+    const int hash_output =
+        db_display_frame_step_should_hash_output(ctx->frame_step, frame_index);
+    const int hash_state =
+        db_display_frame_step_should_hash_state(ctx->frame_step, frame_index);
     uint64_t output_hash = 0U;
-    if ((ctx->frame_step->output_hash_enabled != 0) &&
-        (ctx->frame_step->output_hash_tracker != NULL)) {
+    if (hash_output != 0) {
         output_hash = db_offscreen_cpu_surface_hash(&ctx->surface);
         db_frame_source_commit_success_with_hash(ctx->core, &plan, output_hash);
     } else {
         db_frame_source_commit_success(ctx->core, &plan);
     }
-    if ((ctx->frame_step->state_hash_enabled != 0) &&
-        (ctx->frame_step->state_hash_tracker != NULL)) {
+    if (hash_state != 0) {
         db_display_hash_tracker_record(ctx->frame_step->state_hash_tracker,
                                        plan.expected_state_hash);
     }
-    if ((ctx->frame_step->output_hash_enabled != 0) &&
-        (ctx->frame_step->output_hash_tracker != NULL)) {
+    if (hash_output != 0) {
         db_display_hash_tracker_record(ctx->frame_step->output_hash_tracker,
                                        output_hash);
     }
@@ -165,21 +165,24 @@ db_offscreen_vulkan_frame_step(void *user_data, uint32_t frame_index,
     }
     db_frame_plan_t plan;
     db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
+    const int hash_output = db_display_hash_tracker_should_sample(
+        ctx->output_hash_tracker, frame_index, ctx->frame_limit);
+    const int hash_state = db_display_hash_tracker_should_sample(
+        ctx->state_hash_tracker, frame_index, ctx->frame_limit);
+    db_vk_set_output_hash_enabled(hash_output);
     const db_vk_frame_result_t frame_result = db_vk_render_frame(&plan);
     uint64_t output_hash = 0U;
-    if ((frame_result == DB_VK_FRAME_OK) && (ctx->output_hash_enabled != 0)) {
+    if ((frame_result == DB_VK_FRAME_OK) && (hash_output != 0)) {
         output_hash = db_vk_output_hash();
         db_frame_source_commit_success_with_hash(ctx->core, &plan, output_hash);
     } else if (frame_result == DB_VK_FRAME_OK) {
         db_frame_source_commit_success(ctx->core, &plan);
     }
-    if ((ctx != NULL) && (ctx->state_hash_enabled != 0) &&
-        (frame_result == DB_VK_FRAME_OK)) {
+    if ((hash_state != 0) && (frame_result == DB_VK_FRAME_OK)) {
         db_display_hash_tracker_record(ctx->state_hash_tracker,
                                        plan.expected_state_hash);
     }
-    if ((ctx != NULL) && (ctx->output_hash_enabled != 0) &&
-        (frame_result == DB_VK_FRAME_OK)) {
+    if ((hash_output != 0) && (frame_result == DB_VK_FRAME_OK)) {
         db_display_hash_tracker_record(ctx->output_hash_tracker, output_hash);
     }
     if ((ctx != NULL) && (frame_result == DB_VK_FRAME_STOP)) {
@@ -224,9 +227,7 @@ static int db_run_offscreen_vulkan(const db_cli_config_t *cfg) {
         .backend_name = DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
         .state_hash_tracker = &hash_trackers.state,
         .output_hash_tracker = &hash_trackers.output,
-        .state_hash_enabled = resolved_runtime.hash_settings.state_hash_enabled,
-        .output_hash_enabled =
-            resolved_runtime.hash_settings.output_hash_enabled,
+        .frame_limit = resolved_runtime.display.frame_limit,
         .core = &core,
     };
     const db_display_frame_loop_t loop = {
@@ -286,16 +287,21 @@ db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
     };
     db_display_gl_render_frame(ctx->renderer_ops->renderer, &plan,
                                &presentation);
+    const int hash_output =
+        db_display_frame_step_should_hash_output(ctx->frame_step, frame_index);
+    const int hash_state =
+        db_display_frame_step_should_hash_state(ctx->frame_step, frame_index);
     uint64_t output_hash_value = 0U;
-    if (ctx->frame_step->output_hash_enabled != 0) {
+    if (hash_output != 0) {
         output_hash_value = ctx->renderer_ops->working_hash();
         db_frame_source_commit_success_with_hash(ctx->core, &plan,
                                                  output_hash_value);
     } else {
         db_frame_source_commit_success(ctx->core, &plan);
     }
-    db_display_gl_frame_step(ctx->frame_step, frame_index, elapsed_ms, 1,
-                             plan.expected_state_hash, 1, output_hash_value);
+    db_display_gl_frame_step(ctx->frame_step, frame_index, elapsed_ms,
+                             hash_state, plan.expected_state_hash, hash_output,
+                             output_hash_value);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
 
@@ -377,7 +383,8 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
         DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, renderer_ops.renderer_name,
         &hash_trackers.output, &hash_trackers.state, &next_progress_log_due_ms,
         work_unit_count, resolved_runtime.hash_settings.output_hash_enabled,
-        resolved_runtime.hash_settings.state_hash_enabled);
+        resolved_runtime.hash_settings.state_hash_enabled,
+        resolved_runtime.display.frame_limit);
     db_offscreen_gl3_loop_ctx_t loop_ctx = {
         .frame_step = &frame_step,
         .renderer_ops = &renderer_ops,
@@ -451,7 +458,8 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
         db_renderer_name_cpu(), &hash_trackers.output, &hash_trackers.state,
         &next_progress_log_due_ms, work_unit_count,
         resolved_runtime.hash_settings.output_hash_enabled,
-        resolved_runtime.hash_settings.state_hash_enabled);
+        resolved_runtime.hash_settings.state_hash_enabled,
+        resolved_runtime.display.frame_limit);
     db_offscreen_cpu_loop_ctx_t loop_ctx = {
         .frame_step = &frame_step,
         .surface = db_offscreen_cpu_surface_create(
@@ -472,11 +480,6 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     const db_display_frame_loop_run_result_t loop_result =
         db_display_run_frame_loop(&loop);
     const uint64_t frames = loop_result.frames;
-
-    if (resolved_runtime.hash_settings.output_hash_enabled != 0) {
-        hash_trackers.output.final_hash =
-            db_offscreen_cpu_surface_hash(&loop_ctx.surface);
-    }
 
     const double total_ms =
         (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;

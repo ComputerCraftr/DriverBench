@@ -108,8 +108,11 @@ static uint32_t gl_shadow_present_clamped_preserved_framebuffer_count(
 uint32_t db_gl_shadow_present_active_slot_count(
     db_gl_shadow_present_preserve_mode_t preserve_mode,
     uint32_t preserved_framebuffer_count) {
-    if (preserve_mode != DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT) {
+    if (preserve_mode == DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE) {
         return 1U;
+    }
+    if (preserve_mode == DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS) {
+        return DB_GL_SHADOW_PRESENT_MAX_RING_SLOTS;
     }
     return DB_MAX(2U, gl_shadow_present_clamped_preserved_framebuffer_count(
                           preserved_framebuffer_count));
@@ -162,9 +165,8 @@ uint32_t db_gl_shadow_present_next_write_slot_after_present(
     if (slot_count == 0U) {
         return 0U;
     }
-    if ((preserve_mode == DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS) ||
-        ((preserve_slot_contents != 0) &&
-         (preserve_mode == DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE))) {
+    if ((preserve_slot_contents != 0) &&
+        (preserve_mode == DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE)) {
         return target_slot_index % slot_count;
     }
     return (target_slot_index + 1U) % slot_count;
@@ -519,7 +521,7 @@ void db_gl_shadow_present_init_runtime(
     if (db_gl_geometry_stream_init(&state->presentation_quad_stream,
                                    &quad_result, "renderer_gl_shadow_present",
                                    sizeof(state->vertices), state->vertices,
-                                   state->vertices, sizeof(state->vertices),
+                                   state->vertices, sizeof(state->vertices), 0,
                                    1) != 0) {
         state->presentation_quad_uses_vbo =
             DB_BOOL(db_gl_stream_upload_uses_buffer_object(

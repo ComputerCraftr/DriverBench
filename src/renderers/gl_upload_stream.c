@@ -291,7 +291,7 @@ int db_gl_geometry_stream_init(db_gl_upload_stream_t *stream,
                                const char *backend, size_t storage_bytes,
                                const float *probe_seed_vertices,
                                const float *initial_vertices,
-                               size_t initial_seed_bytes,
+                               size_t initial_seed_bytes, int enable_sync,
                                int allow_client_array_fallback) {
     if ((stream == NULL) || (result == NULL) || (backend == NULL) ||
         (storage_bytes == 0U)) {
@@ -305,7 +305,8 @@ int db_gl_geometry_stream_init(db_gl_upload_stream_t *stream,
     const float *seed_ptr =
         (probe_seed_vertices != NULL) ? probe_seed_vertices : k_fallback_seed;
     result->capability = db_gl_stream_upload_capability_probe(
-        DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, storage_bytes, seed_ptr, 0);
+        DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER, storage_bytes, seed_ptr,
+        enable_sync);
 
     unsigned int geometry_buffer = 0U;
     if (db_gl_vbo_create_or_zero(&geometry_buffer) != 0) {

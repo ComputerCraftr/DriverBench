@@ -4,6 +4,7 @@
 #include "core/db_format_contract.h"
 #include "core/db_log.h"
 #include "core/db_render_types.h"
+#include "core/db_trace.h"
 #include "gl_common.h"
 #include "gl_probe_internal.h"
 #include "gl_proc_runtime.h"
@@ -378,10 +379,17 @@ void db_gl_shadow_present_present_full_upload_target(
         "shadow_full_upload_target",
         db_gl_shadow_full_upload_target_mode_name(target->mode),
         db_gl_stream_upload_name(&slot->stream.capability, 0, 1));
+    const db_trace_config_t trace_config = db_trace_config_current();
+    const int capture_surface_hashes = DB_BOOL(
+        (trace_config.damage != 0) || (trace_config.shadow_upload != 0));
     const uint64_t target_surface_hash =
-        db_gl_pixel_surface_hash_canonical(&target->pixel_surface);
+        (capture_surface_hashes != 0)
+            ? db_gl_pixel_surface_hash_canonical(&target->pixel_surface)
+            : 0U;
     const uint64_t fallback_source_hash =
-        db_gl_pixel_surface_hash_canonical(target->fallback_source_surface);
+        (capture_surface_hashes != 0) ? db_gl_pixel_surface_hash_canonical(
+                                            target->fallback_source_surface)
+                                      : 0U;
     const db_damage_block_t full_block =
         db_damage_block_full(pixel_height, pixel_width);
     const int finalized_upload_target =

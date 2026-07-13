@@ -34,11 +34,11 @@ typedef enum {
 } db_sync_timeout_action_t;
 
 typedef struct {
-    db_progress_policy_id_t id;
     const char *name;
-    uint32_t max_attempts;
     uint64_t attempt_timeout_ns;
     uint64_t total_timeout_ns;
+    db_progress_policy_id_t id;
+    uint32_t max_attempts;
     db_sync_timeout_action_t timeout_action;
 } db_poll_policy_t;
 

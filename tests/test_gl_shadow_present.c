@@ -348,7 +348,7 @@ db_test_preserve_mode_active_slot_count_matches_mode(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_U32(state,
                           db_gl_shadow_present_active_slot_count(
                               DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS, 3U),
-                          1U);
+                          2U);
     DB_TEST_EXPECT_EQ_U32(state,
                           db_gl_shadow_present_active_slot_count(
                               DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE, 3U),
@@ -523,15 +523,15 @@ db_test_repair_full_upload_target_copies_full_surface_for_fresh_target(
 }
 
 static void
-db_test_replace_mode_does_not_rotate_write_slot(db_test_state_t *state) {
+db_test_upload_slots_rotate_except_single_source(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_U32(state,
                           db_gl_shadow_present_next_write_slot_after_present(
                               DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS, 0, 0U, 2U),
-                          0U);
+                          1U);
     DB_TEST_EXPECT_EQ_U32(state,
                           db_gl_shadow_present_next_write_slot_after_present(
                               DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS, 0, 1U, 2U),
-                          1U);
+                          0U);
     DB_TEST_EXPECT_EQ_U32(
         state,
         db_gl_shadow_present_next_write_slot_after_present(
@@ -580,8 +580,8 @@ unsigned db_gl_shadow_present_test_run_all(void) {
          db_test_shadow_upload_trace_does_not_mark_execution_before_upload_runs},
         {"repair_full_upload_target_copies_full_surface_for_fresh_target",
          db_test_repair_full_upload_target_copies_full_surface_for_fresh_target},
-        {"replace_mode_does_not_rotate_write_slot",
-         db_test_replace_mode_does_not_rotate_write_slot},
+        {"upload_slots_rotate_except_single_source",
+         db_test_upload_slots_rotate_except_single_source},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

@@ -114,6 +114,21 @@ function(db_register_release_suite suite_id)
         endforeach()
 
         db_suite_make_test_name(db_test_name "${db_prefix}"
+                                "regression_gl3_persistent_geometry_reuse")
+        add_test(
+            NAME ${db_test_name}
+            COMMAND
+                ${CMAKE_COMMAND} -DTEST_BIN=${db_test_bin} -P
+                ${CMAKE_SOURCE_DIR}/cmake/RunGl3PersistentGeometryReuseTest.cmake
+        )
+        db_test_timeout_seconds(db_gl3_reuse_timeout determinism_gpu)
+        set_tests_properties(
+            ${db_test_name}
+            PROPERTIES LABELS "${db_regression_labels}" TIMEOUT
+                       "${db_gl3_reuse_timeout}" RESOURCE_LOCK
+                       driverbench_gpu_matrix)
+
+        db_suite_make_test_name(db_test_name "${db_prefix}"
                                 "regression_glfw_buffer_age_deduplicated")
         add_test(NAME ${db_test_name}
                  COMMAND ${CMAKE_COMMAND} -DTEST_BIN=${db_test_bin} -P

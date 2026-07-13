@@ -48,8 +48,7 @@ typedef struct {
     const char *backend_name;
     db_display_hash_tracker_t *state_hash_tracker;
     db_display_hash_tracker_t *output_hash_tracker;
-    int state_hash_enabled;
-    int output_hash_enabled;
+    uint32_t frame_limit;
     db_frame_source_t *core;
     GLFWwindow *window;
 } db_glfw_vulkan_loop_ctx_t;
@@ -311,8 +310,12 @@ db_glfw_cpu_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
     db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
     db_glfw_cpu_present_surface(ctx->window, ctx->present, &plan,
                                 ctx->debug_clear_default_framebuffer);
+    const int hash_output =
+        db_display_frame_step_should_hash_output(&ctx->frame_step, frame_index);
+    const int hash_state =
+        db_display_frame_step_should_hash_state(&ctx->frame_step, frame_index);
     uint64_t output_hash_value = 0U;
-    if (ctx->frame_step.output_hash_enabled != 0) {
+    if (hash_output != 0) {
         output_hash_value = db_glfw_hash_canonical_default_framebuffer_or_fail(
             DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU, ctx->window,
             plan.grid_cols, plan.grid_rows, ctx->hash_scratch);
@@ -323,8 +326,9 @@ db_glfw_cpu_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
     }
     glfwSwapBuffers(ctx->window);
 
-    db_display_gl_frame_step(&ctx->frame_step, frame_index, elapsed_ms, 1,
-                             plan.expected_state_hash, 1, output_hash_value);
+    db_display_gl_frame_step(&ctx->frame_step, frame_index, elapsed_ms,
+                             hash_state, plan.expected_state_hash, hash_output,
+                             output_hash_value);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
 
@@ -419,7 +423,7 @@ static int db_run_glfw_window_cpu(const db_cli_config_t *cfg) {
         db_renderer_name_cpu(), loop_ctx.framebuffer_hash_tracker,
         loop_ctx.state_hash_tracker, &loop_ctx.next_progress_log_due_ms,
         loop_ctx.work_unit_count, loop_ctx.output_hash_enabled,
-        loop_ctx.state_hash_enabled);
+        loop_ctx.state_hash_enabled, resolved_runtime.display.frame_limit);
     db_glfw_loop_t loop = {
         .backend = DB_BACKEND_NAME_DISPLAY_GLFW_WINDOW_CPU,
         .frame_fn = db_glfw_cpu_frame,
@@ -467,8 +471,7 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
         db_presentation_buffer_age_resolve(
             DB_PRESENTATION_BUFFER_AGE_UNAVAILABLE, 0U,
             ctx->renderer_preserved_framebuffer_count);
-    if ((renderer_ops->renderer == DB_GL_RENDERER_GL1_5_GLES1_1) &&
-        (ctx->uses_native_buffer_age != 0)) {
+    if (ctx->uses_native_buffer_age != 0) {
         buffer_age = db_glfw_query_presentation_buffer_age(
             ctx->window, ctx->renderer_preserved_framebuffer_count);
         if (buffer_age.provider == DB_PRESENTATION_BUFFER_AGE_UNAVAILABLE) {
@@ -560,15 +563,21 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
     db_display_gl_render_frame(renderer_ops->renderer, &plan, &presentation);
 
     const int trace_damage = db_damage_trace_enabled();
+    const int hash_output =
+        db_display_frame_step_should_hash_output(&ctx->frame_step, frame_index);
+    const int hash_state =
+        db_display_frame_step_should_hash_state(&ctx->frame_step, frame_index);
     uint64_t output_hash_value = 0U;
     uint64_t pre_swap_hash = 0U;
-    if (ctx->frame_step.output_hash_enabled != 0) {
+    if (hash_output != 0) {
         output_hash_value = db_glfw_hash_canonical_default_framebuffer_or_fail(
             ctx->backend_name, ctx->window, plan.grid_cols, plan.grid_rows,
             ctx->hash_scratch);
     }
     const int seed_buffer_age_validation = DB_BOOL(
-        (ctx->uses_native_buffer_age != 0) && (ctx->buffer_age_qualified == 0));
+        (ctx->uses_native_buffer_age != 0) &&
+        (buffer_age.provider != DB_PRESENTATION_BUFFER_AGE_UNAVAILABLE) &&
+        (ctx->buffer_age_qualified == 0));
     if ((trace_damage != 0) || (seed_buffer_age_validation != 0)) {
         pre_swap_hash = db_glfw_hash_native_default_framebuffer_or_fail(
             ctx->backend_name, ctx->window, ctx->framebuffer_hash_format,
@@ -578,7 +587,7 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
         ctx->buffer_age_expected_hash = pre_swap_hash;
         ctx->buffer_age_validation_pending = 1;
     }
-    if (ctx->frame_step.output_hash_enabled != 0) {
+    if (hash_output != 0) {
         db_frame_source_commit_success_with_hash(ctx->core, &plan,
                                                  output_hash_value);
     } else {
@@ -606,9 +615,9 @@ db_glfw_opengl_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
         });
     }
 
-    db_display_gl_frame_step(
-        &ctx->frame_step, frame_index, elapsed_ms, 1, plan.expected_state_hash,
-        ctx->frame_step.output_hash_enabled, output_hash_value);
+    db_display_gl_frame_step(&ctx->frame_step, frame_index, elapsed_ms,
+                             hash_state, plan.expected_state_hash, hash_output,
+                             output_hash_value);
     glfwSwapBuffers(ctx->window);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
@@ -658,7 +667,13 @@ static int db_glfw_run_opengl_renderer_loop(
             resolved_runtime->hash_settings.state_hash_enabled,
         .output_hash_enabled =
             resolved_runtime->hash_settings.output_hash_enabled,
-        .uses_native_buffer_age = uses_native_buffer_age,
+        // Only GL1 draws into preserved default-framebuffer contents. GL3
+        // presents its persistent FBO in full and must never pay buffer-age
+        // qualification readbacks.
+        .uses_native_buffer_age =
+            DB_BOOL(db_display_gl_uses_default_framebuffer_history(
+                        renderer_ops->renderer) &&
+                    (uses_native_buffer_age != 0)),
         .debug_clear_default_framebuffer =
             resolved_runtime->display.debug_clear_default_framebuffer,
         .renderer_preserved_framebuffer_count =
@@ -672,7 +687,7 @@ static int db_glfw_run_opengl_renderer_loop(
         loop_ctx.renderer_name, loop_ctx.framebuffer_hash_tracker,
         loop_ctx.state_hash_tracker, &loop_ctx.next_progress_log_due_ms,
         loop_ctx.work_unit_count, loop_ctx.output_hash_enabled,
-        loop_ctx.state_hash_enabled);
+        loop_ctx.state_hash_enabled, resolved_runtime->display.frame_limit);
     db_glfw_loop_t loop = {
         .backend = backend_name,
         .frame_fn = db_glfw_opengl_frame,
@@ -807,10 +822,15 @@ db_glfw_vulkan_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
     }
     db_frame_plan_t plan;
     db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
+    const int hash_output = db_display_hash_tracker_should_sample(
+        ctx->output_hash_tracker, frame_index, ctx->frame_limit);
+    const int hash_state = db_display_hash_tracker_should_sample(
+        ctx->state_hash_tracker, frame_index, ctx->frame_limit);
+    db_vk_set_output_hash_enabled(hash_output);
     const db_vk_frame_result_t frame_result = db_vk_render_frame(&plan);
     uint64_t output_hash = 0U;
     if (frame_result == DB_VK_FRAME_OK) {
-        if (ctx->output_hash_enabled != 0) {
+        if (hash_output != 0) {
             output_hash = db_vk_output_hash();
             db_frame_source_commit_success_with_hash(ctx->core, &plan,
                                                      output_hash);
@@ -818,11 +838,11 @@ db_glfw_vulkan_frame(void *user_data, uint32_t frame_index, double elapsed_ms) {
             db_frame_source_commit_success(ctx->core, &plan);
         }
     }
-    if ((ctx->state_hash_enabled != 0) && (frame_result == DB_VK_FRAME_OK)) {
+    if ((hash_state != 0) && (frame_result == DB_VK_FRAME_OK)) {
         db_display_hash_tracker_record(ctx->state_hash_tracker,
                                        plan.expected_state_hash);
     }
-    if ((ctx->output_hash_enabled != 0) && (frame_result == DB_VK_FRAME_OK)) {
+    if ((hash_output != 0) && (frame_result == DB_VK_FRAME_OK)) {
         db_display_hash_tracker_record(ctx->output_hash_tracker, output_hash);
     }
     if (frame_result == DB_VK_FRAME_STOP) {
@@ -908,9 +928,7 @@ static int db_run_glfw_window_vulkan(const db_cli_config_t *cfg) {
         .backend_name = backend_name,
         .state_hash_tracker = &hash_trackers.state,
         .output_hash_tracker = &hash_trackers.output,
-        .state_hash_enabled = resolved_runtime.hash_settings.state_hash_enabled,
-        .output_hash_enabled =
-            resolved_runtime.hash_settings.output_hash_enabled,
+        .frame_limit = resolved_runtime.display.frame_limit,
         .core = &core,
         .window = window,
     };

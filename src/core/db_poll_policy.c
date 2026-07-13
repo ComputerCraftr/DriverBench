@@ -8,33 +8,49 @@
 
 #define DB_NS_PER_MS_U64 1000000ULL
 #define DB_NS_PER_SECOND_U64 1000000000ULL
+#define DB_POLL_POLICY(id_, name_, max_, attempt_, total_, action_)            \
+    {.name = (name_),                                                          \
+     .attempt_timeout_ns = (attempt_),                                         \
+     .total_timeout_ns = (total_),                                             \
+     .id = (id_),                                                              \
+     .max_attempts = (max_),                                                   \
+     .timeout_action = (action_)}
 
 static const db_poll_policy_t g_progress_policies[] = {
-    {DB_PROGRESS_VK_PRIMARY_FENCE, "vk_primary_fence", 8U,
-     100U * DB_NS_PER_MS_U64, 800U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FAIL},
-    {DB_PROGRESS_VK_ACQUIRE_IMAGE, "vk_acquire_image", 8U,
-     100U * DB_NS_PER_MS_U64, 800U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FAIL},
-    {DB_PROGRESS_VK_CALIBRATION_READY, "vk_calibration_ready", 1U,
-     DB_NS_PER_MS_U64, DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_SKIP},
-    {DB_PROGRESS_VK_CANDIDATE_COMPLETE, "vk_candidate_complete", 8U,
-     10U * DB_NS_PER_MS_U64, 80U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FALLBACK},
-    {DB_PROGRESS_VK_WORKER_SLOT_REUSE, "vk_worker_slot_reuse", 1U,
-     DB_NS_PER_MS_U64, DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FALLBACK},
-    {DB_PROGRESS_GL_UPLOAD_REUSE, "gl_upload_reuse", 8U, DB_NS_PER_MS_U64,
-     8U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FALLBACK},
-    {DB_PROGRESS_GL_PENDING_SYNC_PROBE, "gl_pending_sync_probe", 1U, 1U, 1U,
-     DB_SYNC_TIMEOUT_SKIP},
-    {DB_PROGRESS_GL_SHADOW_SLOT_PROBE, "gl_shadow_slot_probe", 1U, 1U, 1U,
-     DB_SYNC_TIMEOUT_SKIP},
-    {DB_PROGRESS_GLFW_RESIZE, "glfw_resize", 50U, 5U * DB_NS_PER_MS_U64,
-     250U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FAIL},
-    {DB_PROGRESS_KMS_PAGE_FLIP, "kms_page_flip", 100U, 10U * DB_NS_PER_MS_U64,
-     1000U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FAIL},
-    {DB_PROGRESS_FRAME_RETRY, "frame_retry", 8U, 0U, 1000U * DB_NS_PER_MS_U64,
-     DB_SYNC_TIMEOUT_FAIL},
-    {DB_PROGRESS_GL_ERROR_DRAIN, "gl_error_drain", 64U, 0U, 0U,
-     DB_SYNC_TIMEOUT_SKIP},
+    DB_POLL_POLICY(DB_PROGRESS_VK_PRIMARY_FENCE, "vk_primary_fence", 8U,
+                   100U * DB_NS_PER_MS_U64, 800U * DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FAIL),
+    DB_POLL_POLICY(DB_PROGRESS_VK_ACQUIRE_IMAGE, "vk_acquire_image", 8U,
+                   100U * DB_NS_PER_MS_U64, 800U * DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FAIL),
+    DB_POLL_POLICY(DB_PROGRESS_VK_CALIBRATION_READY, "vk_calibration_ready", 1U,
+                   DB_NS_PER_MS_U64, DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_SKIP),
+    DB_POLL_POLICY(DB_PROGRESS_VK_CANDIDATE_COMPLETE, "vk_candidate_complete",
+                   8U, 10U * DB_NS_PER_MS_U64, 80U * DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FALLBACK),
+    DB_POLL_POLICY(DB_PROGRESS_VK_WORKER_SLOT_REUSE, "vk_worker_slot_reuse", 1U,
+                   DB_NS_PER_MS_U64, DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FALLBACK),
+    DB_POLL_POLICY(DB_PROGRESS_GL_UPLOAD_REUSE, "gl_upload_reuse", 8U,
+                   DB_NS_PER_MS_U64, 8U * DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FALLBACK),
+    DB_POLL_POLICY(DB_PROGRESS_GL_PENDING_SYNC_PROBE, "gl_pending_sync_probe",
+                   1U, 1U, 1U, DB_SYNC_TIMEOUT_SKIP),
+    DB_POLL_POLICY(DB_PROGRESS_GL_SHADOW_SLOT_PROBE, "gl_shadow_slot_probe", 1U,
+                   1U, 1U, DB_SYNC_TIMEOUT_SKIP),
+    DB_POLL_POLICY(DB_PROGRESS_GLFW_RESIZE, "glfw_resize", 50U,
+                   5U * DB_NS_PER_MS_U64, 250U * DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FAIL),
+    DB_POLL_POLICY(DB_PROGRESS_KMS_PAGE_FLIP, "kms_page_flip", 100U,
+                   10U * DB_NS_PER_MS_U64, 1000U * DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FAIL),
+    DB_POLL_POLICY(DB_PROGRESS_FRAME_RETRY, "frame_retry", 8U, 0U,
+                   1000U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FAIL),
+    DB_POLL_POLICY(DB_PROGRESS_GL_ERROR_DRAIN, "gl_error_drain", 64U, 0U, 0U,
+                   DB_SYNC_TIMEOUT_SKIP),
 };
+
+#undef DB_POLL_POLICY
 
 _Static_assert(sizeof(g_progress_policies) / sizeof(g_progress_policies[0]) ==
                    DB_PROGRESS_PROFILE_COUNT,
