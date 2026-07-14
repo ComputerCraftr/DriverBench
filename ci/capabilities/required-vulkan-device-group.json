@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "requirements": [
+    {
+      "capability": "vulkan_device_group",
+      "test_regex": "^hardware_vulkan_device_group_auto$",
+      "required": true,
+      "minimum_executed": 1
+    }
+  ]
+}

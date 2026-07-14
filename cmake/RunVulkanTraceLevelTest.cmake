@@ -8,7 +8,6 @@ db_test_run_command(
     level1_output level1_skip level1_status "${common_args} --trace-vulkan 1"
     "Vulkan trace-level-1 command failed")
 if(NOT "${level1_skip}" STREQUAL "")
-    message(STATUS "Vulkan trace-level test skipped: ${level1_skip}")
     return()
 endif()
 if(level1_output
@@ -26,7 +25,6 @@ db_test_run_command(
     level2_output level2_skip level2_status "${common_args} --trace-vulkan 2"
     "Vulkan trace-level-2 command failed")
 if(NOT "${level2_skip}" STREQUAL "")
-    message(STATUS "Vulkan level-2 detail unavailable: ${level2_skip}")
     return()
 endif()
 if(NOT

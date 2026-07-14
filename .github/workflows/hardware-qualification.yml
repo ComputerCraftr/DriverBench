@@ -1,0 +1,64 @@
+name: Required Hardware Qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GL1 direct window
+            runner: driverbench-gl1-buffer-age
+            test: hardware_gl1_direct_window_auto
+            manifest: required-gl1-direct-window
+          - name: GL3 native
+            runner: driverbench-gl3-native
+            test: hardware_gl3_native_auto
+            manifest: required-gl3-native
+          - name: Vulkan single device
+            runner: driverbench-vulkan-single
+            test: hardware_vulkan_single_auto
+            manifest: required-vulkan-single-device
+          - name: Vulkan device group
+            runner: driverbench-vulkan-device-group
+            test: hardware_vulkan_device_group_auto
+            manifest: required-vulkan-device-group
+          - name: Vulkan independent devices
+            runner: driverbench-vulkan-independent
+            test: hardware_vulkan_independent_auto
+            manifest: required-vulkan-independent
+    name: ${{ matrix.name }}
+    runs-on: [self-hosted, linux, x64, "${{ matrix.runner }}"]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/hardware -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DDB_GLFW_PROVIDER=vendored
+          -DDB_GLFW_REQUIRED=ON
+
+      - name: Build
+        run: cmake --build build/hardware --parallel
+
+      - name: Execute required hardware path
+        run: >-
+          ctest --test-dir build/hardware
+          -R "^${{ matrix.test }}$"
+          --output-on-failure
+          --output-junit ctest-results.xml
+
+      - name: Reject skips and missing execution
+        run: >-
+          python3 scripts/audit_ctest_results.py
+          --junit build/hardware/ctest-results.xml
+          --manifest ci/capabilities/${{ matrix.manifest }}.json

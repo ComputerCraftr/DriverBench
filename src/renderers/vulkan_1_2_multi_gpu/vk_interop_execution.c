@@ -1,9 +1,11 @@
+#include "vk_diagnostics.h"
 #include "vk_internal.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "../../core/db_frame_plan.h"
+#include "../../core/db_render_ir.h"
 
 #ifdef __linux__
 #include "core/db_log.h"
@@ -38,7 +40,7 @@ static uint32_t vk_buffer_word_offset(uint32_t source_x, uint32_t source_y,
 
 #define DB_VK_EXTERNAL_SEMAPHORE_HANDLE                                        \
     VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT
-#define DB_VK_PACK_WORKGROUP_SIZE 16U
+#define DB_VK_TRANSPORT_PACK_WORKGROUP_SIZE 16U
 #include <unistd.h>
 
 static uint32_t vk_external_queue_family(const db_vk_lane_slot_t *slot) {
@@ -219,10 +221,7 @@ uint32_t db_vk_independent_lanes_submit(
                 vkCmdClearAttachments(runtime->command_buffer, 1U, &attachment,
                                       1U, &rect);
             }
-            const db_colored_f64_block_view_t draw_view =
-                (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_GEOMETRY)
-                    ? plan->rebuild_seed.geometry
-                    : plan->geometry.current_blocks;
+            const size_t draw_count = db_vk_frame_rect_count(plan);
             uint32_t first_valid_piece = UINT32_MAX;
             uint32_t valid_piece_count = 0U;
             for (size_t assignment_index = 0U;
@@ -237,45 +236,55 @@ uint32_t db_vk_independent_lanes_submit(
                 }
                 const db_vk_present_piece_t *const piece =
                     &execution_plan->pieces[assignment->piece_first];
-                if (piece->geometry_first >= draw_view.count) {
+                if (piece->instance_first >= draw_count) {
                     continue;
                 }
-                const db_colored_f64_block_t *const block =
-                    &draw_view.blocks[piece->geometry_first];
-                const db_grid_block_t grid_block = {
-                    .row_start = block->row_start,
-                    .row_count = block->row_count,
-                    .col_start = block->col_start,
-                    .col_count = block->col_count,
-                };
-                db_damage_block_t pixel_block = {0};
-                if (db_grid_block_to_pixel_block(
-                        g_state.runtime.grid_cols, g_state.runtime.grid_rows,
-                        &grid_block, g_state.backing.extent.width,
-                        g_state.backing.extent.height, &pixel_block) == 0) {
-                    continue;
+                for (uint32_t instance = 0U; instance < piece->instance_count;
+                     instance++) {
+                    db_render_ir_fill_t fill = {0};
+                    if (db_vk_frame_rect_at(
+                            plan, (size_t)piece->instance_first + instance,
+                            &fill) == 0) {
+                        continue;
+                    }
+                    db_grid_block_t grid_block = {0};
+                    if (db_render_ir_rect_to_grid_block(
+                            fill.rect, g_state.runtime.grid_cols,
+                            g_state.runtime.grid_rows, &grid_block) == 0) {
+                        DB_RUNTIME_FAIL(
+                            BACKEND_NAME,
+                            "invalid independent-lane IR rectangle");
+                    }
+                    db_damage_block_t pixel_block = {0};
+                    if (db_grid_block_to_pixel_block(
+                            g_state.runtime.grid_cols,
+                            g_state.runtime.grid_rows, &grid_block,
+                            g_state.backing.extent.width,
+                            g_state.backing.extent.height, &pixel_block) == 0) {
+                        continue;
+                    }
+                    float color[3] = {0};
+                    db_rgb_f64_quantize_f16_to_f32_rgb3(fill.color.rgba, color);
+                    const VkClearAttachment attachment = {
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .colorAttachment = 0U,
+                        .clearValue = {.color = {.float32 = {color[0], color[1],
+                                                             color[2], 1.0F}}},
+                    };
+                    const VkClearRect rect = {
+                        .rect = {.offset = {.x = db_checked_u32_to_i32(
+                                                BACKEND_NAME, "clear_rect_x",
+                                                pixel_block.col_start),
+                                            .y = db_checked_u32_to_i32(
+                                                BACKEND_NAME, "clear_rect_y",
+                                                pixel_block.row_start)},
+                                 .extent = {.width = pixel_block.col_count,
+                                            .height = pixel_block.row_count}},
+                        .layerCount = 1U,
+                    };
+                    vkCmdClearAttachments(runtime->command_buffer, 1U,
+                                          &attachment, 1U, &rect);
                 }
-                float color[3] = {0};
-                db_rgb_f64_quantize_f16_to_f32_rgb3(block->rgb, color);
-                const VkClearAttachment attachment = {
-                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                    .colorAttachment = 0U,
-                    .clearValue = {.color = {.float32 = {color[0], color[1],
-                                                         color[2], 1.0F}}},
-                };
-                const VkClearRect rect = {
-                    .rect = {.offset = {.x = db_checked_u32_to_i32(
-                                            BACKEND_NAME, "clear_rect_x",
-                                            pixel_block.col_start),
-                                        .y = db_checked_u32_to_i32(
-                                            BACKEND_NAME, "clear_rect_y",
-                                            pixel_block.row_start)},
-                             .extent = {.width = pixel_block.col_count,
-                                        .height = pixel_block.row_count}},
-                    .layerCount = 1U,
-                };
-                vkCmdClearAttachments(runtime->command_buffer, 1U, &attachment,
-                                      1U, &rect);
                 if (first_valid_piece == UINT32_MAX) {
                     first_valid_piece = assignment->piece_first;
                 }
@@ -317,8 +326,12 @@ uint32_t db_vk_independent_lanes_submit(
                 runtime->pack_pipeline_layout, 0U, 1U,
                 &active_slot->worker_pack_descriptor_set, 0U, NULL);
             const uint32_t words_per_pixel =
-                (g_state.backing.pixel_format == DB_PIXEL_FORMAT_RGBA16F) ? 2U
-                                                                          : 1U;
+                db_pixel_format_u32_words_per_pixel(
+                    g_state.backing.pixel_format);
+            if (words_per_pixel == 0U) {
+                DB_RUNTIME_FAIL(BACKEND_NAME,
+                                "invalid working format for buffer packing");
+            }
             for (size_t index = 0U; index < execution_plan->assignment_count;
                  index++) {
                 const db_vk_lane_assignment_t *const assignment =
@@ -348,11 +361,11 @@ uint32_t db_vk_independent_lanes_submit(
                     VK_SHADER_STAGE_COMPUTE_BIT, 0U, sizeof(push), &push);
                 vkCmdDispatch(runtime->command_buffer,
                               (piece->source_rect.extent.width +
-                               DB_VK_PACK_WORKGROUP_SIZE - 1U) /
-                                  DB_VK_PACK_WORKGROUP_SIZE,
+                               DB_VK_TRANSPORT_PACK_WORKGROUP_SIZE - 1U) /
+                                  DB_VK_TRANSPORT_PACK_WORKGROUP_SIZE,
                               (piece->source_rect.extent.height +
-                               DB_VK_PACK_WORKGROUP_SIZE - 1U) /
-                                  DB_VK_PACK_WORKGROUP_SIZE,
+                               DB_VK_TRANSPORT_PACK_WORKGROUP_SIZE - 1U) /
+                                  DB_VK_TRANSPORT_PACK_WORKGROUP_SIZE,
                               1U);
             }
             const VkBufferMemoryBarrier release_buffer = {
@@ -457,7 +470,7 @@ uint64_t db_vk_independent_lane_timing_ns(uint32_t lane_index) {
     const uint64_t ticks = db_vk_timestamp_delta(timestamps[0], timestamps[1],
                                                  runtime->timestamp_valid_bits);
     return db_checked_double_to_u64(BACKEND_NAME, "independent_lane_timing_ns",
-                                    (double)ticks *
+                                    DB_TO_F64(ticks) *
                                         runtime->timestamp_period_ns);
 #else
     (void)lane_index;
@@ -541,7 +554,11 @@ void db_vk_independent_lanes_record_composition(
         };
         vkCmdSetViewport(command_buffer, 0U, 1U, &viewport);
         const uint32_t words_per_pixel =
-            (g_state.backing.pixel_format == DB_PIXEL_FORMAT_RGBA16F) ? 2U : 1U;
+            db_pixel_format_u32_words_per_pixel(g_state.backing.pixel_format);
+        if (words_per_pixel == 0U) {
+            DB_RUNTIME_FAIL(BACKEND_NAME,
+                            "invalid working format for buffer composition");
+        }
         for (size_t index = 0U; index < execution_plan->assignment_count;
              index++) {
             const db_vk_lane_assignment_t *const assignment =

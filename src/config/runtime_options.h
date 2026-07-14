@@ -9,6 +9,10 @@
 #define DB_RUNTIME_OPT_WORKING_FORMAT "working_format"
 #define DB_RUNTIME_OPT_FPS_CAP "fps_cap"
 #define DB_RUNTIME_OPT_FRAME_LIMIT "frame_limit"
+#define DB_RUNTIME_OPT_GL1_GRADIENT "gl1_gradient"
+#define DB_RUNTIME_OPT_GL1_REPLAY_CAPACITY "gl1_replay_capacity"
+#define DB_RUNTIME_OPT_GL1_TARGET "gl1_target"
+#define DB_RUNTIME_OPT_GL3_GRADIENT "gl3_gradient"
 #define DB_RUNTIME_OPT_HASH "hash"
 #define DB_RUNTIME_OPT_HASH_REPORT "hash_report"
 #define DB_RUNTIME_OPT_METRICS_MODE "metrics_mode"
@@ -22,6 +26,10 @@
 #define DB_RUNTIME_OPT_TRACE_GL_ERRORS "trace_gl_errors"
 #define DB_RUNTIME_OPT_TRACE_SHADOW_UPLOAD "trace_shadow_upload"
 #define DB_RUNTIME_OPT_TRACE_VULKAN "trace_vulkan"
+#define DB_RUNTIME_OPT_DUMP_GRADIENT_DIVERGENCE "dump_gradient_divergence"
+#define DB_RUNTIME_OPT_IGNORE_CONFORMANCE_CACHE "ignore_conformance_cache"
+#define DB_RUNTIME_OPT_RERUN_CONFORMANCE_PROBE "rerun_conformance_probe"
+#define DB_RUNTIME_OPT_VK_GRADIENT "vk_gradient"
 #define DB_RUNTIME_OPT_VSYNC "vsync"
 
 #include <stdint.h>

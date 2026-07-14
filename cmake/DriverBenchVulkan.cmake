@@ -62,9 +62,11 @@ if(DB_BUILD_VULKAN)
             src/renderers/vulkan_1_2_multi_gpu/vk_renderer.c
             src/renderers/vulkan_1_2_multi_gpu/vk_frame.c
             src/renderers/vulkan_1_2_multi_gpu/vk_init.c
+            src/renderers/vulkan_1_2_multi_gpu/vk_init_device.c
             src/renderers/vulkan_1_2_multi_gpu/vk_init_phases.c
             src/renderers/vulkan_1_2_multi_gpu/vk_init_capabilities.c
             src/renderers/vulkan_1_2_multi_gpu/vk_init_selection.c
+            src/renderers/vulkan_1_2_multi_gpu/vk_selection_diagnostics.c
             src/renderers/vulkan_1_2_multi_gpu/vk_interop.c
             src/renderers/vulkan_1_2_multi_gpu/vk_interop_memory.c
             src/renderers/vulkan_1_2_multi_gpu/vk_interop_execution.c
@@ -72,9 +74,11 @@ if(DB_BUILD_VULKAN)
             src/renderers/vulkan_1_2_multi_gpu/vk_buffer_transport.c
             src/renderers/vulkan_1_2_multi_gpu/vk_calibration.c
             src/renderers/vulkan_1_2_multi_gpu/vk_piece_plan.c
+            src/renderers/vulkan_1_2_multi_gpu/vk_qualification.c
             src/renderers/vulkan_1_2_multi_gpu/vk_device_group.c
             src/renderers/vulkan_1_2_multi_gpu/vk_runtime.c
             src/renderers/vulkan_1_2_multi_gpu/vk_runtime_frame.c
+            src/renderers/vulkan_1_2_multi_gpu/vk_frame_finalize.c
             src/renderers/vulkan_1_2_multi_gpu/vk_runtime_metrics.c
             src/renderers/vulkan_1_2_multi_gpu/vk_wait.c
             src/renderers/vulkan_1_2_multi_gpu/vk_scheduler.c
@@ -85,68 +89,61 @@ if(DB_BUILD_VULKAN)
             list(APPEND DB_DRIVERBENCH_DEFS DB_VK_TEST_FORCE_BUFFER_TRANSPORT=1)
         endif()
 
-        set(DB_VK_VERT_SPV ${CMAKE_CURRENT_BINARY_DIR}/vk_rect.vert.spv)
-        set(DB_VK_FRAG_SPV ${CMAKE_CURRENT_BINARY_DIR}/vk_rect.frag.spv)
-        set(DB_VK_PRESENT_VERT_SPV
-            ${CMAKE_CURRENT_BINARY_DIR}/vk_present.vert.spv)
-        set(DB_VK_PRESENT_FRAG_SPV
-            ${CMAKE_CURRENT_BINARY_DIR}/vk_present.frag.spv)
-        set(DB_VK_PACK_COMP_SPV ${CMAKE_CURRENT_BINARY_DIR}/vk_pack.comp.spv)
-        set(DB_VK_UNPACK_FRAG_SPV
-            ${CMAKE_CURRENT_BINARY_DIR}/vk_unpack.frag.spv)
+        set(DB_VK_SHADER_MANIFEST
+            "IR_EXECUTE_VERT|ir_execute|vert"
+            "IR_EXECUTE_FRAG|ir_execute|frag"
+            "PRESENTATION_VERT|presentation|vert"
+            "PRESENTATION_FRAG|presentation|frag"
+            "TRANSPORT_PACK_COMP|transport_pack|comp"
+            "TRANSPORT_UNPACK_FRAG|transport_unpack|frag")
+        set(DB_VK_SHADER_KEYS "")
+        set(DB_VK_SHADER_ROLE_STAGES "")
+        foreach(DB_VK_SHADER_ENTRY IN LISTS DB_VK_SHADER_MANIFEST)
+            string(REPLACE "|" ";" DB_VK_SHADER_FIELDS "${DB_VK_SHADER_ENTRY}")
+            list(LENGTH DB_VK_SHADER_FIELDS DB_VK_SHADER_FIELD_COUNT)
+            if(NOT DB_VK_SHADER_FIELD_COUNT EQUAL 3)
+                message(
+                    FATAL_ERROR
+                        "Invalid Vulkan shader manifest entry: ${DB_VK_SHADER_ENTRY}"
+                )
+            endif()
+            list(GET DB_VK_SHADER_FIELDS 0 DB_VK_SHADER_KEY)
+            list(GET DB_VK_SHADER_FIELDS 1 DB_VK_SHADER_ROLE)
+            list(GET DB_VK_SHADER_FIELDS 2 DB_VK_SHADER_STAGE)
+            set(DB_VK_SHADER_ROLE_STAGE
+                "${DB_VK_SHADER_ROLE}|${DB_VK_SHADER_STAGE}")
+            if(DB_VK_SHADER_KEY IN_LIST DB_VK_SHADER_KEYS
+               OR DB_VK_SHADER_ROLE_STAGE IN_LIST DB_VK_SHADER_ROLE_STAGES)
+                message(
+                    FATAL_ERROR
+                        "Duplicate Vulkan shader manifest entry: ${DB_VK_SHADER_ENTRY}"
+                )
+            endif()
+            list(APPEND DB_VK_SHADER_KEYS "${DB_VK_SHADER_KEY}")
+            list(APPEND DB_VK_SHADER_ROLE_STAGES "${DB_VK_SHADER_ROLE_STAGE}")
+            set(DB_VK_SHADER_SOURCE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vulkan/${DB_VK_SHADER_ROLE}.${DB_VK_SHADER_STAGE}
+            )
+            if(NOT EXISTS "${DB_VK_SHADER_SOURCE}")
+                message(
+                    FATAL_ERROR
+                        "Vulkan shader source is missing: ${DB_VK_SHADER_SOURCE}"
+                )
+            endif()
+            set(DB_VK_SHADER_OUTPUT
+                ${CMAKE_CURRENT_BINARY_DIR}/vk_${DB_VK_SHADER_ROLE}.${DB_VK_SHADER_STAGE}.spv
+            )
+            set(DB_VK_${DB_VK_SHADER_KEY}_SPV ${DB_VK_SHADER_OUTPUT})
+            list(APPEND DB_VK_SHADER_OUTPUTS ${DB_VK_SHADER_OUTPUT})
+            add_custom_command(
+                OUTPUT ${DB_VK_SHADER_OUTPUT}
+                COMMAND ${GLSLC} ${DB_VK_SHADER_SOURCE} -o
+                        ${DB_VK_SHADER_OUTPUT}
+                DEPENDS ${DB_VK_SHADER_SOURCE}
+                VERBATIM)
+        endforeach()
 
-        add_custom_command(
-            OUTPUT ${DB_VK_VERT_SPV}
-            COMMAND
-                ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_rect.vert -o
-                ${DB_VK_VERT_SPV}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_rect.vert
-            VERBATIM)
-
-        add_custom_command(
-            OUTPUT ${DB_VK_FRAG_SPV}
-            COMMAND
-                ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_rect.frag -o
-                ${DB_VK_FRAG_SPV}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_rect.frag
-            VERBATIM)
-
-        add_custom_command(
-            OUTPUT ${DB_VK_PRESENT_VERT_SPV}
-            COMMAND
-                ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_present.vert
-                -o ${DB_VK_PRESENT_VERT_SPV}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_present.vert
-            VERBATIM)
-
-        add_custom_command(
-            OUTPUT ${DB_VK_PRESENT_FRAG_SPV}
-            COMMAND
-                ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_present.frag
-                -o ${DB_VK_PRESENT_FRAG_SPV}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_present.frag
-            VERBATIM)
-
-        add_custom_command(
-            OUTPUT ${DB_VK_PACK_COMP_SPV}
-            COMMAND
-                ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_pack.comp -o
-                ${DB_VK_PACK_COMP_SPV}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_pack.comp
-            VERBATIM)
-
-        add_custom_command(
-            OUTPUT ${DB_VK_UNPACK_FRAG_SPV}
-            COMMAND
-                ${GLSLC} ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_unpack.frag
-                -o ${DB_VK_UNPACK_FRAG_SPV}
-            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/vk_unpack.frag
-            VERBATIM)
-
-        add_custom_target(
-            driverbench_vulkan_shaders ALL
-            DEPENDS ${DB_VK_VERT_SPV} ${DB_VK_FRAG_SPV}
-                    ${DB_VK_PRESENT_VERT_SPV} ${DB_VK_PRESENT_FRAG_SPV}
-                    ${DB_VK_PACK_COMP_SPV} ${DB_VK_UNPACK_FRAG_SPV})
+        add_custom_target(driverbench_vulkan_shaders ALL
+                          DEPENDS ${DB_VK_SHADER_OUTPUTS})
     endif()
 endif()

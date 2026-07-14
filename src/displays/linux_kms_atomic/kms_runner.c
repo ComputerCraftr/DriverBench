@@ -191,7 +191,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     db_display_log_renderer_final_summary(
         db_dispatch_api_name(DB_API_OPENGL), renderer_name, backend,
         loop_result.frames, work_unit_count, loop_result.elapsed_ms,
-        renderer->draw_stats);
+        renderer->draw_stats, renderer->execution_report);
 
     renderer->shutdown();
     db_frame_source_shutdown(&benchmark_core);
@@ -323,7 +323,8 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
                                            db_kms_atomic_next_cpu_fb);
     db_display_log_renderer_final_summary(
         db_dispatch_api_name(DB_API_CPU), renderer_name, backend,
-        loop_result.frames, work_unit_count, loop_result.elapsed_ms, NULL);
+        loop_result.frames, work_unit_count, loop_result.elapsed_ms, NULL,
+        db_cpu_execution_report);
 
     db_cpu_shutdown();
     db_frame_source_shutdown(&benchmark_core);

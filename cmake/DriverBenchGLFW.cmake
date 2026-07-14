@@ -396,8 +396,10 @@ if(DB_BUILD_GLFW_WINDOW_DISPLAY AND NOT (DB_GLFW_LINK_LIB STREQUAL ""))
             "GLFW provider resolved to '${DB_GLFW_PROVIDER_RESOLVED}' (${DB_GLFW_LINK_LIB})"
     )
 
-    set(DB_GLFW_SOURCES src/displays/glfw_window/glfw_window.c
-                        src/displays/glfw_window/glfw_window_common.c)
+    set(DB_GLFW_SOURCES
+        src/displays/glfw_window/glfw_window.c
+        src/displays/glfw_window/glfw_opengl.c
+        src/displays/glfw_window/glfw_window_common.c)
     list(APPEND DB_APP_SOURCES ${DB_GLFW_SOURCES})
     db_set_source_include_directories("${DB_GLFW_EXTRA_INCLUDE_DIRS}"
                                       ${DB_GLFW_SOURCES})

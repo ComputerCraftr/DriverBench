@@ -29,7 +29,7 @@ enum {
 static const double db_hdr10_round_to_nearest_offset = 0.5;
 
 static double db_hdr10_finite_nonnegative(double value) {
-    return (isfinite(value) && (value > 0.0)) ? value : 0.0;
+    return db_f64_positive_finite_or_zero(value);
 }
 
 double db_hdr10_pq_encode_nits(double luminance_nits) {
@@ -39,7 +39,8 @@ double db_hdr10_pq_encode_nits(double luminance_nits) {
     static const double c2 = 2413.0 / 128.0;
     static const double c3 = 2392.0 / 128.0;
     const double normalized =
-        DB_MIN(db_hdr10_finite_nonnegative(luminance_nits), 10000.0) / 10000.0;
+        db_min_f64(db_hdr10_finite_nonnegative(luminance_nits), 10000.0) /
+        10000.0;
     const double powered = pow(normalized, m1);
     return pow((c1 + (c2 * powered)) / (1.0 + (c3 * powered)), m2);
 }
@@ -59,15 +60,15 @@ void db_hdr10_linear_srgb_to_bt2020_pq(const double *linear_srgb,
     };
     for (size_t channel = 0U; channel < 3U; channel++) {
         const double nits =
-            DB_MIN(bt2020[channel] * DB_HDR10_REFERENCE_WHITE_NITS,
-                   DB_HDR10_MASTERING_MAX_NITS);
+            db_min_f64(bt2020[channel] * DB_HDR10_REFERENCE_WHITE_NITS,
+                       DB_HDR10_MASTERING_MAX_NITS);
         encoded_bt2020_pq[channel] = db_hdr10_pq_encode_nits(nits);
     }
 }
 
 static uint32_t db_hdr10_quantize_10(double value) {
-    const double clamped = DB_MAX(0.0, DB_MIN(value, 1.0));
-    return (uint32_t)((clamped * (double)DB_HDR10_CODE_MAX) +
+    const double clamped = db_clamp_f64_finite_or(value, 0.0, 1.0, 0.0);
+    return (uint32_t)((clamped * DB_TO_F64(DB_HDR10_CODE_MAX)) +
                       db_hdr10_round_to_nearest_offset);
 }
 

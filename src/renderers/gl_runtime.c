@@ -31,14 +31,17 @@ int db_parse_gl_version_numbers(const char *version_text, int *major_out,
         return 0;
     }
 
-    char *parse_end = NULL;
-    const long major_l = strtol(cursor, &parse_end, 10);
-    if ((parse_end == cursor) || (*parse_end != '.')) {
+    const char *parse_end = NULL;
+    long major_l = 0L;
+    if ((db_parse_long_prefix(cursor, DB_PARSE_BASE_DECIMAL, &major_l,
+                              &parse_end) == 0) ||
+        (*parse_end != '.')) {
         return 0;
     }
     const char *minor_start = parse_end + 1;
-    const long minor_l = strtol(minor_start, &parse_end, 10);
-    if (parse_end == minor_start) {
+    long minor_l = 0L;
+    if (db_parse_long_prefix(minor_start, DB_PARSE_BASE_DECIMAL, &minor_l,
+                             &parse_end) == 0) {
         return 0;
     }
     if ((major_l < 0L) || (minor_l < 0L) || (major_l > INT_MAX) ||
@@ -100,7 +103,7 @@ uint64_t db_gl_pixel_surface_hash_canonical(const db_pixel_surface_t *surface) {
         db_checked_u32_to_size("renderer_gl_runtime", "pixel_surface_hash_w",
                                surface->pixel_width),
         db_pixel_surface_pixel_bytes(surface));
-    return db_hash_working_rgba8(db_pixel_surface_data_const(surface),
+    return db_hash_working_rgba8(db_pixel_surface_bytes_const(surface),
                                  surface->format, surface->pixel_width,
                                  surface->pixel_height, row_stride_bytes, 1);
 }
@@ -270,10 +273,6 @@ int db_gl_probe_finish(int success) {
 
 static const uint8_t db_gl_probe_channel_high_threshold = 200U;
 static const uint8_t db_gl_probe_channel_low_threshold = 80U;
-
-size_t db_gl_probe_rgba_pixel_offset(size_t width, size_t col, size_t row) {
-    return ((row * width) + col) * 4U;
-}
 
 int db_gl_probe_rgb_matches(const uint8_t *pixels, size_t offset, uint8_t red,
                             uint8_t green, uint8_t blue) {

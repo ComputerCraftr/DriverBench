@@ -55,6 +55,7 @@ int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,
             (db_kms_atomic_renderer_vtable_t){
                 .capability_mode = renderer_ops.runtime_capability_mode,
                 .draw_stats = renderer_ops.draw_stats,
+                .execution_report = renderer_ops.execution_report,
                 .init = renderer_ops.init,
                 .render_frame = (renderer == DB_GL_RENDERER_GL1_5_GLES1_1)
                                     ? kms_render_frame_gl1

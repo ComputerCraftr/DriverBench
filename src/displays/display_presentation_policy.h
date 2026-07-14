@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "core/db_geometry.h"
+#include "core/db_render_ir.h"
 
 typedef enum {
     DB_PRESENTATION_BUFFER_AGE_UNAVAILABLE = 0,
@@ -63,6 +64,11 @@ size_t db_presentation_damage_history_resolve(
     const db_presentation_buffer_age_t *age, db_grid_block_view_t current,
     uint32_t rows, uint32_t cols, db_grid_block_t *out_blocks,
     size_t out_capacity, int *out_force_full);
+size_t db_presentation_damage_history_resolve_ir(
+    db_presentation_damage_history_t *history,
+    const db_presentation_buffer_age_t *age, const db_render_ir_view_t *ir,
+    db_render_ir_region_id_t damage_region, uint32_t rows, uint32_t cols,
+    db_grid_block_t *out_blocks, size_t out_capacity, int *out_force_full);
 size_t db_presentation_map_logical_damage(
     db_grid_block_view_t logical, uint32_t grid_rows, uint32_t grid_cols,
     uint32_t destination_width, uint32_t destination_height,

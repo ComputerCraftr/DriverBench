@@ -11,6 +11,7 @@
 #include "core/db_backing_recovery.h"
 #include "renderers/gl_api.h"
 #include "renderers/gl_common.h"
+#include "renderers/gl_probe_internal.h"
 #include "renderers/gl_proc_runtime.h"
 #include "renderers/gl_shadow_present_internal.h"
 
@@ -498,7 +499,7 @@ db_test_repair_full_upload_target_copies_full_surface_for_fresh_target(
     db_gl_shadow_present_state_t present = {
         .slot_count = 1U,
     };
-    const db_gl_shadow_present_full_upload_target_t target = {
+    db_gl_shadow_present_full_upload_target_t target = {
         .pixel_surface =
             {
                 .pixel_width = 2U,
@@ -542,6 +543,15 @@ db_test_upload_slots_rotate_except_single_source(db_test_state_t *state) {
         0U);
 }
 
+static void db_test_upload_probe_prefix_is_bounded(db_test_state_t *state) {
+    const uint8_t expected = 0U;
+    const size_t maximum = db_gl_upload_probe_size_bytes(SIZE_MAX);
+    DB_TEST_EXPECT_TRUE(state, maximum > 0U);
+    DB_TEST_EXPECT_TRUE(state, db_gl_verify_buffer_prefix(NULL, maximum) == 0);
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_verify_buffer_prefix(&expected, maximum + 1U) == 0);
+}
+
 unsigned db_gl_shadow_present_test_run_all(void) {
     static const db_test_case_t cases[] = {
         {"unpack_upload_storage_reuses_client_buffer",
@@ -580,6 +590,8 @@ unsigned db_gl_shadow_present_test_run_all(void) {
          db_test_repair_full_upload_target_copies_full_surface_for_fresh_target},
         {"upload_slots_rotate_except_single_source",
          db_test_upload_slots_rotate_except_single_source},
+        {"upload_probe_prefix_is_bounded",
+         db_test_upload_probe_prefix_is_bounded},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

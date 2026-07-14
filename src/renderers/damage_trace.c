@@ -6,6 +6,7 @@
 #include "../core/db_hash.h"
 #include "../core/db_log.h"
 #include "../core/db_numeric.h"
+#include "../core/db_render_ir.h"
 #include "../core/db_trace.h"
 #include "core/db_render_types.h"
 
@@ -58,12 +59,99 @@ db_damage_trace_operation_name(db_damage_trace_operation_t value) {
                                                                 : "unknown";
 }
 
-static const char *
-db_geometry_execution_name(db_geometry_execution_operation_t value) {
-    static const char *const names[] = {"no_op", "incremental", "rebuild",
-                                        "full_redraw"};
-    return ((size_t)value < (sizeof(names) / sizeof(names[0]))) ? names[value]
-                                                                : "unknown";
+static const char *render_ir_opcode_name(uint8_t opcode) {
+    static const char *const names[] = {
+        "begin_target",        "end_target",      "clear",
+        "fill_rects",          "linear_gradient", "upload_image",
+        "invalidate_resource",
+    };
+    return ((size_t)opcode < (sizeof(names) / sizeof(names[0]))) ? names[opcode]
+                                                                 : "unknown";
+}
+
+static void emit_render_ir_detail(uint32_t frame_index, const char *phase,
+                                  const db_render_ir_view_t *ir) {
+    if ((ir == NULL) || (db_damage_trace_level() < 2)) {
+        return;
+    }
+    db_render_ir_iterator_t iterator = {0};
+    db_render_ir_iterator_begin(&iterator, ir);
+    const db_render_ir_command_header_t *command = NULL;
+    while ((command = db_render_ir_iterator_next(&iterator)) != NULL) {
+        const db_log_field_t fields[] = {
+            DB_LOG_U64("frame", frame_index),
+            DB_LOG_TOKEN("phase", phase),
+            DB_LOG_U64("sequence", command->sequence),
+            DB_LOG_TOKEN("opcode", render_ir_opcode_name(command->opcode)),
+            DB_LOG_U64("destination", command->destination),
+            DB_LOG_U64("clip_region", command->clip_region),
+            DB_LOG_U64("touched_region", command->touched_region),
+            DB_LOG_U64("coverage_region", command->full_coverage_region),
+            DB_LOG_U64("flags", command->flags),
+            DB_LOG_U64("source_access", command->source_access),
+            DB_LOG_U64("destination_access", command->destination_access),
+        };
+        db_log_info("damage_trace", "render_ir_command", fields,
+                    DB_LOG_FIELD_COUNT(fields));
+        if (command->opcode == DB_RENDER_IR_OP_FILL_LINEAR_GRADIENT) {
+            const db_render_ir_linear_gradient_command_t *const gradient =
+                (const db_render_ir_linear_gradient_command_t *)command;
+            const db_log_field_t gradient_fields[] = {
+                DB_LOG_U64("frame", frame_index),
+                DB_LOG_TOKEN("phase", phase),
+                DB_LOG_U64("command_sequence", command->sequence),
+                DB_LOG_I64("x", gradient->bounds.x),
+                DB_LOG_I64("y", gradient->bounds.y),
+                DB_LOG_I64("width", gradient->bounds.width),
+                DB_LOG_I64("height", gradient->bounds.height),
+                DB_LOG_I64("axis_start", gradient->axis_start),
+                DB_LOG_I64("axis_end", gradient->axis_end),
+                DB_LOG_BOOL("reverse_stops", gradient->reverse_stops),
+                DB_LOG_HEX64("start_r_bits",
+                             db_f64_to_bits_u64(gradient->start_color.rgba[0])),
+                DB_LOG_HEX64("start_g_bits",
+                             db_f64_to_bits_u64(gradient->start_color.rgba[1])),
+                DB_LOG_HEX64("start_b_bits",
+                             db_f64_to_bits_u64(gradient->start_color.rgba[2])),
+                DB_LOG_HEX64("end_r_bits",
+                             db_f64_to_bits_u64(gradient->end_color.rgba[0])),
+                DB_LOG_HEX64("end_g_bits",
+                             db_f64_to_bits_u64(gradient->end_color.rgba[1])),
+                DB_LOG_HEX64("end_b_bits",
+                             db_f64_to_bits_u64(gradient->end_color.rgba[2])),
+            };
+            db_log_info("damage_trace", "render_ir_gradient", gradient_fields,
+                        DB_LOG_FIELD_COUNT(gradient_fields));
+            continue;
+        }
+        if (command->opcode != DB_RENDER_IR_OP_FILL_RECTS) {
+            continue;
+        }
+        const db_render_ir_fill_command_t *const fill_command =
+            (const db_render_ir_fill_command_t *)command;
+        const size_t detail_count = db_damage_trace_detail_count(
+            fill_command->fill_count, db_damage_trace_level());
+        for (size_t index = 0U; index < detail_count; index++) {
+            const db_render_ir_fill_t fill =
+                ir->fills[fill_command->first_fill + index];
+            const db_log_field_t fill_fields[] = {
+                DB_LOG_U64("frame", frame_index),
+                DB_LOG_TOKEN("phase", phase),
+                DB_LOG_U64("command_sequence", command->sequence),
+                DB_LOG_U64("index", index),
+                DB_LOG_I64("x", fill.rect.x),
+                DB_LOG_I64("y", fill.rect.y),
+                DB_LOG_I64("width", fill.rect.width),
+                DB_LOG_I64("height", fill.rect.height),
+                DB_LOG_HEX64("r_bits", db_f64_to_bits_u64(fill.color.rgba[0])),
+                DB_LOG_HEX64("g_bits", db_f64_to_bits_u64(fill.color.rgba[1])),
+                DB_LOG_HEX64("b_bits", db_f64_to_bits_u64(fill.color.rgba[2])),
+                DB_LOG_HEX64("a_bits", db_f64_to_bits_u64(fill.color.rgba[3])),
+            };
+            db_log_info("damage_trace", "render_ir_fill", fill_fields,
+                        DB_LOG_FIELD_COUNT(fill_fields));
+        }
+    }
 }
 
 static const char *
@@ -336,21 +424,51 @@ void db_damage_trace_emit_frame_plan(db_damage_trace_backend_t backend,
         DB_LOG_U64("pixel_width", plan->pixel_width),
         DB_LOG_U64("pixel_height", plan->pixel_height),
         DB_LOG_TOKEN("geometry_operation",
-                     db_geometry_execution_name(plan->geometry.operation)),
-        DB_LOG_U64("logical_count", plan->geometry.logical_damage.count),
-        DB_LOG_U64("current_count", plan->geometry.current_blocks.count),
-        DB_LOG_TOKEN(
-            "rebuild_seed",
-            (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_GEOMETRY)
-                ? "geometry"
-                : ((plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_RASTER)
-                       ? "raster"
-                       : "none")),
-        DB_LOG_U64("rebuild_count", plan->rebuild_seed.geometry.count),
-        DB_LOG_U64("rebuild_seed_generation", plan->rebuild_seed.generation),
-        DB_LOG_U64("repair_count", plan->geometry.repair_union.count),
-        DB_LOG_U64("replay_depth", plan->geometry.replay_depth),
-        DB_LOG_BOOL("overflowed", plan->geometry.overflowed),
+                     (plan->rebuild_required != 0) ? "rebuild" : "incremental"),
+        DB_LOG_U64("update_ir_commands", plan->update_ir.command_count),
+        DB_LOG_U64("update_ir_fills", plan->update_ir.fill_count),
+        DB_LOG_HEX64("update_ir_hash", plan->update_ir_hash),
+        DB_LOG_U64("rebuild_ir_commands", plan->rebuild_ir.command_count),
+        DB_LOG_U64("rebuild_ir_fills", plan->rebuild_ir.fill_count),
+        DB_LOG_HEX64("rebuild_ir_hash", plan->rebuild_ir_hash),
+        DB_LOG_U64("external_binding_count", plan->external_bindings.count),
+        DB_LOG_TOKEN("update_ir_status",
+                     db_render_ir_status_name(plan->update_metadata.status)),
+        DB_LOG_U64("update_damage_area", plan->update_metadata.damage_area),
+        DB_LOG_U64("update_eliminated_area",
+                   plan->update_metadata.eliminated_area),
+        DB_LOG_U64("update_batch_count",
+                   plan->update_metadata.compatible_batch_count),
+        DB_LOG_U64("update_instance_count",
+                   plan->update_metadata.instance_count),
+        DB_LOG_U64("update_solid_commands",
+                   plan->update_metadata.solid_command_count),
+        DB_LOG_U64("update_gradient_commands",
+                   plan->update_metadata.gradient_count),
+        DB_LOG_U64("update_exact_fallback_instances",
+                   plan->update_metadata.exact_fallback_instance_count),
+        DB_LOG_BOOL("update_full_coverage",
+                    plan->update_metadata.full_coverage),
+        DB_LOG_BOOL("update_fragmented", plan->update_metadata.fragmented),
+        DB_LOG_BOOL("update_prior_content_required",
+                    plan->update_metadata.prior_content_required),
+        DB_LOG_BOOL("update_worker_partitionable",
+                    plan->update_metadata.worker_partitionable),
+        DB_LOG_TOKEN("rebuild_ir_status",
+                     db_render_ir_status_name(plan->rebuild_metadata.status)),
+        DB_LOG_U64("rebuild_damage_area", plan->rebuild_metadata.damage_area),
+        DB_LOG_U64("rebuild_batch_count",
+                   plan->rebuild_metadata.compatible_batch_count),
+        DB_LOG_U64("rebuild_instance_count",
+                   plan->rebuild_metadata.instance_count),
+        DB_LOG_U64("rebuild_solid_commands",
+                   plan->rebuild_metadata.solid_command_count),
+        DB_LOG_U64("rebuild_gradient_commands",
+                   plan->rebuild_metadata.gradient_count),
+        DB_LOG_U64("rebuild_exact_fallback_instances",
+                   plan->rebuild_metadata.exact_fallback_instance_count),
+        DB_LOG_BOOL("rebuild_full_coverage",
+                    plan->rebuild_metadata.full_coverage),
         DB_LOG_BOOL("rebuild_required", plan->rebuild_required),
         DB_LOG_TOKEN("rebuild_reason",
                      db_frame_rebuild_reason_name(plan->rebuild_reason)),
@@ -361,6 +479,8 @@ void db_damage_trace_emit_frame_plan(db_damage_trace_backend_t backend,
     };
     db_log_info("damage_trace", "frame_plan", fields,
                 DB_LOG_FIELD_COUNT(fields));
+    emit_render_ir_detail(plan->frame_index, "update", &plan->update_ir);
+    emit_render_ir_detail(plan->frame_index, "rebuild", &plan->rebuild_ir);
 }
 
 void db_damage_trace_emit_target_lifecycle(
@@ -411,43 +531,6 @@ db_damage_trace_emit_grid(const db_damage_trace_event_t *event,
     }
     for (size_t i = 0U; i < block_count; i++) {
         converted[i] = db_damage_block_from_grid_block(&blocks[i]);
-    }
-    db_damage_trace_event_t converted_event = *event;
-    converted_event.blocks = converted;
-    converted_event.block_count = block_count;
-    summary = db_damage_trace_emit(&converted_event);
-    free(converted);
-    return summary;
-}
-
-db_damage_trace_summary_t
-db_damage_trace_emit_colored_grid(const db_damage_trace_event_t *event,
-                                  const db_colored_f64_block_t *blocks,
-                                  size_t block_count) {
-    db_damage_trace_summary_t summary = {0};
-    if ((event == NULL) || (db_damage_trace_enabled() == 0)) {
-        return summary;
-    }
-    if ((blocks == NULL) || (block_count == 0U)) {
-        db_damage_trace_event_t empty_event = *event;
-        empty_event.blocks = NULL;
-        empty_event.block_count = 0U;
-        return db_damage_trace_emit(&empty_event);
-    }
-    db_damage_block_t *const converted =
-        (db_damage_block_t *)calloc(block_count, sizeof(*converted));
-    if (converted == NULL) {
-        DB_RUNTIME_FAIL("damage_trace",
-                        "failed to allocate %zu colored trace blocks",
-                        block_count);
-    }
-    for (size_t i = 0U; i < block_count; i++) {
-        converted[i] = (db_damage_block_t){
-            .row_start = blocks[i].row_start,
-            .row_count = blocks[i].row_count,
-            .col_start = blocks[i].col_start,
-            .col_count = blocks[i].col_count,
-        };
     }
     db_damage_trace_event_t converted_event = *event;
     converted_event.blocks = converted;

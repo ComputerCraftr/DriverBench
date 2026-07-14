@@ -3,10 +3,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "core/db_core.h"
 #include "core/db_geometry.h"
-#include "core/db_geometry_builder.h"
 #include "core/db_log.h"
 #include "core/db_numeric.h"
+#include "core/db_render_ir.h"
 #include "core/db_render_types.h"
 
 const char *db_presentation_buffer_age_provider_name(
@@ -30,7 +31,7 @@ db_presentation_buffer_age_t db_presentation_buffer_age_from_serial(
     uint32_t raw_age = 0U;
     if ((previous_valid != 0) && (current_serial > previous_serial)) {
         const uint64_t delta = current_serial - previous_serial;
-        raw_age = (delta <= UINT32_MAX) ? (uint32_t)delta : UINT32_MAX;
+        raw_age = db_u64_to_u32_saturating(delta);
     }
     return db_presentation_buffer_age_resolve(
         DB_PRESENTATION_BUFFER_AGE_SCANOUT, raw_age, history_capacity);
@@ -91,10 +92,63 @@ void db_presentation_damage_history_reset(
     }
 }
 
-static int db_presentation_damage_add(db_geometry_builder_t *builder,
+typedef struct {
+    db_grid_block_t *blocks;
+    size_t capacity;
+    size_t count;
+} db_presentation_damage_builder_t;
+
+static int
+db_presentation_damage_add_one(db_presentation_damage_builder_t *builder,
+                               const db_grid_block_t *block) {
+    if ((builder == NULL) || (block == NULL) || (block->row_count == 0U) ||
+        (block->col_count == 0U)) {
+        return 0;
+    }
+    const uint64_t block_row_end =
+        (uint64_t)block->row_start + block->row_count;
+    const uint64_t block_col_end =
+        (uint64_t)block->col_start + block->col_count;
+    for (size_t index = 0U; index < builder->count; index++) {
+        db_grid_block_t *const existing = &builder->blocks[index];
+        const uint64_t existing_row_end =
+            (uint64_t)existing->row_start + existing->row_count;
+        const uint64_t existing_col_end =
+            (uint64_t)existing->col_start + existing->col_count;
+        if ((existing->row_start == block->row_start) &&
+            (existing->row_count == block->row_count) &&
+            ((uint64_t)block->col_start <= existing_col_end) &&
+            ((uint64_t)existing->col_start <= block_col_end)) {
+            const uint32_t start =
+                DB_MIN(existing->col_start, block->col_start);
+            const uint64_t end = DB_MAX(existing_col_end, block_col_end);
+            existing->col_start = start;
+            existing->col_count = (uint32_t)(end - start);
+            return 1;
+        }
+        if ((existing->col_start == block->col_start) &&
+            (existing->col_count == block->col_count) &&
+            ((uint64_t)block->row_start <= existing_row_end) &&
+            ((uint64_t)existing->row_start <= block_row_end)) {
+            const uint32_t start =
+                DB_MIN(existing->row_start, block->row_start);
+            const uint64_t end = DB_MAX(existing_row_end, block_row_end);
+            existing->row_start = start;
+            existing->row_count = (uint32_t)(end - start);
+            return 1;
+        }
+    }
+    if (builder->count >= builder->capacity) {
+        return 0;
+    }
+    builder->blocks[builder->count++] = *block;
+    return 1;
+}
+
+static int db_presentation_damage_add(db_presentation_damage_builder_t *builder,
                                       db_grid_block_view_t damage) {
     for (size_t index = 0U; index < damage.count; index++) {
-        if (db_geometry_builder_add_damage(builder, &damage.blocks[index]) ==
+        if (db_presentation_damage_add_one(builder, &damage.blocks[index]) ==
             0) {
             return 0;
         }
@@ -114,11 +168,10 @@ size_t db_presentation_damage_history_resolve(
         (out_capacity == 0U) || (rows == 0U) || (cols == 0U)) {
         return 0U;
     }
-    db_geometry_builder_t builder = {
-        .logical_blocks = out_blocks,
-        .logical_capacity = out_capacity,
+    db_presentation_damage_builder_t builder = {
+        .blocks = out_blocks,
+        .capacity = out_capacity,
     };
-    db_geometry_builder_reset(&builder);
     int valid = DB_BOOL((history->count > 0U) && (age->valid != 0) &&
                         (age->force_full_repair == 0) &&
                         (age->effective_replay_depth <= history->count));
@@ -142,9 +195,9 @@ size_t db_presentation_damage_history_resolve(
         valid = 0;
     }
     if (valid == 0) {
-        db_geometry_builder_reset(&builder);
+        builder.count = 0U;
         const db_grid_block_t full = db_grid_block_full(rows, cols);
-        if (db_geometry_builder_add_damage(&builder, &full) == 0) {
+        if (db_presentation_damage_add_one(&builder, &full) == 0) {
             return 0U;
         }
     }
@@ -153,8 +206,10 @@ size_t db_presentation_damage_history_resolve(
     const size_t stored_count =
         DB_MIN(current.count, (size_t)DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME);
     if ((current.blocks != NULL) && (stored_count > 0U)) {
-        memcpy(history->blocks[write_index], current.blocks,
-               stored_count * sizeof(*current.blocks));
+        const size_t stored_bytes =
+            db_checked_mul_size("presentation_policy", "damage history bytes",
+                                stored_count, sizeof(*current.blocks));
+        memmove(history->blocks[write_index], current.blocks, stored_bytes);
     }
     history->counts[write_index] = stored_count;
     history->valid[write_index] = DB_BOOL(stored_count == current.count);
@@ -165,7 +220,30 @@ size_t db_presentation_damage_history_resolve(
     if (out_force_full != NULL) {
         *out_force_full = DB_BOOL(valid == 0);
     }
-    return builder.logical_count;
+    return builder.count;
+}
+
+size_t db_presentation_damage_history_resolve_ir(
+    db_presentation_damage_history_t *history,
+    const db_presentation_buffer_age_t *age, const db_render_ir_view_t *ir,
+    db_render_ir_region_id_t damage_region, uint32_t rows, uint32_t cols,
+    db_grid_block_t *out_blocks, size_t out_capacity, int *out_force_full) {
+    db_grid_block_t current[DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME] = {};
+    int overflow = 0;
+    const size_t current_count = db_render_ir_region_copy_grid_blocks(
+        ir, damage_region, current, DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME,
+        &overflow);
+    db_presentation_buffer_age_t resolved_age =
+        (age != NULL) ? *age : (db_presentation_buffer_age_t){0};
+    if (overflow != 0) {
+        resolved_age.valid = 0;
+        resolved_age.force_full_repair = 1;
+        resolved_age.fallback_reason = "damage_capacity_exceeded";
+    }
+    return db_presentation_damage_history_resolve(
+        history, &resolved_age,
+        (db_grid_block_view_t){.blocks = current, .count = current_count}, rows,
+        cols, out_blocks, out_capacity, out_force_full);
 }
 
 static uint32_t db_scale_edge_floor(uint32_t edge, uint32_t source_extent,
@@ -210,12 +288,14 @@ size_t db_presentation_map_logical_damage(
             }
             return count;
         }
-        const uint32_t row_end = (uint32_t)DB_MIN(
-            (uint64_t)grid_rows,
-            (uint64_t)block->row_start + (uint64_t)block->row_count);
-        const uint32_t col_end = (uint32_t)DB_MIN(
-            (uint64_t)grid_cols,
-            (uint64_t)block->col_start + (uint64_t)block->col_count);
+        const uint32_t row_end = db_checked_u64_to_u32(
+            "presentation_policy", "logical_row_end",
+            DB_MIN((uint64_t)grid_rows,
+                   (uint64_t)block->row_start + (uint64_t)block->row_count));
+        const uint32_t col_end = db_checked_u64_to_u32(
+            "presentation_policy", "logical_col_end",
+            DB_MIN((uint64_t)grid_cols,
+                   (uint64_t)block->col_start + (uint64_t)block->col_count));
         const uint32_t x0 =
             db_scale_edge_floor(block->col_start, grid_cols, destination_width);
         const uint32_t x1 =

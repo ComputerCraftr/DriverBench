@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "db_log.h"
+#include "db_numeric.h"
 
 #define DB_NS_PER_MS_U64 1000000ULL
 #define DB_NS_PER_SECOND_U64 1000000000ULL
@@ -48,6 +49,12 @@ static const db_poll_policy_t g_progress_policies[] = {
                    1000U * DB_NS_PER_MS_U64, DB_SYNC_TIMEOUT_FAIL),
     DB_POLL_POLICY(DB_PROGRESS_GL_ERROR_DRAIN, "gl_error_drain", 64U, 0U, 0U,
                    DB_SYNC_TIMEOUT_SKIP),
+    DB_POLL_POLICY(DB_PROGRESS_CONFORMANCE_HELPER, "conformance_helper", 6000U,
+                   10U * DB_NS_PER_MS_U64, 60U * DB_NS_PER_SECOND_U64,
+                   DB_SYNC_TIMEOUT_FALLBACK),
+    DB_POLL_POLICY(DB_PROGRESS_CONFORMANCE_REAP, "conformance_reap", 25U,
+                   10U * DB_NS_PER_MS_U64, 250U * DB_NS_PER_MS_U64,
+                   DB_SYNC_TIMEOUT_FALLBACK),
 };
 
 #undef DB_POLL_POLICY
@@ -136,8 +143,7 @@ int db_poll_policy_validate(const db_poll_policy_t *policy) {
 }
 
 db_deadline_t db_deadline_after(uint64_t now_ns, uint64_t duration_ns) {
-    const uint64_t expires_ns =
-        (UINT64_MAX - now_ns < duration_ns) ? UINT64_MAX : now_ns + duration_ns;
+    const uint64_t expires_ns = db_u64_saturating_add(now_ns, duration_ns);
     return (db_deadline_t){.started_ns = now_ns, .expires_ns = expires_ns};
 }
 
@@ -177,9 +183,7 @@ db_sync_wait_result_t db_progress_execute_with_clock(
             break;
         }
         const uint64_t attempt_timeout_ns =
-            (policy->attempt_timeout_ns < remaining_ns)
-                ? policy->attempt_timeout_ns
-                : remaining_ns;
+            DB_MIN(policy->attempt_timeout_ns, remaining_ns);
         last = attempt_fn(user_data, attempt_timeout_ns);
         last.policy_id = id;
         last.attempts = attempt + 1U;

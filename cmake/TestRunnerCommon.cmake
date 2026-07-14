@@ -4,6 +4,18 @@ set(DB_TEST_GLFW_ENV_SKIP_REGEX
 set(DB_TEST_GLFW_ENV_SKIP_REASON
     "environment does not provide a usable local GLFW display/context for this test"
 )
+set(DB_TEST_CANONICAL_SKIP_REGEX
+    "DB_CTEST_OUTCOME=SKIP reason=[a-z0-9_]+ capability=[a-z0-9_]+")
+
+function(db_test_report_skip reason capability)
+    if(NOT reason MATCHES "^[a-z0-9_]+$" OR NOT capability MATCHES
+                                            "^[a-z0-9_]+$")
+        message(FATAL_ERROR "Invalid canonical skip: ${reason}/${capability}")
+    endif()
+    message(
+        STATUS "DB_CTEST_OUTCOME=SKIP reason=${reason} capability=${capability}"
+    )
+endfunction()
 
 function(db_test_require_defined var_name)
     if(NOT DEFINED ${var_name} OR "${${var_name}}" STREQUAL "")
@@ -154,7 +166,8 @@ function(db_test_run_command out_output out_skip_reason out_status args_string
     set(skip_reason "")
     if(NOT run_status EQUAL 0 AND run_combined_output MATCHES
                                   "${DB_TEST_GLFW_ENV_SKIP_REGEX}")
-        set(skip_reason "${DB_TEST_GLFW_ENV_SKIP_REASON}")
+        set(skip_reason "glfw_environment_unavailable")
+        db_test_report_skip("${skip_reason}" "glfw_context")
     endif()
 
     set(${out_output}

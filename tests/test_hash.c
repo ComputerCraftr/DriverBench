@@ -2,8 +2,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
+#include "core/db_byte_codec.h"
+#include "core/db_conformance_cache.h"
+#include "core/db_core.h"
 #include "core/db_hash.h"
 #include "core/db_hash_simd_internal.h"
 
@@ -11,6 +16,7 @@ enum {
     DB_TEST_TREE_MAX_BYTES = 8193U,
     DB_TEST_TREE_BYTE_MULTIPLIER = 37U,
     DB_TEST_TREE_BYTE_OFFSET = 11U,
+    DB_TEST_CACHE_PATH_BYTES = 128U,
 };
 
 static void db_test_hash_tree_fill(uint8_t *bytes, size_t length) {
@@ -19,6 +25,25 @@ static void db_test_hash_tree_fill(uint8_t *bytes, size_t length) {
                                   DB_TEST_TREE_BYTE_OFFSET) &
                                  UINT8_MAX);
     }
+}
+
+static void db_test_byte_codec_round_trips_and_hex(db_test_state_t *state) {
+    uint8_t u32_wire[DB_U32_WIRE_BYTES] = {0};
+    uint8_t u64_wire[DB_U64_WIRE_BYTES] = {0};
+    char hex[(DB_U64_WIRE_BYTES * 2U) + 1U] = {0};
+    db_store_u32_le(u32_wire, UINT32_C(0x78563412));
+    db_store_u64_le(u64_wire, UINT64_C(0xf0debc9a78563412));
+    DB_TEST_EXPECT_EQ_U32(state, u32_wire[0], 0x12U);
+    DB_TEST_EXPECT_EQ_U32(state, u32_wire[3], 0x78U);
+    DB_TEST_EXPECT_EQ_U32(state, db_load_u32_le(u32_wire),
+                          UINT32_C(0x78563412));
+    DB_TEST_EXPECT_TRUE(state, db_load_u64_le(u64_wire) ==
+                                   UINT64_C(0xf0debc9a78563412));
+    DB_TEST_EXPECT_TRUE(state, db_hex_encode_lower(u64_wire, sizeof(u64_wire),
+                                                   hex, sizeof(hex)) != 0);
+    DB_TEST_EXPECT_STR_EQ(state, hex, "123456789abcdef0");
+    DB_TEST_EXPECT_TRUE(state, db_hex_encode_lower(u64_wire, sizeof(u64_wire),
+                                                   hex, sizeof(hex) - 1U) == 0);
 }
 
 static void db_test_hash_tree_vectors(db_test_state_t *state) {
@@ -175,16 +200,72 @@ static void db_test_hash_rejects_invalid_framebuffers(db_test_state_t *state) {
         0U);
 }
 
+static void db_test_hash_rejects_overflowing_layouts(db_test_state_t *state) {
+    const uint8_t byte = 0U;
+    const uint16_t half_pixel = 0U;
+    DB_TEST_EXPECT_EQ_U64(state,
+                          db_hash_rgba8_pixels_canonical(
+                              &byte, UINT32_MAX, UINT32_MAX, SIZE_MAX, 0),
+                          0U);
+    DB_TEST_EXPECT_EQ_U64(state,
+                          db_hash_rgba16f_pixels_canonical(
+                              &half_pixel, UINT32_MAX, UINT32_MAX, SIZE_MAX, 0),
+                          0U);
+    const db_rgba8_pixel_diff_t diff =
+        db_rgba8_pixel_diff(&byte, &byte, UINT32_MAX, UINT32_MAX);
+    DB_TEST_EXPECT_EQ_SIZE(state, diff.mismatch_count, 0U);
+}
+
+static void db_test_conformance_cache_round_trip(db_test_state_t *state) {
+    char path[DB_TEST_CACHE_PATH_BYTES];
+    (void)db_snprintf(path, sizeof(path), "/tmp/driverbench-probe-%ld.cache",
+                      (long)getpid());
+    (void)remove(path);
+    const uint8_t key[] = {1U, 2U, 3U, 4U, 5U};
+    db_conformance_result_t result = DB_CONFORMANCE_UNTESTED;
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_conformance_cache_read(path, key, sizeof(key), &result),
+        DB_CONFORMANCE_CACHE_MISS);
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_conformance_cache_write(path, key, sizeof(key),
+                                                     DB_CONFORMANCE_CONFORMING),
+                          DB_CONFORMANCE_CACHE_HIT);
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_conformance_cache_read(path, key, sizeof(key), &result),
+        DB_CONFORMANCE_CACHE_HIT);
+    DB_TEST_EXPECT_EQ_INT(state, result, DB_CONFORMANCE_CONFORMING);
+    const uint8_t other_key[] = {1U, 2U, 3U, 4U, 6U};
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_conformance_cache_read(path, other_key, sizeof(other_key), &result),
+        DB_CONFORMANCE_CACHE_INVALID);
+    FILE *const corrupt = fopen(path, "wb");
+    DB_TEST_EXPECT_TRUE(state, corrupt != NULL);
+    if (corrupt != NULL) {
+        DB_TEST_EXPECT_EQ_SIZE(state, fwrite("bad", 3U, 1U, corrupt), 1U);
+        DB_TEST_EXPECT_EQ_INT(state, fclose(corrupt), 0);
+    }
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_conformance_cache_read(path, key, sizeof(key), &result),
+        DB_CONFORMANCE_CACHE_INVALID);
+    (void)remove(path);
+}
+
 unsigned db_hash_test_run_all(void) {
     const db_test_case_t cases[] = {
+        {"byte_codec_round_trips_and_hex",
+         db_test_byte_codec_round_trips_and_hex},
         {"hash_retina_normalization", db_test_hash_retina_normalization},
         {"hash_canonicalizes_alpha_and_origin",
          db_test_hash_canonicalizes_alpha_and_origin},
         {"hash_rejects_invalid_framebuffers",
          db_test_hash_rejects_invalid_framebuffers},
+        {"hash_rejects_overflowing_layouts",
+         db_test_hash_rejects_overflowing_layouts},
         {"hash_tree_vectors", db_test_hash_tree_vectors},
         {"hash_tree_domain_and_seed", db_test_hash_tree_domain_and_seed},
         {"hash_tree_structure_is_bound", db_test_hash_tree_structure_is_bound},
+        {"conformance_cache_round_trip", db_test_conformance_cache_round_trip},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

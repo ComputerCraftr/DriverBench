@@ -119,7 +119,7 @@ static inline double db_window_blend_factor(uint32_t window_index,
     if (span <= 1U) {
         return 1.0;
     }
-    return ((double)((span - 1U) - window_index)) / (double)(span - 1U);
+    return DB_TO_F64((span - 1U) - window_index) / DB_TO_F64(span - 1U);
 }
 
 static inline db_snake_active_batch_t db_snake_bind_active_batch_scratch(

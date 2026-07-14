@@ -1,31 +1,106 @@
 #include "db_benchmark_emitters.h"
 
-#include <stddef.h>
-#include <stdint.h>
-
 #include "benchmarks/db_benchmark_geometry_internal.h"
 #include "benchmarks/db_benchmark_gradient_internal.h"
 #include "benchmarks/db_benchmark_runtime_internal.h"
 #include "benchmarks/db_benchmark_types_internal.h"
 #include "core/db_core.h"
 #include "core/db_geometry.h"
-#include "core/db_geometry_builder.h"
 #include "core/db_numeric.h"
+#include "core/db_render_ir.h"
 #include "core/db_render_types.h"
 
-void db_block_emitter_sink_reset(db_block_emitter_sink_t *sink) {
-    db_geometry_builder_reset(sink);
+#include <stddef.h>
+#include <stdint.h>
+
+void db_benchmark_ir_emitter_reset(db_benchmark_ir_emitter_t *emitter) {
+    if (emitter != NULL) {
+        emitter->logical_count = 0U;
+        emitter->fill_count = 0U;
+        emitter->status = DB_BENCHMARK_IR_EMITTER_OK;
+    }
 }
 
-db_block_emitter_status_t
+int db_benchmark_ir_emitter_add_damage(db_benchmark_ir_emitter_t *emitter,
+                                       const db_grid_block_t *block) {
+    if ((emitter == NULL) || (block == NULL) || (block->row_count == 0U) ||
+        (block->col_count == 0U)) {
+        if (emitter != NULL) {
+            emitter->status = DB_BENCHMARK_IR_EMITTER_INVALID;
+        }
+        return 0;
+    }
+    if (emitter->logical_count >= emitter->logical_capacity) {
+        emitter->status = DB_BENCHMARK_IR_EMITTER_CAPACITY;
+        return 0;
+    }
+    emitter->logical_blocks[emitter->logical_count++] = *block;
+    return 1;
+}
+
+int db_benchmark_ir_emitter_add_rect(db_benchmark_ir_emitter_t *emitter,
+                                     uint32_t row_start, uint32_t row_count,
+                                     uint32_t col_start, uint32_t col_count,
+                                     const double rgb[3]) {
+    if ((emitter == NULL) || (rgb == NULL) || (row_count == 0U) ||
+        (col_count == 0U) || (row_start > INT32_MAX) ||
+        (row_count > INT32_MAX) || (col_start > INT32_MAX) ||
+        (col_count > INT32_MAX)) {
+        if (emitter != NULL) {
+            emitter->status = DB_BENCHMARK_IR_EMITTER_INVALID;
+        }
+        return 0;
+    }
+    if (emitter->fill_count > 0U) {
+        db_render_ir_fill_t *const previous =
+            &emitter->fills[emitter->fill_count - 1U];
+        if ((previous->rect.x == (int32_t)col_start) &&
+            (previous->rect.width == (int32_t)col_count) &&
+            ((previous->rect.y + previous->rect.height) ==
+             (int32_t)row_start) &&
+            (db_equal_f64_rgb3(previous->color.rgba, rgb) != 0)) {
+            previous->rect.height += (int32_t)row_count;
+            return 1;
+        }
+    }
+    if (emitter->fill_count >= emitter->fill_capacity) {
+        emitter->status = DB_BENCHMARK_IR_EMITTER_CAPACITY;
+        return 0;
+    }
+    emitter->fills[emitter->fill_count++] = (db_render_ir_fill_t){
+        .rect = {.x = (int32_t)col_start,
+                 .y = (int32_t)row_start,
+                 .width = (int32_t)col_count,
+                 .height = (int32_t)row_count},
+        .color = {.rgba = {rgb[0], rgb[1], rgb[2], 1.0}},
+    };
+    return 1;
+}
+
+int db_benchmark_ir_emitter_add_span(db_benchmark_ir_emitter_t *emitter,
+                                     uint32_t row, uint32_t col_start,
+                                     uint32_t col_end, const double rgb[3]) {
+    if (col_end <= col_start) {
+        if (emitter != NULL) {
+            emitter->status = DB_BENCHMARK_IR_EMITTER_INVALID;
+        }
+        return 0;
+    }
+    return db_benchmark_ir_emitter_add_rect(emitter, row, 1U, col_start,
+                                            col_end - col_start, rgb);
+}
+
+db_benchmark_ir_emitter_status_t
 db_benchmark_emit_bands(uint32_t cols, uint32_t rows, uint32_t band_count,
-                        uint32_t frame_index, db_block_emitter_sink_t *sink) {
-    db_block_emitter_sink_reset(sink);
-    if ((sink == NULL) || (cols == 0U) || (rows == 0U) || (band_count == 0U)) {
-        return DB_BLOCK_EMITTER_STATUS_INVALID;
+                        uint32_t frame_index,
+                        db_benchmark_ir_emitter_t *emitter) {
+    db_benchmark_ir_emitter_reset(emitter);
+    if ((emitter == NULL) || (cols == 0U) || (rows == 0U) ||
+        (band_count == 0U)) {
+        return DB_BENCHMARK_IR_EMITTER_INVALID;
     }
     const db_grid_block_t full = db_grid_block_full(rows, cols);
-    (void)db_geometry_builder_add_damage(sink, &full);
+    (void)db_benchmark_ir_emitter_add_damage(emitter, &full);
     for (uint32_t band = 0U; band < band_count; band++) {
         const uint32_t col_start =
             db_checked_u64_to_u32("benchmark_emitters", "band_col_start",
@@ -33,39 +108,31 @@ db_benchmark_emit_bands(uint32_t cols, uint32_t rows, uint32_t band_count,
         const uint32_t col_end =
             db_checked_u64_to_u32("benchmark_emitters", "band_col_end",
                                   ((uint64_t)(band + 1U) * cols) / band_count);
-        db_colored_f64_block_t block = {
-            .row_start = 0U,
-            .row_count = rows,
-            .col_start = col_start,
-            .col_count = col_end - col_start,
-            .rgb = {0.0, 0.0, 0.0},
-        };
-        db_band_color_rgb3(band, band_count, frame_index, block.rgb);
-        (void)db_geometry_builder_add_block(sink, &block);
+        double rgb[3] = {0};
+        db_band_color_rgb3(band, band_count, frame_index, rgb);
+        (void)db_benchmark_ir_emitter_add_rect(emitter, 0U, rows, col_start,
+                                               col_end - col_start, rgb);
     }
-    return sink->status;
+    return emitter->status;
 }
 
-db_block_emitter_status_t
+db_benchmark_ir_emitter_status_t
 db_benchmark_emit_gradient(uint32_t cols, uint32_t rows,
                            const db_gradient_damage_plan_t *plan,
-                           int full_frame, db_block_emitter_sink_t *sink) {
-    db_block_emitter_sink_reset(sink);
-    if ((sink == NULL) || (plan == NULL) || (cols == 0U) || (rows == 0U)) {
-        return DB_BLOCK_EMITTER_STATUS_INVALID;
+                           int full_frame, db_benchmark_ir_emitter_t *emitter) {
+    db_benchmark_ir_emitter_reset(emitter);
+    if ((emitter == NULL) || (plan == NULL) || (cols == 0U) || (rows == 0U)) {
+        return DB_BENCHMARK_IR_EMITTER_INVALID;
     }
     db_grid_block_t damage[2] = {{0}, {0}};
-    size_t damage_count = 0U;
-    if (full_frame != 0) {
-        damage[0] = db_grid_block_full(rows, cols);
-        damage_count = 1U;
-    } else {
-        damage_count = db_gradient_collect_dirty_blocks(
-            plan, rows, cols, damage, sizeof(damage) / sizeof(damage[0]));
-    }
+    const size_t damage_count =
+        (full_frame != 0)
+            ? (damage[0] = db_grid_block_full(rows, cols), 1U)
+            : db_gradient_collect_dirty_blocks(plan, rows, cols, damage, 2U);
     for (size_t damage_index = 0U; damage_index < damage_count;
          damage_index++) {
-        (void)db_geometry_builder_add_damage(sink, &damage[damage_index]);
+        (void)db_benchmark_ir_emitter_add_damage(emitter,
+                                                 &damage[damage_index]);
         db_gradient_row_segment_iter_t iter = {0};
         db_gradient_row_segment_t segment = {0};
         if (db_gradient_row_segment_iter_init(
@@ -75,34 +142,35 @@ db_benchmark_emit_gradient(uint32_t cols, uint32_t rows,
             continue;
         }
         while (db_gradient_row_segment_iter_next(&iter, &segment) != 0) {
-            const db_colored_f64_block_t block = {
-                .row_start = segment.block.row_start,
-                .row_count = segment.block.row_count,
-                .col_start = segment.block.col_start,
-                .col_count = segment.block.col_count,
-                .rgb = {segment.rgb[0], segment.rgb[1], segment.rgb[2]},
-            };
-            (void)db_geometry_builder_add_block(sink, &block);
+            (void)db_benchmark_ir_emitter_add_rect(
+                emitter, segment.block.row_start, segment.block.row_count,
+                segment.block.col_start, segment.block.col_count, segment.rgb);
         }
     }
-    return sink->status;
+    return emitter->status;
 }
 
-db_block_emitter_status_t db_benchmark_emit_grid_state_damage(
-    uint32_t cols, uint32_t rows, db_grid_block_view_t damage,
-    const double *tile_rgb, size_t tile_count, db_block_emitter_sink_t *sink) {
-    if ((sink == NULL) || (tile_rgb == NULL) || (cols == 0U) || (rows == 0U) ||
-        ((damage.blocks == NULL) && (damage.count > 0U))) {
-        return DB_BLOCK_EMITTER_STATUS_INVALID;
+db_benchmark_ir_emitter_status_t
+db_benchmark_emit_grid_state_damage(uint32_t cols, uint32_t rows,
+                                    db_grid_block_view_t damage,
+                                    const double *tile_rgb, size_t tile_count,
+                                    db_benchmark_ir_emitter_t *emitter) {
+    if ((emitter == NULL) || (tile_rgb == NULL) || (cols == 0U) ||
+        (rows == 0U) || ((damage.blocks == NULL) && (damage.count > 0U))) {
+        return DB_BENCHMARK_IR_EMITTER_INVALID;
     }
     for (size_t damage_index = 0U; damage_index < damage.count;
          damage_index++) {
         const db_grid_block_t block = damage.blocks[damage_index];
-        (void)db_geometry_builder_add_damage(sink, &block);
-        const uint32_t row_end =
-            DB_MIN(rows, block.row_start + block.row_count);
-        const uint32_t col_end =
-            DB_MIN(cols, block.col_start + block.col_count);
+        (void)db_benchmark_ir_emitter_add_damage(emitter, &block);
+        const uint32_t row_end = db_checked_u64_to_u32(
+            "benchmark_emitters", "grid_damage_row_end",
+            DB_MIN((uint64_t)rows,
+                   (uint64_t)block.row_start + (uint64_t)block.row_count));
+        const uint32_t col_end = db_checked_u64_to_u32(
+            "benchmark_emitters", "grid_damage_col_end",
+            DB_MIN((uint64_t)cols,
+                   (uint64_t)block.col_start + (uint64_t)block.col_count));
         for (uint32_t row = block.row_start; row < row_end; row++) {
             uint32_t run_start = block.col_start;
             while (run_start < col_end) {
@@ -121,11 +189,11 @@ db_block_emitter_status_t db_benchmark_emit_grid_state_damage(
                     }
                     run_end++;
                 }
-                (void)db_geometry_builder_add_span(sink, row, run_start,
-                                                   run_end, run_rgb);
+                (void)db_benchmark_ir_emitter_add_span(emitter, row, run_start,
+                                                       run_end, run_rgb);
                 run_start = run_end;
             }
         }
     }
-    return sink->status;
+    return emitter->status;
 }

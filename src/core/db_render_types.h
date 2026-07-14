@@ -33,6 +33,32 @@ typedef struct {
     db_pixel_format_t format;
 } db_pixel_surface_t;
 
+static inline size_t db_pixel_format_bytes_per_pixel(db_pixel_format_t format) {
+    switch (format) {
+    case DB_PIXEL_FORMAT_RGBA8:
+        return DB_RGBA8_BYTES_PER_PIXEL;
+    case DB_PIXEL_FORMAT_RGBA16F:
+        return DB_RGBA16F_BYTES_PER_PIXEL;
+    }
+    return 0U;
+}
+
+static inline uint32_t
+db_pixel_format_u32_words_per_pixel(db_pixel_format_t format) {
+    switch (format) {
+    case DB_PIXEL_FORMAT_RGBA8:
+        return 1U;
+    case DB_PIXEL_FORMAT_RGBA16F:
+        return 2U;
+    }
+    return 0U;
+}
+
+static inline size_t db_rgba4_channel_offset(size_t width, size_t column,
+                                             size_t row) {
+    return ((row * width) + column) * 4U;
+}
+
 static inline int
 db_pixel_surface_uses_rgba16f(const db_pixel_surface_t *surface) {
     return DB_BOOL((surface != NULL) &&
@@ -41,14 +67,11 @@ db_pixel_surface_uses_rgba16f(const db_pixel_surface_t *surface) {
 
 static inline size_t
 db_pixel_surface_pixel_bytes(const db_pixel_surface_t *surface) {
-    if (db_pixel_surface_uses_rgba16f(surface) != 0) {
-        return DB_RGBA16F_BYTES_PER_PIXEL;
-    }
-    return DB_RGBA8_BYTES_PER_PIXEL;
+    return (surface != NULL) ? db_pixel_format_bytes_per_pixel(surface->format)
+                             : 0U;
 }
 
-static inline uint8_t *
-db_pixel_surface_bytes_mut(const db_pixel_surface_t *surface) {
+static inline uint8_t *db_pixel_surface_bytes_mut(db_pixel_surface_t *surface) {
     if (surface == NULL) {
         return NULL;
     }
@@ -63,16 +86,6 @@ db_pixel_surface_bytes_const(const db_pixel_surface_t *surface) {
     return (const uint8_t *)surface->pixels;
 }
 
-static inline void *
-db_pixel_surface_data_mut(const db_pixel_surface_t *surface) {
-    return (void *)db_pixel_surface_bytes_mut(surface);
-}
-
-static inline const void *
-db_pixel_surface_data_const(const db_pixel_surface_t *surface) {
-    return (const void *)db_pixel_surface_bytes_const(surface);
-}
-
 static inline const void *
 db_pixel_surface_data_at_offset_const(const db_pixel_surface_t *surface,
                                       size_t offset_bytes) {
@@ -80,7 +93,7 @@ db_pixel_surface_data_at_offset_const(const db_pixel_surface_t *surface,
     if (base == NULL) {
         return NULL;
     }
-    return (const void *)(base + offset_bytes);
+    return base + offset_bytes;
 }
 
 static inline db_grid_block_t db_grid_block_full(uint32_t row_count,
@@ -269,7 +282,7 @@ static inline float db_pixel_coord_to_ndc_f32(uint32_t pixel_coord,
         return 0.0F;
     }
     const double normalized =
-        ((double)pixel_coord * 2.0) / (double)pixel_extent;
+        (DB_TO_F64(pixel_coord) * 2.0) / DB_TO_F64(pixel_extent);
     return db_double_to_f32(normalized - 1.0);
 }
 

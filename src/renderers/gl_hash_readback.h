@@ -179,4 +179,23 @@ static inline uint64_t db_gl_hash_framebuffer_rgba16f_or_fail(
     (void)db_gl_upload_stream_end_read(&scratch->stream, backend);
     return hash;
 }
+
+static inline uint64_t db_gl_hash_framebuffer_rgba8_or_fail(
+    const char *backend, uint32_t width_px, uint32_t height_px,
+    db_gl_framebuffer_hash_scratch_t *scratch, int canonicalize) {
+    const uint8_t *rgba8 = db_gl_read_framebuffer_rgba8_or_fail(
+        backend, width_px, height_px, scratch);
+    if (rgba8 == NULL) {
+        DB_RUNTIME_FAIL(backend,
+                        "failed to read RGBA8 framebuffer for hashing");
+    }
+    const size_t row_stride_bytes = db_checked_mul_size(
+        backend, "gl_hash_rgba8_row_stride_bytes",
+        db_checked_u32_to_size(backend, "hash_fb_width_px", width_px), 4U);
+    const uint64_t hash =
+        db_hash_working_rgba8(rgba8, DB_PIXEL_FORMAT_RGBA8, width_px, height_px,
+                              row_stride_bytes, canonicalize);
+    (void)db_gl_upload_stream_end_read(&scratch->stream, backend);
+    return hash;
+}
 #endif

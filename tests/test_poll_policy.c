@@ -1,5 +1,6 @@
 #include "support/test_harness.h"
 
+#include "core/db_numeric.h"
 #include "core/db_poll_policy.h"
 
 #include <stddef.h>
@@ -25,8 +26,7 @@ static db_sync_wait_result_t db_fake_attempt(void *user_data,
                                              uint64_t timeout_ns) {
     db_fake_progress_t *const progress = (db_fake_progress_t *)user_data;
     progress->attempts++;
-    progress->now_ns +=
-        (progress->advance_ns < timeout_ns) ? progress->advance_ns : timeout_ns;
+    progress->now_ns += DB_MIN(progress->advance_ns, timeout_ns);
     const int complete = (progress->complete_after > 0U) &&
                          (progress->attempts >= progress->complete_after);
     return db_sync_wait_result_make(

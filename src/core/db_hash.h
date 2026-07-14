@@ -19,6 +19,7 @@ typedef struct {
     size_t mismatch_count;
     uint32_t first_x;
     uint32_t first_y;
+    uint32_t first_component;
     uint32_t min_x;
     uint32_t min_y;
     uint32_t max_x;

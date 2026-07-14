@@ -6,7 +6,6 @@ db_test_require_defined(TEST_MAX_LINES)
 db_test_run_command(output skip_reason status "${TEST_ARGS}"
                     "Default-output command failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(STATUS "Default-output test skipped: ${skip_reason}")
     return()
 endif()
 

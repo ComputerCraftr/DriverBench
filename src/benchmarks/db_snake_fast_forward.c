@@ -1,6 +1,7 @@
 #include "db_snake_fast_forward_internal.h"
 
 #include "benchmarks/db_benchmark_checkpoint_internal.h"
+#include "benchmarks/db_benchmark_emitters.h"
 #include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_snake_collect_internal.h"
 #include "benchmarks/db_snake_progression_internal.h"
@@ -9,7 +10,6 @@
 #include "benchmarks/db_snake_types_internal.h"
 #include "core/db_core.h"
 #include "core/db_geometry.h"
-#include "core/db_geometry_builder.h"
 #include "core/db_numeric.h"
 
 #include <stddef.h>
@@ -30,16 +30,10 @@ static int write_settled_row(uint32_t row, uint32_t col_start, uint32_t col_end,
         return 0;
     }
     db_benchmark_checkpoint_overlay_write(
-        context->checkpoint,
-        &(const db_colored_f64_block_t){
-            .row_start = row,
-            .row_count = 1U,
-            .col_start = col_start,
-            .col_count =
-                db_checked_sub_u32("benchmark_snake_fast_forward",
-                                   "settled_row_col_count", col_end, col_start),
-            .rgb = {context->rgb[0], context->rgb[1], context->rgb[2]},
-        });
+        context->checkpoint, row, 1U, col_start,
+        db_checked_sub_u32("benchmark_snake_fast_forward",
+                           "settled_row_col_count", col_end, col_start),
+        context->rgb);
     return 1;
 }
 
@@ -81,18 +75,18 @@ static void add_plan_damage(const db_snake_progression_eval_t *eval,
                             const db_snake_shape_cache_t *shape_cache,
                             const db_snake_plan_t *coverage,
                             db_snake_progression_workspace_t *workspace,
-                            db_geometry_builder_t *emitter) {
+                            db_benchmark_ir_emitter_t *emitter) {
     size_t count = 0U;
     if (db_snake_collect_damage_blocks_for_plan(
             &eval->target.region, coverage, shape_cache,
             workspace->damage.blocks, workspace->damage.capacity,
             &count) == 0) {
-        emitter->status = DB_GEOMETRY_BUILDER_OVERFLOW;
+        emitter->status = DB_BENCHMARK_IR_EMITTER_CAPACITY;
         return;
     }
     for (size_t index = 0U; index < count; index++) {
-        (void)db_geometry_builder_add_damage(emitter,
-                                             &workspace->damage.blocks[index]);
+        (void)db_benchmark_ir_emitter_add_damage(
+            emitter, &workspace->damage.blocks[index]);
     }
 }
 
@@ -116,7 +110,7 @@ static void write_settled_range(const db_snake_progression_eval_t *eval,
 static db_snake_progression_eval_t execute_movement_chunk(
     db_benchmark_runtime_init_t *runtime, uint32_t tick_count, int region_mode,
     db_snake_progression_workspace_t *workspace,
-    db_benchmark_checkpoint_t *checkpoint, db_geometry_builder_t *emitter,
+    db_benchmark_checkpoint_t *checkpoint, db_benchmark_ir_emitter_t *emitter,
     db_snake_fast_forward_result_t *result) {
     db_benchmark_runtime_init_t unit_runtime = *runtime;
     unit_runtime.bench_speed_step = 1U;
@@ -202,7 +196,7 @@ static db_snake_progression_eval_t
 execute_completion(db_benchmark_runtime_init_t *runtime, int region_mode,
                    int shapes_mode, db_snake_progression_workspace_t *workspace,
                    db_benchmark_checkpoint_t *checkpoint,
-                   db_geometry_builder_t *emitter,
+                   db_benchmark_ir_emitter_t *emitter,
                    db_snake_fast_forward_result_t *result) {
     db_benchmark_runtime_init_t unit_runtime = *runtime;
     unit_runtime.bench_speed_step = 1U;
@@ -219,21 +213,16 @@ execute_completion(db_benchmark_runtime_init_t *runtime, int region_mode,
                                      checkpoint, emitter);
         add_plan_damage(&eval, shape_cache_ptr, &eval.plan, workspace, emitter);
         if (shapes_mode == 0) {
-            const db_colored_f64_block_t block = {
-                .row_start = eval.target.region.y,
-                .row_count = eval.target.region.height,
-                .col_start = eval.target.region.x,
-                .col_count = eval.target.region.width,
-                .rgb = {eval.target.target_rgb[0], eval.target.target_rgb[1],
-                        eval.target.target_rgb[2]},
-            };
-            db_benchmark_checkpoint_overlay_write(checkpoint, &block);
-            (void)db_geometry_builder_add_damage(
+            db_benchmark_checkpoint_overlay_write(
+                checkpoint, eval.target.region.y, eval.target.region.height,
+                eval.target.region.x, eval.target.region.width,
+                eval.target.target_rgb);
+            (void)db_benchmark_ir_emitter_add_damage(
                 emitter, &(const db_grid_block_t){
-                             .row_start = block.row_start,
-                             .row_count = block.row_count,
-                             .col_start = block.col_start,
-                             .col_count = block.col_count,
+                             .row_start = eval.target.region.y,
+                             .row_count = eval.target.region.height,
+                             .col_start = eval.target.region.x,
+                             .col_count = eval.target.region.width,
                          });
         }
     } else {
@@ -259,7 +248,7 @@ int db_snake_fast_forward_execute(const db_benchmark_runtime_init_t *runtime,
                                   int shapes_mode,
                                   db_snake_progression_workspace_t *workspace,
                                   db_benchmark_checkpoint_t *checkpoint,
-                                  db_geometry_builder_t *emitter,
+                                  db_benchmark_ir_emitter_t *emitter,
                                   db_snake_fast_forward_result_t *out_result) {
     if ((runtime == NULL) || (workspace == NULL) || (emitter == NULL) ||
         (out_result == NULL) || (requested_ticks == 0U) ||

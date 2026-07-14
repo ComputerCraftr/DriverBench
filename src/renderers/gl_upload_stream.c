@@ -1,3 +1,4 @@
+#include "../core/db_core.h"
 #include "../core/db_numeric.h"
 #include "../core/db_poll_policy.h"
 #include "core/db_log.h"
@@ -420,9 +421,9 @@ uint8_t *db_gl_upload_stream_begin_write(db_gl_upload_stream_t *stream,
                                          size_t offset_bytes,
                                          size_t size_bytes) {
     if ((stream == NULL) || (size_bytes == 0U) ||
-        (offset_bytes > (SIZE_MAX - size_bytes)) ||
         ((stream->active_bytes != 0U) &&
-         ((offset_bytes + size_bytes) > stream->active_bytes))) {
+         (db_size_range_fits(stream->active_bytes, offset_bytes, size_bytes) ==
+          0))) {
         return NULL;
     }
     if (db_gl_stream_upload_uses_buffer_object(&stream->capability) == 0) {
@@ -519,9 +520,9 @@ uint8_t *db_gl_upload_stream_begin_read(db_gl_upload_stream_t *stream,
                                         size_t offset_bytes,
                                         size_t size_bytes) {
     if ((stream == NULL) || (size_bytes == 0U) ||
-        (offset_bytes > (SIZE_MAX - size_bytes)) ||
         ((stream->active_bytes != 0U) &&
-         ((offset_bytes + size_bytes) > stream->active_bytes))) {
+         (db_size_range_fits(stream->active_bytes, offset_bytes, size_bytes) ==
+          0))) {
         return NULL;
     }
     if (db_gl_stream_upload_uses_buffer_object(&stream->capability) == 0) {

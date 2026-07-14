@@ -3,11 +3,13 @@
 
 #include "cli/cli_parse.h"
 #include "config/runtime_options.h"
+#include "core/db_renderer_diagnostics.h"
 #include "driverbench_config.h"
 #include "renderers/gl_common.h"
 
 enum { DB_TEST_CLI_ERROR_TEXT_SIZE = 512 };
 
+#ifdef DB_HAS_GLFW
 static void db_test_cli_valid_cpu_glfw_replace(db_test_state_t *state) {
     char error[DB_TEST_CLI_ERROR_TEXT_SIZE] = {0};
     db_cli_config_t cfg = {0};
@@ -28,6 +30,7 @@ static void db_test_cli_valid_cpu_glfw_replace(db_test_state_t *state) {
         state, db_runtime_option_get(DB_RUNTIME_OPT_PRESENT_BUFFER_MODE),
         "replace");
 }
+#endif
 
 static void db_test_cli_invalid_api(db_test_state_t *state) {
     char error[DB_TEST_CLI_ERROR_TEXT_SIZE] = {0};
@@ -57,6 +60,16 @@ static void db_test_cli_invalid_frame_limit(db_test_state_t *state) {
                                          sizeof(error)) == 0);
     DB_TEST_EXPECT_STR_CONTAINS(state, error, "--frame-limit");
     DB_TEST_EXPECT_STR_CONTAINS(state, error, "abc");
+
+    const char *overflow_argv[] = {"driverbench", "--display", "offscreen",
+                                   "--frame-limit",
+                                   "999999999999999999999999999"};
+    DB_TEST_EXPECT_TRUE(
+        state,
+        db_cli_try_parse(sizeof(overflow_argv) / sizeof(overflow_argv[0]),
+                         overflow_argv, &cfg, &show_help, &print_usage, error,
+                         sizeof(error)) == 0);
+    DB_TEST_EXPECT_STR_CONTAINS(state, error, "--frame-limit");
 }
 
 static void db_test_cli_missing_option_value(db_test_state_t *state) {
@@ -118,6 +131,7 @@ static void db_test_cli_invalid_present_mode_combo(db_test_state_t *state) {
     DB_TEST_EXPECT_STR_CONTAINS(state, error, "--display glfw_window");
 }
 
+#ifdef DB_HAS_GLFW
 static void db_test_cli_invalid_gl1_replace_dirty(db_test_state_t *state) {
     char error[DB_TEST_CLI_ERROR_TEXT_SIZE] = {0};
     db_cli_config_t cfg = {0};
@@ -137,7 +151,9 @@ static void db_test_cli_invalid_gl1_replace_dirty(db_test_state_t *state) {
     DB_TEST_EXPECT_STR_CONTAINS(state, error, "replace");
     DB_TEST_EXPECT_STR_CONTAINS(state, error, "--backbuffer-draw-mode full");
 }
+#endif
 
+#ifdef DB_HAS_GLFW
 static void db_test_cli_present_mode_validation(db_test_state_t *state) {
     char error[DB_TEST_CLI_ERROR_TEXT_SIZE] = {0};
     db_cli_config_t cfg = {0};
@@ -187,6 +203,7 @@ static void db_test_cli_present_mode_validation(db_test_state_t *state) {
         DB_TEST_EXPECT_STR_CONTAINS(state, error, "--renderer gl1_5_gles1_1");
     }
 }
+#endif
 
 static void
 db_test_present_mode_resolve_auto_downgrade(db_test_state_t *state) {
@@ -268,6 +285,62 @@ static void db_test_cli_trace_level_validation(db_test_state_t *state) {
         state, db_runtime_option_get(DB_RUNTIME_OPT_TRACE_VULKAN), "2");
 }
 
+static void db_test_cli_renderer_diagnostics(db_test_state_t *state) {
+    char error[DB_TEST_CLI_ERROR_TEXT_SIZE] = {0};
+    db_cli_config_t cfg = {0};
+    int show_help = 0;
+    int print_usage = 0;
+    const char *valid[] = {
+        "driverbench",
+        "--display",
+        "offscreen",
+        "--gl1-target",
+        "persistent-fbo",
+        "--gl1-gradient",
+        "row-fill",
+        "--gl1-replay-capacity",
+        "3",
+        "--gl3-gradient",
+        "semantic",
+        "--vk-gradient",
+        "row-fill",
+        "--ignore-conformance-cache",
+        "1",
+        "--rerun-conformance-probe",
+        "1",
+        "--dump-gradient-divergence",
+        "gradient.log",
+    };
+    DB_TEST_EXPECT_TRUE(state,
+                        db_cli_try_parse(sizeof(valid) / sizeof(valid[0]),
+                                         valid, &cfg, &show_help, &print_usage,
+                                         error, sizeof(error)) != 0);
+    const db_renderer_diagnostic_config_t diagnostics =
+        db_renderer_diagnostic_config_resolve();
+    DB_TEST_EXPECT_EQ_INT(state, diagnostics.gl1_target,
+                          DB_GL1_TARGET_PERSISTENT_FBO);
+    DB_TEST_EXPECT_EQ_INT(state, diagnostics.gl1_gradient,
+                          DB_GL1_GRADIENT_ROW_FILL);
+    DB_TEST_EXPECT_EQ_U32(state, diagnostics.gl1_replay_capacity, 3U);
+    DB_TEST_EXPECT_EQ_INT(state, diagnostics.gl3_gradient,
+                          DB_GL3_GRADIENT_SEMANTIC);
+    DB_TEST_EXPECT_EQ_INT(state, diagnostics.vk_gradient,
+                          DB_VK_GRADIENT_ROW_FILL);
+    DB_TEST_EXPECT_EQ_INT(state, diagnostics.ignore_conformance_cache, 1);
+    DB_TEST_EXPECT_EQ_INT(state, diagnostics.rerun_conformance_probe, 1);
+    DB_TEST_EXPECT_STR_EQ(state, diagnostics.gradient_divergence_path,
+                          "gradient.log");
+
+    const char *invalid_capacity[] = {"driverbench", "--display", "offscreen",
+                                      "--gl1-replay-capacity", "9"};
+    DB_TEST_EXPECT_TRUE(
+        state,
+        db_cli_try_parse(sizeof(invalid_capacity) / sizeof(invalid_capacity[0]),
+                         invalid_capacity, &cfg, &show_help, &print_usage,
+                         error, sizeof(error)) == 0);
+    DB_TEST_EXPECT_STR_CONTAINS(state, error, "expected 1..8");
+}
+
 static void db_test_cli_presentation_format_validation(db_test_state_t *state) {
     char error[DB_TEST_CLI_ERROR_TEXT_SIZE] = {0};
     db_cli_config_t cfg = {0};
@@ -303,6 +376,7 @@ static void db_test_cli_presentation_format_validation(db_test_state_t *state) {
     DB_TEST_EXPECT_STR_CONTAINS(state, error, "unknown option: --cpu-hdr");
 }
 
+#ifdef DB_HAS_GLFW
 static void db_test_cli_resize_schedule_validation(db_test_state_t *state) {
     char error[DB_TEST_CLI_ERROR_TEXT_SIZE] = {0};
     db_cli_config_t cfg = {0};
@@ -323,8 +397,9 @@ static void db_test_cli_resize_schedule_validation(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_U32(state, schedule.width, 1279U);
     DB_TEST_EXPECT_EQ_U32(state, schedule.height, 719U);
 
-    static const char *const invalid_values[] = {"2", "2:0x719", "2:1279x0",
-                                                 "2:1279x", "2:4294967296x719"};
+    static const char *const invalid_values[] = {
+        "2",       "2:0x719",          "2:1279x0",
+        "2:1279x", "2:4294967296x719", "999999999999999999999999999:1279x719"};
     for (size_t i = 0U; i < sizeof(invalid_values) / sizeof(invalid_values[0]);
          i++) {
         error[0] = '\0';
@@ -346,25 +421,33 @@ static void db_test_cli_resize_schedule_validation(db_test_state_t *state) {
                                 error, sizeof(error)) == 0);
     DB_TEST_EXPECT_STR_CONTAINS(state, error, "--display glfw_window");
 }
+#endif
 
 unsigned db_cli_test_run_all(void) {
     static const db_test_case_t cases[] = {
+#ifdef DB_HAS_GLFW
         {"valid_cpu_glfw_replace", db_test_cli_valid_cpu_glfw_replace},
+#endif
         {"invalid_api", db_test_cli_invalid_api},
         {"invalid_frame_limit", db_test_cli_invalid_frame_limit},
         {"missing_option_value", db_test_cli_missing_option_value},
         {"unknown_option", db_test_cli_unknown_option},
         {"help", db_test_cli_help},
         {"invalid_present_mode_combo", db_test_cli_invalid_present_mode_combo},
+#ifdef DB_HAS_GLFW
         {"invalid_gl1_replace_dirty", db_test_cli_invalid_gl1_replace_dirty},
         {"cli_present_mode_validation", db_test_cli_present_mode_validation},
+#endif
         {"present_mode_resolve_auto_downgrade",
          db_test_present_mode_resolve_auto_downgrade},
         {"cli_trace_level_validation", db_test_cli_trace_level_validation},
+        {"cli_renderer_diagnostics", db_test_cli_renderer_diagnostics},
         {"cli_presentation_format_validation",
          db_test_cli_presentation_format_validation},
+#ifdef DB_HAS_GLFW
         {"cli_resize_schedule_validation",
          db_test_cli_resize_schedule_validation},
+#endif
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

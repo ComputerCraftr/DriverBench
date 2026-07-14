@@ -1,7 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include <vulkan/vulkan_core.h>
 
@@ -13,81 +12,14 @@
 #include "vk_renderer.h"
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
-#define COLOR_CHANNEL_ALPHA 3U
 #define MASK_GPU0 1U
 
 typedef struct {
     VkCommandBuffer cmd;
-    VkPipelineLayout layout;
     VkExtent2D extent;
     uint32_t grid_rows;
     uint32_t grid_cols;
-    db_vk_draw_payload_cache_t *payload_cache;
 } db_vk_grid_draw_ctx_t;
-
-static const VkShaderStageFlags db_pc_stages =
-    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-
-static const float *
-db_vk_payload_color_ptr(const db_vk_draw_payload_t *payload) {
-    static const float zero_color[3] = {0};
-    if ((payload == NULL) || (payload->color == NULL)) {
-        return zero_color;
-    }
-    return payload->color;
-}
-
-static int
-db_vk_draw_payload_cache_matches(const db_vk_draw_payload_cache_t *cache,
-                                 const db_vk_draw_payload_t *payload) {
-    if ((cache == NULL) || (payload == NULL) || (cache->valid == 0)) {
-        return 0;
-    }
-    return db_equal_f32_rgb3(cache->color, db_vk_payload_color_ptr(payload));
-}
-
-static void
-db_vk_draw_payload_cache_store(db_vk_draw_payload_cache_t *cache,
-                               const db_vk_draw_payload_t *payload) {
-    if ((cache == NULL) || (payload == NULL)) {
-        return;
-    }
-    cache->payload = *payload;
-    memcpy(cache->color, db_vk_payload_color_ptr(payload), 3U * sizeof(float));
-    cache->valid = 1;
-}
-
-static void vk_push_constants_draw_geometry(VkCommandBuffer cmd,
-                                            VkPipelineLayout layout,
-                                            float ndc_x0, float ndc_y0,
-                                            float ndc_x1, float ndc_y1) {
-    const float offset_ndc[2] = {ndc_x0, ndc_y0};
-    const float scale_ndc[2] = {(ndc_x1 - ndc_x0), (ndc_y1 - ndc_y0)};
-    vkCmdPushConstants(cmd, layout, db_pc_stages,
-                       (uint32_t)offsetof(PushConstants, offset_ndc),
-                       sizeof(offset_ndc), offset_ndc);
-    vkCmdPushConstants(cmd, layout, db_pc_stages,
-                       (uint32_t)offsetof(PushConstants, scale_ndc),
-                       sizeof(scale_ndc), scale_ndc);
-}
-
-void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
-                                       VkPipelineLayout layout,
-                                       const db_vk_draw_dynamic_req_t *req) {
-    if (req == NULL) {
-        return;
-    }
-    PushConstants pc = {0};
-    const float offset_ndc[2] = {req->ndc_x0, req->ndc_y0};
-    const float scale_ndc[2] = {(req->ndc_x1 - req->ndc_x0),
-                                (req->ndc_y1 - req->ndc_y0)};
-    memcpy(pc.offset_ndc, offset_ndc, 2U * sizeof(float));
-    memcpy(pc.scale_ndc, scale_ndc, 2U * sizeof(float));
-    memcpy(pc.color, db_vk_payload_color_ptr(&req->payload),
-           3U * sizeof(float));
-    pc.color[COLOR_CHANNEL_ALPHA] = 1.0F;
-    vkCmdPushConstants(cmd, layout, db_pc_stages, 0U, sizeof(pc), &pc);
-}
 
 static void vk_destroy_swapchain_state(VkDevice device, SwapchainState *state) {
     if ((state == NULL) || (state->swapchain == VK_NULL_HANDLE)) {
@@ -96,19 +28,19 @@ static void vk_destroy_swapchain_state(VkDevice device, SwapchainState *state) {
     for (uint32_t i = 0; i < state->image_count; i++) {
         vkDestroyFramebuffer(device, state->framebuffers[i], NULL);
     }
-    free((void *)state->framebuffers);
+    db_free_opaque_handle_array((void *)state->framebuffers);
     state->framebuffers = NULL;
 
-    free((void *)state->image_layouts);
+    free(state->image_layouts);
     state->image_layouts = NULL;
 
     for (uint32_t i = 0; i < state->image_count; i++) {
         vkDestroyImageView(device, state->views[i], NULL);
     }
-    free((void *)state->views);
+    db_free_opaque_handle_array((void *)state->views);
     state->views = NULL;
 
-    free((void *)state->images);
+    db_free_opaque_handle_array((void *)state->images);
     state->images = NULL;
     state->image_count = 0;
 
@@ -168,11 +100,13 @@ void db_vk_recreate_backing_target(VkPhysicalDevice phys, VkDevice device,
 
 static void vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
                                    const db_grid_block_t *block,
-                                   const db_vk_draw_payload_t *payload) {
-    if ((ctx == NULL) || (payload == NULL) || (block == NULL) ||
-        (block->row_count == 0U) || (block->col_count == 0U) ||
-        (block->row_start >= ctx->grid_rows) || (ctx->grid_rows == 0U) ||
-        (ctx->grid_cols == 0U) || (block->col_start >= ctx->grid_cols)) {
+                                   uint32_t first_instance,
+                                   uint32_t instance_count,
+                                   const VkRect2D *piece_scissor) {
+    if ((ctx == NULL) || (block == NULL) || (block->row_count == 0U) ||
+        (block->col_count == 0U) || (block->row_start >= ctx->grid_rows) ||
+        (ctx->grid_rows == 0U) || (ctx->grid_cols == 0U) ||
+        (block->col_start >= ctx->grid_cols)) {
         return;
     }
     db_damage_block_t pixel_block = {0};
@@ -181,33 +115,20 @@ static void vk_draw_grid_row_block(const db_vk_grid_draw_ctx_t *ctx,
                                      &pixel_block) == 0) {
         return;
     }
-    VkRect2D sc = {0};
-    sc.offset.x =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", pixel_block.col_start);
-    sc.offset.y =
-        db_checked_u32_to_i32(BACKEND_NAME, "vk_i32", pixel_block.row_start);
-    sc.extent.width = pixel_block.col_count;
-    sc.extent.height = pixel_block.row_count;
+    VkRect2D sc =
+        (piece_scissor != NULL)
+            ? *piece_scissor
+            : (VkRect2D){
+                  .offset = {.x = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
+                                                        pixel_block.col_start),
+                             .y = db_checked_u32_to_i32(BACKEND_NAME, "vk_i32",
+                                                        pixel_block.row_start)},
+                  .extent = {.width = pixel_block.col_count,
+                             .height = pixel_block.row_count}};
     vkCmdSetScissor(ctx->cmd, 0, 1, &sc);
 
-    db_vk_draw_dynamic_req_t dynamic = {
-        .ndc_x0 = -1.0F,
-        .ndc_y0 = -1.0F,
-        .ndc_x1 = 1.0F,
-        .ndc_y1 = 1.0F,
-        .payload = *payload,
-    };
-    if ((ctx->payload_cache == NULL) ||
-        (db_vk_draw_payload_cache_matches(ctx->payload_cache,
-                                          &dynamic.payload) == 0)) {
-        db_vk_push_constants_draw_dynamic(ctx->cmd, ctx->layout, &dynamic);
-        db_vk_draw_payload_cache_store(ctx->payload_cache, &dynamic.payload);
-    } else {
-        vk_push_constants_draw_geometry(ctx->cmd, ctx->layout, dynamic.ndc_x0,
-                                        dynamic.ndc_y0, dynamic.ndc_x1,
-                                        dynamic.ndc_y1);
-    }
-    vkCmdDraw(ctx->cmd, DB_RECT_VERTEX_COUNT, 1, 0, 0);
+    vkCmdDraw(ctx->cmd, DB_RECT_VERTEX_COUNT, DB_MAX(instance_count, 1U), 0U,
+              first_instance);
 }
 
 void db_vk_owner_timing_begin(VkCommandBuffer cmd, int timing_enabled,
@@ -263,13 +184,12 @@ void db_vk_draw_owner_grid_row_block(
                              ctx->frame_owner_used);
     const db_vk_grid_draw_ctx_t draw_ctx = {
         .cmd = ctx->cmd,
-        .layout = ctx->layout,
         .extent = ctx->extent,
         .grid_rows = ctx->grid_rows,
         .grid_cols = ctx->grid_cols,
-        .payload_cache = ctx->payload_cache,
     };
-    vk_draw_grid_row_block(&draw_ctx, &req->block, &req->payload);
+    vk_draw_grid_row_block(&draw_ctx, &req->block, req->first_instance,
+                           req->instance_count, &req->scissor);
     db_vk_owner_timing_end(ctx->cmd, ctx->timing_enabled,
                            ctx->timing_query_pool, owner,
                            ctx->frame_owner_finished);
@@ -285,6 +205,16 @@ void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx) {
     vkDestroySemaphore(ctx->device, ctx->render_done, NULL);
     vkDestroyBuffer(ctx->device, ctx->vertex_buffer, NULL);
     vkFreeMemory(ctx->device, ctx->vertex_memory, NULL);
+    if (ctx->instance_mapped != NULL) {
+        vkUnmapMemory(ctx->device, ctx->instance_memory);
+    }
+    vkDestroyBuffer(ctx->device, ctx->instance_buffer, NULL);
+    vkFreeMemory(ctx->device, ctx->instance_memory, NULL);
+    if (ctx->lookup_mapped != NULL) {
+        vkUnmapMemory(ctx->device, ctx->lookup_memory);
+    }
+    vkDestroyBuffer(ctx->device, ctx->lookup_buffer, NULL);
+    vkFreeMemory(ctx->device, ctx->lookup_memory, NULL);
     if (ctx->hash_readback_buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(ctx->device, ctx->hash_readback_buffer, NULL);
     }

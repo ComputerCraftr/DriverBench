@@ -7,7 +7,6 @@ set(TEST_ARGS
 db_test_run_command(output skip_reason status "${TEST_ARGS}"
                     "GLFW resize contract command failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(STATUS "GLFW resize contract skipped: ${skip_reason}")
     return()
 endif()
 

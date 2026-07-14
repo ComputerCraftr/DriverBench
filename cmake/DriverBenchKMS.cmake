@@ -59,6 +59,10 @@ if(DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY AND DB_PLATFORM_IS_NON_APPLE_UNIX)
         set(DB_KMS_SOURCES
             src/displays/linux_kms_atomic/kms_runner.c
             src/displays/linux_kms_atomic/kms_core.c
+            src/displays/linux_kms_atomic/kms_connector.c
+            src/displays/linux_kms_atomic/kms_diagnostics.c
+            src/displays/linux_kms_atomic/kms_framebuffer.c
+            src/displays/linux_kms_atomic/kms_page_flip.c
             src/displays/linux_kms_atomic/kms_egl.c
             src/displays/linux_kms_atomic/kms_cpu.c
             src/displays/linux_kms_atomic/kms_display.c)

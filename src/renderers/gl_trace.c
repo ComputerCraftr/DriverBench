@@ -2,6 +2,7 @@
 #include "gl_common.h"
 
 #include "../core/db_log.h"
+#include "../core/db_numeric.h"
 #include "../core/db_trace.h"
 
 #include <stddef.h>
@@ -44,10 +45,9 @@ void db_gl_shadow_upload_trace_dump(const db_gl_shadow_upload_trace_t *trace) {
         db_gl_error_trace_dump(&trace->error_trace);
         return;
     }
-    const size_t emitted_count =
-        ((trace_level >= 3) || (trace->upload_span_count < 128U))
-            ? trace->upload_span_count
-            : 128U;
+    const size_t emitted_count = (trace_level >= 3)
+                                     ? trace->upload_span_count
+                                     : DB_MIN(trace->upload_span_count, 128U);
     const db_log_field_t upload_fields[] = {
         DB_LOG_BOOL("attempted", trace->full_upload_attempted),
         DB_LOG_BOOL("executed", trace->full_upload_executed),

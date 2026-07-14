@@ -21,7 +21,8 @@ db_vk_init(const db_vk_wsi_config_t *wsi_config, int vsync_enabled,
     db_vk_init_phase_instance_surface(wsi_config, &instance_surface_phase);
     db_vk_init_phase_device(
         instance_surface_phase.instance, instance_surface_phase.surface,
-        vsync_enabled, resolved_runtime->format.output_request, &device_phase);
+        vsync_enabled, resolved_runtime->format.output_request,
+        resolved_runtime->format.surface_pixel_format, &device_phase);
     db_vk_init_phase_pipeline_resources(
         wsi_config, instance_surface_phase.surface, &device_phase,
         resolved_runtime, &pipeline_phase);
@@ -49,6 +50,12 @@ db_vk_init(const db_vk_wsi_config_t *wsi_config, int vsync_enabled,
         .device_group_mask = device_phase.device_group_mask,
         .vertex_buffer = pipeline_phase.vertex_buffer,
         .vertex_memory = pipeline_phase.vertex_memory,
+        .instance_buffer = pipeline_phase.instance_buffer,
+        .instance_memory = pipeline_phase.instance_memory,
+        .instance_mapped = pipeline_phase.instance_mapped,
+        .lookup_buffer = pipeline_phase.lookup_buffer,
+        .lookup_memory = pipeline_phase.lookup_memory,
+        .lookup_mapped = pipeline_phase.lookup_mapped,
         .pipeline = pipeline_phase.pipeline,
         .present_pipeline = pipeline_phase.present_pipeline,
         .composition_pipeline = pipeline_phase.composition_pipeline,
@@ -65,6 +72,7 @@ db_vk_init(const db_vk_wsi_config_t *wsi_config, int vsync_enabled,
         .timing_query_pool = pipeline_phase.timing_query_pool,
         .gpu_timing_enabled = pipeline_phase.gpu_timing_enabled,
         .runtime = scheduler_phase.runtime,
+        .diagnostics = resolved_runtime->diagnostics,
         .capability_mode = scheduler_phase.capability_mode,
         .no_present_mode = scheduler_phase.no_present_mode,
         .ema_ms_per_work_unit = scheduler_phase.ema_ms_per_work_unit,

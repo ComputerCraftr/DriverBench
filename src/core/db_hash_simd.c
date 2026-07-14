@@ -2,6 +2,7 @@
 #include "db_hash_simd_internal.h"
 
 #include "db_core.h"
+#include "db_numeric.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -201,9 +202,7 @@ static void db_fnv_tree_hash_leaves(const uint8_t *bytes, size_t total_bytes,
     size_t leaf_index = 0U;
     while (leaf_index < full_leaf_count) {
         const size_t remaining = full_leaf_count - leaf_index;
-        const size_t batch_count = (remaining < DB_FNV_TREE_AVX2_LANES)
-                                       ? remaining
-                                       : DB_FNV_TREE_AVX2_LANES;
+        const size_t batch_count = DB_MIN(remaining, DB_FNV_TREE_AVX2_LANES);
         const uint8_t *payloads[DB_FNV_TREE_AVX2_LANES] = {0};
         uint64_t initial[DB_FNV_TREE_AVX2_LANES] = {0};
         uint64_t hashes[DB_FNV_TREE_AVX2_LANES] = {0};
@@ -256,9 +255,7 @@ static size_t db_fnv_tree_reduce_level(db_fnv_tree_node_t *nodes,
     size_t pair_index = 0U;
     while (pair_index < pair_count) {
         const size_t remaining = pair_count - pair_index;
-        const size_t batch_count = (remaining < DB_FNV_TREE_AVX2_LANES)
-                                       ? remaining
-                                       : DB_FNV_TREE_AVX2_LANES;
+        const size_t batch_count = DB_MIN(remaining, DB_FNV_TREE_AVX2_LANES);
         uint8_t records[DB_FNV_TREE_AVX2_LANES]
                        [DB_FNV_TREE_PARENT_RECORD_BYTES];
         const uint8_t *record_ptrs[DB_FNV_TREE_AVX2_LANES] = {0};
@@ -316,8 +313,7 @@ static uint64_t db_fnv1a64_tree_internal(const void *data, size_t len_bytes,
         db_failf("hash", "FNV tree node allocation overflow for %zu bytes",
                  len_bytes);
     }
-    db_fnv_tree_node_t *nodes =
-        (db_fnv_tree_node_t *)calloc(leaf_count, sizeof(*nodes));
+    db_fnv_tree_node_t *nodes = calloc(leaf_count, sizeof(*nodes));
     if (nodes == NULL) {
         db_failf("hash", "failed to allocate %zu FNV tree nodes", leaf_count);
     }

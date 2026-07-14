@@ -9,15 +9,15 @@ static inline void db_band_color_rgb3(uint32_t band_index, uint32_t band_count,
     if (out_rgb == NULL) {
         return;
     }
-    const double band_value = (double)band_index;
-    const double frame_value = (double)frame_index;
+    const double band_value = DB_TO_F64(band_index);
+    const double frame_value = DB_TO_F64(frame_index);
     const double pulse_value =
         BENCH_PULSE_BASE +
         (BENCH_PULSE_AMP * sin((frame_value * BENCH_PULSE_FREQ) +
                                (band_value * BENCH_PULSE_PHASE)));
     const double color_r_value =
-        pulse_value * (BENCH_COLOR_R_BASE +
-                       (BENCH_COLOR_R_SCALE * band_value / (double)band_count));
+        pulse_value * (BENCH_COLOR_R_BASE + (BENCH_COLOR_R_SCALE * band_value /
+                                             DB_TO_F64(band_count)));
     const double band_rgb[3] = {
         color_r_value, pulse_value * BENCH_COLOR_G_SCALE, 1.0 - color_r_value};
     memcpy(out_rgb, band_rgb, 3U * sizeof(double));

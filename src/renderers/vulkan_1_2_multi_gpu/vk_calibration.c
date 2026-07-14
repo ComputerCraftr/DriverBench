@@ -1,4 +1,5 @@
 #include "core/db_poll_policy.h"
+#include "vk_diagnostics.h"
 #include "vk_internal.h"
 #include "vk_state_internal.h"
 
@@ -8,9 +9,9 @@
 
 #include "../../core/db_core.h"
 #include "../../core/db_frame_plan.h"
-#include "../../core/db_geometry.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_render_ir.h"
 #include "vk_runtime_internal.h"
 #include <vulkan/vulkan_core.h>
 
@@ -165,10 +166,7 @@ static void vk_calibration_apply(const db_frame_plan_t *plan,
     };
     vkCmdBeginRenderPass(command_buffer, &render_info,
                          VK_SUBPASS_CONTENTS_INLINE);
-    const db_colored_f64_block_view_t draw_view =
-        (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_GEOMETRY)
-            ? plan->rebuild_seed.geometry
-            : plan->geometry.current_blocks;
+    const size_t draw_count = db_vk_frame_rect_count(plan);
     for (size_t index = 0U; index < execution_plan->assignment_count; index++) {
         const db_vk_lane_assignment_t *const assignment =
             &execution_plan->assignments[index];
@@ -176,27 +174,36 @@ static void vk_calibration_apply(const db_frame_plan_t *plan,
             continue;
         }
         if ((assignment->piece_first >= execution_plan->piece_count) ||
-            (execution_plan->pieces[assignment->piece_first].geometry_first >=
-             draw_view.count)) {
+            (execution_plan->pieces[assignment->piece_first].instance_first >=
+             draw_count)) {
             continue;
         }
         const db_vk_present_piece_t *const piece =
             &execution_plan->pieces[assignment->piece_first];
-        const db_colored_f64_block_t *const block =
-            &draw_view.blocks[piece->geometry_first];
-        float color[3] = {0};
-        db_rgb_f64_quantize_f16_to_f32_rgb3(block->rgb, color);
-        const VkClearAttachment attachment = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .colorAttachment = 0U,
-            .clearValue = {.color = {.float32 = {color[0], color[1], color[2],
-                                                 1.0F}}},
-        };
-        const VkClearRect rect = {
-            .rect = piece->destination_rect,
-            .layerCount = 1U,
-        };
-        vkCmdClearAttachments(command_buffer, 1U, &attachment, 1U, &rect);
+        for (uint32_t instance = 0U; instance < piece->instance_count;
+             instance++) {
+            db_render_ir_fill_t fill = {0};
+            if (db_vk_frame_rect_at(plan,
+                                    (size_t)piece->instance_first + instance,
+                                    &fill) == 0) {
+                continue;
+            }
+            float color[3] = {0};
+            db_rgb_f64_quantize_f16_to_f32_rgb3(fill.color.rgba, color);
+            const VkClearAttachment attachment = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .colorAttachment = 0U,
+                .clearValue = {.color = {.float32 = {color[0], color[1],
+                                                     color[2], 1.0F}}},
+            };
+            const VkClearRect rect = {
+                .rect = {.offset = {.x = fill.rect.x, .y = fill.rect.y},
+                         .extent = {.width = (uint32_t)fill.rect.width,
+                                    .height = (uint32_t)fill.rect.height}},
+                .layerCount = 1U,
+            };
+            vkCmdClearAttachments(command_buffer, 1U, &attachment, 1U, &rect);
+        }
     }
     vkCmdEndRenderPass(command_buffer);
 }
@@ -283,7 +290,7 @@ void db_vk_calibration_run_after_live(const db_frame_plan_t *plan) {
     }
     db_vk_independent_lanes_export_reusable();
     const uint64_t candidate_ns = db_now_ns_monotonic() - candidate_start;
-    const double candidate_ms = (double)candidate_ns / DB_NS_PER_MS;
+    const double candidate_ms = DB_TO_F64(candidate_ns) / DB_NS_PER_MS;
     uint64_t primary_deviation_ns = 0U;
     uint64_t worker_deviation_ns = 0U;
     const int calibrated = DB_BOOL(
@@ -299,7 +306,7 @@ void db_vk_calibration_run_after_live(const db_frame_plan_t *plan) {
                            primary_deviation_ns, worker_deviation_ns);
     const uint64_t worker_gpu_ns = db_vk_independent_lane_timing_ns(1U);
     const uint64_t handoff_ns =
-        (candidate_ns > worker_gpu_ns) ? candidate_ns - worker_gpu_ns : 0U;
+        db_u64_saturating_sub(candidate_ns, worker_gpu_ns);
     const uint64_t reference_hash = db_vk_compute_output_hash_from_image(
         g_state.calibration.targets[0].image,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, g_state.backing.extent);
@@ -392,7 +399,6 @@ void db_vk_calibration_run_after_live(const db_frame_plan_t *plan) {
     const db_vk_multi_gpu_phase_t previous_phase =
         g_state.calibration.state.phase;
     db_vk_calibration_state_record(&g_state.calibration.state, &pair);
-    g_state.scheduler.multi_gpu_phase = g_state.calibration.state.phase;
     if (g_state.calibration.state.phase != previous_phase) {
         const db_log_field_t phase_fields[] = {
             DB_LOG_TOKEN("from", db_vk_multi_gpu_phase_name(previous_phase)),

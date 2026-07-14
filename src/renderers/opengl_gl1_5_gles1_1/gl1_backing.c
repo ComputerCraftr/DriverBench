@@ -1,5 +1,7 @@
 #include "core/db_format_contract.h"
 #include "core/db_log.h"
+#include "core/db_render_ir.h"
+#include "core/db_render_ir_surface.h"
 #include "gl1_internal.h"
 
 #include <stddef.h>
@@ -28,21 +30,6 @@ static int has_backing_pixels(void) {
     return DB_BOOL((required > 0U) &&
                    (g_state.backing.pixel_capacity >= required) &&
                    (g_state.backing.pixels != NULL));
-}
-
-static void fill_pixel_block(const db_damage_block_t *block,
-                             const double rgb[3]) {
-    if ((block == NULL) || (rgb == NULL) || (block->row_count == 0U) ||
-        (block->col_count == 0U)) {
-        return;
-    }
-    db_rgb_pixels_fill_damage_block_f64(
-        g_state.backing.pixel_width, g_state.backing.pixel_height,
-        g_state.backing.pixels,
-        (db_gl1_backing_uses_rgba16f() != 0) ? DB_PIXEL_FORMAT_RGBA16F
-                                             : DB_PIXEL_FORMAT_RGBA8,
-        block->row_start, block->row_count, block->col_start, block->col_count,
-        rgb);
 }
 
 static void reserve_backing(size_t required) {
@@ -118,23 +105,18 @@ void db_gl1_ensure_backing_capacity(uint32_t pixel_width,
     }
 }
 
-static void apply_blocks(db_colored_f64_block_view_t blocks,
-                         uint32_t pixel_width, uint32_t pixel_height) {
-    const uint32_t cols = g_state.runtime.grid_cols;
-    const uint32_t rows = g_state.runtime.grid_rows;
-    for (size_t index = 0U; index < blocks.count; index++) {
-        const db_colored_f64_block_t *const block = &blocks.blocks[index];
-        const db_grid_block_t grid_block = {
-            .row_start = block->row_start,
-            .row_count = block->row_count,
-            .col_start = block->col_start,
-            .col_count = block->col_count,
-        };
-        db_damage_block_t pixel_block = {0};
-        if (db_grid_block_to_pixel_block(cols, rows, &grid_block, pixel_width,
-                                         pixel_height, &pixel_block) != 0) {
-            fill_pixel_block(&pixel_block, block->rgb);
-        }
+static void apply_ir(const db_frame_plan_t *plan, const db_render_ir_view_t *ir,
+                     db_render_ir_external_binding_view_t bindings,
+                     uint32_t pixel_width, uint32_t pixel_height) {
+    if (plan == NULL) {
+        return;
+    }
+    const db_pixel_surface_t surface =
+        gl1_backing_surface(pixel_width, pixel_height);
+    if (db_render_ir_rasterize_surface_with_bindings(
+            ir, bindings, g_state.runtime.grid_cols, g_state.runtime.grid_rows,
+            &surface) != DB_RENDER_IR_OK) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "failed to lower frame-plan render IR");
     }
 }
 
@@ -155,23 +137,15 @@ static size_t executed_upload_bytes(const db_gl_shadow_upload_trace_t *trace) {
 
 void db_gl1_rebuild_backing(const db_frame_plan_t *plan, uint32_t pixel_width,
                             uint32_t pixel_height) {
-    const int use_raster_seed =
-        DB_BOOL((plan != NULL) &&
-                (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_RASTER));
-    db_colored_f64_block_view_t rebuild_source = {0};
-    if (plan != NULL) {
-        rebuild_source = plan->geometry.current_blocks;
-        if (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_GEOMETRY) {
-            rebuild_source = plan->rebuild_seed.geometry;
-        }
-    }
-    if ((use_raster_seed == 0) &&
-        ((rebuild_source.blocks == NULL) || (rebuild_source.count == 0U))) {
+    if ((plan == NULL) ||
+        ((plan->rebuild_ir.command_count == 0U) &&
+         (db_render_ir_final_damage_covers(&plan->update_ir, plan->grid_cols,
+                                           plan->grid_rows) == 0))) {
         const db_log_field_t fields[] = {
             DB_LOG_TOKEN("code", "missing_canonical_rebuild_source"),
             DB_LOG_U64("target_generation", g_state.backing.generation),
-            DB_LOG_U64("rebuild_block_count",
-                       (plan != NULL) ? plan->rebuild_seed.geometry.count : 0U),
+            DB_LOG_U64("rebuild_ir_commands",
+                       (plan == NULL) ? 0U : plan->rebuild_ir.command_count),
             DB_LOG_BOOL("backing_valid",
                         g_state.presentation.shadow.backing_valid),
         };
@@ -182,32 +156,12 @@ void db_gl1_rebuild_backing(const db_frame_plan_t *plan, uint32_t pixel_width,
     if (has_backing_pixels() == 0) {
         return;
     }
-    if (use_raster_seed != 0) {
-        const db_pixel_surface_t destination =
-            gl1_backing_surface(pixel_width, pixel_height);
-        const db_pixel_surface_t *const source = &plan->rebuild_seed.raster;
-        if ((source->pixels == NULL) ||
-            (source->pixel_width != destination.pixel_width) ||
-            (source->pixel_height != destination.pixel_height) ||
-            (source->format != destination.format)) {
-            const db_log_field_t fields[] = {
-                DB_LOG_TOKEN("code", "invalid_raster_rebuild_seed"),
-                DB_LOG_U64("seed_generation", plan->rebuild_seed.generation),
-            };
-            db_log_fail(BACKEND_NAME, "backing_rebuild_error", fields,
-                        DB_LOG_FIELD_COUNT(fields));
-        }
-        const size_t pixel_count = db_checked_mul_size(
-            BACKEND_NAME, "rebuild_pixel_count",
-            (size_t)destination.pixel_width, (size_t)destination.pixel_height);
-        const size_t byte_count =
-            db_checked_mul_size(BACKEND_NAME, "rebuild_byte_count", pixel_count,
-                                db_pixel_surface_pixel_bytes(&destination));
-        memcpy(destination.pixels, source->pixels, byte_count);
-        apply_blocks(plan->geometry.current_blocks, pixel_width, pixel_height);
-    } else {
-        apply_blocks(rebuild_source, pixel_width, pixel_height);
+    if (plan->rebuild_ir.command_count > 0U) {
+        apply_ir(plan, &plan->rebuild_ir, plan->external_bindings, pixel_width,
+                 pixel_height);
     }
+    apply_ir(plan, &plan->update_ir, (db_render_ir_external_binding_view_t){0},
+             pixel_width, pixel_height);
     g_state.presentation.shadow.backing_valid = 1;
     db_gl_shadow_present_note_shadow_change(&g_state.presentation.shadow, 1);
 }
@@ -221,7 +175,8 @@ void db_gl1_update_backing(const db_frame_plan_t *plan, uint32_t pixel_width,
     if (has_backing_pixels() == 0) {
         return;
     }
-    apply_blocks(plan->geometry.current_blocks, pixel_width, pixel_height);
+    apply_ir(plan, &plan->update_ir, (db_render_ir_external_binding_view_t){0},
+             pixel_width, pixel_height);
     g_state.presentation.shadow.backing_valid = 1;
     db_gl_shadow_present_note_shadow_change(&g_state.presentation.shadow, 0);
     g_state.telemetry.backing.backing_incremental_frames++;

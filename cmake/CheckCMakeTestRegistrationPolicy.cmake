@@ -4,8 +4,11 @@ endif()
 
 set(DB_ALLOWED_TEST_REGISTRATION_FILES
     "${SOURCE_ROOT}/cmake/DriverBenchTests.cmake"
+    "${SOURCE_ROOT}/cmake/DriverBenchRuntimeRegressionTests.cmake"
+    "${SOURCE_ROOT}/cmake/DriverBenchSourcePolicyTests.cmake"
     "${SOURCE_ROOT}/cmake/DriverBenchTestHelpers.cmake"
     "${SOURCE_ROOT}/cmake/DriverBenchDeterminismSuites.cmake"
+    "${SOURCE_ROOT}/cmake/DriverBenchUnitProbeTests.cmake"
     "${SOURCE_ROOT}/cmake/CheckCMakeTestRegistrationPolicy.cmake")
 
 set(DB_CMAKE_FILES "${SOURCE_ROOT}/CMakeLists.txt")
@@ -26,7 +29,7 @@ foreach(DB_CMAKE_FILE IN LISTS DB_CMAKE_FILES)
         string(
             APPEND
             DB_FAILURES
-            "${DB_CMAKE_FILE}: add_test(...) registrations must live in cmake/DriverBenchTests.cmake\n"
+            "${DB_CMAKE_FILE}: add_test(...) registrations must live in an approved DriverBench test-registration module\n"
         )
     endif()
 endforeach()
@@ -61,6 +64,18 @@ if(NOT DB_GLFW_RESIZE_TEST_CONTENT MATCHES "--glfw-hidden-window[ 	]+1")
     string(APPEND DB_FAILURES
            "GLFW resize CTest must keep its native test surface hidden\n")
 endif()
+
+file(GLOB DB_TEST_RUNNERS "${SOURCE_ROOT}/cmake/Run*.cmake")
+foreach(DB_TEST_RUNNER IN LISTS DB_TEST_RUNNERS)
+    file(READ "${DB_TEST_RUNNER}" DB_TEST_RUNNER_CONTENT)
+    if(DB_TEST_RUNNER_CONTENT MATCHES "message[ \t\r\n]*\\([^\\)]*[Ss]kipp")
+        string(
+            APPEND
+            DB_FAILURES
+            "${DB_TEST_RUNNER}: ad hoc skip messages are forbidden; use db_test_report_skip\n"
+        )
+    endif()
+endforeach()
 
 if(NOT DB_FAILURES STREQUAL "")
     message(FATAL_ERROR "${DB_FAILURES}")

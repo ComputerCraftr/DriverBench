@@ -17,5 +17,6 @@ uint32_t db_gl3_work_unit_count(void);
 uint64_t db_gl3_state_hash(void);
 uint64_t db_gl3_working_hash(void);
 void db_gl3_draw_stats(db_renderer_draw_path_stats_t *stats);
+void db_gl3_execution_report(db_render_execution_report_t *report);
 
 #endif

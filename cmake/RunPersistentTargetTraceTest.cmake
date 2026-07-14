@@ -7,7 +7,6 @@ endforeach()
 db_test_run_command(output skip_reason status "${TEST_ARGS}"
                     "Persistent-target trace command failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(STATUS "Persistent-target trace skipped: ${skip_reason}")
     return()
 endif()
 

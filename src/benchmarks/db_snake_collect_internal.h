@@ -8,7 +8,7 @@
 #include <string.h>
 
 static inline double db_snake_color_channel(uint32_t seed) {
-    const double normalized = (double)(seed & UINT8_MAX) / DB_U8_MAX;
+    const double normalized = DB_TO_F64(seed & UINT8_MAX) / DB_U8_MAX;
     return DB_SNAKE_COMMON_COLOR_BIAS +
            (normalized * DB_SNAKE_COMMON_COLOR_SCALE);
 }
@@ -273,8 +273,7 @@ static inline int db_snake_for_each_damage_row_segment(
             // Overlapping or adjacent: settled covers [S, E], active starts at
             // A. Merge into settled range [S, max(E, A+count)].
             const uint32_t active_end = active_start + active_count;
-            const uint32_t merged_end =
-                (active_end > settled_end) ? active_end : settled_end;
+            const uint32_t merged_end = DB_MAX(active_end, settled_end);
             final_settled_count = merged_end - settled_start;
             final_active_count = 0U;
         }

@@ -6,6 +6,7 @@
 #include "core/db_poll_policy.h"
 #include "core/db_renderer_log.h"
 #include "core/db_renderer_support.h"
+#include "vk_diagnostics.h"
 #include "vk_init_internal.h"
 #include "vk_internal.h"
 #include "vk_renderer.h"
@@ -21,13 +22,13 @@ void db_vk_shutdown(void) {
     }
     const uint64_t bench_end = db_now_ns_monotonic();
     const double bench_ms =
-        (double)(bench_end - g_state.metrics.bench_start_ns) / DB_NS_PER_MS;
+        DB_TO_F64(bench_end - g_state.metrics.bench_start_ns) / DB_NS_PER_MS;
     db_renderer_log_final_summary(
         "Vulkan", RENDERER_NAME,
         (g_state.log_backend_name != NULL) ? g_state.log_backend_name
                                            : BACKEND_NAME,
         g_state.metrics.bench_frames, g_state.runtime.work_unit_count, bench_ms,
-        db_vk_draw_stats);
+        db_vk_draw_stats, db_vk_execution_report);
     double render_p50_ms = 0.0;
     double render_p95_ms = 0.0;
     double render_p99_ms = 0.0;
@@ -78,14 +79,15 @@ void db_vk_shutdown(void) {
     for (uint32_t g = 0; g < gpu_count; g++) {
         const double share_pct =
             (total_work_units > 0U)
-                ? ((double)g_state.scheduler.cumulative_work_units[g] * 100.0) /
-                      (double)total_work_units
+                ? (DB_TO_F64(g_state.scheduler.cumulative_work_units[g]) *
+                   100.0) /
+                      DB_TO_F64(total_work_units)
                 : 0.0;
         const double ema_ms_per_unit =
             g_state.scheduler.ema_ms_per_work_unit[g];
         const double ema_ns_per_unit = ema_ms_per_unit * DB_NS_PER_MS;
         const double ema_units_per_ms =
-            (ema_ms_per_unit > 0.0) ? (1.0 / ema_ms_per_unit) : 0.0;
+            db_f64_reciprocal_positive_finite_or(ema_ms_per_unit, 0.0);
         const db_vk_device_lane_t *lane =
             (g < g_state.device.selection.lane_count)
                 ? &g_state.device.selection.lanes[g]
@@ -130,6 +132,12 @@ void db_vk_shutdown(void) {
         .render_done = g_state.presentation.render_done,
         .vertex_buffer = g_state.pipelines.vertex_buffer,
         .vertex_memory = g_state.pipelines.vertex_memory,
+        .instance_buffer = g_state.pipelines.instance_buffer,
+        .instance_memory = g_state.pipelines.instance_memory,
+        .instance_mapped = g_state.pipelines.instance_mapped,
+        .lookup_buffer = g_state.pipelines.lookup_buffer,
+        .lookup_memory = g_state.pipelines.lookup_memory,
+        .lookup_mapped = g_state.pipelines.lookup_mapped,
         .hash_readback_buffer = g_state.hash.hash_readback_buffer,
         .hash_readback_memory = g_state.hash.hash_readback_memory,
         .pipeline = g_state.pipelines.pipeline,
@@ -175,4 +183,10 @@ void db_vk_set_output_hash_enabled(int enabled) {
 
 void db_vk_draw_stats(db_renderer_draw_path_stats_t *stats) {
     db_renderer_copy_draw_path_stats(&g_state.frame, stats);
+}
+
+void db_vk_execution_report(db_render_execution_report_t *report) {
+    if (report != NULL) {
+        *report = g_state.execution;
+    }
 }

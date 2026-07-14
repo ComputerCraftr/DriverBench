@@ -5,7 +5,6 @@ db_test_require_defined(TEST_ARGS)
 db_test_run_command(output skip_reason status "${TEST_ARGS}"
                     "Damage trace command failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(STATUS "Skipped: ${skip_reason}")
     return()
 endif()
 

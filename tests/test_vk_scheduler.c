@@ -2,7 +2,7 @@
 
 #include "core/db_format_contract.h"
 #include "core/db_frame_plan.h"
-#include "core/db_geometry.h"
+#include "core/db_render_ir.h"
 #include "core/db_render_types.h"
 #include "renderers/vulkan_1_2_multi_gpu/vk_internal.h"
 
@@ -18,12 +18,15 @@ enum {
     TEST_SLOT_FRAME = 12U,
     TEST_SCHEDULING_EPOCH = 9U,
     TEST_CONTENT_GENERATION = 4U,
+    TEST_IR_COMMAND_BYTES = 1024U,
     TEST_SPLIT_DEFAULT_NS = 8000000U,
     TEST_SPLIT_COARSE_BEST_NS = 7000000U,
     TEST_SPLIT_REFINED_BEST_NS = 6000000U,
     TEST_SPLIT_COARSE_BEST_BPS = 5000U,
     TEST_SPLIT_REFINED_LOW_BPS = 3750U,
     TEST_SPLIT_REFINED_HIGH_BPS = 6250U,
+    TEST_SPLIT_SEARCH_ITERATION_LIMIT =
+        DB_VK_SPLIT_SEARCH_SHARE_COUNT * (DB_VK_SPLIT_SAMPLES_PER_SHARE + 1U),
 };
 
 static const double test_primary_ms = 10.0;
@@ -35,15 +38,46 @@ static const double test_candidate_good_p95_ms = 12.5;
 static const double test_candidate_bad_p95_ms = 14.0;
 
 static db_frame_plan_t
-db_test_vk_piece_frame_plan(const db_colored_f64_block_t *blocks,
-                            size_t count) {
+db_test_vk_piece_frame_plan(const db_render_ir_fill_t *fills, size_t count) {
+    static max_align_t commands[TEST_IR_COMMAND_BYTES / sizeof(max_align_t)] = {
+        0};
+    static db_render_ir_fill_t fill_storage[8] = {};
+    static db_render_ir_resource_t resources[1] = {};
+    static db_render_ir_region_t regions[8] = {};
+    static db_render_ir_band_t bands[8] = {};
+    static db_render_ir_span_t spans[8] = {};
+    db_render_ir_store_t store = {.commands = commands,
+                                  .command_capacity = sizeof(commands),
+                                  .fills = fill_storage,
+                                  .fill_capacity = 8U,
+                                  .resources = resources,
+                                  .resource_capacity = 1U,
+                                  .regions = regions,
+                                  .region_capacity = 8U,
+                                  .bands = bands,
+                                  .band_capacity = 8U,
+                                  .spans = spans,
+                                  .span_capacity = 8U};
+    db_render_ir_resource_id_t target = DB_RENDER_IR_INVALID_ID;
+    (void)db_render_ir_add_resource(
+        &store,
+        &(const db_render_ir_resource_t){
+            .kind = DB_RENDER_IR_RESOURCE_CANONICAL_TARGET,
+            .width = TEST_GRID_EXTENT,
+            .height = TEST_GRID_EXTENT,
+            .format = DB_PIXEL_FORMAT_RGBA8},
+        &target);
+    (void)db_render_ir_begin_target(&store, target);
+    (void)db_render_ir_fill_rects(&store, target, fills, count,
+                                  DB_RENDER_IR_INVALID_ID);
+    (void)db_render_ir_end_target(&store, target);
     return (db_frame_plan_t){
         .frame_index = 3U,
         .grid_cols = TEST_GRID_EXTENT,
         .grid_rows = TEST_GRID_EXTENT,
         .pixel_width = TEST_PIXEL_WIDTH,
         .pixel_height = TEST_PIXEL_HEIGHT,
-        .geometry = {.current_blocks = {.blocks = blocks, .count = count}},
+        .update_ir = db_render_ir_store_view(&store),
     };
 }
 
@@ -112,9 +146,11 @@ static void db_test_vk_hdr_aware_primary_selection(db_test_state_t *state) {
 }
 
 static void db_test_vk_piece_plan_preserves_order(db_test_state_t *state) {
-    const db_colored_f64_block_t blocks[] = {
-        {.row_start = 1U, .row_count = 2U, .col_start = 2U, .col_count = 3U},
-        {.row_start = 2U, .row_count = 3U, .col_start = 4U, .col_count = 2U},
+    const db_render_ir_fill_t blocks[] = {
+        {.rect = {.x = 2, .y = 1, .width = 3, .height = 2},
+         .color = {.rgba = {1.0, 0.0, 0.0, 1.0}}},
+        {.rect = {.x = 4, .y = 2, .width = 2, .height = 3},
+         .color = {.rgba = {0.0, 1.0, 0.0, 1.0}}},
     };
     const db_frame_plan_t frame =
         db_test_vk_piece_frame_plan(blocks, sizeof(blocks) / sizeof(blocks[0]));
@@ -126,21 +162,41 @@ static void db_test_vk_piece_plan_preserves_order(db_test_state_t *state) {
                    &frame, 2U, DB_VK_SCHEDULING_PRIMARY_ONLY, NULL, 7U, 11U,
                    pieces, sizeof(pieces) / sizeof(pieces[0]), assignments,
                    sizeof(assignments) / sizeof(assignments[0]), &plan));
-    DB_TEST_EXPECT_EQ_U32(state, (uint32_t)plan.piece_count, 2U);
+    DB_TEST_EXPECT_EQ_U32(state, (uint32_t)plan.piece_count, 1U);
     DB_TEST_EXPECT_EQ_U32(state, pieces[0].piece_index, 0U);
-    DB_TEST_EXPECT_EQ_U32(state, pieces[1].piece_index, 1U);
+    DB_TEST_EXPECT_EQ_U32(state, pieces[0].instance_count, 2U);
+    DB_TEST_EXPECT_EQ_U32(state, pieces[0].command_range.command_count, 1U);
     DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.offset.x, 20U);
     DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.offset.y, 8U);
-    DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.extent.width, 30U);
-    DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.extent.height, 16U);
+    DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.extent.width, 40U);
+    DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.extent.height, 32U);
     DB_TEST_EXPECT_EQ_U32(state, assignments[0].lane, 0U);
-    DB_TEST_EXPECT_EQ_U32(state, assignments[1].lane, 0U);
+}
+
+static void
+db_test_vk_instance_bounds_use_top_left_origin(db_test_state_t *state) {
+    const db_render_ir_fill_t fills[] = {
+        {.rect = {.x = 0, .y = 0, .width = 10, .height = 1},
+         .color = {.rgba = {1.0, 0.0, 0.0, 1.0}}},
+        {.rect = {.x = 0, .y = 9, .width = 10, .height = 1},
+         .color = {.rgba = {0.0, 1.0, 0.0, 1.0}}},
+    };
+    const db_frame_plan_t plan = db_test_vk_piece_frame_plan(fills, 2U);
+    db_vk_ir_execute_instance_t instances[2] = {0};
+    DB_TEST_EXPECT_EQ_SIZE(
+        state, db_vk_write_frame_instances(&plan, instances, 2U), 2U);
+    DB_TEST_EXPECT_TRUE(state, instances[0].rect[1] < 0.0F);
+    DB_TEST_EXPECT_TRUE(state, instances[1].rect[1] > 0.0F);
+    DB_TEST_EXPECT_TRUE(state, instances[0].rect[3] > 0.0F);
+    DB_TEST_EXPECT_TRUE(state, instances[1].rect[3] > 0.0F);
 }
 
 static void db_test_vk_piece_plan_overflow_is_primary(db_test_state_t *state) {
-    const db_colored_f64_block_t blocks[] = {
-        {.row_count = 1U, .col_count = 1U},
-        {.row_start = 1U, .row_count = 1U, .col_count = 1U},
+    const db_render_ir_fill_t blocks[] = {
+        {.rect = {.width = 1, .height = 1},
+         .color = {.rgba = {1.0, 0.0, 0.0, 1.0}}},
+        {.rect = {.y = 1, .width = 1, .height = 1},
+         .color = {.rgba = {0.0, 1.0, 0.0, 1.0}}},
     };
     db_frame_plan_t frame =
         db_test_vk_piece_frame_plan(blocks, sizeof(blocks) / sizeof(blocks[0]));
@@ -158,9 +214,11 @@ static void db_test_vk_piece_plan_overflow_is_primary(db_test_state_t *state) {
 }
 
 static void db_test_vk_overlapping_pieces_are_primary(db_test_state_t *state) {
-    const db_colored_f64_block_t blocks[] = {
-        {.row_start = 1U, .row_count = 4U, .col_start = 1U, .col_count = 4U},
-        {.row_start = 3U, .row_count = 4U, .col_start = 3U, .col_count = 4U},
+    const db_render_ir_fill_t blocks[] = {
+        {.rect = {.x = 1, .y = 1, .width = 4, .height = 4},
+         .color = {.rgba = {1.0, 0.0, 0.0, 1.0}}},
+        {.rect = {.x = 3, .y = 3, .width = 4, .height = 4},
+         .color = {.rgba = {0.0, 1.0, 0.0, 1.0}}},
     };
     const db_frame_plan_t frame =
         db_test_vk_piece_frame_plan(blocks, sizeof(blocks) / sizeof(blocks[0]));
@@ -174,7 +232,6 @@ static void db_test_vk_overlapping_pieces_are_primary(db_test_state_t *state) {
                    costs, 1U, 1U, pieces, 2U, assignments, 2U, &plan));
     DB_TEST_EXPECT_EQ_U32(state, plan.policy, DB_VK_SCHEDULING_PRIMARY_ONLY);
     DB_TEST_EXPECT_EQ_U32(state, assignments[0].lane, 0U);
-    DB_TEST_EXPECT_EQ_U32(state, assignments[1].lane, 0U);
 }
 
 static void db_test_vk_sync_fd_state_machine(db_test_state_t *state) {
@@ -375,6 +432,15 @@ static void db_test_vk_shared_buffer_piece_overflow(db_test_state_t *state) {
                                    4096U, &layout, 1U, &plan));
     DB_TEST_EXPECT_EQ_U32(state, plan.layout_count, 0U);
     DB_TEST_EXPECT_EQ_U32(state, plan.rerouted_piece_count, 1U);
+
+    piece.destination_rect.extent.width = UINT32_MAX;
+    piece.destination_rect.extent.height = UINT32_MAX;
+    plan = (db_vk_shared_buffer_plan_t){0};
+    DB_TEST_EXPECT_TRUE(state, db_vk_build_shared_buffer_plan(
+                                   &execution, DB_PIXEL_FORMAT_RGBA16F, 64U,
+                                   UINT64_MAX, &layout, 1U, &plan));
+    DB_TEST_EXPECT_EQ_U32(state, plan.layout_count, 0U);
+    DB_TEST_EXPECT_EQ_U32(state, plan.rerouted_piece_count, 1U);
 }
 
 static void db_test_vk_bounded_calibration_activation(db_test_state_t *state) {
@@ -406,7 +472,10 @@ static void db_test_vk_bounded_calibration_activation(db_test_state_t *state) {
 static void
 db_test_vk_split_search_refines_and_breaks_ties(db_test_state_t *state) {
     db_vk_split_search_t search = {0};
-    while (search.complete == 0) {
+    for (uint32_t iteration = 0U;
+         (iteration < TEST_SPLIT_SEARCH_ITERATION_LIMIT) &&
+         (search.complete == 0);
+         iteration++) {
         const uint32_t share = db_vk_split_search_next_share(&search);
         uint64_t duration = TEST_SPLIT_DEFAULT_NS;
         if (share == TEST_SPLIT_COARSE_BEST_BPS) {
@@ -497,6 +566,8 @@ unsigned db_vk_scheduler_test_run_all(void) {
          db_test_vk_hdr_aware_primary_selection},
         {"vk_piece_plan_preserves_order",
          db_test_vk_piece_plan_preserves_order},
+        {"vk_instance_bounds_use_top_left_origin",
+         db_test_vk_instance_bounds_use_top_left_origin},
         {"vk_piece_plan_overflow_is_primary",
          db_test_vk_piece_plan_overflow_is_primary},
         {"vk_overlapping_pieces_are_primary",

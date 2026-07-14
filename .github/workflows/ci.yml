@@ -1,0 +1,268 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CTEST_OUTPUT_ON_FAILURE: "1"
+  DISPLAY: ""
+  WAYLAND_DISPLAY: ""
+
+jobs:
+  format-and-python:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Install LLVM 22
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang-22 clang-format-22
+      - name: Install pinned Python tools
+        run: |
+          python3 scripts/install_python_tools.py
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify LLVM 22 formatting and Python policy
+        env:
+          CC: clang-22
+        run: python3 scripts/run_quality_ci.py format
+
+  clang-tidy:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Install graphics development dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            clang-22 \
+            clang-format-22 \
+            clang-tidy-22 \
+            clang-tools-22 \
+            glslc \
+            libdrm-dev \
+            libegl1-mesa-dev \
+            libgbm-dev \
+            libgl1-mesa-dev \
+            libvulkan-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev \
+            libxrender-dev \
+            ninja-build \
+            pkg-config
+      - name: Build and run source and header clang-tidy
+        env:
+          CC: clang-22
+        run: python3 scripts/run_quality_ci.py tidy
+      - name: Upload clang-tidy diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-tidy-diagnostics
+          path: |
+            build/ci-quality/clang-tidy.log
+            build/ci-quality/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+
+  clang-debug-sanitizers:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/install-linux-graphics-deps
+      - name: Configure
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-clang-debug
+          cmake -S . -B build/ci-clang-debug -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang-22 \
+            -DDB_ENABLE_LTO=OFF \
+            -DDB_ENABLE_SANITIZERS=ON \
+            -DDB_REQUIRE_SANITIZER_RUNTIME=ON \
+            -DDB_GLFW_PROVIDER=vendored \
+            -DDB_GLFW_REQUIRED=ON \
+            -DDB_TEST_HEADLESS_ONLY=ON \
+            2>&1 | tee build/ci-clang-debug-configure.log
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build/ci-clang-debug --parallel 4 \
+            2>&1 | tee build/ci-clang-debug-build.log
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: >-
+          ctest --test-dir build/ci-clang-debug --parallel 4
+          --output-junit "$PWD/build/ci-clang-debug/ctest-results.xml"
+      - name: Audit required test execution
+        run: >-
+          python3 scripts/audit_ctest_results.py
+          --junit build/ci-clang-debug/ctest-results.xml
+          --manifest ci/capabilities/hosted-headless.json
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-debug-diagnostics
+          path: |
+            build/ci-clang-debug-configure.log
+            build/ci-clang-debug-build.log
+            build/ci-clang-debug/ctest-results.xml
+          if-no-files-found: ignore
+
+  clang-release:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/install-linux-graphics-deps
+      - name: Configure and build
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-clang-release
+          cmake -S . -B build/ci-clang-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-22 \
+            -DDB_ENABLE_LTO=OFF \
+            -DDB_GLFW_PROVIDER=vendored \
+            -DDB_GLFW_REQUIRED=ON \
+            -DDB_TEST_HEADLESS_ONLY=ON \
+            2>&1 | tee build/ci-clang-release-configure.log
+          cmake --build build/ci-clang-release --parallel 4 \
+            2>&1 | tee build/ci-clang-release-build.log
+      - name: Test and audit
+        run: |
+          ctest --test-dir build/ci-clang-release --parallel 4 \
+            --output-junit "$PWD/build/ci-clang-release/ctest-results.xml"
+          python3 scripts/audit_ctest_results.py \
+            --junit build/ci-clang-release/ctest-results.xml \
+            --manifest ci/capabilities/hosted-headless.json
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: clang-release-diagnostics
+          path: |
+            build/ci-clang-release-configure.log
+            build/ci-clang-release-build.log
+            build/ci-clang-release/ctest-results.xml
+          if-no-files-found: ignore
+
+  gcc-warnings:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: ./.github/actions/install-linux-graphics-deps
+      - name: Configure and build with fatal GCC warnings
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-gcc-release
+          cmake -S . -B build/ci-gcc-release -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc \
+            -DDB_ENABLE_LTO=OFF \
+            -DDB_GLFW_PROVIDER=vendored \
+            -DDB_GLFW_REQUIRED=ON \
+            -DDB_TEST_HEADLESS_ONLY=ON \
+            2>&1 | tee build/ci-gcc-release-configure.log
+          cmake --build build/ci-gcc-release --parallel 4 \
+            2>&1 | tee build/ci-gcc-release-build.log
+      - name: Test and audit
+        run: |
+          ctest --test-dir build/ci-gcc-release --parallel 4 \
+            --output-junit "$PWD/build/ci-gcc-release/ctest-results.xml"
+          python3 scripts/audit_ctest_results.py \
+            --junit build/ci-gcc-release/ctest-results.xml \
+            --manifest ci/capabilities/hosted-headless.json
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gcc-warning-diagnostics
+          path: |
+            build/ci-gcc-release-configure.log
+            build/ci-gcc-release-build.log
+            build/ci-gcc-release/ctest-results.xml
+          if-no-files-found: ignore
+
+  macos-headless:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Configure and build
+        run: |
+          set -o pipefail
+          mkdir -p build/ci-macos
+          cmake -S . -B build/ci-macos -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DDB_ENABLE_LTO=OFF \
+            -DDB_GLFW_PROVIDER=vendored \
+            -DDB_GLFW_REQUIRED=ON \
+            -DDB_TEST_HEADLESS_ONLY=ON \
+            2>&1 | tee build/ci-macos-configure.log
+          cmake --build build/ci-macos --parallel 4 \
+            2>&1 | tee build/ci-macos-build.log
+      - name: Test and audit
+        run: |
+          ctest --test-dir build/ci-macos --parallel 4 \
+            --output-junit "$PWD/build/ci-macos/ctest-results.xml"
+          python3 scripts/audit_ctest_results.py \
+            --junit build/ci-macos/ctest-results.xml \
+            --manifest ci/capabilities/hosted-headless.json
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-headless-diagnostics
+          path: |
+            build/ci-macos-configure.log
+            build/ci-macos-build.log
+            build/ci-macos/ctest-results.xml
+          if-no-files-found: ignore
+
+  i686-void-sanitizers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Execute the local Void i686 CI entrypoint
+        run: python3 scripts/run_void_i686_ci.py
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: i686-void-sanitizer-diagnostics
+          path: build/linux32-sanitize/ctest-results.xml
+          if-no-files-found: ignore

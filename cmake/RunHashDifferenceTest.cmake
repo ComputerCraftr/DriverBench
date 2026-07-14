@@ -11,15 +11,11 @@ endif()
 db_test_run_command(output_a skip_reason_a run_status_a "${TEST_ARGS_A}"
                     "Hash-difference run failed")
 if(NOT "${skip_reason_a}" STREQUAL "")
-    message(
-        STATUS "Hash-difference test skipped: ${skip_reason_a}\n${output_a}")
     return()
 endif()
 db_test_run_command(output_b skip_reason_b run_status_b "${TEST_ARGS_B}"
                     "Hash-difference run failed")
 if(NOT "${skip_reason_b}" STREQUAL "")
-    message(
-        STATUS "Hash-difference test skipped: ${skip_reason_b}\n${output_b}")
     return()
 endif()
 

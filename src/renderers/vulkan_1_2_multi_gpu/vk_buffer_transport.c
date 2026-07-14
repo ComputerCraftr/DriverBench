@@ -5,6 +5,7 @@
 
 #include <stdint.h>
 
+#include "../../core/db_core.h"
 #include "../../core/db_numeric.h"
 #include "../../core/db_render_types.h"
 #include "db_embedded_shaders.h"
@@ -205,8 +206,8 @@ static int vk_create_pack_pipeline(db_vk_independent_lane_runtime_t *runtime) {
     }
     const VkShaderModuleCreateInfo module_info = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = db_vk_pack_comp_spv_word_count * sizeof(uint32_t),
-        .pCode = db_vk_pack_comp_spv,
+        .codeSize = db_vk_transport_pack_comp_spv_word_count * sizeof(uint32_t),
+        .pCode = db_vk_transport_pack_comp_spv,
     };
     VkShaderModule module = VK_NULL_HANDLE;
     if (vkCreateShaderModule(runtime->device, &module_info, NULL, &module) !=
@@ -339,15 +340,16 @@ vk_create_unpack_pipeline(db_vk_independent_lane_runtime_t *runtime) {
     VkShaderModule modules[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkShaderModuleCreateInfo module_info = {
         .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = db_vk_present_vert_spv_word_count * sizeof(uint32_t),
-        .pCode = db_vk_present_vert_spv,
+        .codeSize = db_vk_presentation_vert_spv_word_count * sizeof(uint32_t),
+        .pCode = db_vk_presentation_vert_spv,
     };
     if (vkCreateShaderModule(g_state.device.device, &module_info, NULL,
                              &modules[0]) != VK_SUCCESS) {
         return 0;
     }
-    module_info.codeSize = db_vk_unpack_frag_spv_word_count * sizeof(uint32_t);
-    module_info.pCode = db_vk_unpack_frag_spv;
+    module_info.codeSize =
+        db_vk_transport_unpack_frag_spv_word_count * sizeof(uint32_t);
+    module_info.pCode = db_vk_transport_unpack_frag_spv;
     if (vkCreateShaderModule(g_state.device.device, &module_info, NULL,
                              &modules[1]) != VK_SUCCESS) {
         vkDestroyShaderModule(g_state.device.device, modules[0], NULL);
@@ -472,9 +474,17 @@ int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime,
     vkGetPhysicalDeviceProperties(g_state.device.present_phys,
                                   &primary_properties);
     const VkDeviceSize pixel_size =
-        (g_state.backing.pixel_format == DB_PIXEL_FORMAT_RGBA16F) ? 8U : 4U;
-    const VkDeviceSize size = (VkDeviceSize)g_state.backing.extent.width *
-                              g_state.backing.extent.height * pixel_size;
+        db_pixel_format_bytes_per_pixel(g_state.backing.pixel_format);
+    if (pixel_size == 0U) {
+        goto fail;
+    }
+    VkDeviceSize pixel_count = 0U;
+    VkDeviceSize size = 0U;
+    if ((db_try_mul_u64(g_state.backing.extent.width,
+                        g_state.backing.extent.height, &pixel_count) == 0) ||
+        (db_try_mul_u64(pixel_count, pixel_size, &size) == 0)) {
+        goto fail;
+    }
     if ((size > worker_properties.limits.maxStorageBufferRange) ||
         (size > primary_properties.limits.maxStorageBufferRange) ||
         (vk_create_pack_pipeline(runtime) == 0)) {

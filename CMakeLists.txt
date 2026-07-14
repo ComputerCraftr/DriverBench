@@ -1,45 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
 
-# Prefer musl-targeted GCC when a musl preset requests it and a matching cross
-# compiler is available. Otherwise prefer Clang for better default LTO support.
-if(NOT DEFINED CMAKE_C_COMPILER AND "$ENV{CC}" STREQUAL "")
-    if(DEFINED DB_TARGET_LINUX_MUSL
-       AND DB_TARGET_LINUX_MUSL
-       AND DEFINED DB_TARGET_LINUX_MUSL_TRIPLE
-       AND NOT "${DB_TARGET_LINUX_MUSL_TRIPLE}" STREQUAL "")
-        find_program(DB_DEFAULT_MUSL_GCC
-                     NAMES "${DB_TARGET_LINUX_MUSL_TRIPLE}-gcc")
-        if(DB_DEFAULT_MUSL_GCC)
-            set(CMAKE_C_COMPILER
-                "${DB_DEFAULT_MUSL_GCC}"
-                CACHE
-                    FILEPATH
-                    "C compiler selected by DriverBench default preference (musl-targeted GCC)"
-            )
-            message(
-                STATUS
-                    "No C compiler specified; defaulting to musl-targeted GCC: ${DB_DEFAULT_MUSL_GCC}"
-            )
-        endif()
-    endif()
-
-    if(NOT DEFINED CMAKE_C_COMPILER)
-        find_program(DB_DEFAULT_CLANG NAMES clang)
-        if(DB_DEFAULT_CLANG)
-            set(CMAKE_C_COMPILER
-                "${DB_DEFAULT_CLANG}"
-                CACHE
-                    FILEPATH
-                    "C compiler selected by DriverBench default preference (clang)"
-            )
-            message(
-                STATUS
-                    "No C compiler specified; defaulting to clang: ${DB_DEFAULT_CLANG}"
-            )
-        endif()
-    endif()
-endif()
-
 project(DriverBench C)
 include(CTest)
 
@@ -48,6 +8,7 @@ include(CheckSymbolExists)
 include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchPlatform.cmake)
 
 set(DB_SOURCE_FILE_LINE_LIMIT 1000)
+set(DB_SOURCE_FILE_SOFT_LINE_LIMIT 800)
 
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -68,21 +29,42 @@ set(DB_COMPILER_IS_GNU_LIKE OFF)
 if(DB_COMPILER_IS_CLANG OR DB_COMPILER_IS_GNU)
     set(DB_COMPILER_IS_GNU_LIKE ON)
 endif()
+include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchWarnings.cmake)
 
 set(DB_CORE_SOURCES
     src/config/runtime_options.c
     src/core/db_buffer_convert.c
     src/core/db_core.c
+    src/core/db_conformance.c
+    src/core/db_conformance_cache.c
+    src/core/db_conformance_service.c
+    src/core/db_frame_plan.c
+    src/core/db_frame_preparation.c
+    src/core/db_gradient_divergence.c
     src/core/db_log.c
     src/core/db_poll_policy.c
+    src/core/db_process_environment.c
+    src/core/db_probe_process.c
+    src/core/db_probe_protocol.c
+    src/core/db_render_ir.c
+    src/core/db_render_ir_query.c
+    src/core/db_render_ir_ranges.c
+    src/core/db_render_ir_lowering.c
+    src/core/db_render_ir_optimizer.c
+    src/core/db_render_ir_region.c
+    src/core/db_render_ir_snapshot.c
+    src/core/db_render_ir_surface.c
+    src/core/db_render_ir_validate.c
+    src/core/db_replay_policy.c
+    src/core/db_renderer_diagnostics.c
     src/core/db_sort.c
     src/benchmarks/db_benchmark_core.c
+    src/benchmarks/db_benchmark_workspace.c
+    src/benchmarks/db_benchmark_requirements.c
     src/benchmarks/db_snake_fast_forward.c
     src/benchmarks/db_benchmark_checkpoint.c
     src/benchmarks/db_benchmark_emitters.c
     src/benchmarks/db_frame_source.c
-    src/core/db_geometry.c
-    src/core/db_geometry_builder.c
     src/core/db_hash.c
     src/core/db_hash_simd.c)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|i[3-6]86)$")
@@ -105,6 +87,8 @@ set_property(CACHE DB_GLFW_PROVIDER PROPERTY STRINGS vendored system off)
 option(DB_ENABLE_LOOP_HINTS "Enable loop optimization hint flags" ON)
 option(DB_ENABLE_LTO "Enable link-time optimization in release-like builds" OFF)
 option(DB_ENABLE_SANITIZERS "Enable sanitizers for debug builds" ON)
+option(DB_REQUIRE_SANITIZER_RUNTIME
+       "Fail configuration when requested sanitizer runtimes cannot link" OFF)
 option(DB_ENABLE_DSYM "Generate dSYM bundles for Apple debug-like builds" ON)
 option(
     DB_TEST_HEADLESS_ONLY
@@ -182,6 +166,27 @@ set(DB_CROSS_COMPILE_FLAGS "")
 set(DB_CROSS_LINK_FLAGS "")
 include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchLinuxToolchain.cmake)
 
+if(DB_ENABLE_SANITIZERS
+   AND DB_REQUIRE_SANITIZER_RUNTIME
+   AND CMAKE_BUILD_TYPE STREQUAL "Debug")
+    include(CheckCSourceCompiles)
+    set(DB_SAVED_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+    set(DB_SAVED_REQUIRED_LINK_OPTIONS "${CMAKE_REQUIRED_LINK_OPTIONS}")
+    string(APPEND CMAKE_REQUIRED_FLAGS " -fsanitize=address,undefined")
+    list(APPEND CMAKE_REQUIRED_LINK_OPTIONS -fsanitize=address,undefined)
+    check_c_source_compiles(
+        "#include <stddef.h>\nint main(void) { volatile size_t n = 1U; return (int)n - 1; }"
+        DB_SANITIZER_RUNTIME_LINKS)
+    set(CMAKE_REQUIRED_FLAGS "${DB_SAVED_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_LINK_OPTIONS "${DB_SAVED_REQUIRED_LINK_OPTIONS}")
+    if(NOT DB_SANITIZER_RUNTIME_LINKS)
+        message(
+            FATAL_ERROR
+                "ASan/UBSan runtimes do not compile and link for the selected target. Install matching target runtimes or disable DB_REQUIRE_SANITIZER_RUNTIME."
+        )
+    endif()
+endif()
+
 function(db_apply_perf_options target_name)
     if(NOT TARGET ${target_name})
         return()
@@ -189,42 +194,7 @@ function(db_apply_perf_options target_name)
 
     target_compile_definitions(${target_name} PRIVATE _GNU_SOURCE)
 
-    if(DB_COMPILER_IS_CLANG)
-        target_compile_options(
-            ${target_name}
-            PRIVATE -Wall
-                    -Wextra
-                    -Wpedantic
-                    -Werror
-                    -Wformat=2
-                    -Wcast-align
-                    -Wcast-qual
-                    -Wconversion
-                    -Wsign-conversion
-                    -Wdouble-promotion
-                    -Wfloat-equal
-                    -Wimplicit-fallthrough
-                    -Wmissing-prototypes
-                    -Wstrict-prototypes
-                    -Wnewline-eof
-                    -Wnull-dereference
-                    -Wshadow-all
-                    -Wswitch-enum
-                    -Wundef
-                    -Wunreachable-code
-                    -Wunused-function
-                    -Wunused-parameter
-                    -Wunused-variable
-                    -Wvla
-                    -Wwrite-strings
-                    -Wpointer-arith
-                    -Wmissing-declarations
-                    -Wbad-function-cast
-                    -Wunused-macros
-                    -Wunused-but-set-variable
-                    -Wunused-but-set-parameter
-                    -Wunneeded-internal-declaration)
-    endif()
+    db_apply_warning_options(${target_name})
 
     if(DB_CROSS_COMPILE_FLAGS)
         target_compile_options(${target_name} PRIVATE ${DB_CROSS_COMPILE_FLAGS})
@@ -262,3 +232,6 @@ if(BUILD_TESTING)
     include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchTests.cmake)
     db_register_driverbench_tests()
 endif()
+
+include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchDeveloperTools.cmake)
+db_add_developer_tool_targets()

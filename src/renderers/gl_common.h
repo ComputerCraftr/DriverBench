@@ -304,6 +304,8 @@ typedef struct {
     db_gl_present_upload_profile_t upload_profile;
     db_gl_shadow_present_preserve_mode_t requested_preserve_mode;
     db_gl_shadow_present_preserve_mode_t preserve_mode;
+    db_gl_shadow_present_preserve_mode_t runtime_preserve_mode;
+    int runtime_preserve_mode_explicit;
     uint32_t requested_preserved_framebuffer_count;
     uint32_t slot_count;
     uint32_t write_slot_index;
@@ -506,7 +508,7 @@ int db_gl_shadow_present_begin_full_upload_target_slot_offset(
     uint32_t slot_offset, db_gl_shadow_present_full_upload_target_t *target);
 void db_gl_shadow_present_repair_full_upload_target(
     db_gl_shadow_present_state_t *state,
-    const db_gl_shadow_present_full_upload_target_t *target,
+    db_gl_shadow_present_full_upload_target_t *target,
     const db_pixel_surface_t *source_surface,
     db_pixel_block_view_t damage_view);
 void db_gl_shadow_present_sync_preserved_slots(
@@ -532,6 +534,9 @@ void db_gl_shadow_present_present_replace_pixels_direct_client(
 void db_gl_shadow_present_frame(const db_gl_shadow_present_frame_t *frame);
 void db_gl_shadow_present_draw(db_gl_shadow_present_state_t *state,
                                uint32_t pixel_width, uint32_t pixel_height);
+void db_gl_shadow_present_draw_framebuffer_texture(
+    db_gl_shadow_present_state_t *state, uint32_t pixel_width,
+    uint32_t pixel_height);
 void db_gl_shadow_present_set_draw_damage(db_gl_shadow_present_state_t *state,
                                           db_pixel_block_view_t damage,
                                           int force_full);
@@ -584,6 +589,8 @@ void db_gl_set_color_pointer_f(uint32_t component_count, size_t stride_bytes,
                                const void *pointer);
 void db_gl_set_texcoord_pointer_2f(size_t stride_bytes, const void *pointer);
 void db_gl_draw_arrays_triangles(uint32_t first, uint32_t count);
+int db_gl_draw_arrays_triangles_instanced(uint32_t first, uint32_t count,
+                                          uint32_t instance_count);
 void db_gl_draw_arrays_triangle_strip(uint32_t first, uint32_t count);
 void db_gl_set_scissor_enabled(int enabled);
 void db_gl_set_scissor(uint32_t x_px, uint32_t y_px, uint32_t width,
@@ -629,6 +636,9 @@ void db_gl_vertex_attrib_pointer_2f(unsigned int index, int stride_bytes,
                                     size_t byte_offset);
 void db_gl_vertex_attrib_pointer_3f(unsigned int index, int stride_bytes,
                                     size_t byte_offset);
+void db_gl_vertex_attrib_pointer_4f(unsigned int index, int stride_bytes,
+                                    size_t byte_offset);
+int db_gl_vertex_attrib_divisor(unsigned int index, unsigned int divisor);
 uint32_t db_gl_get_error_value(void);
 const char *db_gl_get_version_string(void);
 const char *db_gl_get_renderer_string(void);

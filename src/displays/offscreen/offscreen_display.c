@@ -10,6 +10,8 @@
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_frame_source.h"
 #include "../../core/db_hash.h"
+#include "../../core/db_numeric.h"
+#include "../../core/db_render_result.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/cpu_renderer.h"
 #include "../../renderers/gl_common.h"
@@ -124,18 +126,25 @@ db_offscreen_cpu_frame_step(void *user_data, uint32_t frame_index,
         return DB_DISPLAY_FRAME_LOOP_STOP;
     }
     db_frame_plan_t plan;
-    db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
+    if (db_frame_source_generate(ctx->core, frame_index, NULL, &plan) !=
+        DB_FRAME_PLAN_OK) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
     (void)db_cpu_render_frame_to_surface(&plan, &ctx->surface, NULL);
     const int hash_output =
         db_display_frame_step_should_hash_output(ctx->frame_step, frame_index);
     const int hash_state =
         db_display_frame_step_should_hash_state(ctx->frame_step, frame_index);
     uint64_t output_hash = 0U;
+    db_render_execution_report_t execution = {0};
+    db_cpu_execution_report(&execution);
     if (hash_output != 0) {
         output_hash = db_offscreen_cpu_surface_hash(&ctx->surface);
-        db_frame_source_commit_success_with_hash(ctx->core, &plan, output_hash);
+        db_frame_source_commit_success_with_hash_and_execution(
+            ctx->core, &plan, output_hash, &execution);
     } else {
-        db_frame_source_commit_success(ctx->core, &plan);
+        db_frame_source_commit_success_with_execution(ctx->core, &plan,
+                                                      &execution);
     }
     if (hash_state != 0) {
         db_display_hash_tracker_record(ctx->frame_step->state_hash_tracker,
@@ -164,7 +173,10 @@ db_offscreen_vulkan_frame_step(void *user_data, uint32_t frame_index,
         return DB_DISPLAY_FRAME_LOOP_STOP;
     }
     db_frame_plan_t plan;
-    db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
+    if (db_frame_source_generate(ctx->core, frame_index, NULL, &plan) !=
+        DB_FRAME_PLAN_OK) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
     const int hash_output = db_display_hash_tracker_should_sample(
         ctx->output_hash_tracker, frame_index, ctx->frame_limit);
     const int hash_state = db_display_hash_tracker_should_sample(
@@ -270,7 +282,10 @@ db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
     }
 
     db_frame_plan_t plan;
-    db_frame_source_generate(ctx->core, frame_index, NULL, &plan);
+    if (db_frame_source_generate(ctx->core, frame_index, NULL, &plan) !=
+        DB_FRAME_PLAN_OK) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
 
     db_gl_bind_framebuffer(GL_FRAMEBUFFER, ctx->offscreen_fbo);
     db_gl_set_viewport_px(ctx->framebuffer_width_px,
@@ -292,12 +307,15 @@ db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
     const int hash_state =
         db_display_frame_step_should_hash_state(ctx->frame_step, frame_index);
     uint64_t output_hash_value = 0U;
+    db_render_execution_report_t execution = {0};
+    ctx->renderer_ops->execution_report(&execution);
     if (hash_output != 0) {
         output_hash_value = ctx->renderer_ops->working_hash();
-        db_frame_source_commit_success_with_hash(ctx->core, &plan,
-                                                 output_hash_value);
+        db_frame_source_commit_success_with_hash_and_execution(
+            ctx->core, &plan, output_hash_value, &execution);
     } else {
-        db_frame_source_commit_success(ctx->core, &plan);
+        db_frame_source_commit_success_with_execution(ctx->core, &plan,
+                                                      &execution);
     }
     db_display_gl_frame_step(ctx->frame_step, frame_index, elapsed_ms,
                              hash_state, plan.expected_state_hash, hash_output,
@@ -408,11 +426,11 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
     const uint64_t frames = loop_result.frames;
 
     const double total_ms =
-        (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
+        DB_TO_F64(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
     db_display_log_renderer_final_summary(
         db_dispatch_api_name(DB_API_OPENGL), renderer_ops.renderer_name,
         DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, frames, work_unit_count,
-        total_ms, renderer_ops.draw_stats);
+        total_ms, renderer_ops.draw_stats, renderer_ops.execution_report);
     db_display_dual_hash_trackers_log_final(
         DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, &hash_trackers);
 
@@ -482,11 +500,11 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
     const uint64_t frames = loop_result.frames;
 
     const double total_ms =
-        (double)(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
+        DB_TO_F64(db_now_ns_monotonic() - start_ns) / DB_NS_PER_MS;
     db_display_log_renderer_final_summary(
         db_dispatch_api_name(DB_API_CPU), db_renderer_name_cpu(),
         DB_BACKEND_NAME_DISPLAY_OFFSCREEN, frames, work_unit_count, total_ms,
-        NULL);
+        NULL, db_cpu_execution_report);
     db_display_dual_hash_trackers_log_final(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
                                             &hash_trackers);
     db_offscreen_cpu_surface_destroy(&loop_ctx.surface);

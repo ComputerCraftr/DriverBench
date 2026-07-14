@@ -485,6 +485,23 @@ void db_gl_draw_arrays_triangles(uint32_t first, uint32_t count) {
     }
 }
 
+int db_gl_draw_arrays_triangles_instanced(uint32_t first, uint32_t count,
+                                          uint32_t instance_count) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.draw_arrays_instanced == NULL) {
+        return 0;
+    }
+    g_upload_proc_table.draw_arrays_instanced(
+        GL_TRIANGLES,
+        db_checked_u32_to_int("db_gl_draw_arrays_triangles_instanced", "first",
+                              first),
+        db_checked_u32_to_int("db_gl_draw_arrays_triangles_instanced", "count",
+                              count),
+        db_checked_u32_to_int("db_gl_draw_arrays_triangles_instanced",
+                              "instance_count", instance_count));
+    return 1;
+}
+
 void db_gl_draw_arrays_triangle_strip(uint32_t first, uint32_t count) {
     db_gl_load_upload_proc_table();
     if (g_upload_proc_table.draw_arrays != NULL) {

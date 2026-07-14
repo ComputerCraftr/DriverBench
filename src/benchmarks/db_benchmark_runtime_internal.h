@@ -232,15 +232,15 @@ db_benchmark_random_seed_from_text_or_time(const char *backend_name,
     if ((value == NULL) || (value[0] == '\0')) {
         return db_pattern_seed_from_time();
     }
-    char *end = NULL;
-    const unsigned long parsed = strtoul(value, &end, 0);
-    if ((end == value) || (end == NULL) || (*end != '\0') ||
-        (parsed > UINT32_MAX)) {
+    const char *end = NULL;
+    uint32_t parsed = 0U;
+    if ((db_parse_u32_prefix(value, DB_PARSE_BASE_AUTODETECT, &parsed, &end) ==
+         0) ||
+        (*end != '\0')) {
         DB_RUNTIME_FAIL(backend_name, "Invalid %s='%s'",
                         DB_RUNTIME_OPT_RANDOM_SEED, value);
     }
-    return db_checked_ulong_to_u32(backend_name, DB_RUNTIME_OPT_RANDOM_SEED,
-                                   parsed);
+    return parsed;
 }
 
 static inline uint32_t
@@ -254,10 +254,10 @@ db_benchmark_speed_step_from_text(const char *backend_name, const char *value) {
     if ((value == NULL) || (value[0] == '\0')) {
         return 1U;
     }
-    char *end = NULL;
-    const double parsed = strtod(value, &end);
-    if ((end == value) || (end == NULL) || (*end != '\0') ||
-        !isfinite(parsed) || (parsed <= 0.0)) {
+    const char *end = NULL;
+    double parsed = 0.0;
+    if ((db_parse_double_prefix(value, &parsed, &end) == 0) || (*end != '\0') ||
+        (parsed <= 0.0)) {
         DB_RUNTIME_FAIL(backend_name, "Invalid %s='%s' (expected: > 0)",
                         DB_RUNTIME_OPT_BENCH_SPEED, value);
     }

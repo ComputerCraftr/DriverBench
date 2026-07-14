@@ -19,15 +19,16 @@ void db_gl_compact_vbo_init_or_fail(const char *backend_name,
         DB_RUNTIME_FAIL("renderer_gl_common",
                         "db_gl_compact_vbo_init_or_fail: invalid arguments");
     }
-    if (vertex_stride == 0U) {
-        DB_RUNTIME_FAIL(backend_name, "compact vertex_stride is zero");
+    if ((vertex_stride == 0U) || (vertex_stride > (SIZE_MAX / sizeof(float))) ||
+        (base_vbo_bytes < sizeof(float))) {
+        DB_RUNTIME_FAIL(backend_name, "compact VBO layout is invalid");
     }
+    const size_t vertex_stride_bytes = vertex_stride * sizeof(float);
     *compact = (db_gl_compact_vbo_state_t){0};
     compact->vbo_capacity_bytes = base_vbo_bytes;
     compact->vbo_offset_bytes = base_vbo_bytes;
     compact->scratch_float_capacity = base_vbo_bytes / sizeof(float);
-    compact->first_vertex =
-        compact->vbo_offset_bytes / (vertex_stride * sizeof(float));
+    compact->first_vertex = compact->vbo_offset_bytes / vertex_stride_bytes;
     compact->scratch_vertices = (float *)db_malloc_or_fail(
         backend_name, "compact_vbo_scratch", compact->scratch_float_capacity,
         sizeof(float));
@@ -41,7 +42,8 @@ void db_gl_compact_vbo_init_standalone_or_fail(
             "renderer_gl_common",
             "db_gl_compact_vbo_init_standalone_or_fail: invalid arguments");
     }
-    if ((vertex_stride == 0U) || (compact_vbo_bytes == 0U)) {
+    if ((vertex_stride == 0U) || (compact_vbo_bytes < sizeof(float)) ||
+        (vertex_stride > (SIZE_MAX / sizeof(float)))) {
         DB_RUNTIME_FAIL(backend_name,
                         "compact standalone VBO layout is invalid");
     }

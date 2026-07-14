@@ -144,10 +144,6 @@ db_damage_trace_emit(const db_damage_trace_event_t *event);
 db_damage_trace_summary_t
 db_damage_trace_emit_grid(const db_damage_trace_event_t *event,
                           const db_grid_block_t *blocks, size_t block_count);
-db_damage_trace_summary_t
-db_damage_trace_emit_colored_grid(const db_damage_trace_event_t *event,
-                                  const db_colored_f64_block_t *blocks,
-                                  size_t block_count);
 void db_damage_trace_emit_frame_plan(db_damage_trace_backend_t backend,
                                      const char *target,
                                      uint32_t target_generation,

@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "core/db_render_result.h"
 #include "core/db_render_types.h"
 #include "core/db_renderer_runtime_contract.h"
 
@@ -27,5 +28,6 @@ void db_cpu_shutdown(void);
 uint32_t db_cpu_work_unit_count(void);
 const char *db_cpu_capability_mode(void);
 uint64_t db_cpu_state_hash(void);
+void db_cpu_execution_report(db_render_execution_report_t *report);
 
 #endif

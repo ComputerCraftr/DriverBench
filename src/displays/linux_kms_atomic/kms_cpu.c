@@ -1,6 +1,7 @@
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_frame_source.h"
 #include "core/db_format_contract.h"
+#include "core/db_render_result.h"
 #include "kms_internal.h"
 
 #include <gbm.h>
@@ -66,17 +67,22 @@ struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx, uint32_t frame_index) {
         return NULL;
     }
     db_frame_plan_t plan = {0};
-    db_frame_source_generate(
-        producer->core, frame_index,
-        &(const db_frame_plan_request_t){
-            .pixel_width = producer->surface.pixel_width,
-            .pixel_height = producer->surface.pixel_height,
-            .force_rebuild = DB_BOOL(frame_index == 0U),
-            .rebuild_reason = DB_FRAME_REBUILD_INITIAL_TARGET,
-        },
-        &plan);
+    if (db_frame_source_generate(
+            producer->core, frame_index,
+            &(const db_frame_plan_request_t){
+                .pixel_width = producer->surface.pixel_width,
+                .pixel_height = producer->surface.pixel_height,
+                .force_rebuild = DB_BOOL(frame_index == 0U),
+                .rebuild_reason = DB_FRAME_REBUILD_INITIAL_TARGET,
+            },
+            &plan) != DB_FRAME_PLAN_OK) {
+        return NULL;
+    }
     (void)db_cpu_render_frame_to_surface(&plan, &producer->surface, NULL);
-    db_frame_source_commit_success(producer->core, &plan);
+    db_render_execution_report_t execution = {0};
+    db_cpu_execution_report(&execution);
+    db_frame_source_commit_success_with_execution(producer->core, &plan,
+                                                  &execution);
     producer->present_serial++;
     db_kms_cpu_scanout_slot_t *const slot =
         &producer->slots[producer->next_slot];
@@ -105,10 +111,11 @@ struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx, uint32_t frame_index) {
             producer->present_serial, slot->last_present_serial, slot->valid,
             DB_PRESENTATION_DAMAGE_HISTORY_LENGTH);
     int force_full = 1;
-    const size_t logical_count = db_presentation_damage_history_resolve(
-        &producer->damage_history, &age, plan.geometry.logical_damage,
-        plan.grid_rows, plan.grid_cols, producer->logical_damage,
-        DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME, &force_full);
+    const size_t logical_count = db_presentation_damage_history_resolve_ir(
+        &producer->damage_history, &age, &plan.update_ir,
+        plan.update_metadata.damage_region, plan.grid_rows, plan.grid_cols,
+        producer->logical_damage, DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME,
+        &force_full);
     int overflow = 0;
     size_t pixel_count = db_presentation_map_logical_damage(
         (db_grid_block_view_t){

@@ -27,10 +27,7 @@ execute_process(
 set(combined_output "${test_stdout}\n${test_stderr}")
 if(NOT test_result EQUAL 0 AND combined_output MATCHES
                                "${DB_TEST_GLFW_ENV_SKIP_REGEX}")
-    message(
-        STATUS
-            "Command-contract test skipped: ${DB_TEST_GLFW_ENV_SKIP_REASON}\n${combined_output}"
-    )
+    db_test_report_skip("glfw_environment_unavailable" "glfw_context")
     return()
 endif()
 

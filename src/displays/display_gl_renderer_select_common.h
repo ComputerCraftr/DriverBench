@@ -16,6 +16,7 @@ typedef struct {
     db_gl_renderer_t renderer;
     const char *renderer_name;
     void (*draw_stats)(db_renderer_draw_path_stats_t *stats);
+    void (*execution_report)(db_render_execution_report_t *report);
     void (*init)(const db_renderer_runtime_contract_t *resolved_runtime);
     const char *(*runtime_capability_mode)(void);
     uint64_t (*state_hash)(void);
@@ -69,6 +70,7 @@ db_display_gl_select_renderer_ops(db_gl_renderer_t renderer) {
             .renderer = renderer,
             .renderer_name = db_renderer_name_opengl_gl1_5_gles1_1(),
             .draw_stats = db_gl1_draw_stats,
+            .execution_report = db_gl1_execution_report,
             .init = db_gl1_init,
             .runtime_capability_mode = db_gl1_capability_mode,
             .state_hash = db_gl1_state_hash,
@@ -81,6 +83,7 @@ db_display_gl_select_renderer_ops(db_gl_renderer_t renderer) {
         .renderer = renderer,
         .renderer_name = db_renderer_name_opengl_gl3_3(),
         .draw_stats = db_gl3_draw_stats,
+        .execution_report = db_gl3_execution_report,
         .init = db_gl3_init,
         .runtime_capability_mode = db_gl3_capability_mode,
         .state_hash = db_gl3_state_hash,

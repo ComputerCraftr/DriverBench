@@ -75,13 +75,14 @@ db_reserve_array_capacity_or_fail(void **buffer, size_t *capacity,
         db_failf(backend, "%s reserve capacity overflow",
                  (field_name != NULL) ? field_name : "buffer");
     }
+    const size_t allocation_bytes =
+        db_checked_mul_size(backend, field_name, new_capacity, element_size);
     if (*buffer == NULL) {
-        *buffer =
-            db_malloc_or_fail(backend, field_name, new_capacity, element_size);
+        *buffer = db_malloc_or_fail(backend, field_name, 1U, allocation_bytes);
         *capacity = new_capacity;
         return;
     }
-    void *const grown = realloc(*buffer, new_capacity * element_size);
+    void *const grown = realloc(*buffer, allocation_bytes);
     if (grown == NULL) {
         db_failf(backend, "failed to grow %s",
                  (field_name != NULL) ? field_name : "buffer");
@@ -108,10 +109,20 @@ static inline void db_reserve_aligned_array_capacity_or_fail(
         db_failf(backend, "%s aligned reserve capacity overflow",
                  (field_name != NULL) ? field_name : "buffer");
     }
+    if (preserve_count > *capacity) {
+        db_failf(backend, "%s preserve count exceeds old capacity",
+                 (field_name != NULL) ? field_name : "buffer");
+    }
+    if ((preserve_count > 0U) && (*buffer == NULL)) {
+        db_failf(backend, "%s cannot preserve a null buffer",
+                 (field_name != NULL) ? field_name : "buffer");
+    }
+    const size_t preserve_bytes =
+        db_checked_mul_size(backend, field_name, preserve_count, element_size);
     void *const new_buffer = db_calloc_or_fail(
         backend, field_name, new_capacity, element_size, alignment);
     if ((*buffer != NULL) && (preserve_count > 0U)) {
-        memcpy(new_buffer, *buffer, preserve_count * element_size);
+        memcpy(new_buffer, *buffer, preserve_bytes);
     }
     free(*buffer);
     *buffer = new_buffer;

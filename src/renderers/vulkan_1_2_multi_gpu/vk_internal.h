@@ -1,9 +1,8 @@
 #ifndef DRIVERBENCH_VK_INTERNAL_H
 #define DRIVERBENCH_VK_INTERNAL_H
 
-#include "core/db_numeric.h"
 #include "core/db_renderer_support.h"
-#include "core/db_trace.h"
+#include "vk_diagnostics.h"
 #include "vk_renderer.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -28,6 +27,7 @@
 #define DB_VK_NONBLOCKING_FRAME_SAFETY_NS 500000ULL
 #define DB_VK_LANE_SLOT_COUNT 2U
 #define DB_VK_MAX_PIECES_PER_FRAME 8192U
+#define DB_VK_LOOKUP_WORD_CAPACITY ((size_t)DB_VK_MAX_PIECES_PER_FRAME * 2U)
 #define DB_VK_MAX_DAMAGE_RECTS 8192U
 #define DB_VK_MAX_BATCHES_PER_LANE 4U
 #define DB_VK_DAMAGE_HISTORY_LENGTH 8U
@@ -39,36 +39,6 @@
 #define DB_VK_HDR_DEVICE_SCORE_BONUS_SHIFT 48U
 #define DB_VK_SPLIT_SEARCH_SAMPLE_COUNT                                        \
     (DB_VK_SPLIT_SEARCH_SHARE_COUNT * DB_VK_SPLIT_SAMPLES_PER_SHARE)
-
-static inline int db_vk_trace_level(void) {
-    return db_trace_config_current().vulkan;
-}
-
-static inline VkClearValue
-db_vk_clear_value_from_rgba_f64(const double rgba[4]) {
-    VkClearValue clear = {0};
-    db_rgba_f64_to_f32_rgba4(rgba, clear.color.float32);
-    return clear;
-}
-
-static inline const char *db_vk_format_name(VkFormat format) {
-    switch ((int)format) {
-    case VK_FORMAT_R16G16B16A16_SFLOAT:
-        return "rgba16f";
-    case VK_FORMAT_R8G8B8A8_UNORM:
-        return "r8g8b8a8_unorm";
-    case VK_FORMAT_B8G8R8A8_UNORM:
-        return "b8g8r8a8_unorm";
-    case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
-        return "a2r10g10b10_unorm";
-    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-        return "a2b10g10r10_unorm";
-    case VK_FORMAT_UNDEFINED:
-        return "undefined";
-    default:
-        return "other";
-    }
-}
 
 typedef enum {
     DB_VK_COMPOSE_SAMPLE_NEAREST = 0,
@@ -85,11 +55,20 @@ typedef enum {
 typedef struct {
     VkRect2D source_rect;
     VkRect2D destination_rect;
-    uint32_t geometry_first;
-    uint32_t geometry_count;
+    db_render_ir_rect_t logical_rect;
+    db_render_ir_command_range_t command_range;
+    uint32_t instance_first;
+    uint32_t instance_count;
     uint32_t piece_index;
     db_vk_compose_mode_t compose_mode;
 } db_vk_present_piece_t;
+
+typedef struct {
+    float rect[4];
+    float start_color[4];
+    float end_color[4];
+    float gradient[4];
+} db_vk_ir_execute_instance_t;
 
 typedef struct {
     uint32_t piece_first;
@@ -171,10 +150,8 @@ typedef struct {
 } db_vk_split_search_t;
 
 typedef struct {
-    float offset_ndc[2];
-    float scale_ndc[2];
-    float color[4];
-} PushConstants;
+    float hdr_output_enabled;
+} db_vk_present_push_constants_t;
 
 typedef struct {
     VkPhysicalDeviceGroupProperties grp;
@@ -217,7 +194,8 @@ typedef struct {
     int supports_present;
     int supports_external_memory_interop;
     int supports_external_semaphore_interop;
-    int supports_external_image_interop;
+    int supports_external_image_export;
+    int supports_external_image_import;
     int supports_dma_buf;
     int supports_drm_modifier;
     int supports_dma_buf_buffer;
@@ -428,36 +406,19 @@ typedef struct {
     int calibrated_timestamps_enabled;
 } db_vk_independent_lane_runtime_t;
 
-typedef struct {
-    const float *color;
-} db_vk_draw_payload_t;
-
-typedef struct {
-    float color[3];
-    db_vk_draw_payload_t payload;
-    int valid;
-} db_vk_draw_payload_cache_t;
-
 typedef struct db_vk_state_init_ctx db_vk_state_init_ctx_t;
 
 typedef struct {
     uint32_t span_units;
     uint32_t owner;
+    uint32_t first_instance;
+    uint32_t instance_count;
+    VkRect2D scissor;
     db_grid_block_t block;
-    db_vk_draw_payload_t payload;
 } db_vk_grid_row_block_draw_req_t;
 
 typedef struct {
-    float ndc_x0;
-    float ndc_y0;
-    float ndc_x1;
-    float ndc_y1;
-    db_vk_draw_payload_t payload;
-} db_vk_draw_dynamic_req_t;
-
-typedef struct {
     VkCommandBuffer cmd;
-    VkPipelineLayout layout;
     VkExtent2D extent;
     int have_group;
     uint32_t active_gpu_count;
@@ -474,7 +435,6 @@ typedef struct {
     const uint8_t *owner_enabled;
     uint32_t grid_rows;
     uint32_t grid_cols;
-    db_vk_draw_payload_cache_t *payload_cache;
 } db_vk_owner_draw_ctx_t;
 
 typedef struct {
@@ -484,6 +444,12 @@ typedef struct {
     VkSemaphore render_done;
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_memory;
+    VkBuffer instance_buffer;
+    VkDeviceMemory instance_memory;
+    void *instance_mapped;
+    VkBuffer lookup_buffer;
+    VkDeviceMemory lookup_memory;
+    void *lookup_mapped;
     VkBuffer hash_readback_buffer;
     VkDeviceMemory hash_readback_memory;
     VkPipeline pipeline;
@@ -539,7 +505,7 @@ static inline uint32_t db_vk_normalize_gpu_count(uint32_t gpu_count) {
     if (gpu_count == 0U) {
         return 1U;
     }
-    return (gpu_count > MAX_GPU_COUNT) ? MAX_GPU_COUNT : gpu_count;
+    return DB_MIN(gpu_count, MAX_GPU_COUNT);
 }
 
 static inline int db_vk_present_mode_is_blocking(VkPresentModeKHR mode) {
@@ -562,76 +528,6 @@ db_vk_scheduler_frame_safety_ns(VkPresentModeKHR present_mode) {
     }
     return DB_VK_NONBLOCKING_FRAME_SAFETY_NS;
 }
-
-static inline const char *db_vk_result_name(VkResult result) {
-    switch ((int)result) {
-    case VK_SUCCESS:
-        return "VK_SUCCESS";
-    case VK_NOT_READY:
-        return "VK_NOT_READY";
-    case VK_TIMEOUT:
-        return "VK_TIMEOUT";
-    case VK_EVENT_SET:
-        return "VK_EVENT_SET";
-    case VK_EVENT_RESET:
-        return "VK_EVENT_RESET";
-    case VK_INCOMPLETE:
-        return "VK_INCOMPLETE";
-    case VK_ERROR_OUT_OF_HOST_MEMORY:
-        return "VK_ERROR_OUT_OF_HOST_MEMORY";
-    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
-        return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
-    case VK_ERROR_INITIALIZATION_FAILED:
-        return "VK_ERROR_INITIALIZATION_FAILED";
-    case VK_ERROR_DEVICE_LOST:
-        return "VK_ERROR_DEVICE_LOST";
-    case VK_ERROR_MEMORY_MAP_FAILED:
-        return "VK_ERROR_MEMORY_MAP_FAILED";
-    case VK_ERROR_LAYER_NOT_PRESENT:
-        return "VK_ERROR_LAYER_NOT_PRESENT";
-    case VK_ERROR_EXTENSION_NOT_PRESENT:
-        return "VK_ERROR_EXTENSION_NOT_PRESENT";
-    case VK_ERROR_FEATURE_NOT_PRESENT:
-        return "VK_ERROR_FEATURE_NOT_PRESENT";
-    case VK_ERROR_INCOMPATIBLE_DRIVER:
-        return "VK_ERROR_INCOMPATIBLE_DRIVER";
-    case VK_ERROR_TOO_MANY_OBJECTS:
-        return "VK_ERROR_TOO_MANY_OBJECTS";
-    case VK_ERROR_FORMAT_NOT_SUPPORTED:
-        return "VK_ERROR_FORMAT_NOT_SUPPORTED";
-    case VK_ERROR_FRAGMENTED_POOL:
-        return "VK_ERROR_FRAGMENTED_POOL";
-    case VK_ERROR_SURFACE_LOST_KHR:
-        return "VK_ERROR_SURFACE_LOST_KHR";
-    case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR:
-        return "VK_ERROR_NATIVE_WINDOW_IN_USE_KHR";
-    case VK_SUBOPTIMAL_KHR:
-        return "VK_SUBOPTIMAL_KHR";
-    case VK_ERROR_OUT_OF_DATE_KHR:
-        return "VK_ERROR_OUT_OF_DATE_KHR";
-    case VK_ERROR_INCOMPATIBLE_DISPLAY_KHR:
-        return "VK_ERROR_INCOMPATIBLE_DISPLAY_KHR";
-    case VK_ERROR_VALIDATION_FAILED_EXT:
-        return "VK_ERROR_VALIDATION_FAILED_EXT";
-    default:
-        return "VK_RESULT_UNKNOWN";
-    }
-}
-
-static inline void __attribute__((noreturn))
-db_vk_fail(const char *backend_name, const char *expr, VkResult result,
-           const char *file, int line) {
-    DB_RUNTIME_FAIL(backend_name, "%s failed: %s (%d) at %s:%d", expr,
-                    db_vk_result_name(result), (int)result, file, line);
-    __builtin_unreachable();
-}
-
-#define DB_VK_CHECK(backend_name, x)                                           \
-    do {                                                                       \
-        VkResult _r = (x);                                                     \
-        if (_r != VK_SUCCESS)                                                  \
-            db_vk_fail((backend_name), #x, _r, __FILE__, __LINE__);            \
-    } while (0)
 
 uint32_t db_vk_build_device_group_mask(uint32_t device_count);
 VkSurfaceFormatKHR
@@ -669,10 +565,8 @@ uint32_t db_vk_choose_primary_physical_index_for_output(
     db_output_format_request_t output_request);
 DeviceSelectionState
 db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface,
-                               db_output_format_request_t output_request);
-void db_vk_push_constants_draw_dynamic(VkCommandBuffer cmd,
-                                       VkPipelineLayout layout,
-                                       const db_vk_draw_dynamic_req_t *req);
+                               db_output_format_request_t output_request,
+                               VkFormat working_format);
 void db_vk_recreate_swapchain_state(const db_vk_wsi_config_t *wsi_config,
                                     VkPhysicalDevice present_phys,
                                     VkDevice device, VkSurfaceKHR surface,
@@ -684,7 +578,7 @@ void db_vk_recreate_backing_target(VkPhysicalDevice phys, VkDevice device,
                                    VkFormat format, VkExtent2D extent,
                                    VkRenderPass render_pass,
                                    uint32_t device_group_mask,
-                                   VkBackingTargetState backing_targets[1]);
+                                   VkBackingTargetState *backing_targets);
 void db_vk_draw_owner_grid_row_block(
     const db_vk_owner_draw_ctx_t *ctx,
     const db_vk_grid_row_block_draw_req_t *req);
@@ -728,6 +622,27 @@ int db_vk_build_execution_plan(
     db_vk_present_piece_t *pieces, size_t piece_capacity,
     db_vk_lane_assignment_t *assignments, size_t assignment_capacity,
     db_vk_execution_plan_t *out_plan);
+int db_vk_build_execution_plan_for_gradient_path(
+    const db_frame_plan_t *frame_plan, uint32_t lane_count,
+    db_vk_scheduling_policy_t policy, const double *ema_ms_per_work_unit,
+    uint32_t scheduling_epoch, uint32_t content_generation,
+    db_vk_present_piece_t *pieces, size_t piece_capacity,
+    db_vk_lane_assignment_t *assignments, size_t assignment_capacity,
+    db_vk_execution_plan_t *out_plan, int semantic_gradient);
+size_t db_vk_frame_rect_count(const db_frame_plan_t *plan);
+int db_vk_frame_rect_at(const db_frame_plan_t *plan, size_t index,
+                        db_render_ir_fill_t *fill);
+size_t db_vk_write_frame_instances(const db_frame_plan_t *plan,
+                                   db_vk_ir_execute_instance_t *instances,
+                                   size_t instance_capacity);
+size_t db_vk_write_frame_instances_for_gradient_path(
+    const db_frame_plan_t *plan, db_vk_ir_execute_instance_t *instances,
+    size_t instance_capacity, int semantic_gradient);
+size_t db_vk_write_frame_instances_for_implementation(
+    const db_frame_plan_t *plan, db_vk_ir_execute_instance_t *instances,
+    size_t instance_capacity, uint32_t *lookup_words, size_t lookup_capacity,
+    size_t *lookup_word_count, db_pixel_format_t working_format,
+    db_gradient_implementation_t implementation);
 int db_vk_build_execution_plan_with_worker_share(
     const db_frame_plan_t *frame_plan, uint32_t lane_count,
     db_vk_scheduling_policy_t policy, uint32_t worker_share_bps,
@@ -801,5 +716,6 @@ double db_vk_scheduler_percentile_sorted(const double *samples, size_t count,
                                          double pct);
 void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx);
 void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx);
+void db_vk_resolve_gradient_qualification(void);
 
 #endif

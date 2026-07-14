@@ -1,10 +1,10 @@
+#include "vk_diagnostics.h"
 #include "vk_runtime_internal.h"
 
 #include <stdint.h>
 
 #include "core/db_poll_policy.h"
 #include "vk_init_internal.h"
-#include "vk_internal.h"
 #include <vulkan/vulkan_core.h>
 
 typedef struct {

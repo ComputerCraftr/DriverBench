@@ -1,3 +1,5 @@
+#include "../../core/db_core.h"
+#include "../../core/db_numeric.h"
 #include "../../core/db_render_types.h"
 #include "vk_internal.h"
 
@@ -6,12 +8,21 @@
 
 #include <vulkan/vulkan_core.h>
 
-static VkDeviceSize vk_align_up(VkDeviceSize value, VkDeviceSize alignment) {
+static int vk_try_align_up(VkDeviceSize value, VkDeviceSize alignment,
+                           VkDeviceSize *out_value) {
+    if (out_value == NULL) {
+        return 0;
+    }
     if (alignment <= 1U) {
-        return value;
+        *out_value = value;
+        return 1;
     }
     const VkDeviceSize remainder = value % alignment;
-    return (remainder == 0U) ? value : value + (alignment - remainder);
+    if (remainder == 0U) {
+        *out_value = value;
+        return 1;
+    }
+    return db_try_add_u64(value, alignment - remainder, out_value);
 }
 
 int db_vk_build_shared_buffer_plan(const db_vk_execution_plan_t *execution_plan,
@@ -26,25 +37,37 @@ int db_vk_build_shared_buffer_plan(const db_vk_execution_plan_t *execution_plan,
         return 0;
     }
     *out_plan = (db_vk_shared_buffer_plan_t){0};
-    const VkDeviceSize pixel_size =
-        (format == DB_PIXEL_FORMAT_RGBA16F) ? 8U : 4U;
+    const VkDeviceSize pixel_size = db_pixel_format_bytes_per_pixel(format);
+    if (pixel_size == 0U) {
+        return 0;
+    }
     const VkDeviceSize base_alignment =
-        (segment_base_alignment > 4U) ? segment_base_alignment : 4U;
+        DB_MAX(segment_base_alignment, (VkDeviceSize)4U);
     uint32_t segment = 0U;
     VkDeviceSize segment_used = 0U;
     VkDeviceSize segment_base = 0U;
     for (size_t index = 0U; index < execution_plan->piece_count; index++) {
-        const db_vk_present_piece_t *const piece =
-            &execution_plan->pieces[index];
-        const VkDeviceSize row_pitch =
-            (VkDeviceSize)piece->destination_rect.extent.width * pixel_size;
-        const VkDeviceSize byte_size =
-            row_pitch * (VkDeviceSize)piece->destination_rect.extent.height;
-        if (row_pitch > UINT32_MAX) {
+        if (segment >= DB_VK_MAX_BATCHES_PER_LANE) {
             out_plan->rerouted_piece_count++;
             continue;
         }
-        VkDeviceSize offset = vk_align_up(segment_used, 4U);
+        const db_vk_present_piece_t *const piece =
+            &execution_plan->pieces[index];
+        VkDeviceSize row_pitch = 0U;
+        VkDeviceSize byte_size = 0U;
+        if ((db_try_mul_u64(piece->destination_rect.extent.width, pixel_size,
+                            &row_pitch) == 0) ||
+            (db_try_mul_u64(row_pitch, piece->destination_rect.extent.height,
+                            &byte_size) == 0) ||
+            (row_pitch > UINT32_MAX)) {
+            out_plan->rerouted_piece_count++;
+            continue;
+        }
+        VkDeviceSize offset = 0U;
+        if (vk_try_align_up(segment_used, 4U, &offset) == 0) {
+            out_plan->rerouted_piece_count++;
+            continue;
+        }
         if ((byte_size > max_segment_range) ||
             (out_plan->layout_count >= layout_capacity)) {
             out_plan->rerouted_piece_count++;
@@ -57,8 +80,15 @@ int db_vk_build_shared_buffer_plan(const db_vk_execution_plan_t *execution_plan,
                 out_plan->rerouted_piece_count++;
                 continue;
             }
-            segment_base =
-                vk_align_up(segment_base + max_segment_range, base_alignment);
+            VkDeviceSize unaligned_segment_base = 0U;
+            if ((db_try_add_u64(segment_base, max_segment_range,
+                                &unaligned_segment_base) == 0) ||
+                (vk_try_align_up(unaligned_segment_base, base_alignment,
+                                 &segment_base) == 0)) {
+                out_plan->rerouted_piece_count++;
+                segment = DB_VK_MAX_BATCHES_PER_LANE;
+                continue;
+            }
             offset = 0U;
         }
         layouts[out_plan->layout_count++] = (db_vk_shared_piece_layout_t){
@@ -72,8 +102,18 @@ int db_vk_build_shared_buffer_plan(const db_vk_execution_plan_t *execution_plan,
             .content_generation = execution_plan->content_generation,
             .scheduling_epoch = execution_plan->scheduling_epoch,
         };
-        segment_used = offset + byte_size;
-        const VkDeviceSize end = segment_base + segment_used;
+        if ((db_try_add_u64(offset, byte_size, &segment_used) == 0)) {
+            out_plan->layout_count--;
+            out_plan->rerouted_piece_count++;
+            continue;
+        }
+        VkDeviceSize end = 0U;
+        if (db_try_add_u64(segment_base, segment_used, &end) == 0) {
+            out_plan->layout_count--;
+            out_plan->rerouted_piece_count++;
+            segment = DB_VK_MAX_BATCHES_PER_LANE;
+            continue;
+        }
         if (end > out_plan->total_size) {
             out_plan->total_size = end;
         }

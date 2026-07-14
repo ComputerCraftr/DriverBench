@@ -1,5 +1,5 @@
 {
-    "version": 3,
+    "version": 5,
     "cmakeMinimumRequired": {
         "major": 3,
         "minor": 24,
@@ -22,10 +22,20 @@
             }
         },
         {
+            "name": "base-cross-release",
+            "hidden": true,
+            "inherits": "base-native-release-like",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "DB_ENABLE_LTO": "ON"
+            }
+        },
+        {
             "name": "base-native-clang-release",
             "hidden": true,
             "inherits": "base-native-release-like",
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
                 "CMAKE_BUILD_TYPE": "Release",
                 "DB_ENABLE_LTO": "ON"
             }
@@ -45,6 +55,7 @@
             "hidden": true,
             "inherits": "base-native-release-like",
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
                 "CMAKE_BUILD_TYPE": "Debug",
                 "DB_ENABLE_SANITIZERS": "ON"
             }
@@ -64,6 +75,7 @@
             "hidden": true,
             "inherits": "base-native-release-like",
             "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
                 "DB_ENABLE_SANITIZERS": "OFF"
             }
@@ -125,17 +137,74 @@
             "inherits": "base-native-clang-release",
             "binaryDir": "${sourceDir}/build/linux32",
             "cacheVariables": {
-                "CMAKE_C_COMPILER": "clang",
                 "CMAKE_C_COMPILER_TARGET": "i686-pc-linux-gnu",
                 "DB_TARGET_LINUX_32BIT": "ON"
             }
         },
         {
+            "name": "ninja-linux-gnu-i686-clang-headless-release",
+            "displayName": "Ninja (Release, Linux i686 headless, Clang)",
+            "inherits": "base-native-clang-release",
+            "binaryDir": "${sourceDir}/build/linux32-headless",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER_TARGET": "i686-pc-linux-gnu",
+                "DB_TARGET_LINUX_32BIT": "ON",
+                "DB_BUILD_GLFW_WINDOW_DISPLAY": "OFF",
+                "DB_GLFW_PROVIDER": "off",
+                "DB_GLFW_REQUIRED": "OFF",
+                "DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY": "OFF",
+                "DB_BUILD_VULKAN": "OFF",
+                "DB_TEST_HEADLESS_ONLY": "ON",
+                "DB_ENABLE_LTO": "OFF"
+            }
+        },
+        {
+            "name": "ninja-linux-gnu-i686-clang-headless-sanitize",
+            "displayName": "Ninja (Debug ASan/UBSan, Linux i686 headless, Clang)",
+            "inherits": "base-native-clang-debug",
+            "binaryDir": "${sourceDir}/build/linux32-sanitize",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER_TARGET": "i686-pc-linux-gnu",
+                "DB_TARGET_LINUX_32BIT": "ON",
+                "DB_BUILD_GLFW_WINDOW_DISPLAY": "OFF",
+                "DB_GLFW_PROVIDER": "off",
+                "DB_GLFW_REQUIRED": "OFF",
+                "DB_BUILD_LINUX_KMS_ATOMIC_DISPLAY": "OFF",
+                "DB_BUILD_VULKAN": "OFF",
+                "DB_TEST_HEADLESS_ONLY": "ON",
+                "DB_REQUIRE_SANITIZER_RUNTIME": "ON"
+            }
+        },
+        {
+            "name": "ninja-linux-gnu-i686-clang-full-release",
+            "displayName": "Ninja (Release, Linux i686 full graphics, Clang)",
+            "inherits": "ninja-linux-gnu-i686-clang-release",
+            "binaryDir": "${sourceDir}/build/linux32-full",
+            "cacheVariables": {
+                "DB_TARGET_LINUX_ROOT": "$env{DB_TARGET_LINUX_ROOT}",
+                "DB_GLFW_REQUIRED": "ON"
+            }
+        },
+        {
+            "name": "ninja-linux-gnu-i686-clang-full-sanitize",
+            "displayName": "Ninja (Debug ASan/UBSan, Linux i686 full graphics, Clang)",
+            "inherits": "base-native-clang-debug",
+            "binaryDir": "${sourceDir}/build/linux32-full-sanitize",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER_TARGET": "i686-pc-linux-gnu",
+                "DB_TARGET_LINUX_32BIT": "ON",
+                "DB_TARGET_LINUX_ROOT": "$env{DB_TARGET_LINUX_ROOT}",
+                "DB_GLFW_REQUIRED": "ON",
+                "DB_REQUIRE_SANITIZER_RUNTIME": "ON"
+            }
+        },
+        {
             "name": "ninja-linux-musl-x86_64-release",
             "displayName": "Ninja (Release, Linux musl shared)",
-            "inherits": "base-native-clang-release",
+            "inherits": "base-cross-release",
             "binaryDir": "${sourceDir}/build/musl-x86_64",
             "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/DriverBenchLinuxMusl.cmake",
                 "DB_TARGET_LINUX_MUSL": "ON",
                 "DB_TARGET_LINUX_MUSL_TRIPLE": "x86_64-linux-musl",
                 "DB_GLFW_REQUIRED": "OFF"
@@ -144,9 +213,10 @@
         {
             "name": "ninja-linux-musl-x86_64-static-release",
             "displayName": "Ninja (Release, Linux musl static)",
-            "inherits": "base-native-clang-release",
+            "inherits": "base-cross-release",
             "binaryDir": "${sourceDir}/build/musl-static-x86_64",
             "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/DriverBenchLinuxMusl.cmake",
                 "DB_TARGET_LINUX_MUSL": "ON",
                 "DB_TARGET_LINUX_MUSL_TRIPLE": "x86_64-linux-musl",
                 "DB_TARGET_LINUX_MUSL_STATIC_LINK": "ON",
@@ -160,9 +230,10 @@
         {
             "name": "ninja-linux-musl-i686-release",
             "displayName": "Ninja (Release, Linux musl shared + 32-bit)",
-            "inherits": "base-native-clang-release",
+            "inherits": "base-cross-release",
             "binaryDir": "${sourceDir}/build/musl-i686",
             "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/DriverBenchLinuxMusl.cmake",
                 "DB_TARGET_LINUX_MUSL": "ON",
                 "DB_TARGET_LINUX_32BIT": "ON",
                 "DB_TARGET_LINUX_MUSL_TRIPLE": "i686-linux-musl",
@@ -172,9 +243,10 @@
         {
             "name": "ninja-linux-musl-i686-static-release",
             "displayName": "Ninja (Release, Linux musl static + 32-bit)",
-            "inherits": "base-native-clang-release",
+            "inherits": "base-cross-release",
             "binaryDir": "${sourceDir}/build/musl-static-i686",
             "cacheVariables": {
+                "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchains/DriverBenchLinuxMusl.cmake",
                 "DB_TARGET_LINUX_MUSL": "ON",
                 "DB_TARGET_LINUX_32BIT": "ON",
                 "DB_TARGET_LINUX_MUSL_TRIPLE": "i686-linux-musl",
@@ -184,6 +256,122 @@
                 "DB_BUILD_GLFW_WINDOW_DISPLAY": "OFF",
                 "DB_GLFW_PROVIDER": "off",
                 "DB_GLFW_REQUIRED": "OFF"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "native-release",
+            "configurePreset": "ninja-linux-native-clang-release",
+            "jobs": 0
+        },
+        {
+            "name": "native-sanitize",
+            "configurePreset": "ninja-linux-native-clang-debug",
+            "jobs": 0
+        },
+        {
+            "name": "i686-headless-release",
+            "configurePreset": "ninja-linux-gnu-i686-clang-headless-release",
+            "jobs": 0
+        },
+        {
+            "name": "i686-headless-sanitize",
+            "configurePreset": "ninja-linux-gnu-i686-clang-headless-sanitize",
+            "jobs": 0
+        },
+        {
+            "name": "i686-full-release",
+            "configurePreset": "ninja-linux-gnu-i686-clang-full-release",
+            "jobs": 0
+        },
+        {
+            "name": "i686-full-sanitize",
+            "configurePreset": "ninja-linux-gnu-i686-clang-full-sanitize",
+            "jobs": 0
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "native-release",
+            "configurePreset": "ninja-linux-native-clang-release",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            }
+        },
+        {
+            "name": "native-sanitize",
+            "configurePreset": "ninja-linux-native-clang-debug",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            },
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1",
+                "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+            }
+        },
+        {
+            "name": "i686-headless-release",
+            "configurePreset": "ninja-linux-gnu-i686-clang-headless-release",
+            "filter": {
+                "include": {
+                    "label": "unit|ir|headless|qemu"
+                }
+            },
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            }
+        },
+        {
+            "name": "i686-headless-sanitize",
+            "configurePreset": "ninja-linux-gnu-i686-clang-headless-sanitize",
+            "filter": {
+                "include": {
+                    "label": "unit|ir|headless|sanitizer"
+                }
+            },
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            },
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1",
+                "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
+            }
+        },
+        {
+            "name": "i686-full-release",
+            "configurePreset": "ninja-linux-gnu-i686-clang-full-release",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            }
+        },
+        {
+            "name": "i686-full-sanitize",
+            "configurePreset": "ninja-linux-gnu-i686-clang-full-sanitize",
+            "output": {
+                "outputOnFailure": true
+            },
+            "execution": {
+                "noTestsAction": "error"
+            },
+            "environment": {
+                "ASAN_OPTIONS": "detect_leaks=0:halt_on_error=1",
+                "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1"
             }
         }
     ]

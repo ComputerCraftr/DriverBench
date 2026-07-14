@@ -10,7 +10,8 @@ set(DB_DIRECT_WAIT_RULES
     "vkAcquireNextImageKHR[ \\t\\r\\n]*\\(|src/renderers/vulkan_1_2_multi_gpu/vk_wait.c"
     "client_wait_sync[ \t\r\n]*\\(|src/renderers/gl_upload_stream.c"
     "glfwWaitEventsTimeout|src/displays/glfw_window/glfw_window_common.c"
-    "select[ \t\r\n]*\\(|src/displays/linux_kms_atomic/kms_core.c"
+    "select[ \t\r\n]*\\(|src/displays/linux_kms_atomic/kms_page_flip.c"
+    "poll[ \t\r\n]*\\(|src/core/db_probe_process.c"
     "nanosleep[ \t\r\n]*\\(|src/core/db_core.c")
 
 set(DB_FORBIDDEN_WAIT_PATTERNS

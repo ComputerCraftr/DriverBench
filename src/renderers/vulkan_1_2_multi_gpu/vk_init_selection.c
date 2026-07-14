@@ -1,12 +1,15 @@
 #include "../../config/runtime_options.h"
+#include "../../core/db_byte_codec.h"
 #include "../../core/db_core.h"
 #include "../../core/db_format_contract.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
 #include "../../core/db_renderer_support.h"
+#include "vk_diagnostics.h"
 #include "vk_init_internal.h"
 #include "vk_internal.h"
 #include "vk_renderer.h"
+#include "vk_selection_diagnostics.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -137,8 +140,13 @@ int db_vk_allow_cpu_workers_from_runtime(void) {
 uint32_t db_vk_find_graphics_queue_family(VkPhysicalDevice phys) {
     uint32_t queue_count = 0U;
     vkGetPhysicalDeviceQueueFamilyProperties(phys, &queue_count, NULL);
-    VkQueueFamilyProperties *queue_props = (VkQueueFamilyProperties *)calloc(
-        queue_count, sizeof(VkQueueFamilyProperties));
+    if (queue_count == 0U) {
+        return UINT32_MAX;
+    }
+    VkQueueFamilyProperties *queue_props =
+        (VkQueueFamilyProperties *)db_calloc_array_or_fail(
+            BACKEND_NAME, "queue family properties", queue_count,
+            sizeof(*queue_props));
     vkGetPhysicalDeviceQueueFamilyProperties(phys, &queue_count, queue_props);
     uint32_t family_index = UINT32_MAX;
     for (uint32_t qi = 0U; qi < queue_count; qi++) {
@@ -321,45 +329,6 @@ void db_vk_probe_device_hdr_surface(VkPhysicalDevice phys, VkSurfaceKHR surface,
     free(formats);
 }
 
-static void db_vk_log_physical_devices(const DeviceSelectionState *selection) {
-    if (selection == NULL) {
-        return;
-    }
-    for (uint32_t index = 0U; index < selection->phys_count; index++) {
-        const db_vk_physical_device_info_t *const info =
-            &selection->phys_info[index];
-        const char *const driver_name =
-            (info->driver_properties.driverName[0] != '\0')
-                ? info->driver_properties.driverName
-                : "unavailable";
-        const char *const driver_info =
-            (info->driver_properties.driverInfo[0] != '\0')
-                ? info->driver_properties.driverInfo
-                : "unavailable";
-        const db_log_field_t fields[] = {
-            DB_LOG_U64("physical_index", index),
-            DB_LOG_STRING("device_name", info->properties.deviceName),
-            DB_LOG_U64("driver_id", (uint32_t)info->driver_properties.driverID),
-            DB_LOG_STRING("driver_name", driver_name),
-            DB_LOG_STRING("driver_info", driver_info),
-            DB_LOG_HEX64("driver_version", info->properties.driverVersion),
-            DB_LOG_HEX64("api_version", info->properties.apiVersion),
-            DB_LOG_BOOL("graphics_supported", info->supports_graphics),
-            DB_LOG_BOOL("present_supported", info->supports_present),
-            DB_LOG_BOOL("hdr10_format_supported", info->supports_hdr10_format),
-            DB_LOG_BOOL("hdr10_colorspace_supported",
-                        info->supports_hdr10_colorspace),
-            DB_LOG_BOOL("hdr10_surface_pair_supported",
-                        info->supports_hdr10_surface_pair),
-            DB_LOG_BOOL("hdr_metadata_supported", info->supports_hdr_metadata),
-            DB_LOG_BOOL("selected_primary",
-                        index == selection->primary_phys_index),
-        };
-        db_log_info(BACKEND_NAME, "vk_physical_device", fields,
-                    DB_LOG_FIELD_COUNT(fields));
-    }
-}
-
 static int db_vk_physical_device_supports_verified_hdr(
     const db_vk_physical_device_info_t *info) {
     return DB_BOOL((info != NULL) && (info->supports_present != 0) &&
@@ -453,54 +422,17 @@ void db_vk_fill_lane_identity(db_vk_device_lane_t *lane,
     lane->can_compose_to_primary =
         (info->supports_external_memory_interop != 0) &&
         (info->supports_external_semaphore_interop != 0) &&
-        (info->supports_external_image_interop != 0);
+        (info->supports_external_image_export != 0);
     lane->group_index = -1;
     lane->group_lane_index = -1;
     (void)db_snprintf(lane->name, sizeof(lane->name), "%s",
                       info->properties.deviceName);
 }
 
-void db_vk_log_execution_plan(const DeviceSelectionState *selection) {
-    if (selection == NULL) {
-        return;
-    }
-    const db_log_field_t plan_fields[] = {
-        DB_LOG_TOKEN("execution_mode", db_vk_scheduler_mode_name_effective(
-                                           selection->execution_mode,
-                                           selection->active_lane_count)),
-        DB_LOG_U64("primary_lane", selection->primary_lane_index),
-        DB_LOG_U64("active_lanes", selection->active_lane_count),
-        DB_LOG_U64("discovered_lanes", selection->lane_count),
-    };
-    db_log_info(BACKEND_NAME, "vk_execution_plan", plan_fields,
-                DB_LOG_FIELD_COUNT(plan_fields));
-    for (uint32_t i = 0U; i < selection->lane_count; i++) {
-        const db_vk_device_lane_t *lane = &selection->lanes[i];
-        const char *backend_name = "primary";
-        if (lane->backend == DB_VK_LANE_BACKEND_GROUP) {
-            backend_name = "group_lane";
-        } else if (lane->backend == DB_VK_LANE_BACKEND_INDEPENDENT) {
-            backend_name = "independent_lane";
-        }
-        const db_log_field_t lane_fields[] = {
-            DB_LOG_U64("lane", i),
-            DB_LOG_TOKEN("backend", backend_name),
-            DB_LOG_U64("physical_index", lane->physical_index),
-            DB_LOG_BOOL("present", lane->can_present),
-            DB_LOG_BOOL("compose", lane->can_compose_to_primary),
-            DB_LOG_BOOL("active", lane->active_for_scheduler),
-            DB_LOG_STRING("reason", (lane->inactive_reason[0] != '\0')
-                                        ? lane->inactive_reason
-                                        : "active"),
-        };
-        db_log_info(BACKEND_NAME, "vk_lane", lane_fields,
-                    DB_LOG_FIELD_COUNT(lane_fields));
-    }
-}
-
 DeviceSelectionState
 db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface,
-                               db_output_format_request_t output_request) {
+                               db_output_format_request_t output_request,
+                               VkFormat working_format) {
     DeviceSelectionState selection = {0};
     const db_vk_multi_device_policy_t multi_device_policy =
         db_vk_multi_device_policy_from_runtime();
@@ -545,15 +477,33 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface,
             info->phys, info->queue_family_index, surface);
         db_vk_probe_device_interop_extensions(instance, info->phys, info);
         db_vk_probe_device_hdr_surface(info->phys, surface, info);
-        info->supports_external_image_interop =
-            db_vk_probe_external_image_interop(info->phys,
-                                               VK_FORMAT_R16G16B16A16_SFLOAT) &&
-            db_vk_probe_external_image_interop(info->phys,
-                                               VK_FORMAT_R8G8B8A8_UNORM);
+        info->supports_external_image_export =
+            db_vk_probe_external_image_interop(
+                info->phys, working_format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT);
+        info->supports_external_image_import =
+            db_vk_probe_external_image_interop(
+                info->phys, working_format, VK_IMAGE_USAGE_SAMPLED_BIT,
+                VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT);
     }
     selection.primary_phys_index =
         db_vk_choose_primary_physical_index_for_output(&selection,
                                                        output_request);
+    const char *const probe_uuid = getenv("DRIVERBENCH_PROBE_DEVICE_UUID");
+    if ((probe_uuid != NULL) && (strlen(probe_uuid) == (VK_UUID_SIZE * 2U))) {
+        for (uint32_t index = 0U; index < selection.phys_count; index++) {
+            char uuid_text[(VK_UUID_SIZE * 2U) + 1U] = {0};
+            if (db_hex_encode_lower(selection.phys_info[index].device_uuid,
+                                    VK_UUID_SIZE, uuid_text,
+                                    sizeof(uuid_text)) == 0) {
+                runtime_failf("failed to encode Vulkan device UUID");
+            }
+            if (strcmp(uuid_text, probe_uuid) == 0) {
+                selection.primary_phys_index = index;
+                break;
+            }
+        }
+    }
     int prefer_hdr_presenter = 0;
     if (output_request != DB_OUTPUT_FORMAT_SDR) {
         for (uint32_t index = 0U; index < selection.phys_count; index++) {
@@ -592,17 +542,19 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface,
             uint32_t mask = 0U;
             uint32_t hdr_mask = 0U;
             const uint32_t group_device_scan_count =
-                (group_props->physicalDeviceCount < MAX_GPU_COUNT)
-                    ? group_props->physicalDeviceCount
-                    : MAX_GPU_COUNT;
+                DB_MIN(group_props->physicalDeviceCount, MAX_GPU_COUNT);
             for (uint32_t di = 0; di < group_device_scan_count; di++) {
                 VkPhysicalDevice pd = group_props->physicalDevices[di];
                 uint32_t queue_count = 0;
                 vkGetPhysicalDeviceQueueFamilyProperties(pd, &queue_count,
                                                          NULL);
+                if (queue_count == 0U) {
+                    continue;
+                }
                 VkQueueFamilyProperties *queue_props =
-                    (VkQueueFamilyProperties *)calloc(
-                        queue_count, sizeof(VkQueueFamilyProperties));
+                    (VkQueueFamilyProperties *)db_calloc_array_or_fail(
+                        BACKEND_NAME, "group queue family properties",
+                        queue_count, sizeof(*queue_props));
                 vkGetPhysicalDeviceQueueFamilyProperties(pd, &queue_count,
                                                          queue_props);
 
@@ -628,7 +580,7 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface,
                         break;
                     }
                 }
-                free((void *)queue_props);
+                free(queue_props);
             }
 
             if ((mask == 0U) ||
@@ -766,14 +718,14 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface,
             int have_common_modifier = 0;
             if (have_dma_extensions != 0) {
                 have_common_modifier = db_vk_find_common_drm_modifier(
-                    worker_info->phys, primary_info->phys,
-                    VK_FORMAT_R16G16B16A16_SFLOAT, &common_modifier);
+                    worker_info->phys, primary_info->phys, working_format,
+                    &common_modifier);
             }
             const db_vk_transport_capabilities_t capabilities = {
                 .opaque_identity_compatible = opaque_identity_compatible,
                 .opaque_external_image =
-                    worker_info->supports_external_image_interop &&
-                    primary_info->supports_external_image_interop,
+                    worker_info->supports_external_image_export &&
+                    primary_info->supports_external_image_import,
                 .dma_buf_external_image = have_dma_extensions,
                 .dma_buf_modifier_compatible = have_common_modifier,
                 .dma_buf_external_buffer =

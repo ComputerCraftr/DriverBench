@@ -1,3 +1,4 @@
+#include "core/db_core.h"
 #include "core/db_log.h"
 #include "gl_common.h"
 
@@ -8,12 +9,16 @@ int db_gl_upload_compact_stream_write(db_gl_upload_stream_t *stream,
                                       const char *backend,
                                       const db_gl_compact_vbo_state_t *compact,
                                       size_t compact_bytes) {
-    const size_t total_bytes = compact->vbo_offset_bytes + compact_bytes;
     if ((stream == NULL) || (backend == NULL) || (compact == NULL) ||
         (compact_bytes == 0U) || (compact->scratch_vertices == NULL) ||
         (compact->vbo_capacity_bytes == 0U) ||
-        (compact_bytes > compact->vbo_capacity_bytes) ||
-        (compact->vbo_offset_bytes > (SIZE_MAX - compact_bytes))) {
+        (db_size_range_fits(compact->vbo_capacity_bytes,
+                            compact->vbo_offset_bytes, compact_bytes) == 0)) {
+        return 0;
+    }
+    size_t total_bytes = 0U;
+    if (db_try_add_size(compact->vbo_offset_bytes, compact_bytes,
+                        &total_bytes) == 0) {
         return 0;
     }
     if (db_gl_stream_upload_uses_buffer_object(&stream->capability) != 0) {

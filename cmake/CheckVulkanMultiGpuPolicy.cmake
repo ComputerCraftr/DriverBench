@@ -8,9 +8,11 @@ foreach(db_source IN LISTS db_vk_sources)
     file(READ "${db_source}" db_text)
     foreach(
         db_forbidden IN
-        ITEMS db_vk_compute_lane_bands db_vk_clip_block_to_lane_band
+        ITEMS db_vk_compute_lane_bands
+              db_vk_clip_block_to_lane_band
               opaque_fd_device_uuid_mismatch
-              VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT)
+              VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT
+              "db_vk_multi_gpu_phase_t multi_gpu_phase;")
         string(FIND "${db_text}" "${db_forbidden}" db_match)
         if(NOT db_match EQUAL -1)
             message(

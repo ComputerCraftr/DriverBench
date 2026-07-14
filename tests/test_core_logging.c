@@ -92,7 +92,7 @@ db_test_structured_log_rejects_invalid_contracts(db_test_state_t *state) {
         DB_LOG_U64("value", 2U),
     };
     const db_log_field_t invalid_key[] = {DB_LOG_U64("Bad-Key", 1U)};
-    const db_log_field_t invalid_double[] = {DB_LOG_DOUBLE("value", INFINITY)};
+    const db_log_field_t invalid_double[] = {DB_LOG_DOUBLE("value", HUGE_VAL)};
     DB_TEST_EXPECT_EQ_INT(
         state,
         db_log_format_line(

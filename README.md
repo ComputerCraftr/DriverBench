@@ -167,6 +167,29 @@ cmake -S . -B build-no-glfw -DDB_GLFW_PROVIDER=off
 cmake --build build-no-glfw -j
 ```
 
+Developer validation uses LLVM 22 for the primary Linux compiler, formatter,
+and clang-tidy contract. Install the Python tools through pipx at the pinned
+versions recorded in `ci/python-tool-versions.env`:
+
+```bash
+python3 scripts/install_python_tools.py
+cmake --build build --target format-check
+cmake --build build --target clang-tidy-check
+```
+
+The formatting targets are intentionally split:
+
+- `format-c` and `format-c-check` use LLVM `clang-format`.
+- `format-cmake` and `format-cmake-check` use pipx-installed `cmake-format`.
+- `python-format` applies Ruff fixes and formatting.
+- `python-check` runs Ruff check, Ruff format-check, and strict mypy.
+- `format` and `format-check` aggregate their respective mutating and
+  non-mutating targets.
+
+`clang-tidy-check` writes runner output to a unique temporary file, atomically
+publishes `build/clang-tidy.log`, checks the runner status, scans the completed
+log for diagnostics, and then runs the primary-header include-cleaner pass.
+
 Vendored GLFW policy:
 
 - macOS: vendored static GLFW is the default path
@@ -289,6 +312,14 @@ Runtime flags:
 - `--trace-gl-errors <0|1>`
 - `--trace-shadow-upload <0|1|2|3>` (`1`: summaries, `2`: up to 128 spans, `3`: exhaustive)
 - `--trace-vulkan <0|1|2>` (`1`: plans/phases, `2`: transport and synchronization details)
+- `--gl1-target <auto|direct-window|persistent-fbo|cpu-upload>` diagnostic target forcing
+- `--gl1-gradient <auto|interpolated|row-fill|cpu>` diagnostic gradient forcing
+- `--gl1-replay-capacity <1..8>` bounded direct-window replay history
+- `--gl3-gradient <auto|semantic|row-fill>` diagnostic gradient forcing
+- `--vk-gradient <auto|semantic|row-fill>` diagnostic gradient forcing
+- `--ignore-conformance-cache <0|1>` bypass cached qualification results
+- `--rerun-conformance-probe <0|1>` rerun qualification without promoting forced paths
+- `--dump-gradient-divergence <path>` write first-divergence schema-2 events
 - `--vsync <0|1|on|off|true|false>`
 - `--help`
 
@@ -531,8 +562,26 @@ This mode still compiles the host-supported renderer and presenter code. It
 runs unit tests, source policies, hash conformance, CLI contracts, CPU
 offscreen regressions, and CPU canonical determinism matrices. It omits GLFW,
 OpenGL, Vulkan WSI, KMS runtime, resize, and cross-renderer tests that need a
-native graphics environment. `.github/workflows/headless.yml` runs this lane
-on the current GitHub-hosted Ubuntu and macOS runner images.
+native graphics environment. `.github/workflows/ci.yml` runs independent
+hosted lanes for Ubuntu 26.04 LLVM 22 formatting, tidy, sanitizers, and release
+builds; Ubuntu 24.04 GCC warning coverage; and `macos-latest` AppleClang
+validation. Ubuntu 26.04 is a GitHub public-preview image, while the GCC lane
+intentionally remains on the stable Ubuntu 24.04 image.
+
+The hosted quality environment and the 32-bit Void sanitizer environment are
+also reproducible locally:
+
+```bash
+# LLVM 22 format, Python, source tidy, and header tidy checks.
+python3 scripts/run_ubuntu2604_quality.py
+
+# Native 32-bit Void ASan/UBSan build, ELF32 checks, CTest, and JUnit audit.
+python3 scripts/run_void_i686_ci.py
+```
+
+The Void check uses `getconf LONG_BIT` and ELF headers to validate the 32-bit
+userland. It does not use `uname -m`, because containers share the host kernel
+architecture.
 
 Header-only clang-tidy diagnostics are checked separately because
 `run-clang-tidy` schedules compilation-database source files, not headers as

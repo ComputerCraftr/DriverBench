@@ -7,7 +7,6 @@ set(args
 db_test_run_command(output skip_reason status "${args}"
                     "Buffer-age deduplication command failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(STATUS "Buffer-age deduplication skipped: ${skip_reason}")
     return()
 endif()
 

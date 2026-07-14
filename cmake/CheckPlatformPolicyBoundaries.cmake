@@ -123,6 +123,38 @@ elseif(RULE_SET STREQUAL "renderer_gl_upload_policy")
         "Apple-specific OpenGL/buffer policy text must live only in the approved GL resolver/proc files"
     )
 
+elseif(RULE_SET STREQUAL "renderer_ir_policy")
+    db_pp_collect_files(
+        DB_PP_SCAN_FILES
+        "${SOURCE_ROOT}/src/renderers/*.c"
+        "${SOURCE_ROOT}/src/renderers/*.h"
+        "${SOURCE_ROOT}/src/renderers/*/*.c"
+        "${SOURCE_ROOT}/src/renderers/*/*.h"
+        "${SOURCE_ROOT}/src/displays/*.c"
+        "${SOURCE_ROOT}/src/displays/*.h"
+        "${SOURCE_ROOT}/src/displays/*/*.c"
+        "${SOURCE_ROOT}/src/displays/*/*.h")
+
+    db_pp_check_forbidden_in_files(
+        DB_PP_SCAN_FILES
+        "db_colored_f64_block_t|db_geometry_execution_t|db_frame_plan_draw_fill|geometry\\.current_blocks|rebuild_seed\\.geometry"
+        "renderers and displays must consume canonical render IR instead of legacy colored-block storage"
+    )
+
+    db_pp_check_forbidden_in_files(
+        DB_PP_SCAN_FILES "static[ \t]+int[ \t]+cached_result"
+        "live backend probe results must not use unkeyed process-global caches")
+
+    db_pp_collect_files(
+        DB_PP_CORE_FILES "${SOURCE_ROOT}/src/core/*.c"
+        "${SOURCE_ROOT}/src/core/*.h" "${SOURCE_ROOT}/src/benchmarks/*.c"
+        "${SOURCE_ROOT}/src/benchmarks/*.h")
+    db_pp_check_forbidden_in_files(
+        DB_PP_CORE_FILES
+        "#[ \t]*include[ \t]*[<\"][^>\"]*(renderers|GLFW|vulkan|OpenGL|GL/)"
+        "benchmark and IR core modules must not include renderer or native graphics headers"
+    )
+
 elseif(RULE_SET STREQUAL "platform_proc_loading")
     db_pp_collect_files(
         DB_PP_SCAN_FILES "${SOURCE_ROOT}/src/renderers/*.c"
@@ -140,13 +172,16 @@ elseif(RULE_SET STREQUAL "platform_proc_loading")
     )
 
 elseif(RULE_SET STREQUAL "cmake_platform_policy")
-    set(DB_PP_SCAN_FILES "${SOURCE_ROOT}/CMakeLists.txt")
-    file(GLOB DB_PP_CMAKE_FILES "${SOURCE_ROOT}/cmake/*.cmake")
+    set(DB_PP_SCAN_FILES "${SOURCE_ROOT}/CMakeLists.txt"
+                         "${SOURCE_ROOT}/CMakePresets.json")
+    file(GLOB DB_PP_CMAKE_FILES "${SOURCE_ROOT}/cmake/*.cmake"
+         "${SOURCE_ROOT}/cmake/toolchains/*.cmake")
     list(APPEND DB_PP_SCAN_FILES ${DB_PP_CMAKE_FILES})
 
     set(DB_PP_ALLOWED_FILES
         "${SOURCE_ROOT}/cmake/DriverBenchPlatform.cmake"
         "${SOURCE_ROOT}/cmake/DriverBenchLinuxToolchain.cmake"
+        "${SOURCE_ROOT}/cmake/toolchains/DriverBenchLinuxMusl.cmake"
         "${SOURCE_ROOT}/cmake/DriverBenchTestCapabilities.cmake"
         "${SOURCE_ROOT}/cmake/DriverBenchAlternateSuites.cmake"
         "${SOURCE_ROOT}/cmake/CheckPlatformPolicyBoundaries.cmake")
@@ -161,7 +196,7 @@ elseif(RULE_SET STREQUAL "cmake_platform_policy")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
         DB_PP_ALLOWED_FILES
-        "/usr/lib32|/usr/i686-pc-linux-gnu|/usr/[A-Za-z0-9._+-]+-linux-musl|NO_CMAKE_FIND_ROOT_PATH"
+        "/usr/lib32|/usr/i686-pc-linux-gnu|/usr/[A-Za-z0-9._+-]+-linux-musl|NO_CMAKE_FIND_ROOT_PATH|CMAKE_(C|EXE_LINKER)_FLAGS_INIT[^\n]*gcc-toolchain"
         "host-specific Linux cross root/library path forcing must live only in the Linux toolchain policy module"
     )
 
@@ -187,7 +222,7 @@ elseif(RULE_SET STREQUAL "architecture_boundaries")
     db_pp_check_forbidden_in_files(
         DB_PP_CORE_BENCHMARK_FILES
         "db_snake_compact_block|collect_compact_blocks|snake_damage_collector"
-        "benchmarks must emit through the canonical geometry builder")
+        "benchmarks must emit canonical semantic render IR directly")
     db_pp_check_forbidden_in_files(
         DB_PP_CORE_BENCHMARK_FILES
         "color_state_rgb|authoritative_grid_rgb|is_snake_history_texture|active_prior_rgb|db_snake_semantic_emit_completed_shape|completed_shape_count"
@@ -223,6 +258,21 @@ elseif(RULE_SET STREQUAL "architecture_boundaries")
         "renderer subsystems must use core contracts and current subsystem generations"
     )
 
+    set(DB_PP_IR_HISTORY_ALLOWED_FILES
+        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_internal.h"
+        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_replay.c")
+    db_pp_check_forbidden_outside_allowlist(
+        DB_PP_RENDERER_FILES
+        DB_PP_IR_HISTORY_ALLOWED_FILES
+        "db_render_ir_(snapshot|owned_store)_t|db_render_ir_clone_replayable"
+        "renderer IR history is permitted only in the bounded GL1 direct-window replay subsystem"
+    )
+    db_pp_check_forbidden_in_files(
+        DB_PP_IR_HISTORY_ALLOWED_FILES
+        "realloc[ \t\r\n]*[(]"
+        "GL1 replay storage must be preallocated and must never grow at frame time"
+    )
+
     db_pp_collect_files(
         DB_PP_GL1_FILES "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/*.c"
         "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/*.h")
@@ -250,10 +300,10 @@ elseif(RULE_SET STREQUAL "logging_policy")
         "${SOURCE_ROOT}/src/*/*.h"
         "${SOURCE_ROOT}/src/*/*/*.c"
         "${SOURCE_ROOT}/src/*/*/*.h")
-    set(DB_PP_VK_PRESENT_FILES
+    set(DB_PP_VK_PRESENTATION_FILES
         "${SOURCE_ROOT}/src/renderers/vulkan_1_2_multi_gpu/vk_runtime_frame.c")
     db_pp_check_forbidden_in_files(
-        DB_PP_VK_PRESENT_FILES "vkCmd(CopyImage|BlitImage)\\("
+        DB_PP_VK_PRESENTATION_FILES "vkCmd(CopyImage|BlitImage)\\("
         "Vulkan final presentation must use the sampled fullscreen pipeline")
     set(DB_PP_ALLOWED_STDIO_LOG_FILES
         "${SOURCE_ROOT}/src/core/db_log.c" "${SOURCE_ROOT}/src/core/db_core.c"
@@ -444,9 +494,14 @@ elseif(RULE_SET STREQUAL "numeric_boundary_policy")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
         DB_PP_ALLOWED_FLOAT_CAST_FILES
-        "\\(float\\)[ \\t\\r\\n]*[A-Za-z_(]"
-        "f64/u32 to f32 conversion must use the canonical numeric boundary helpers"
+        "\\((float|double)\\)[ \\t\\r\\n]*[A-Za-z_(]"
+        "scalar-to-float conversion must use DB_TO_F64 or the canonical narrowing helpers"
     )
+
+    db_pp_check_forbidden_outside_allowlist(
+        DB_PP_SCAN_FILES DB_PP_ALLOWED_FLOAT_CAST_FILES
+        "(^|[^A-Za-z0-9_])(fmin|fmax)(f|l)?[ \\t\\r\\n]*\\("
+        "floating-point extrema must use the canonical numeric policy helpers")
 
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
@@ -466,6 +521,45 @@ elseif(RULE_SET STREQUAL "numeric_boundary_policy")
         "pixel and Vulkan rectangle narrowing must use checked numeric boundary helpers"
     )
 
+    set(DB_PP_ALLOWED_RAW_ALLOCATION_MATH "${SOURCE_ROOT}/src/core/db_core.h")
+    db_pp_check_forbidden_outside_allowlist(
+        DB_PP_SCAN_FILES
+        DB_PP_ALLOWED_RAW_ALLOCATION_MATH
+        "(malloc|realloc)[ \\t\\r\\n]*\\([^;\\n]*\\*[^;\\n]*\\)"
+        "allocation byte counts must be checked before calling malloc or realloc"
+    )
+
+    db_pp_check_forbidden_in_files(
+        DB_PP_SCAN_FILES
+        "memcpy[ \\t\\r\\n]*\\([^;]*preserve_count[ \\t\\r\\n]*\\*[ \\t\\r\\n]*element_size"
+        "array-preservation copy sizes must use checked multiplication")
+
+    set(DB_PP_NUMERIC_PRIMITIVE_FILES "${SOURCE_ROOT}/src/core/db_core.c"
+                                      "${SOURCE_ROOT}/src/core/db_core.h")
+    db_pp_check_forbidden_outside_allowlist(
+        DB_PP_SCAN_FILES
+        DB_PP_NUMERIC_PRIMITIVE_FILES
+        "(^|[^A-Za-z0-9_])(ckd_add|ckd_sub|ckd_mul|strtol|strtoul|strtod)[ \\t\\r\\n]*\\("
+        "checked arithmetic and libc numeric parsing must remain behind core numeric boundaries"
+    )
+
+    db_pp_check_forbidden_in_files(
+        DB_PP_SCAN_FILES
+        "memcmp[ \\t\\r\\n]*\\([ \\t\\r\\n]*&"
+        "memcmp must compare explicit byte arrays, not potentially padded object representations"
+    )
+
+    set(DB_PP_ALLOWED_IR_NARROWING_FILES
+        "${SOURCE_ROOT}/src/core/db_render_ir.c"
+        "${SOURCE_ROOT}/src/core/db_render_ir_query.c"
+        "${SOURCE_ROOT}/src/core/db_render_ir_validate.c")
+    db_pp_check_forbidden_outside_allowlist(
+        DB_PP_SCAN_FILES
+        DB_PP_ALLOWED_IR_NARROWING_FILES
+        "\\(uint32_t\\)[ \\t\\r\\n]*(band|span)\\."
+        "IR region coordinates must cross through db_render_ir_rect_to_grid_block before unsigned use"
+    )
+
 elseif(RULE_SET STREQUAL "sorting_policy")
     db_pp_collect_files(
         DB_PP_SCAN_FILES
@@ -482,6 +576,10 @@ elseif(RULE_SET STREQUAL "sorting_policy")
         "(^|[^A-Za-z0-9_])(qsort|heapsort|mergesort)[ \\t\\r\\n]*\\(|insertion[_A-Za-z0-9]*sort|sort[_A-Za-z0-9]*doubles"
         "sorting must use the canonical db_sort policy instead of local or direct libc implementations"
     )
+    db_pp_check_forbidden_in_files(
+        DB_PP_SCAN_FILES
+        "\\(void\\)[ \\t\\r\\n]*db_sort_[A-Za-z0-9_]*[ \\t\\r\\n]*\\("
+        "sort outcomes must be propagated rather than discarded")
 
 else()
     message(FATAL_ERROR "Unknown RULE_SET: ${RULE_SET}")

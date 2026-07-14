@@ -1,12 +1,13 @@
-#include "../../config/runtime_options.h"
 #include "../../core/db_alloc_policy.h"
 #include "../../core/db_core.h"
-#include "../../core/db_frame_plan.h"
 #include "../../core/db_hash.h"
+#include "../../core/db_metrics_policy.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_render_ir.h"
 #include "../../core/db_render_types.h"
 #include "core/db_log.h"
 #include "core/db_poll_policy.h"
+#include "vk_diagnostics.h"
 #include "vk_init_internal.h"
 #include "vk_internal.h"
 #include "vk_runtime_internal.h"
@@ -49,21 +50,22 @@ static uint32_t vk_host_visible_memory_type(uint32_t type_bits) {
                     "no host-visible Vulkan raster seed upload memory");
 }
 
-static size_t vk_raster_seed_size(const db_frame_rebuild_seed_t *seed) {
-    if ((seed == NULL) || (seed->kind != DB_FRAME_REBUILD_SEED_RASTER) ||
-        (seed->raster.pixels == NULL)) {
+static size_t
+vk_raster_seed_size(const db_render_ir_external_binding_t *binding) {
+    size_t required_bytes = 0U;
+    if ((binding == NULL) || (binding->pixels == NULL) ||
+        (db_try_strided_size(binding->height, binding->row_stride_bytes,
+                             binding->row_stride_bytes,
+                             &required_bytes) == 0) ||
+        (required_bytes > binding->size_bytes)) {
         DB_RUNTIME_FAIL(BACKEND_NAME, "invalid Vulkan raster rebuild seed");
     }
-    return db_checked_mul_size(BACKEND_NAME, "raster_seed_size",
-                               db_checked_mul_size(BACKEND_NAME,
-                                                   "raster_seed_pixels",
-                                                   seed->raster.pixel_width,
-                                                   seed->raster.pixel_height),
-                               db_pixel_surface_pixel_bytes(&seed->raster));
+    return required_bytes;
 }
 
-void db_vk_prepare_raster_seed_upload(const db_frame_rebuild_seed_t *seed) {
-    const size_t required_bytes = vk_raster_seed_size(seed);
+void db_vk_prepare_raster_seed_upload(
+    const db_render_ir_external_binding_t *binding) {
+    const size_t required_bytes = vk_raster_seed_size(binding);
     if (g_state.backing.rebuild_upload_size_bytes < required_bytes) {
         db_vk_release_rebuild_upload_buffer();
         const VkBufferCreateInfo create_info = {
@@ -98,17 +100,17 @@ void db_vk_prepare_raster_seed_upload(const db_frame_rebuild_seed_t *seed) {
     DB_VK_CHECK(BACKEND_NAME, vkMapMemory(g_state.device.device,
                                           g_state.backing.rebuild_upload_memory,
                                           0U, required_bytes, 0U, &mapped));
-    memcpy(mapped, seed->raster.pixels, required_bytes);
+    memcpy(mapped, binding->pixels, required_bytes);
     vkUnmapMemory(g_state.device.device, g_state.backing.rebuild_upload_memory);
 }
 
-void db_vk_record_raster_seed_upload(VkCommandBuffer command_buffer,
-                                     VkBackingTargetState *target,
-                                     const db_frame_rebuild_seed_t *seed) {
-    if ((target == NULL) ||
-        (seed->raster.pixel_width != g_state.backing.extent.width) ||
-        (seed->raster.pixel_height != g_state.backing.extent.height) ||
-        (seed->raster.format != g_state.backing.pixel_format)) {
+void db_vk_record_raster_seed_upload(
+    VkCommandBuffer command_buffer, VkBackingTargetState *target,
+    const db_render_ir_external_binding_t *binding) {
+    if ((target == NULL) || (binding == NULL) ||
+        (binding->width != g_state.backing.extent.width) ||
+        (binding->height != g_state.backing.extent.height) ||
+        (binding->format != g_state.backing.pixel_format)) {
         DB_RUNTIME_FAIL(BACKEND_NAME, "Vulkan raster rebuild seed mismatch");
     }
     const int initialized = target->layout_initialized;
@@ -144,8 +146,8 @@ void db_vk_record_raster_seed_upload(VkCommandBuffer command_buffer,
             },
         .imageExtent =
             {
-                .width = seed->raster.pixel_width,
-                .height = seed->raster.pixel_height,
+                .width = binding->width,
+                .height = binding->height,
                 .depth = 1U,
             },
     };
@@ -243,7 +245,10 @@ uint64_t db_vk_compute_output_hash_from_image(VkImage image,
         return DB_FNV1A64_OFFSET;
     }
     const size_t pixel_bytes =
-        (g_state.backing.pixel_format == DB_PIXEL_FORMAT_RGBA16F) ? 8U : 4U;
+        db_pixel_format_bytes_per_pixel(g_state.backing.pixel_format);
+    if (pixel_bytes == 0U) {
+        return DB_FNV1A64_OFFSET;
+    }
     const size_t byte_count = db_checked_mul_size(
         BACKEND_NAME, "vk_output_hash_bytes",
         db_checked_mul_size(
@@ -342,34 +347,16 @@ uint64_t db_vk_compute_output_hash_from_image(VkImage image,
 }
 
 int db_vk_dual_metrics_enabled(void) {
-    const char *const metrics_mode =
-        db_runtime_option_get(DB_RUNTIME_OPT_METRICS_MODE);
-    return DB_BOOL((metrics_mode != NULL) &&
-                   (strcmp(metrics_mode, "dual") == 0));
+    return g_state.runtime.dual_metrics_enabled;
 }
 
 uint32_t db_vk_metrics_sample_capacity_hint(void) {
-    const char *const frame_limit_text =
-        db_runtime_option_get(DB_RUNTIME_OPT_FRAME_LIMIT);
-    if ((frame_limit_text == NULL) || (frame_limit_text[0] == '\0')) {
-        return DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY;
+    if (g_state.runtime.frame_limit == 0U) {
+        return DB_METRIC_SAMPLE_INITIAL_CAPACITY;
     }
-    char *end = NULL;
-    const unsigned long parsed = strtoul(frame_limit_text, &end, 10);
-    if ((end == frame_limit_text) || (end == NULL) || (*end != '\0')) {
-        return DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY;
-    }
-    if (parsed == 0UL) {
-        return DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY;
-    }
-    if (parsed > (unsigned long)UINT32_MAX) {
-        return UINT32_MAX;
-    }
-    const uint32_t hint =
-        db_checked_ulong_to_u32(BACKEND_NAME, "frame_limit_hint", parsed);
-    return (hint > DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY)
-               ? hint
-               : DB_VK_RENDER_FRAME_SAMPLE_INIT_CAPACITY;
+    return DB_MIN(
+        DB_MAX(g_state.runtime.frame_limit, DB_METRIC_SAMPLE_INITIAL_CAPACITY),
+        DB_METRIC_SAMPLE_MAX_CAPACITY);
 }
 
 void db_vk_record_render_frame_sample(double frame_ms) {
@@ -385,11 +372,17 @@ void db_vk_record_render_frame_sample(double frame_ms) {
     }
     if (g_state.metrics.render_frame_samples_count >=
         g_state.metrics.render_frame_samples_capacity) {
+        if (g_state.metrics.render_frame_samples_capacity >=
+            DB_METRIC_SAMPLE_MAX_CAPACITY) {
+            return;
+        }
         const uint32_t new_capacity = db_u32_grow_capacity_3_2(
             g_state.metrics.render_frame_samples_capacity,
             g_state.metrics.render_frame_samples_count + 1U,
             db_vk_metrics_sample_capacity_hint());
-        if (new_capacity <= g_state.metrics.render_frame_samples_capacity) {
+        const uint32_t bounded_capacity =
+            DB_MIN(new_capacity, DB_METRIC_SAMPLE_MAX_CAPACITY);
+        if (bounded_capacity <= g_state.metrics.render_frame_samples_capacity) {
             DB_RUNTIME_FAIL(BACKEND_NAME,
                             "render frame sample capacity overflow");
         }
@@ -398,7 +391,7 @@ void db_vk_record_render_frame_sample(double frame_ms) {
             g_state.metrics.render_frame_samples_capacity);
         db_reserve_array_capacity_or_fail(
             (void **)&g_state.metrics.render_frame_samples_ms, &sample_capacity,
-            (size_t)new_capacity, db_vk_metrics_sample_capacity_hint(),
+            (size_t)bounded_capacity, db_vk_metrics_sample_capacity_hint(),
             sizeof(double), BACKEND_NAME, "render_frame_samples");
         g_state.metrics.render_frame_samples_capacity = db_checked_size_to_u32(
             BACKEND_NAME, "render_frame_samples_capacity", sample_capacity);

@@ -30,11 +30,6 @@ function(db_linux_collect_pkgconfig_dirs out_var base_root)
 endfunction()
 
 function(db_linux_append_root_flags root_path)
-    if(DB_COMPILER_IS_GNU_LIKE)
-        list(APPEND DB_CROSS_COMPILE_FLAGS "--sysroot=${root_path}")
-        list(APPEND DB_CROSS_LINK_FLAGS "--sysroot=${root_path}")
-    endif()
-
     set(CMAKE_SYSROOT
         "${root_path}"
         CACHE PATH "Resolved Linux cross root/sysroot path" FORCE)
@@ -105,10 +100,17 @@ if(DB_TARGET_LINUX_MUSL)
     endif()
 
     if(DB_COMPILER_IS_CLANG)
-        list(APPEND DB_CROSS_COMPILE_FLAGS
-             "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}")
-        list(APPEND DB_CROSS_LINK_FLAGS
-             "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}")
+        if(CMAKE_C_COMPILER_TARGET STREQUAL "")
+            list(APPEND DB_CROSS_COMPILE_FLAGS
+                 "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}")
+            list(APPEND DB_CROSS_LINK_FLAGS
+                 "--target=${DB_TARGET_LINUX_MUSL_TRIPLE}")
+        elseif(NOT CMAKE_C_COMPILER_TARGET STREQUAL DB_TARGET_LINUX_MUSL_TRIPLE)
+            message(
+                FATAL_ERROR
+                    "Clang target '${CMAKE_C_COMPILER_TARGET}' does not match requested musl target '${DB_TARGET_LINUX_MUSL_TRIPLE}'."
+            )
+        endif()
     elseif(DB_COMPILER_IS_GNU)
         message(
             STATUS
@@ -139,8 +141,15 @@ if(DB_TARGET_LINUX_32BIT)
                 "DB_TARGET_LINUX_32BIT is only supported for non-Apple UNIX builds."
         )
     endif()
-    list(APPEND DB_CROSS_COMPILE_FLAGS -m32)
-    list(APPEND DB_CROSS_LINK_FLAGS -m32)
+    set(DB_LINUX_EXPLICIT_32BIT_TARGET OFF)
+    if(CMAKE_C_COMPILER_TARGET MATCHES "^i[3-6]86-"
+       OR DB_TARGET_LINUX_MUSL_TRIPLE MATCHES "^i[3-6]86-")
+        set(DB_LINUX_EXPLICIT_32BIT_TARGET ON)
+    endif()
+    if(NOT DB_LINUX_EXPLICIT_32BIT_TARGET)
+        list(APPEND DB_CROSS_COMPILE_FLAGS -m32)
+        list(APPEND DB_CROSS_LINK_FLAGS -m32)
+    endif()
     if(DB_LINUX_EFFECTIVE_ROOT STREQUAL "")
         list(JOIN DB_LINUX_MULTILIB_LIB_DIRS ":" DB_LINUX_MULTILIB_RPATH_LINK)
         list(APPEND DB_CROSS_LINK_FLAGS

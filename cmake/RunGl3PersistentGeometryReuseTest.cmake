@@ -25,9 +25,6 @@ foreach(benchmark_mode IN ITEMS gradient_fill snake_rect)
             "--api opengl --renderer gl3_3 --display offscreen --vsync 0 --backbuffer-draw-mode dirty --benchmark-mode ${benchmark_mode} ${common_args}"
             "GL3 persistent-geometry repetition ${repetition} failed")
         if(NOT "${gl3_skip}" STREQUAL "")
-            message(
-                STATUS
-                    "Skipping GL3 persistent geometry reuse test: ${gl3_skip}")
             return()
         endif()
         if(repetition EQUAL 1

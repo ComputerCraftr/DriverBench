@@ -245,7 +245,11 @@ int db_log_format_line(char *buffer, size_t buffer_size, db_log_level_t level,
         db_log_append_field(&writer, &event->fields[i]);
     }
     db_log_append_char(&writer, '\n');
-    return writer.valid ? (int)writer.length : 0;
+    if (writer.valid == 0) {
+        return 0;
+    }
+    return db_checked_size_to_int("db_log", "formatted_line_length",
+                                  writer.length);
 }
 
 void db_log_emit(db_log_level_t level, const db_log_event_t *event) {

@@ -152,15 +152,25 @@ function(db_add_unit_binary_test test_name test_bin test_labels)
     set_tests_properties(${test_name} PROPERTIES LABELS "${test_labels}")
 endfunction()
 function(db_test_apply_skip_regex test_name skip_regex)
-    if(NOT "${skip_regex}" STREQUAL "")
-        set_tests_properties(${test_name} PROPERTIES SKIP_REGULAR_EXPRESSION
-                                                     "${skip_regex}")
-    endif()
+    set_tests_properties(
+        ${test_name} PROPERTIES SKIP_REGULAR_EXPRESSION
+                                "${DB_TEST_CANONICAL_SKIP_REGEX}")
 endfunction()
 function(db_test_apply_timeout test_name timeout_profile)
     db_test_timeout_seconds(db_timeout_seconds "${timeout_profile}")
     set_tests_properties(${test_name} PROPERTIES TIMEOUT
                                                  "${db_timeout_seconds}")
+endfunction()
+function(db_test_finalize_skip_contract)
+    get_property(
+        db_registered_tests
+        DIRECTORY
+        PROPERTY TESTS)
+    foreach(db_registered_test IN LISTS db_registered_tests)
+        set_property(
+            TEST ${db_registered_test}
+            PROPERTY SKIP_REGULAR_EXPRESSION "${DB_TEST_CANONICAL_SKIP_REGEX}")
+    endforeach()
 endfunction()
 function(db_suite_make_test_name out_var test_prefix base_name)
     if("${test_prefix}" STREQUAL "")

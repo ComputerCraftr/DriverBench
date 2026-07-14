@@ -9,7 +9,6 @@ import re
 import subprocess
 import sys
 
-
 BENCHMARKS = (
     "bands",
     "gradient_fill",
@@ -45,8 +44,9 @@ def capture(args: argparse.Namespace, benchmark: str) -> dict[str, str]:
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     output = result.stdout + result.stderr
     if result.returncode != 0:
+        status = result.returncode
         raise RuntimeError(
-            f"matrix disagreement for {benchmark} (status={result.returncode})\n{output}"
+            f"matrix disagreement for {benchmark} (status={status})\n{output}"
         )
     match = re.search(
         rf"canonical_golden benchmark={re.escape(benchmark)} "

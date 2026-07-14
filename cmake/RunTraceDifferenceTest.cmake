@@ -8,11 +8,9 @@ db_test_run_command(output_a skip_a status_a "${TEST_ARGS_A}" "Trace A failed")
 db_test_run_command(output_b skip_b status_b "${TEST_ARGS_B}" "Trace B failed")
 
 if(NOT "${skip_a}" STREQUAL "")
-    message(STATUS "Skipped A: ${skip_a}")
     return()
 endif()
 if(NOT "${skip_b}" STREQUAL "")
-    message(STATUS "Skipped B: ${skip_b}")
     return()
 endif()
 

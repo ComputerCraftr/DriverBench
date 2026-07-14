@@ -13,6 +13,8 @@
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_geometry.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_render_ir.h"
+#include "../../core/db_render_ir_surface.h"
 #include "../damage_trace.h"
 #include "core/db_render_result.h"
 #include "core/db_render_types.h"
@@ -40,6 +42,7 @@ typedef struct {
     db_cpu_surface_workspace_t workspace;
     db_cpu_renderer_config_t config;
     db_renderer_frame_stats_t frame;
+    db_render_execution_report_t execution;
     int initialized;
 } db_cpu_renderer_state_t;
 
@@ -77,22 +80,6 @@ cpu_validate_render_surface_or_fail(const db_pixel_surface_t *surface) {
             "cpu render surface format mismatch: got_hdr=%d expected_hdr=%d",
             surface_is_hdr, g_state.config.target_uses_rgba16f);
     }
-}
-
-static void cpu_surface_fill_damage_block_rgb(
-    const db_pixel_surface_t *surface, uint32_t row_start, uint32_t row_count,
-    uint32_t col_start, uint32_t col_count, const double *rgb) {
-    if ((surface == NULL) || (rgb == NULL) ||
-        (row_start >= surface->pixel_height) || (row_count == 0U) ||
-        (col_count == 0U)) {
-        return;
-    }
-    if (col_start >= surface->pixel_width) {
-        return;
-    }
-    db_rgb_pixels_fill_damage_block_f64(
-        surface->pixel_width, surface->pixel_height, surface->pixels,
-        surface->format, row_start, row_count, col_start, col_count, rgb);
 }
 
 static void
@@ -156,10 +143,13 @@ static void db_cpu_copy_surface_or_fail(const db_pixel_surface_t *dst,
     if ((dst->pixels == NULL) || (src->pixels == NULL)) {
         DB_RUNTIME_FAIL(BACKEND_NAME, "missing surface pixels");
     }
-    const size_t copy_bytes = (size_t)src->pixel_width *
-                              (size_t)src->pixel_height *
-                              (size_t)db_cpu_surface_pixel_bytes(src);
-    memcpy(dst->pixels, src->pixels, copy_bytes);
+    const size_t pixel_count = db_checked_mul_size(
+        BACKEND_NAME, "surface_copy_pixel_count", (size_t)src->pixel_width,
+        (size_t)src->pixel_height);
+    const size_t copy_bytes =
+        db_checked_mul_size(BACKEND_NAME, "surface_copy_bytes", pixel_count,
+                            (size_t)db_cpu_surface_pixel_bytes(src));
+    memmove(dst->pixels, src->pixels, copy_bytes);
 }
 
 static void db_cpu_set_full_damage(const db_pixel_surface_t *surface) {
@@ -178,9 +168,13 @@ static void db_cpu_set_full_damage(const db_pixel_surface_t *surface) {
     g_state.workspace.damage_block_count = 1U;
 }
 
-static void cpu_publish_grid_blocks(const db_grid_block_t *blocks,
-                                    size_t block_count) {
-    if ((blocks == NULL) || (block_count == 0U)) {
+static void cpu_publish_ir_damage(const db_frame_plan_t *plan,
+                                  const db_pixel_surface_t *surface) {
+    const db_render_ir_region_id_t region_id =
+        (plan == NULL) ? DB_RENDER_IR_INVALID_ID
+                       : db_render_ir_final_damage_region(&plan->update_ir);
+    if ((plan == NULL) || (surface == NULL) ||
+        (region_id == DB_RENDER_IR_INVALID_ID)) {
         g_state.workspace.damage_block_count = 0U;
         return;
     }
@@ -189,40 +183,53 @@ static void cpu_publish_grid_blocks(const db_grid_block_t *blocks,
         g_state.workspace.damage_block_count = 0U;
         return;
     }
-    g_state.workspace.damage_block_count =
-        db_damage_blocks_from_grid_blocks_or_full(
-            blocks, block_count, g_state.config.runtime.grid_rows,
-            g_state.config.runtime.grid_cols, g_state.workspace.damage_blocks,
-            g_state.workspace.damage_block_capacity);
+    const db_render_ir_region_t region = plan->update_ir.regions[region_id];
+    size_t count = 0U;
+    for (uint32_t band_index = 0U; band_index < region.band_count;
+         band_index++) {
+        const db_render_ir_band_t band =
+            plan->update_ir.bands[region.first_band + band_index];
+        for (uint32_t span_index = 0U; span_index < band.span_count;
+             span_index++) {
+            if (count >= g_state.workspace.damage_block_capacity) {
+                db_cpu_set_full_damage(surface);
+                return;
+            }
+            const db_render_ir_span_t span =
+                plan->update_ir.spans[band.first_span + span_index];
+            db_grid_block_t logical = {0};
+            if (db_render_ir_rect_to_grid_block(
+                    (db_render_ir_rect_t){
+                        .x = span.x_start,
+                        .y = band.y_start,
+                        .width = span.x_end - span.x_start,
+                        .height = band.y_end - band.y_start,
+                    },
+                    plan->grid_cols, plan->grid_rows, &logical) == 0) {
+                db_cpu_set_full_damage(surface);
+                return;
+            }
+            if (db_grid_block_to_pixel_block(
+                    plan->grid_cols, plan->grid_rows, &logical,
+                    surface->pixel_width, surface->pixel_height,
+                    &g_state.workspace.damage_blocks[count]) != 0) {
+                count++;
+            }
+        }
+    }
+    g_state.workspace.damage_block_count = count;
 }
 
-static void
-db_cpu_apply_plan_colored_blocks(const db_pixel_surface_t *surface,
-                                 db_colored_f64_block_view_t colored_view) {
-    if ((surface == NULL) || (colored_view.blocks == NULL)) {
+static void apply_ir(const db_frame_plan_t *plan, const db_render_ir_view_t *ir,
+                     db_render_ir_external_binding_view_t bindings,
+                     const db_pixel_surface_t *surface) {
+    if ((plan == NULL) || (surface == NULL)) {
         return;
     }
-    const uint32_t cols = g_state.config.runtime.grid_cols;
-    const uint32_t rows = g_state.config.runtime.grid_rows;
-    for (size_t block_index = 0U; block_index < colored_view.count;
-         block_index++) {
-        const db_colored_f64_block_t *const block =
-            &colored_view.blocks[block_index];
-        const db_grid_block_t grid_block = {
-            .row_start = block->row_start,
-            .row_count = block->row_count,
-            .col_start = block->col_start,
-            .col_count = block->col_count,
-        };
-        db_damage_block_t pixel_block = {0};
-        if (db_grid_block_to_pixel_block(
-                cols, rows, &grid_block, surface->pixel_width,
-                surface->pixel_height, &pixel_block) == 0) {
-            continue;
-        }
-        cpu_surface_fill_damage_block_rgb(
-            surface, pixel_block.row_start, pixel_block.row_count,
-            pixel_block.col_start, pixel_block.col_count, block->rgb);
+    if (db_render_ir_rasterize_surface_with_bindings(
+            ir, bindings, plan->grid_cols, plan->grid_rows, surface) !=
+        DB_RENDER_IR_OK) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "failed to lower frame-plan render IR");
     }
 }
 
@@ -281,33 +288,41 @@ const db_damage_block_t *db_cpu_render_frame_to_surface_mode(
         db_cpu_set_full_damage(surface);
     }
 
-    if (plan->geometry_overflowed != 0) {
-        DB_RUNTIME_FAIL(BACKEND_NAME, "canonical geometry emitter overflow");
+    if ((plan->update_metadata.status != DB_RENDER_IR_OK) ||
+        (plan->rebuild_metadata.status != DB_RENDER_IR_OK)) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "canonical render IR is invalid");
     }
     const int rebuild =
         DB_BOOL((plan->frame_index == 0U) || (plan->rebuild_required != 0));
-    const int use_raster_seed =
-        DB_BOOL((rebuild != 0) &&
-                (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_RASTER));
-    if (use_raster_seed != 0) {
-        db_cpu_copy_surface_or_fail(render_surface, &plan->rebuild_seed.raster);
-        db_cpu_apply_plan_colored_blocks(render_surface,
-                                         plan->geometry.current_blocks);
-    } else {
-        const int use_rebuild_geometry =
-            DB_BOOL((rebuild != 0) && (plan->rebuild_seed.kind ==
-                                       DB_FRAME_REBUILD_SEED_GEOMETRY));
-        db_cpu_apply_plan_colored_blocks(render_surface,
-                                         use_rebuild_geometry != 0
-                                             ? plan->rebuild_seed.geometry
-                                             : plan->geometry.current_blocks);
+    if ((rebuild != 0) && (plan->rebuild_ir.command_count > 0U)) {
+        apply_ir(plan, &plan->rebuild_ir, plan->external_bindings,
+                 render_surface);
     }
+    apply_ir(plan, &plan->update_ir, (db_render_ir_external_binding_view_t){0},
+             render_surface);
+    g_state.execution = (db_render_execution_report_t){
+        .target_strategy = DB_RENDER_TARGET_CPU_SURFACE,
+        .solid_path = DB_RENDER_OPERATION_CPU_NATIVE,
+        .gradient_path = (plan->update_metadata.gradient_count > 0U)
+                             ? DB_RENDER_OPERATION_CPU_NATIVE
+                             : DB_RENDER_OPERATION_NONE,
+        .solid_commands =
+            plan->update_metadata.solid_command_count +
+            ((rebuild != 0) ? plan->rebuild_metadata.solid_command_count : 0U),
+        .gradient_commands =
+            plan->update_metadata.gradient_count +
+            ((rebuild != 0) ? plan->rebuild_metadata.gradient_count : 0U),
+        .solid_draws = 0U,
+        .gradient_draws = plan->update_metadata.gradient_count,
+        .cpu_pixels_written =
+            plan->update_metadata.damage_area +
+            ((rebuild != 0) ? plan->rebuild_metadata.damage_area : 0U),
+    };
     if ((use_replace_surface != 0) || (plan->rebuild_required != 0) ||
         (plan->frame_index == 0U)) {
         db_cpu_set_full_damage(render_surface);
     } else {
-        cpu_publish_grid_blocks(plan->geometry.logical_damage.blocks,
-                                plan->geometry.logical_damage.count);
+        cpu_publish_ir_damage(plan, render_surface);
     }
 
     if (use_replace_surface != 0) {
@@ -349,8 +364,7 @@ const db_damage_block_t *db_cpu_render_frame_to_surface_mode(
                 .target = "cpu_surface",
                 .target_generation = 1U,
             },
-            plan->geometry.logical_damage.blocks,
-            plan->geometry.logical_damage.count);
+            NULL, 0U);
         (void)db_damage_trace_emit(&(const db_damage_trace_event_t){
             .frame_index = plan->frame_index,
             .backend = DB_DAMAGE_TRACE_BACKEND_CPU,
@@ -394,6 +408,12 @@ const db_damage_block_t *db_cpu_render_frame_to_surface_mode(
         });
     }
     return g_state.workspace.damage_blocks;
+}
+
+void db_cpu_execution_report(db_render_execution_report_t *report) {
+    if (report != NULL) {
+        *report = g_state.execution;
+    }
 }
 
 const db_damage_block_t *

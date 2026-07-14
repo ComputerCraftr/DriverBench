@@ -29,7 +29,9 @@ int db_vk_probe_external_buffer_interop(VkPhysicalDevice phys) {
 #endif
 }
 
-int db_vk_probe_external_image_interop(VkPhysicalDevice phys, VkFormat format) {
+int db_vk_probe_external_image_interop(
+    VkPhysicalDevice phys, VkFormat format, VkImageUsageFlags usage,
+    VkExternalMemoryFeatureFlagBits required_feature) {
 #ifdef __linux__
     const VkPhysicalDeviceExternalImageFormatInfo external_info = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
@@ -41,8 +43,7 @@ int db_vk_probe_external_image_interop(VkPhysicalDevice phys, VkFormat format) {
         .format = format,
         .type = VK_IMAGE_TYPE_2D,
         .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage =
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        .usage = usage,
     };
     VkExternalImageFormatProperties external_properties = {
         .sType = VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES,
@@ -57,11 +58,12 @@ int db_vk_probe_external_image_interop(VkPhysicalDevice phys, VkFormat format) {
     }
     const VkExternalMemoryFeatureFlags features =
         external_properties.externalMemoryProperties.externalMemoryFeatures;
-    return DB_BOOL((features & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) &&
-                   (features & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT));
+    return DB_BOOL((features & required_feature) == required_feature);
 #else
     (void)phys;
     (void)format;
+    (void)usage;
+    (void)required_feature;
     return 0;
 #endif
 }

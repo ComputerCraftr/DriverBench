@@ -57,7 +57,7 @@ function(
         output skip_reason run_status "${scenario_args} ${common_args}"
         "Canonical matrix scenario '${scenario}' failed")
     if(NOT "${skip_reason}" STREQUAL "")
-        message(STATUS "Skipping ${scenario}: ${skip_reason}")
+        set_property(GLOBAL PROPERTY DB_MATRIX_CAPABILITY_SKIPPED TRUE)
         return()
     endif()
     db_matrix_extract_hash("${output}" state_hash state_hash_final actual_state)
@@ -224,6 +224,13 @@ db_matrix_run_strategies(
     "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_FRAMEBUFFER}"
     "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_SPEED}"
     "${DB_CANONICAL_GOLDEN_${TEST_BENCHMARK}_LONG_FRAMES}")
+
+get_property(db_matrix_capability_skipped GLOBAL
+             PROPERTY DB_MATRIX_CAPABILITY_SKIPPED)
+if(db_matrix_capability_skipped)
+    db_test_report_skip("matrix_capability_unavailable" "cross_renderer_matrix")
+    return()
+endif()
 
 if(TEST_CAPTURE_GOLDEN)
     get_property(low_state GLOBAL PROPERTY DB_MATRIX_LOW_STATE)

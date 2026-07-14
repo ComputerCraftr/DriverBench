@@ -193,7 +193,7 @@ db_snake_shape_profile_from_index(uint32_t pattern_seed, uint32_t shape_index,
         break;
     case DB_SNAKE_SHAPE_TRAPEZOID: {
         const double max_width =
-            fmax(trapezoid_top_width, trapezoid_bottom_width);
+            db_max_f64(trapezoid_top_width, trapezoid_bottom_width);
         base_half_width = max_width * DB_SNAKE_SHAPE_CENTER;
         base_half_height = DB_SNAKE_SHAPE_CENTER;
         break;
@@ -204,20 +204,21 @@ db_snake_shape_profile_from_index(uint32_t pattern_seed, uint32_t shape_index,
     const double max_allowed =
         DB_SNAKE_SHAPE_CENTER - DB_SNAKE_SHAPE_EDGE_INSET;
     const double max_allowed_effective =
-        fmax(max_allowed, DB_SNAKE_SHAPE_EXTENT_EPSILON);
+        db_max_f64(max_allowed, DB_SNAKE_SHAPE_EXTENT_EPSILON);
     const double extent_coeff_x =
         (abs_cos * base_half_width) + (abs_sin * base_half_height);
     const double extent_coeff_y =
         (abs_sin * base_half_width) + (abs_cos * base_half_height);
-    const double max_extent_coeff = fmax(extent_coeff_x, extent_coeff_y);
+    const double max_extent_coeff = db_max_f64(extent_coeff_x, extent_coeff_y);
     double safe_extent_max = DB_SNAKE_SHAPE_EXTENT_MAX;
     if (max_extent_coeff > 0.0) {
-        safe_extent_max =
-            fmin(safe_extent_max, max_allowed_effective / max_extent_coeff);
+        safe_extent_max = db_min_f64(safe_extent_max,
+                                     max_allowed_effective / max_extent_coeff);
     }
-    safe_extent_max = fmax(safe_extent_max, DB_SNAKE_SHAPE_EXTENT_EPSILON);
+    safe_extent_max =
+        db_max_f64(safe_extent_max, DB_SNAKE_SHAPE_EXTENT_EPSILON);
     const double safe_extent_min =
-        fmin(DB_SNAKE_SHAPE_EXTENT_MIN, safe_extent_max);
+        db_min_f64(DB_SNAKE_SHAPE_EXTENT_MIN, safe_extent_max);
     double extent_x = db_u32_to_range_f64(
         db_mix_u32(seed_base ^ DB_SNAKE_SHAPE_SALT_EXTENT_X), safe_extent_min,
         safe_extent_max);
@@ -228,7 +229,7 @@ db_snake_shape_profile_from_index(uint32_t pattern_seed, uint32_t shape_index,
                            (abs_sin * base_half_height * extent_y);
     const double bound_y = (abs_sin * base_half_width * extent_x) +
                            (abs_cos * base_half_height * extent_y);
-    const double max_bound = fmax(bound_x, bound_y);
+    const double max_bound = db_max_f64(bound_x, bound_y);
     if ((max_bound > max_allowed) && (max_bound > 0.0)) {
         const double scale = max_allowed / max_bound;
         extent_x *= scale;
@@ -285,18 +286,20 @@ static inline int db_snake_shape_polygon_row_interval_local(
         if (fabs(edge_dy) <= DB_SNAKE_SHAPE_INTERSECT_EPSILON) {
             if (fabs(row_y - y0) <= DB_SNAKE_SHAPE_INTERSECT_EPSILON) {
                 if (has_intersection == 0) {
-                    min_x = fmin(x0, x1);
-                    max_x = fmax(x0, x1);
+                    min_x = db_min_f64(x0, x1);
+                    max_x = db_max_f64(x0, x1);
                     has_intersection = 1;
                 } else {
-                    min_x = fmin(min_x, fmin(x0, x1));
-                    max_x = fmax(max_x, fmax(x0, x1));
+                    min_x = db_min_f64(min_x, db_min_f64(x0, x1));
+                    max_x = db_max_f64(max_x, db_max_f64(x0, x1));
                 }
             }
             continue;
         }
-        const double min_y = fmin(y0, y1) - DB_SNAKE_SHAPE_INTERSECT_EPSILON;
-        const double max_y = fmax(y0, y1) + DB_SNAKE_SHAPE_INTERSECT_EPSILON;
+        const double min_y =
+            db_min_f64(y0, y1) - DB_SNAKE_SHAPE_INTERSECT_EPSILON;
+        const double max_y =
+            db_max_f64(y0, y1) + DB_SNAKE_SHAPE_INTERSECT_EPSILON;
         if ((row_y < min_y) || (row_y > max_y)) {
             continue;
         }
@@ -311,8 +314,8 @@ static inline int db_snake_shape_polygon_row_interval_local(
             max_x = x_at_row;
             has_intersection = 1;
         } else {
-            min_x = fmin(min_x, x_at_row);
-            max_x = fmax(max_x, x_at_row);
+            min_x = db_min_f64(min_x, x_at_row);
+            max_x = db_max_f64(max_x, x_at_row);
         }
     }
     if (has_intersection == 0) {
@@ -330,10 +333,10 @@ static inline int db_snake_shape_circle_row_interval_local(
         return 0;
     }
     const double dy = row_y - DB_SNAKE_SHAPE_CENTER;
-    const double extent_x = fmax(profile->extent_x, 0.000001);
-    const double extent_y = fmax(profile->extent_y, 0.000001);
-    const double radius_x = fmax(profile->circle_radius_x, 0.01);
-    const double radius_y = fmax(profile->circle_radius_y, 0.01);
+    const double extent_x = db_max_f64(profile->extent_x, 0.000001);
+    const double extent_y = db_max_f64(profile->extent_y, 0.000001);
+    const double radius_x = db_max_f64(profile->circle_radius_x, 0.01);
+    const double radius_y = db_max_f64(profile->circle_radius_y, 0.01);
     const double coeff_x = profile->rotate_cos / (extent_x * radius_x);
     const double coeff_y = profile->rotate_sin / (extent_y * radius_y);
     const double term0 = (-profile->rotate_sin * dy) / (extent_x * radius_x);
@@ -348,13 +351,13 @@ static inline int db_snake_shape_circle_row_interval_local(
     if (disc < -DB_SNAKE_SHAPE_INTERSECT_EPSILON) {
         return 0;
     }
-    const double disc_clamped = fmax(disc, 0.0);
+    const double disc_clamped = db_max_f64(disc, 0.0);
     const double sqrt_disc = sqrt(disc_clamped);
     const double inv_denom = 0.5 / quad_a;
     const double dx0 = (-quad_b - sqrt_disc) * inv_denom;
     const double dx1 = (-quad_b + sqrt_disc) * inv_denom;
-    *out_min_x = DB_SNAKE_SHAPE_CENTER + fmin(dx0, dx1);
-    *out_max_x = DB_SNAKE_SHAPE_CENTER + fmax(dx0, dx1);
+    *out_min_x = DB_SNAKE_SHAPE_CENTER + db_min_f64(dx0, dx1);
+    *out_max_x = DB_SNAKE_SHAPE_CENTER + db_max_f64(dx0, dx1);
     return 1;
 }
 
@@ -364,15 +367,15 @@ static inline int db_snake_shape_local_interval_to_col_bounds(
     if ((out_col_start == NULL) || (out_col_end == NULL) || (width == 0U)) {
         return 0;
     }
-    double min_x = fmax(fmin(interval_min_x, interval_max_x), 0.0);
-    double max_x = fmin(fmax(interval_min_x, interval_max_x), 1.0);
+    double min_x = db_max_f64(db_min_f64(interval_min_x, interval_max_x), 0.0);
+    double max_x = db_min_f64(db_max_f64(interval_min_x, interval_max_x), 1.0);
     if (max_x < min_x) {
         return 0;
     }
-    const double col_min_value =
-        ceil((min_x * (double)width) - 0.5 - DB_SNAKE_SHAPE_INTERSECT_EPSILON);
-    const double col_max_value =
-        floor((max_x * (double)width) - 0.5 + DB_SNAKE_SHAPE_INTERSECT_EPSILON);
+    const double col_min_value = ceil((min_x * DB_TO_F64(width)) - 0.5 -
+                                      DB_SNAKE_SHAPE_INTERSECT_EPSILON);
+    const double col_max_value = floor((max_x * DB_TO_F64(width)) - 0.5 +
+                                       DB_SNAKE_SHAPE_INTERSECT_EPSILON);
     int64_t col_min = (int64_t)col_min_value;
     int64_t col_max = (int64_t)col_max_value;
     if (col_max < col_min) {
@@ -494,8 +497,8 @@ static inline size_t db_snake_shape_build_exact_row_bounds(
             continue;
         }
         const double row_center_y =
-            ((double)local_row + DB_SNAKE_SHAPE_CENTER) /
-            (double)region->height;
+            (DB_TO_F64(local_row) + DB_SNAKE_SHAPE_CENTER) /
+            DB_TO_F64(region->height);
         double interval_min_x = 0.0;
         double interval_max_x = 0.0;
         int has_interval = 0;

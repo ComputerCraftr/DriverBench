@@ -4,7 +4,6 @@
 #include "benchmarks/db_benchmark_checkpoint_internal.h"
 #include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_snake_progression_internal.h"
-#include "core/db_geometry_builder.h"
 
 typedef struct {
     db_benchmark_runtime_init_t runtime;
@@ -23,7 +22,7 @@ int db_snake_fast_forward_execute(const db_benchmark_runtime_init_t *runtime,
                                   int shapes_mode,
                                   db_snake_progression_workspace_t *workspace,
                                   db_benchmark_checkpoint_t *checkpoint,
-                                  db_geometry_builder_t *emitter,
+                                  db_benchmark_ir_emitter_t *emitter,
                                   db_snake_fast_forward_result_t *out_result);
 
 #endif

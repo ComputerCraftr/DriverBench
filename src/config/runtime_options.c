@@ -2,7 +2,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "../core/db_core.h"
@@ -66,29 +65,32 @@ int db_resize_schedule_parse(const char *text, db_resize_schedule_t *out) {
     if ((text == NULL) || (out == NULL) || (text[0] == '\0')) {
         return 0;
     }
-    char *frame_end = NULL;
-    const unsigned long frame = strtoul(text, &frame_end, 10);
-    if ((frame_end == text) || (frame_end == NULL) || (*frame_end != ':') ||
-        (frame > UINT32_MAX)) {
+    const char *frame_end = NULL;
+    uint32_t frame = 0U;
+    if ((db_parse_u32_prefix(text, DB_PARSE_BASE_DECIMAL, &frame, &frame_end) ==
+         0) ||
+        (*frame_end != ':')) {
         return 0;
     }
-    char *width_end = NULL;
-    const unsigned long width = strtoul(frame_end + 1, &width_end, 10);
-    if ((width_end == (frame_end + 1)) || (width_end == NULL) ||
-        ((*width_end != 'x') && (*width_end != 'X')) || (width == 0UL) ||
+    const char *width_end = NULL;
+    uint32_t width = 0U;
+    if ((db_parse_u32_prefix(frame_end + 1, DB_PARSE_BASE_DECIMAL, &width,
+                             &width_end) == 0) ||
+        ((*width_end != 'x') && (*width_end != 'X')) || (width == 0U) ||
         (width > INT32_MAX)) {
         return 0;
     }
-    char *height_end = NULL;
-    const unsigned long height = strtoul(width_end + 1, &height_end, 10);
-    if ((height_end == (width_end + 1)) || (height_end == NULL) ||
-        (*height_end != '\0') || (height == 0UL) || (height > INT32_MAX)) {
+    const char *height_end = NULL;
+    uint32_t height = 0U;
+    if ((db_parse_u32_prefix(width_end + 1, DB_PARSE_BASE_DECIMAL, &height,
+                             &height_end) == 0) ||
+        (*height_end != '\0') || (height == 0U) || (height > INT32_MAX)) {
         return 0;
     }
     *out = (db_resize_schedule_t){
-        .frame = (uint32_t)frame,
-        .width = (uint32_t)width,
-        .height = (uint32_t)height,
+        .frame = frame,
+        .width = width,
+        .height = height,
     };
     return 1;
 }

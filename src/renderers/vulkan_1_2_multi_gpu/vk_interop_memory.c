@@ -1,3 +1,4 @@
+#include "vk_diagnostics.h"
 #ifdef __linux__
 #include "vk_internal.h"
 #include "vk_state_internal.h"

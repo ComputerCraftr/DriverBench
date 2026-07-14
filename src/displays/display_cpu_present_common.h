@@ -28,27 +28,63 @@ db_display_pack_native_pixel(const db_pixel_surface_t *source,
                : db_pack_xrgb8888_from_rgba8888(packed);
 }
 
-static inline void db_display_scale_surface_to_native(
-    const char *backend, const db_pixel_surface_t *source, uint8_t *destination,
-    uint32_t destination_width, uint32_t destination_height,
-    uint32_t destination_stride_bytes,
+static inline const char *db_display_cpu_present_validate(
+    const char *backend, const db_pixel_surface_t *source,
+    const uint8_t *destination, uint32_t destination_width,
+    uint32_t destination_height, uint32_t destination_stride_bytes,
     db_native_output_format_t native_format) {
+    const char *const safe_backend =
+        (backend != NULL) ? backend : "cpu_present";
     if ((source == NULL) || (source->pixels == NULL) ||
         (source->pixel_width == 0U) || (source->pixel_height == 0U) ||
         (destination == NULL) || (destination_width == 0U) ||
         (destination_height == 0U) ||
         ((native_format != DB_NATIVE_OUTPUT_XRGB8888) &&
          (native_format != DB_NATIVE_OUTPUT_XRGB2101010))) {
-        DB_RUNTIME_FAIL((backend != NULL) ? backend : "cpu_present",
-                        "invalid CPU presentation transform");
+        DB_RUNTIME_FAIL(safe_backend, "invalid CPU presentation transform");
     }
-    for (uint32_t row = 0U; row < destination_height; row++) {
+    const size_t destination_row_bytes =
+        db_checked_mul_size(safe_backend, "destination row bytes",
+                            destination_width, sizeof(uint32_t));
+    if (destination_stride_bytes < destination_row_bytes) {
+        DB_RUNTIME_FAIL(safe_backend, "CPU presentation stride is too small");
+    }
+    (void)db_checked_mul_size(safe_backend, "destination surface bytes",
+                              destination_height, destination_stride_bytes);
+    const size_t source_pixel_count =
+        db_checked_mul_size(safe_backend, "source surface pixels",
+                            source->pixel_width, source->pixel_height);
+    (void)db_checked_mul_size(safe_backend, "source surface bytes",
+                              source_pixel_count,
+                              db_pixel_surface_pixel_bytes(source));
+    return safe_backend;
+}
+
+static inline uint64_t db_display_scale_surface_region_validated(
+    const char *backend, const db_pixel_surface_t *source, uint8_t *destination,
+    uint32_t destination_width, uint32_t destination_height,
+    uint32_t destination_stride_bytes, db_damage_block_t region,
+    db_native_output_format_t native_format) {
+    if ((region.row_start >= destination_height) ||
+        (region.col_start >= destination_width) || (region.row_count == 0U) ||
+        (region.col_count == 0U)) {
+        return 0U;
+    }
+    region.row_count =
+        DB_MIN(region.row_count, destination_height - region.row_start);
+    region.col_count =
+        DB_MIN(region.col_count, destination_width - region.col_start);
+    const uint32_t row_end = region.row_start + region.row_count;
+    const uint32_t column_end = region.col_start + region.col_count;
+    uint64_t bytes_written = 0U;
+    for (uint32_t row = region.row_start; row < row_end; row++) {
         const uint32_t source_row = db_checked_u64_to_u32(
             backend, "source_row",
             ((uint64_t)row * source->pixel_height) / destination_height);
         uint8_t *const destination_row =
             destination + ((size_t)row * destination_stride_bytes);
-        for (uint32_t column = 0U; column < destination_width; column++) {
+        for (uint32_t column = region.col_start; column < column_end;
+             column++) {
             const uint32_t source_column = db_checked_u64_to_u32(
                 backend, "source_column",
                 ((uint64_t)column * source->pixel_width) / destination_width);
@@ -58,8 +94,25 @@ static inline void db_display_scale_surface_to_native(
                 source, source_index, native_format);
             memcpy(destination_row + ((size_t)column * sizeof(packed)), &packed,
                    sizeof(packed));
+            bytes_written += sizeof(packed);
         }
     }
+    return bytes_written;
+}
+
+static inline void db_display_scale_surface_to_native(
+    const char *backend, const db_pixel_surface_t *source, uint8_t *destination,
+    uint32_t destination_width, uint32_t destination_height,
+    uint32_t destination_stride_bytes,
+    db_native_output_format_t native_format) {
+    const char *const safe_backend = db_display_cpu_present_validate(
+        backend, source, destination, destination_width, destination_height,
+        destination_stride_bytes, native_format);
+    (void)db_display_scale_surface_region_validated(
+        safe_backend, source, destination, destination_width,
+        destination_height, destination_stride_bytes,
+        db_damage_block_full(destination_height, destination_width),
+        native_format);
 }
 
 static inline void db_display_scale_surface_to_xrgb8888(
@@ -76,41 +129,17 @@ static inline uint64_t db_display_scale_surface_region_to_native(
     uint32_t destination_width, uint32_t destination_height,
     uint32_t destination_stride_bytes, const db_damage_block_t *region,
     db_native_output_format_t native_format) {
-    if ((source == NULL) || (source->pixels == NULL) ||
-        (source->pixel_width == 0U) || (source->pixel_height == 0U) ||
-        (destination == NULL) || (destination_width == 0U) ||
-        (destination_height == 0U) || (region == NULL) ||
-        ((native_format != DB_NATIVE_OUTPUT_XRGB8888) &&
-         (native_format != DB_NATIVE_OUTPUT_XRGB2101010))) {
-        DB_RUNTIME_FAIL((backend != NULL) ? backend : "cpu_present",
-                        "invalid CPU presentation region");
+    if (region == NULL) {
+        const char *const safe_backend =
+            (backend != NULL) ? backend : "cpu_present";
+        DB_RUNTIME_FAIL(safe_backend, "invalid CPU presentation region");
     }
-    const uint32_t row_end =
-        DB_MIN(destination_height, region->row_start + region->row_count);
-    const uint32_t column_end =
-        DB_MIN(destination_width, region->col_start + region->col_count);
-    uint64_t bytes_written = 0U;
-    for (uint32_t row = region->row_start; row < row_end; row++) {
-        const uint32_t source_row = db_checked_u64_to_u32(
-            backend, "source_row",
-            ((uint64_t)row * source->pixel_height) / destination_height);
-        uint8_t *const destination_row =
-            destination + ((size_t)row * destination_stride_bytes);
-        for (uint32_t column = region->col_start; column < column_end;
-             column++) {
-            const uint32_t source_column = db_checked_u64_to_u32(
-                backend, "source_column",
-                ((uint64_t)column * source->pixel_width) / destination_width);
-            const size_t source_index =
-                ((size_t)source_row * source->pixel_width) + source_column;
-            const uint32_t packed = db_display_pack_native_pixel(
-                source, source_index, native_format);
-            memcpy(destination_row + ((size_t)column * sizeof(packed)), &packed,
-                   sizeof(packed));
-            bytes_written += sizeof(packed);
-        }
-    }
-    return bytes_written;
+    const char *const safe_backend = db_display_cpu_present_validate(
+        backend, source, destination, destination_width, destination_height,
+        destination_stride_bytes, native_format);
+    return db_display_scale_surface_region_validated(
+        safe_backend, source, destination, destination_width,
+        destination_height, destination_stride_bytes, *region, native_format);
 }
 
 static inline uint64_t db_display_scale_surface_region_to_xrgb8888(

@@ -317,6 +317,25 @@ void db_gl_vertex_attrib_pointer_3f(unsigned int index, int stride_bytes,
     }
 }
 
+void db_gl_vertex_attrib_pointer_4f(unsigned int index, int stride_bytes,
+                                    size_t byte_offset) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.vertex_attrib_pointer != NULL) {
+        g_upload_proc_table.vertex_attrib_pointer(
+            (GLuint)index, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride_bytes,
+            db_gl_vbo_offset_ptr(byte_offset));
+    }
+}
+
+int db_gl_vertex_attrib_divisor(unsigned int index, unsigned int divisor) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.vertex_attrib_divisor == NULL) {
+        return 0;
+    }
+    g_upload_proc_table.vertex_attrib_divisor((GLuint)index, (GLuint)divisor);
+    return 1;
+}
+
 const char *db_gl_get_version_string(void) {
     db_gl_load_upload_proc_table();
     if (g_upload_proc_table.get_string == NULL) {

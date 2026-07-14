@@ -9,6 +9,8 @@ typedef struct GLFWwindow GLFWwindow;
 #include "../display_frame_loop_common.h"
 #include "../display_presentation_policy.h"
 #include "../display_runtime_config_common.h"
+#include "core/db_frame_preparation.h"
+#include "core/db_frame_source.h"
 #include "core/db_geometry.h"
 
 typedef enum {
@@ -59,5 +61,21 @@ db_glfw_query_presentation_buffer_age(GLFWwindow *window,
                                       uint32_t history_capacity);
 void db_glfw_log_presentation_buffer_age(
     const char *backend_name, const db_presentation_buffer_age_t *age);
+int db_glfw_presentation_buffer_age_changed(
+    const db_presentation_buffer_age_t *previous,
+    const db_presentation_buffer_age_t *current);
+db_frame_preparation_t db_glfw_resolve_frame_preparation(
+    db_gl_renderer_t renderer, db_gl1_target_request_t gl1_target,
+    db_glfw_framebuffer_extent_t extent, db_pixel_format_t framebuffer_format,
+    uint32_t framebuffer_generation,
+    const db_presentation_buffer_age_t *buffer_age,
+    const db_frame_requirements_t *requirements);
+db_frame_plan_status_t db_glfw_prepare_frame_transaction(
+    db_frame_source_t *source, uint32_t frame_index,
+    db_frame_plan_request_t *request, db_gl_renderer_t renderer,
+    db_gl1_target_request_t gl1_target, db_glfw_framebuffer_extent_t extent,
+    db_pixel_format_t framebuffer_format, uint32_t framebuffer_generation,
+    const db_presentation_buffer_age_t *buffer_age,
+    db_frame_preparation_t *preparation);
 
 #endif

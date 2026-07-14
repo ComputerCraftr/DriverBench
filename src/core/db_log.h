@@ -47,9 +47,8 @@ typedef struct {
                       .kind = DB_LOG_FIELD_U64,                                \
                       .value.u64 = (uint64_t)(value_)})
 #define DB_LOG_DOUBLE(key_, value_)                                            \
-    ((db_log_field_t){.key = (key_),                                           \
-                      .kind = DB_LOG_FIELD_DOUBLE,                             \
-                      .value.f64 = (double)(value_)})
+    ((db_log_field_t){                                                         \
+        .key = (key_), .kind = DB_LOG_FIELD_DOUBLE, .value.f64 = (value_)})
 #define DB_LOG_BOOL(key_, value_)                                              \
     ((db_log_field_t){.key = (key_),                                           \
                       .kind = DB_LOG_FIELD_BOOL,                               \

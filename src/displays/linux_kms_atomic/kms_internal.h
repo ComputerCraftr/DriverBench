@@ -64,6 +64,7 @@ struct fb {
 };
 
 enum { DB_KMS_CPU_SCANOUT_SLOT_COUNT = 2U };
+enum { DB_KMS_HDR_BIT_DEPTH = 10U };
 
 typedef struct {
     struct fb *fb;
@@ -155,9 +156,15 @@ typedef struct {
 
 void runtime_failf(const char *fmt, ...)
     __attribute__((format(printf, 1, 2), noreturn));
-void runtime_errno_fail(const char *msg) __attribute__((noreturn));
+void runtime_errno_fail(const char *message) __attribute__((noreturn));
+drmModePropertyRes *db_kms_find_object_property(int fd, uint32_t object_id,
+                                                uint32_t object_type,
+                                                const char *name,
+                                                uint64_t *out_value);
 void page_flip_handler(int fd, unsigned frame, unsigned sec, unsigned usec,
                        void *data);
+void db_kms_atomic_flip_to_fb(const struct kms_atomic *kms, uint32_t fb_id,
+                              drmEventContext *event_context);
 void db_kms_atomic_init_core(const char *card, struct kms_atomic *kms,
                              struct gbm_device **out_gbm, uint32_t *out_width,
                              uint32_t *out_height);

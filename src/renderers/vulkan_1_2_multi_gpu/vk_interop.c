@@ -352,7 +352,7 @@ void db_vk_independent_lanes_init(void) {
                 VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
             g_state.calibration.calibrated_timestamps_enabled = 1;
         }
-        g_state.scheduler.multi_gpu_phase = DB_VK_MULTI_GPU_WARMING;
+        db_vk_calibration_state_open(&g_state.calibration.state);
         const db_log_field_t fields[] = {
             DB_LOG_TOKEN("from", "closed"),
             DB_LOG_TOKEN("to", "warming"),
@@ -384,7 +384,9 @@ void db_vk_independent_lane_quarantine(uint32_t lane_index,
                               reason);
     }
     g_state.scheduler.scheduling_epoch++;
-    g_state.scheduler.multi_gpu_phase = DB_VK_MULTI_GPU_CLOSED;
+    g_state.calibration.state = (db_vk_calibration_state_t){
+        .phase = DB_VK_MULTI_GPU_CLOSED,
+    };
     const db_log_field_t fields[] = {
         DB_LOG_U64("lane", lane_index),
         DB_LOG_U64("scheduling_epoch", g_state.scheduler.scheduling_epoch),

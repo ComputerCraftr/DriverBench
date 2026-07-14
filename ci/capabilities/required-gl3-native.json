@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "requirements": [
+    {
+      "capability": "gl3_native",
+      "test_regex": "^hardware_gl3_native_auto$",
+      "required": true,
+      "minimum_executed": 1
+    }
+  ]
+}

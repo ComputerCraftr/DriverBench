@@ -31,6 +31,7 @@
 #define DB_F32_MANT_MASK 0x007FFFFFU
 #define DB_F32_EXP_BIAS 127U
 #define DB_F32_CANONICAL_NAN_BITS 0x7FC00000U
+#define DB_F64_CANONICAL_NAN_BITS UINT64_C(0x7FF8000000000000)
 #define DB_F16_EXP_BIAS 15U
 #define DB_F16_FROM_F32_MANT_SHIFT 13U
 
@@ -39,11 +40,165 @@
 #define DB_PACKED_RGB_SHIFT_BLUE 0U
 #define DB_PACKED_RGB_SHIFT_ALPHA 24U
 
-#define DB_MIN(a, b) (((a) < (b)) ? (a) : (b))
-#define DB_MAX(a, b) (((a) > (b)) ? (a) : (b))
+#define DB_MIN(a, b)                                                           \
+    _Generic(((a) + (b)),                                                      \
+        int: db_min_int,                                                       \
+        unsigned int: db_min_uint,                                             \
+        long: db_min_long,                                                     \
+        unsigned long: db_min_ulong,                                           \
+        long long: db_min_llong,                                               \
+        unsigned long long: db_min_ullong)((a), (b))
+#define DB_MAX(a, b)                                                           \
+    _Generic(((a) + (b)),                                                      \
+        int: db_max_int,                                                       \
+        unsigned int: db_max_uint,                                             \
+        long: db_max_long,                                                     \
+        unsigned long: db_max_ulong,                                           \
+        long long: db_max_llong,                                               \
+        unsigned long long: db_max_ullong)((a), (b))
 #define DB_CLAMP(val, min_v, max_v) DB_MIN(DB_MAX(val, min_v), max_v)
+#define DB_TO_F64(value)                                                       \
+    _Generic((value),                                                          \
+        _Bool: db_bool_to_f64,                                                 \
+        char: db_char_to_f64,                                                  \
+        signed char: db_schar_to_f64,                                          \
+        unsigned char: db_uchar_to_f64,                                        \
+        short: db_short_to_f64,                                                \
+        unsigned short: db_ushort_to_f64,                                      \
+        int: db_int_to_f64,                                                    \
+        unsigned int: db_uint_to_f64,                                          \
+        long: db_long_to_f64,                                                  \
+        unsigned long: db_ulong_to_f64,                                        \
+        long long: db_llong_to_f64,                                            \
+        unsigned long long: db_ullong_to_f64,                                  \
+        float: db_f32_to_double,                                               \
+        double: db_f64_identity)((value))
 // Canonical boolean normalization helper for int/flag boundaries.
 #define DB_BOOL(value) ((value) != 0 ? 1 : 0)
+
+static inline int db_min_int(int lhs, int rhs) {
+    return (lhs < rhs) ? lhs : rhs;
+}
+
+static inline int db_max_int(int lhs, int rhs) {
+    return (lhs > rhs) ? lhs : rhs;
+}
+
+static inline unsigned int db_min_uint(unsigned int lhs, unsigned int rhs) {
+    return (lhs < rhs) ? lhs : rhs;
+}
+
+static inline unsigned int db_max_uint(unsigned int lhs, unsigned int rhs) {
+    return (lhs > rhs) ? lhs : rhs;
+}
+
+static inline long db_min_long(long lhs, long rhs) {
+    return (lhs < rhs) ? lhs : rhs;
+}
+
+static inline long db_max_long(long lhs, long rhs) {
+    return (lhs > rhs) ? lhs : rhs;
+}
+
+static inline unsigned long db_min_ulong(unsigned long lhs, unsigned long rhs) {
+    return (lhs < rhs) ? lhs : rhs;
+}
+
+static inline unsigned long db_max_ulong(unsigned long lhs, unsigned long rhs) {
+    return (lhs > rhs) ? lhs : rhs;
+}
+
+static inline long long db_min_llong(long long lhs, long long rhs) {
+    return (lhs < rhs) ? lhs : rhs;
+}
+
+static inline long long db_max_llong(long long lhs, long long rhs) {
+    return (lhs > rhs) ? lhs : rhs;
+}
+
+static inline unsigned long long db_min_ullong(unsigned long long lhs,
+                                               unsigned long long rhs) {
+    return (lhs < rhs) ? lhs : rhs;
+}
+
+static inline unsigned long long db_max_ullong(unsigned long long lhs,
+                                               unsigned long long rhs) {
+    return (lhs > rhs) ? lhs : rhs;
+}
+
+static inline double db_canonical_nan_f64(void) {
+    union {
+        double f64;
+        uint64_t u64;
+    } pun = {.u64 = DB_F64_CANONICAL_NAN_BITS};
+    return pun.f64;
+}
+
+// Deterministic IEEE minimumNumber/maximumNumber behavior. A numeric operand
+// wins over NaN, two NaNs canonicalize, and signed-zero ordering is explicit.
+static inline double db_min_f64(double lhs, double rhs) {
+    if (isnan(lhs)) {
+        return isnan(rhs) ? db_canonical_nan_f64() : rhs;
+    }
+    if (isnan(rhs)) {
+        return lhs;
+    }
+    if (lhs < rhs) {
+        return lhs;
+    }
+    if (rhs < lhs) {
+        return rhs;
+    }
+    if ((lhs <= 0.0) && (lhs >= 0.0) &&
+        ((signbit(lhs) != 0) || (signbit(rhs) != 0))) {
+        return -0.0;
+    }
+    return lhs;
+}
+
+static inline double db_max_f64(double lhs, double rhs) {
+    if (isnan(lhs)) {
+        return isnan(rhs) ? db_canonical_nan_f64() : rhs;
+    }
+    if (isnan(rhs)) {
+        return lhs;
+    }
+    if (lhs > rhs) {
+        return lhs;
+    }
+    if (rhs > lhs) {
+        return rhs;
+    }
+    if ((lhs <= 0.0) && (lhs >= 0.0) &&
+        ((signbit(lhs) == 0) || (signbit(rhs) == 0))) {
+        return 0.0;
+    }
+    return lhs;
+}
+
+static inline double db_clamp_f64_finite_or(double value, double minimum,
+                                            double maximum,
+                                            double nonfinite_value) {
+    if (!isfinite(value)) {
+        return nonfinite_value;
+    }
+    return db_min_f64(db_max_f64(value, minimum), maximum);
+}
+
+static inline double db_f64_positive_finite_or_zero(double value) {
+    if (!isfinite(value) || (value <= 0.0)) {
+        return 0.0;
+    }
+    return value;
+}
+
+static inline double db_f64_reciprocal_positive_finite_or(double value,
+                                                          double fallback) {
+    if (!isfinite(value) || (value <= 0.0)) {
+        return fallback;
+    }
+    return 1.0 / value;
+}
 
 static inline uint32_t db_u32_next_pow2(uint32_t value) {
     if (value <= 1U) {
@@ -62,7 +217,45 @@ static inline uint32_t db_u32_next_pow2(uint32_t value) {
 }
 
 static inline uint32_t db_u32_saturating_sub(uint32_t lhs, uint32_t rhs) {
-    return (lhs > rhs) ? (lhs - rhs) : 0U;
+    if (lhs <= rhs) {
+        return 0U;
+    }
+    return lhs - rhs;
+}
+
+static inline uint64_t db_u64_saturating_sub(uint64_t lhs, uint64_t rhs) {
+    if (lhs <= rhs) {
+        return 0U;
+    }
+    return lhs - rhs;
+}
+
+static inline uint64_t db_u64_saturating_add(uint64_t lhs, uint64_t rhs) {
+    if (rhs > (UINT64_MAX - lhs)) {
+        return UINT64_MAX;
+    }
+    return lhs + rhs;
+}
+
+static inline uint64_t db_u64_abs_diff(uint64_t lhs, uint64_t rhs) {
+    if (lhs > rhs) {
+        return lhs - rhs;
+    }
+    return rhs - lhs;
+}
+
+static inline size_t db_size_add_or_zero(size_t lhs, size_t rhs) {
+    if (rhs > (SIZE_MAX - lhs)) {
+        return 0U;
+    }
+    return lhs + rhs;
+}
+
+static inline size_t db_positive_i32_to_size_or_zero(int32_t value) {
+    if (value <= 0) {
+        return 0U;
+    }
+    return (size_t)value;
 }
 
 static inline uint32_t db_u32_wrapping_sub(uint32_t lhs, uint32_t rhs) {
@@ -109,37 +302,6 @@ static inline double db_u8_to_unit_f64(uint32_t value_u8) {
 //   direct f16 <-> f32 helpers serve GPU/storage boundaries without widening.
 // - Canonicalization removes representation-only variation (-0, NaN payloads)
 //   while preserving meaningful sign where the destination format supports it.
-static inline float db_double_to_f32(double value) {
-    if (isnan(value) != 0) {
-        return nanf("");
-    }
-    if (value == 0.0) {
-        return 0.0F;
-    }
-    return (float)value;
-}
-
-static inline double db_f32_to_double(float value) {
-    if (isnan(value) != 0) {
-        return nan("");
-    }
-    if (value == 0.0F) {
-        return 0.0;
-    }
-    return (double)value;
-}
-
-static inline float db_u32_to_f32(uint32_t value) {
-    return db_double_to_f32((double)value);
-}
-
-static inline float db_u32_ratio_to_f32(uint32_t numerator,
-                                        uint32_t denominator) {
-    // Callers must validate denominator != 0 to keep divide-by-zero policy
-    // explicit at use sites.
-    return db_double_to_f32((double)numerator / (double)denominator);
-}
-
 static inline uint32_t db_f32_to_bits_u32(float value) {
     union {
         float f32;
@@ -154,6 +316,95 @@ static inline uint64_t db_f64_to_bits_u64(double value) {
         uint64_t u64;
     } pun = {.f64 = value};
     return pun.u64;
+}
+
+static inline float db_bits_u32_to_f32(uint32_t value_bits) {
+    union {
+        float f32;
+        uint32_t u32;
+    } pun = {.u32 = value_bits};
+    return pun.f32;
+}
+
+static inline double db_bits_u64_to_f64(uint64_t value_bits) {
+    union {
+        double f64;
+        uint64_t u64;
+    } pun = {.u64 = value_bits};
+    return pun.f64;
+}
+
+static inline double db_bool_to_f64(_Bool value) { return (double)value; }
+
+static inline double db_char_to_f64(char value) { return (double)value; }
+
+static inline double db_schar_to_f64(signed char value) {
+    return (double)value;
+}
+
+static inline double db_uchar_to_f64(unsigned char value) {
+    return (double)value;
+}
+
+static inline double db_short_to_f64(short value) { return (double)value; }
+
+static inline double db_ushort_to_f64(unsigned short value) {
+    return (double)value;
+}
+
+static inline double db_int_to_f64(int value) { return (double)value; }
+
+static inline double db_uint_to_f64(unsigned int value) {
+    return (double)value;
+}
+
+static inline double db_long_to_f64(long value) { return (double)value; }
+
+static inline double db_ulong_to_f64(unsigned long value) {
+    return (double)value;
+}
+
+static inline double db_llong_to_f64(long long value) { return (double)value; }
+
+static inline double db_ullong_to_f64(unsigned long long value) {
+    return (double)value;
+}
+
+static inline double db_f64_identity(double value) { return value; }
+
+static inline float db_double_to_f32(double value) {
+    if (isnan(value) != 0) {
+        return db_bits_u32_to_f32(DB_F32_CANONICAL_NAN_BITS);
+    }
+    if ((db_f64_to_bits_u64(value) & INT64_MAX) == 0U) {
+        return 0.0F;
+    }
+    return (float)value;
+}
+
+static inline double db_f32_to_double(float value) {
+    if (isnan(value) != 0) {
+        return db_bits_u64_to_f64(DB_F64_CANONICAL_NAN_BITS);
+    }
+    if ((db_f32_to_bits_u32(value) & INT32_MAX) == 0U) {
+        return 0.0;
+    }
+    return (double)value;
+}
+
+static inline float db_u32_to_f32(uint32_t value) {
+    return db_double_to_f32((double)value);
+}
+
+static inline float db_i32_to_f32(int32_t value) {
+    return db_double_to_f32((double)value);
+}
+
+static inline float db_u32_ratio_to_f32(uint32_t numerator,
+                                        uint32_t denominator) {
+    // Callers must validate denominator != 0 to keep divide-by-zero policy
+    // explicit at use sites.
+    return db_double_to_f32((double)numerator / (double)denominator);
 }
 
 // Exact canonical math equality: signed zero compares equal and NaNs do not.
@@ -197,14 +448,6 @@ static inline int db_compare_f64_total(double lhs, double rhs) {
 
 static inline int db_compare_u32(uint32_t lhs, uint32_t rhs) {
     return (lhs > rhs) - (lhs < rhs);
-}
-
-static inline float db_bits_u32_to_f32(uint32_t value_bits) {
-    union {
-        float f32;
-        uint32_t u32;
-    } pun = {.u32 = value_bits};
-    return pun.f32;
 }
 
 static inline uint8_t db_double01_to_u8_clamped(double value01) {
@@ -329,8 +572,10 @@ static inline uint32_t db_round_positive_to_u32_ties_even(double value) {
     const double floor_value = floor(value);
     const double frac = value - floor_value;
     uint32_t rounded = (uint32_t)floor_value;
+    const int exactly_half =
+        db_f64_to_bits_u64(frac) == db_f64_to_bits_u64(DB_ROUND_HALF_UP);
     if ((frac > DB_ROUND_HALF_UP) ||
-        ((frac == DB_ROUND_HALF_UP) && ((rounded & 1U) != 0U))) {
+        ((exactly_half != 0) && ((rounded & 1U) != 0U))) {
         rounded++;
     }
     return rounded;
@@ -350,7 +595,7 @@ static inline uint16_t db_double_to_f16(double value) {
     if (isinf(value) != 0) {
         return (uint16_t)(sign | (DB_F16_EXP_MASK << DB_F16_EXP_SHIFT));
     }
-    if (abs_value == 0.0) {
+    if ((db_f64_to_bits_u64(abs_value) & INT64_MAX) == 0U) {
         return 0U;
     }
 

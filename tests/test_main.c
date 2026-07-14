@@ -13,9 +13,12 @@ int main(void) {
     failures += db_damage_trace_test_run_all();
     failures += db_display_gl_runtime_test_run_all();
     failures += db_gl_shadow_present_test_run_all();
+    failures += db_gl1_replay_test_run_all();
+    failures += db_gradient_divergence_test_run_all();
     failures += db_hash_test_run_all();
     failures += db_numeric_test_run_all();
     failures += db_poll_policy_test_run_all();
+    failures += db_render_ir_test_run_all();
     failures += db_sort_test_run_all();
 #ifdef DB_HAS_VULKAN_API
     failures += db_vk_scheduler_test_run_all();

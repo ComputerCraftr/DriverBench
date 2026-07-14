@@ -7,13 +7,14 @@
 #include "../config/runtime_options.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/signal.h>
 #include <time.h>
 
 #define DB_MAX_SLEEP_NS 100000000.0
@@ -143,13 +144,69 @@ int db_parse_bool_text(const char *value, int *out_value) {
     return 0;
 }
 
-int db_parse_int_text(const char *value, int *out_value) {
-    if ((value == NULL) || (value[0] == '\0')) {
+int db_parse_u32_prefix(const char *value, int base, uint32_t *out_value,
+                        const char **out_end) {
+    if ((value == NULL) || (value[0] == '\0') || (out_value == NULL) ||
+        (out_end == NULL) || (value[0] == '-') ||
+        ((base != DB_PARSE_BASE_AUTODETECT) &&
+         ((base < DB_PARSE_BASE_MIN) || (base > DB_PARSE_BASE_MAX)))) {
         return 0;
     }
-    char *endptr = NULL;
-    const long parsed = strtol(value, &endptr, 10);
-    if ((endptr == value) || (*endptr != '\0')) {
+    errno = 0;
+    char *end = NULL;
+    const unsigned long parsed = strtoul(value, &end, base);
+    if ((end == value) || (end == NULL) || (errno == ERANGE) ||
+        (parsed > UINT32_MAX)) {
+        return 0;
+    }
+    *out_value = (uint32_t)parsed;
+    *out_end = end;
+    return 1;
+}
+
+int db_parse_long_prefix(const char *value, int base, long *out_value,
+                         const char **out_end) {
+    if ((value == NULL) || (value[0] == '\0') || (out_value == NULL) ||
+        (out_end == NULL) ||
+        ((base != DB_PARSE_BASE_AUTODETECT) &&
+         ((base < DB_PARSE_BASE_MIN) || (base > DB_PARSE_BASE_MAX)))) {
+        return 0;
+    }
+    errno = 0;
+    char *end = NULL;
+    const long parsed = strtol(value, &end, base);
+    if ((end == value) || (end == NULL) || (errno == ERANGE)) {
+        return 0;
+    }
+    *out_value = parsed;
+    *out_end = end;
+    return 1;
+}
+
+int db_parse_double_prefix(const char *value, double *out_value,
+                           const char **out_end) {
+    if ((value == NULL) || (value[0] == '\0') || (out_value == NULL) ||
+        (out_end == NULL)) {
+        return 0;
+    }
+    errno = 0;
+    char *end = NULL;
+    const double parsed = strtod(value, &end);
+    if ((end == value) || (end == NULL) || (errno == ERANGE) ||
+        !isfinite(parsed)) {
+        return 0;
+    }
+    *out_value = parsed;
+    *out_end = end;
+    return 1;
+}
+
+int db_parse_int_text(const char *value, int *out_value) {
+    long parsed = 0L;
+    const char *end = NULL;
+    if ((db_parse_long_prefix(value, DB_PARSE_BASE_DECIMAL, &parsed, &end) ==
+         0) ||
+        (*end != '\0') || (parsed < INT_MIN) || (parsed > INT_MAX)) {
         return 0;
     }
     if (out_value != NULL) {
@@ -178,9 +235,10 @@ int db_parse_fps_cap_text(const char *value, double *out_value) {
         return 1;
     }
 
-    char *end = NULL;
-    const double parsed = strtod(value, &end);
-    if ((end != value) && (end != NULL) && (*end == '\0') && (parsed > 0.0)) {
+    const char *end = NULL;
+    double parsed = 0.0;
+    if ((db_parse_double_prefix(value, &parsed, &end) != 0) && (*end == '\0') &&
+        (parsed > 0.0)) {
         if (out_value != NULL) {
             *out_value = parsed;
         }
@@ -267,9 +325,8 @@ void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
     uint64_t remaining_ns =
         db_deadline_remaining_ns(&deadline, db_now_ns_monotonic());
     while (remaining_ns > 0U) {
-        const double sleep_ns = ((double)remaining_ns > DB_MAX_SLEEP_NS)
-                                    ? DB_MAX_SLEEP_NS
-                                    : (double)remaining_ns;
+        const double sleep_ns =
+            db_min_f64(DB_TO_F64(remaining_ns), DB_MAX_SLEEP_NS);
         const long sleep_ns_long =
             db_checked_double_to_long(backend, "sleep_ns", sleep_ns);
         if (sleep_ns_long <= 0L) {
@@ -299,7 +356,7 @@ int db_format_benchmark_log(char *buffer, size_t buffer_size,
         return 0;
     }
 
-    const double ms_per_frame = elapsed_ms / (double)frames;
+    const double ms_per_frame = elapsed_ms / DB_TO_F64(frames);
     const double fps = DB_MS_PER_SECOND / ms_per_frame;
     enum {
         DB_BENCHMARK_LOG_BASE_FIELD_COUNT = 6,

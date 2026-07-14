@@ -41,8 +41,10 @@ db_test_failf_impl(db_test_state_t *state, const char *file, int line,
 
 #define DB_TEST_EXPECT_EQ_U32(state, a, b)                                     \
     do {                                                                       \
-        const unsigned _a = (unsigned)(a);                                     \
-        const unsigned _b = (unsigned)(b);                                     \
+        const typeof(a) _a_value = (a);                                        \
+        const typeof(b) _b_value = (b);                                        \
+        const unsigned _a = (unsigned)_a_value;                                \
+        const unsigned _b = (unsigned)_b_value;                                \
         if (_a != _b) {                                                        \
             DB_TEST_FAILF((state), "expected %s == %s (%u != %u)", #a, #b, _a, \
                           _b);                                                 \
@@ -51,8 +53,10 @@ db_test_failf_impl(db_test_state_t *state, const char *file, int line,
 
 #define DB_TEST_EXPECT_EQ_U64(state, a, b)                                     \
     do {                                                                       \
-        const uint64_t _a = (uint64_t)(a);                                     \
-        const uint64_t _b = (uint64_t)(b);                                     \
+        const typeof(a) _a_value = (a);                                        \
+        const typeof(b) _b_value = (b);                                        \
+        const uint64_t _a = (uint64_t)_a_value;                                \
+        const uint64_t _b = (uint64_t)_b_value;                                \
         if (_a != _b) {                                                        \
             DB_TEST_FAILF((state),                                             \
                           "expected %s == %s (0x%016llx != 0x%016llx)", #a,    \
@@ -62,8 +66,10 @@ db_test_failf_impl(db_test_state_t *state, const char *file, int line,
 
 #define DB_TEST_EXPECT_EQ_INT(state, a, b)                                     \
     do {                                                                       \
-        const int _a = (int)(a);                                               \
-        const int _b = (int)(b);                                               \
+        const typeof(a) _a_value = (a);                                        \
+        const typeof(b) _b_value = (b);                                        \
+        const int _a = (int)_a_value;                                          \
+        const int _b = (int)_b_value;                                          \
         if (_a != _b) {                                                        \
             DB_TEST_FAILF((state), "expected %s == %s (%d != %d)", #a, #b, _a, \
                           _b);                                                 \
@@ -72,8 +78,10 @@ db_test_failf_impl(db_test_state_t *state, const char *file, int line,
 
 #define DB_TEST_EXPECT_EQ_SIZE(state, a, b)                                    \
     do {                                                                       \
-        const size_t _a = (size_t)(a);                                         \
-        const size_t _b = (size_t)(b);                                         \
+        const typeof(a) _a_value = (a);                                        \
+        const typeof(b) _b_value = (b);                                        \
+        const size_t _a = (size_t)_a_value;                                    \
+        const size_t _b = (size_t)_b_value;                                    \
         if (_a != _b) {                                                        \
             DB_TEST_FAILF((state), "expected %s == %s (%zu != %zu)", #a, #b,   \
                           _a, _b);                                             \
@@ -82,8 +90,10 @@ db_test_failf_impl(db_test_state_t *state, const char *file, int line,
 
 #define DB_TEST_EXPECT_DOUBLE_EQUAL(state, a, b)                               \
     do {                                                                       \
-        const double _a = (double)(a);                                         \
-        const double _b = (double)(b);                                         \
+        const typeof(a) _a_value = (a);                                        \
+        const typeof(b) _b_value = (b);                                        \
+        const double _a = DB_TO_F64(_a_value);                                 \
+        const double _b = DB_TO_F64(_b_value);                                 \
         if (fabs(_a - _b) > 0.000001) {                                        \
             DB_TEST_FAILF((state), "expected %s == %s (%f != %f)", #a, #b, _a, \
                           _b);                                                 \
@@ -121,15 +131,21 @@ typedef struct {
 } db_test_case_t;
 
 unsigned db_benchmark_seeding_test_run_all(void);
+unsigned db_benchmark_checkpoint_transaction_test_run_all(void);
 unsigned db_benchmark_emitters_test_run_all(void);
 unsigned db_cli_test_run_all(void);
 unsigned db_core_logging_test_run_all(void);
 unsigned db_damage_trace_test_run_all(void);
 unsigned db_display_gl_runtime_test_run_all(void);
+unsigned db_display_hdr_test_run_all(void);
 unsigned db_gl_shadow_present_test_run_all(void);
+unsigned db_gl1_replay_test_run_all(void);
+unsigned db_gradient_divergence_test_run_all(void);
 unsigned db_hash_test_run_all(void);
 unsigned db_numeric_test_run_all(void);
 unsigned db_poll_policy_test_run_all(void);
+unsigned db_render_ir_test_run_all(void);
+unsigned db_render_ir_snapshot_test_run_all(void);
 unsigned db_sort_test_run_all(void);
 unsigned db_vk_scheduler_test_run_all(void);
 

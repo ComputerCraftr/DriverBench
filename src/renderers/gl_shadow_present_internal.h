@@ -50,6 +50,14 @@ void db_gl_shadow_present_upload_hdr_damage_blocks(
     db_gl_shadow_present_state_t *state, const char *backend,
     const db_pixel_surface_t *source, const db_damage_block_t *blocks,
     size_t block_count);
+void db_gl_shadow_present_repair_full_upload_target_from_pixels(
+    db_gl_shadow_present_state_t *state,
+    db_gl_shadow_present_full_upload_target_t *target,
+    const db_gl_pixel_upload_payload_t *source_pixels,
+    const db_damage_block_t *damage_blocks, size_t damage_block_count);
+int db_gl_shadow_present_requires_full_texture_upload(
+    const db_gl_shadow_present_state_t *state,
+    const db_damage_block_t *damage_blocks, size_t damage_block_count);
 uint32_t db_gl_shadow_present_active_slot_count(
     db_gl_shadow_present_preserve_mode_t preserve_mode,
     uint32_t preserved_framebuffer_count);

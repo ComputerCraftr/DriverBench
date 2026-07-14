@@ -1,16 +1,25 @@
 #include "gl3_renderer.h"
+#include "core/db_conformance.h"
 #include "core/db_log.h"
+#include "core/db_renderer_diagnostics.h"
 #include "core/db_renderer_runtime_contract.h"
 #include "core/db_renderer_support.h"
+#include "gl3_qualification.h"
+#include "gl3_target.h"
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "../../core/db_conformance_cache.h"
+#include "../../core/db_conformance_service.h"
 #include "../../core/db_core.h"
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_geometry.h"
+#include "../../core/db_gradient_divergence.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_render_ir.h"
 #include "../damage_trace.h"
 #include "../gl_api.h"
 #include "../gl_common.h"
@@ -29,20 +38,21 @@
 #endif
 
 #define BACKEND_NAME "renderer_opengl_gl3_3"
-#define ATTR_COLOR_LOC 1U
+#define ATTR_COLOR_LOC 2U
+#define ATTR_END_COLOR_LOC 3U
+#define ATTR_GRADIENT_LOC 4U
+#define ATTR_RECT_LOC 1U
 #define ATTR_POSITION_LOC 0U
-#define SHADER_LOG_MSG_CAPACITY 1024
+#define GL3_INSTANCE_FLOAT_COUNT 14U
+#define GL3_INSTANCE_START_COLOR_OFFSET 4U
+#define GL3_INSTANCE_END_COLOR_OFFSET 7U
+#define GL3_INSTANCE_MODE_OFFSET 10U
+#define GL3_INSTANCE_AXIS_START_OFFSET 11U
+#define GL3_INSTANCE_AXIS_END_OFFSET 12U
+#define GL3_INSTANCE_GRID_ROWS_OFFSET 13U
+#define GL3_UNIT_QUAD_FLOAT_COUNT 12U
+#define GL3_UNIT_QUAD_VERTEX_COUNT 6U
 #define runtime_failf(...) DB_RUNTIME_FAIL(BACKEND_NAME, __VA_ARGS__)
-
-typedef struct {
-    int width;
-    int height;
-    unsigned int fbo;
-    unsigned int texture;
-    int valid;
-    uint32_t generation;
-    db_pixel_format_t format;
-} gl3_persistent_target_t;
 
 typedef struct {
     db_gl_vertex_init_t vertex;
@@ -57,6 +67,13 @@ typedef struct {
     int sampler_location;
     int hdr_output_location;
     int hdr_output_enabled;
+    db_conformance_result_t gradient_conformance;
+    db_gradient_implementation_t gradient_implementation;
+    db_qualification_source_t qualification_source;
+    db_conformance_cache_status_t cache_status;
+    const char *qualification_reason;
+    int gradient_qualified;
+    int qualification_resolved;
     db_gl_viewport_cache_t viewport;
 } gl3_presentation_pipeline_t;
 
@@ -67,10 +84,12 @@ typedef struct {
 typedef struct {
     char capability_mode[DB_GL_CAPABILITY_MODE_MAX];
     db_renderer_frame_stats_t frame;
+    db_render_execution_report_t execution;
 } gl3_telemetry_t;
 
 typedef struct {
     db_renderer_execution_config_t runtime;
+    db_renderer_diagnostic_config_t diagnostics;
     gl3_persistent_target_t target;
     gl3_geometry_stream_t geometry;
     gl3_presentation_pipeline_t presentation;
@@ -79,6 +98,43 @@ typedef struct {
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};
+
+static void gl3_resolve_gradient_qualification(void) {
+    if (g_state.presentation.qualification_resolved != 0) {
+        return;
+    }
+    const db_conformance_decision_t semantic = db_gl3_qualify_implementation(
+        g_state.target.format, g_state.runtime.grid_cols,
+        g_state.runtime.grid_rows, &g_state.diagnostics,
+        DB_GRADIENT_IMPLEMENTATION_SEMANTIC);
+    if (semantic.result == DB_CONFORMANCE_CONFORMING) {
+        g_state.presentation.gradient_conformance = semantic.result;
+        g_state.presentation.gradient_implementation =
+            DB_GRADIENT_IMPLEMENTATION_SEMANTIC;
+        g_state.presentation.gradient_qualified = 1;
+        g_state.presentation.qualification_source = semantic.source;
+        g_state.presentation.cache_status = semantic.cache_status;
+        g_state.presentation.qualification_reason = "semantic_conforming";
+    } else {
+        const db_conformance_decision_t rows = db_gl3_qualify_implementation(
+            g_state.target.format, g_state.runtime.grid_cols,
+            g_state.runtime.grid_rows, &g_state.diagnostics,
+            DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES);
+        g_state.presentation.gradient_conformance =
+            DB_CONFORMANCE_NONCONFORMING;
+        g_state.presentation.gradient_implementation =
+            DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES;
+        g_state.presentation.gradient_qualified =
+            rows.result == DB_CONFORMANCE_CONFORMING;
+        g_state.presentation.qualification_source = rows.source;
+        g_state.presentation.cache_status = rows.cache_status;
+        g_state.presentation.qualification_reason =
+            g_state.presentation.gradient_qualified
+                ? "semantic_rejected_row_instances"
+                : "qualification_unavailable";
+    }
+    g_state.presentation.qualification_resolved = 1;
+}
 
 uint64_t db_gl3_working_hash(void) {
     if ((g_state.target.fbo == 0U) || (g_state.target.width <= 0) ||
@@ -138,87 +194,218 @@ static void gl3_trace_full_frame(uint32_t frame_index,
 
 static void gl3_bind_main_vbo_layout(void) {
     (void)db_gl_upload_stream_bind(&g_state.geometry.stream);
-    const int32_t stride_bytes =
-        db_checked_size_to_i32(BACKEND_NAME, "vertex_stride_bytes",
-                               DB_VERTEX_FLOAT_STRIDE * sizeof(float));
-    db_gl_vertex_attrib_pointer_2f(ATTR_POSITION_LOC, stride_bytes, 0U);
-    db_gl_vertex_attrib_pointer_3f(ATTR_COLOR_LOC, stride_bytes,
-                                   DB_VERTEX_POSITION_FLOAT_COUNT *
-                                       sizeof(float));
+    const int32_t unit_stride = db_checked_size_to_i32(
+        BACKEND_NAME, "unit_vertex_stride", 2U * sizeof(float));
+    const int32_t instance_stride =
+        db_checked_size_to_i32(BACKEND_NAME, "instance_stride",
+                               GL3_INSTANCE_FLOAT_COUNT * sizeof(float));
+    const size_t instance_base = GL3_UNIT_QUAD_FLOAT_COUNT * sizeof(float);
+    db_gl_vertex_attrib_pointer_2f(ATTR_POSITION_LOC, unit_stride, 0U);
+    db_gl_vertex_attrib_pointer_4f(ATTR_RECT_LOC, instance_stride,
+                                   instance_base);
+    db_gl_vertex_attrib_pointer_3f(
+        ATTR_COLOR_LOC, instance_stride,
+        instance_base + (GL3_INSTANCE_START_COLOR_OFFSET * sizeof(float)));
+    db_gl_vertex_attrib_pointer_3f(
+        ATTR_END_COLOR_LOC, instance_stride,
+        instance_base + (GL3_INSTANCE_END_COLOR_OFFSET * sizeof(float)));
+    db_gl_vertex_attrib_pointer_4f(
+        ATTR_GRADIENT_LOC, instance_stride,
+        instance_base + (GL3_INSTANCE_MODE_OFFSET * sizeof(float)));
+    if ((db_gl_vertex_attrib_divisor(ATTR_POSITION_LOC, 0U) == 0) ||
+        (db_gl_vertex_attrib_divisor(ATTR_RECT_LOC, 1U) == 0) ||
+        (db_gl_vertex_attrib_divisor(ATTR_COLOR_LOC, 1U) == 0) ||
+        (db_gl_vertex_attrib_divisor(ATTR_END_COLOR_LOC, 1U) == 0) ||
+        (db_gl_vertex_attrib_divisor(ATTR_GRADIENT_LOC, 1U) == 0)) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "GL3 instancing is unavailable");
+    }
 }
 
-static uint32_t
-db_gl3_upload_canonical_geometry(db_colored_f64_block_view_t blocks) {
-    if ((blocks.blocks == NULL) || (blocks.count == 0U)) {
+static int gl3_append_instance(db_render_ir_rect_t rect,
+                               db_render_ir_color_t start_color,
+                               db_render_ir_color_t end_color, float mode,
+                               int32_t axis_start, int32_t axis_end,
+                               size_t index) {
+    const size_t capacity = (size_t)g_state.geometry.vertex.draw_vertex_count /
+                            DB_RECT_VERTEX_COUNT;
+    if (index >= capacity) {
+        return 0;
+    }
+    db_grid_block_t grid_block = {0};
+    if (db_render_ir_rect_to_grid_block(rect, g_state.runtime.grid_cols,
+                                        g_state.runtime.grid_rows,
+                                        &grid_block) == 0) {
+        return 0;
+    }
+    float x0 = 0.0F;
+    float y0 = 0.0F;
+    float x1 = 0.0F;
+    float y1 = 0.0F;
+    db_grid_block_bounds_ndc_for_extent(g_state.runtime.grid_cols,
+                                        g_state.runtime.grid_rows, &grid_block,
+                                        &x0, &y0, &x1, &y1);
+    float start[3] = {0.0F, 0.0F, 0.0F};
+    float end[3] = {0.0F, 0.0F, 0.0F};
+    db_rgb_f64_quantize_f16_to_f32_rgb3(start_color.rgba, start);
+    db_rgb_f64_quantize_f16_to_f32_rgb3(end_color.rgba, end);
+    float *const instance =
+        &g_state.geometry.vertex.vertices[GL3_UNIT_QUAD_FLOAT_COUNT +
+                                          (index * GL3_INSTANCE_FLOAT_COUNT)];
+    instance[0] = x0;
+    instance[1] = y0;
+    instance[2] = x1 - x0;
+    instance[3] = y1 - y0;
+    memcpy(&instance[GL3_INSTANCE_START_COLOR_OFFSET], start, sizeof(start));
+    memcpy(&instance[GL3_INSTANCE_END_COLOR_OFFSET], end, sizeof(end));
+    instance[GL3_INSTANCE_MODE_OFFSET] = mode;
+    instance[GL3_INSTANCE_AXIS_START_OFFSET] = db_i32_to_f32(axis_start);
+    instance[GL3_INSTANCE_AXIS_END_OFFSET] = db_i32_to_f32(axis_end);
+    instance[GL3_INSTANCE_GRID_ROWS_OFFSET] =
+        db_u32_to_f32(g_state.runtime.grid_rows);
+    return 1;
+}
+
+static size_t gl3_append_ir_instances(const db_render_ir_view_t *ir,
+                                      size_t count,
+                                      uint32_t *semantic_gradients,
+                                      uint32_t *fallback_instances) {
+    if (ir == NULL) {
+        return count;
+    }
+    db_render_ir_iterator_t iterator = {0};
+    db_render_ir_iterator_begin(&iterator, ir);
+    const db_render_ir_command_header_t *command = NULL;
+    while ((command = db_render_ir_iterator_next(&iterator)) != NULL) {
+        switch ((db_render_ir_opcode_t)command->opcode) {
+        case DB_RENDER_IR_OP_BEGIN_TARGET:
+        case DB_RENDER_IR_OP_END_TARGET:
+        case DB_RENDER_IR_OP_UPLOAD_IMAGE:
+        case DB_RENDER_IR_OP_INVALIDATE_RESOURCE:
+            break;
+        case DB_RENDER_IR_OP_CLEAR: {
+            const db_render_ir_clear_command_t *const clear =
+                (const db_render_ir_clear_command_t *)command;
+            const db_render_ir_rect_t rect = {
+                .width = db_checked_u32_to_i32(BACKEND_NAME, "clear_width",
+                                               g_state.runtime.grid_cols),
+                .height = db_checked_u32_to_i32(BACKEND_NAME, "clear_height",
+                                                g_state.runtime.grid_rows),
+            };
+            if (gl3_append_instance(rect, clear->color, clear->color, 0.0F, 0,
+                                    0, count++) == 0) {
+                return SIZE_MAX;
+            }
+            break;
+        }
+        case DB_RENDER_IR_OP_FILL_RECTS: {
+            const db_render_ir_fill_command_t *const fills =
+                (const db_render_ir_fill_command_t *)command;
+            for (uint32_t index = 0U; index < fills->fill_count; index++) {
+                const db_render_ir_fill_t fill =
+                    ir->fills[fills->first_fill + index];
+                if (gl3_append_instance(fill.rect, fill.color, fill.color, 0.0F,
+                                        0, 0, count++) == 0) {
+                    return SIZE_MAX;
+                }
+            }
+            break;
+        }
+        case DB_RENDER_IR_OP_FILL_LINEAR_GRADIENT: {
+            const db_render_ir_linear_gradient_command_t *const gradient =
+                (const db_render_ir_linear_gradient_command_t *)command;
+            db_render_ir_color_t start = gradient->start_color;
+            db_render_ir_color_t end = gradient->end_color;
+            if (gradient->reverse_stops != 0U) {
+                const db_render_ir_color_t swap = start;
+                start = end;
+                end = swap;
+            }
+            if ((command->clip_region == DB_RENDER_IR_INVALID_ID) &&
+                (g_state.presentation.gradient_conformance ==
+                 DB_CONFORMANCE_CONFORMING)) {
+                if (gl3_append_instance(gradient->bounds, start, end, 1.0F,
+                                        gradient->axis_start,
+                                        gradient->axis_end, count++) == 0) {
+                    return SIZE_MAX;
+                }
+                (*semantic_gradients)++;
+                break;
+            }
+            for (int32_t row = gradient->bounds.y;
+                 row < gradient->bounds.y + gradient->bounds.height; row++) {
+                const db_render_ir_rect_t row_rect = {
+                    .x = gradient->bounds.x,
+                    .y = row,
+                    .width = gradient->bounds.width,
+                    .height = 1,
+                };
+                db_gradient_vector_t vector = {0};
+                if (db_gradient_vector_evaluate(gradient, row_rect, row,
+                                                &vector) !=
+                    DB_GRADIENT_VECTOR_OK) {
+                    return SIZE_MAX;
+                }
+                const db_render_ir_color_t color = {
+                    .rgba = {vector.canonical_rgba[0], vector.canonical_rgba[1],
+                             vector.canonical_rgba[2],
+                             vector.canonical_rgba[3]},
+                };
+                if (gl3_append_instance(row_rect, color, color, 0.0F, 0, 0,
+                                        count++) == 0) {
+                    return SIZE_MAX;
+                }
+                (*fallback_instances)++;
+            }
+            break;
+        }
+        }
+    }
+    return count;
+}
+
+static uint32_t draw_ir_fills(const db_render_ir_view_t *first_ir,
+                              const db_render_ir_view_t *second_ir,
+                              uint32_t *semantic_gradients,
+                              uint32_t *fallback_instances) {
+    size_t fill_count = gl3_append_ir_instances(
+        first_ir, 0U, semantic_gradients, fallback_instances);
+    if (fill_count != SIZE_MAX) {
+        fill_count = gl3_append_ir_instances(
+            second_ir, fill_count, semantic_gradients, fallback_instances);
+    }
+    if (fill_count == SIZE_MAX) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "canonical GL3 IR capacity exceeded");
+    }
+    if (fill_count == 0U) {
         return 0U;
     }
     if (db_gl_upload_stream_wait(&g_state.geometry.stream) == 0) {
         DB_RUNTIME_FAIL(BACKEND_NAME,
                         "canonical GL3 geometry stream reuse timed out");
     }
-    const size_t stride = DB_VERTEX_FLOAT_STRIDE;
-    const size_t floats_per_rect = db_checked_mul_size(
-        BACKEND_NAME, "floats_per_rect", (size_t)DB_RECT_VERTEX_COUNT, stride);
-    const size_t capacity = (size_t)g_state.geometry.vertex.draw_vertex_count /
-                            DB_RECT_VERTEX_COUNT;
-    if (blocks.count > capacity) {
-        DB_RUNTIME_FAIL(BACKEND_NAME,
-                        "canonical GL3 geometry capacity exceeded");
-    }
-    for (size_t index = 0U; index < blocks.count; index++) {
-        const db_colored_f64_block_t *const block = &blocks.blocks[index];
-        float rgb[3] = {0};
-        db_rgb_f64_quantize_f16_to_f32_rgb3(block->rgb, rgb);
-        const db_grid_block_t grid_block = {
-            .row_start = block->row_start,
-            .row_count = block->row_count,
-            .col_start = block->col_start,
-            .col_count = block->col_count,
-        };
-        float x0 = 0.0F;
-        float y0 = 0.0F;
-        float x1 = 0.0F;
-        float y1 = 0.0F;
-        db_grid_block_bounds_ndc_for_extent(g_state.runtime.grid_cols,
-                                            g_state.runtime.grid_rows,
-                                            &grid_block, &x0, &y0, &x1, &y1);
-        float *const vertices =
-            &g_state.geometry.vertex.vertices[index * floats_per_rect];
-        db_fill_rect_unit_pos(vertices, x0, y0, x1, y1, stride);
-        db_set_rect_unit_rgb(vertices, stride, DB_VERTEX_POSITION_FLOAT_COUNT,
-                             rgb);
-    }
-    const size_t vertex_count =
-        db_checked_mul_size(BACKEND_NAME, "canonical_vertex_count",
-                            blocks.count, DB_RECT_VERTEX_COUNT);
+    const size_t stride = GL3_INSTANCE_FLOAT_COUNT;
     const size_t float_count = db_checked_mul_size(
-        BACKEND_NAME, "canonical_vertex_float_count", vertex_count, stride);
+        BACKEND_NAME, "canonical_instance_float_count", fill_count, stride);
     const size_t byte_count = db_checked_mul_size(
-        BACKEND_NAME, "canonical_vertex_bytes", float_count, sizeof(float));
-    if (db_gl_upload_stream_write(&g_state.geometry.stream, BACKEND_NAME,
-                                  g_state.geometry.vertex.vertices,
-                                  g_state.geometry.buffers.vbo_bytes, 0U,
-                                  byte_count) == 0) {
+        BACKEND_NAME, "canonical_instance_bytes", float_count, sizeof(float));
+    const size_t instance_offset = GL3_UNIT_QUAD_FLOAT_COUNT * sizeof(float);
+    if (db_gl_upload_stream_write(
+            &g_state.geometry.stream, BACKEND_NAME,
+            &g_state.geometry.vertex.vertices[GL3_UNIT_QUAD_FLOAT_COUNT],
+            g_state.geometry.buffers.vbo_bytes, instance_offset,
+            byte_count) == 0) {
         DB_RUNTIME_FAIL(BACKEND_NAME, "canonical GL3 geometry upload failed");
     }
     gl3_bind_main_vbo_layout();
-    return db_checked_size_to_u32(BACKEND_NAME, "canonical_vertex_count",
-                                  vertex_count);
-}
-
-static uint32_t
-db_gl3_draw_canonical_geometry(db_colored_f64_block_view_t blocks) {
-    const uint32_t vertex_count = db_gl3_upload_canonical_geometry(blocks);
-    if (vertex_count == 0U) {
-        return 0U;
-    }
-    // Presentation damage may leave scissoring enabled. Canonical geometry
-    // already carries exact logical bounds, so the backing draw owns a full
-    // target raster state rather than inheriting presentation clipping.
     db_gl_set_scissor_enabled(0);
-    db_gl_draw_arrays_triangles(0U, vertex_count);
+    const uint32_t instance_count = db_checked_size_to_u32(
+        BACKEND_NAME, "canonical_instance_count", fill_count);
+    if (db_gl_draw_arrays_triangles_instanced(0U, GL3_UNIT_QUAD_VERTEX_COUNT,
+                                              instance_count) == 0) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "canonical GL3 instanced draw failed");
+    }
     db_gl_upload_stream_record_sync(&g_state.geometry.stream);
-    return vertex_count;
+    return instance_count;
 }
 
 static void gl3_refresh_capability_mode(void) {
@@ -239,160 +426,6 @@ static void gl3_refresh_capability_mode(void) {
         sizeof(g_state.telemetry.capability_mode), &mode);
 }
 
-static void destroy_backing_target(const char *cause) {
-    if ((g_state.target.texture != 0U) || (g_state.target.fbo != 0U)) {
-        db_damage_trace_emit_target_lifecycle(&(
-            const db_target_lifecycle_event_t){
-            .backend = DB_DAMAGE_TRACE_BACKEND_GL3,
-            .action = DB_TARGET_LIFECYCLE_DESTROY,
-            .target = "gl3_backing",
-            .target_id = 1U,
-            .generation = g_state.target.generation,
-            .old_width = db_checked_int_to_u32(BACKEND_NAME, "backing_width",
-                                               g_state.target.width),
-            .old_height = db_checked_int_to_u32(BACKEND_NAME, "backing_height",
-                                                g_state.target.height),
-            .format = g_state.target.format,
-            .cause = (cause != NULL) ? cause : "unknown",
-            .valid_before = g_state.target.valid,
-            .valid_after = 0,
-        });
-    }
-    if (g_state.target.fbo != 0U) {
-        db_gl_delete_framebuffers(1, &g_state.target.fbo);
-        g_state.target.fbo = 0U;
-    }
-    db_gl_texture_delete_if_valid(&g_state.target.texture);
-    g_state.target.width = 0;
-    g_state.target.height = 0;
-    g_state.target.valid = 0;
-}
-
-static int ensure_backing_target(int width, int height) {
-    if ((width <= 0) || (height <= 0)) {
-        return 0;
-    }
-    if ((g_state.target.width == width) && (g_state.target.height == height) &&
-        (g_state.target.texture != 0U) && (g_state.target.fbo != 0U)) {
-        return 0;
-    }
-    const uint32_t old_width =
-        (g_state.target.width > 0) ? (uint32_t)g_state.target.width : 0U;
-    const uint32_t old_height =
-        (g_state.target.height > 0) ? (uint32_t)g_state.target.height : 0U;
-    const int had_target =
-        DB_BOOL((g_state.target.texture != 0U) || (g_state.target.fbo != 0U));
-    destroy_backing_target("resize");
-    const uint32_t texture_width =
-        db_checked_int_to_u32(BACKEND_NAME, "backing_width", width);
-    const uint32_t texture_height =
-        db_checked_int_to_u32(BACKEND_NAME, "backing_height", height);
-    const int texture_created =
-        (g_state.target.format == DB_PIXEL_FORMAT_RGBA16F)
-            ? db_gl_texture_create_rgba16f(&g_state.target.texture,
-                                           texture_width, texture_height, NULL)
-            : db_gl_texture_create_rgba8(&g_state.target.texture, texture_width,
-                                         texture_height, NULL);
-    if (texture_created == 0) {
-        runtime_failf("failed to create persistent backing texture");
-    }
-    db_gl_gen_framebuffers(1, &g_state.target.fbo);
-    db_gl_bind_framebuffer(GL_FRAMEBUFFER, g_state.target.fbo);
-    db_gl_framebuffer_texture_2d(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                                 GL_TEXTURE_2D, g_state.target.texture, 0);
-    if (db_gl_check_framebuffer_status(GL_FRAMEBUFFER) !=
-        GL_FRAMEBUFFER_COMPLETE) {
-        runtime_failf("persistent backing framebuffer incomplete");
-    }
-    g_state.target.width = width;
-    g_state.target.height = height;
-    g_state.target.generation++;
-    db_damage_trace_emit_target_lifecycle(&(const db_target_lifecycle_event_t){
-        .backend = DB_DAMAGE_TRACE_BACKEND_GL3,
-        .action = (had_target != 0) ? DB_TARGET_LIFECYCLE_RECREATE
-                                    : DB_TARGET_LIFECYCLE_CREATE,
-        .target = "gl3_backing",
-        .target_id = 1U,
-        .generation = g_state.target.generation,
-        .old_width = old_width,
-        .old_height = old_height,
-        .new_width = texture_width,
-        .new_height = texture_height,
-        .format = g_state.target.format,
-        .cause = (had_target != 0) ? "resize" : "initial_target",
-        .valid_before = 0,
-        .valid_after = 0,
-    });
-    return 1;
-}
-
-static void gl3_restore_raster_seed(const db_frame_rebuild_seed_t *seed) {
-    if ((seed == NULL) || (seed->kind != DB_FRAME_REBUILD_SEED_RASTER) ||
-        (seed->raster.pixels == NULL) ||
-        (seed->raster.pixel_width != (uint32_t)g_state.target.width) ||
-        (seed->raster.pixel_height != (uint32_t)g_state.target.height) ||
-        (seed->raster.format != g_state.target.format)) {
-        runtime_failf("invalid canonical raster rebuild seed");
-    }
-    db_gl_active_texture(GL_TEXTURE0);
-    db_gl_texture_bind_2d(g_state.target.texture);
-    if (seed->raster.format == DB_PIXEL_FORMAT_RGBA16F) {
-        db_gl_texture_sub_image_2d_rgba16f(
-            0U, 0U, seed->raster.pixel_width, seed->raster.pixel_height,
-            (const uint16_t *)seed->raster.pixels);
-    } else {
-        db_gl_texture_sub_image_2d_rgba(0U, 0U, seed->raster.pixel_width,
-                                        seed->raster.pixel_height,
-                                        (const uint8_t *)seed->raster.pixels);
-    }
-    db_gl_texture_bind_2d(0U);
-}
-
-static unsigned int compile_shader(unsigned int shader_type,
-                                   const char *source) {
-    unsigned int shader = db_gl_create_shader(shader_type);
-    db_gl_shader_source_single(shader, source);
-    db_gl_compile_shader(shader);
-
-    int ok = 0;
-    db_gl_get_shader_iv(shader, GL_COMPILE_STATUS, &ok);
-    if (ok == GL_FALSE) {
-        char log_msg[SHADER_LOG_MSG_CAPACITY];
-        int msg_len = 0;
-        db_gl_get_shader_info_log(shader, sizeof(log_msg), &msg_len, log_msg);
-        const int msg_len_i32 =
-            db_checked_int_to_i32(BACKEND_NAME, "shader_log_msg_len", msg_len);
-        runtime_failf("Shader compile failed (%u): %.*s", (unsigned)shader_type,
-                      msg_len_i32, log_msg);
-    }
-    return shader;
-}
-
-static unsigned int build_program(const char *vertex_source,
-                                  const char *fragment_source) {
-    unsigned int vert = compile_shader(GL_VERTEX_SHADER, vertex_source);
-    unsigned int frag = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
-
-    unsigned int program = db_gl_create_program();
-    db_gl_attach_shader(program, vert);
-    db_gl_attach_shader(program, frag);
-    db_gl_link_program(program);
-    db_gl_delete_shader(vert);
-    db_gl_delete_shader(frag);
-
-    int ok = 0;
-    db_gl_get_program_iv(program, GL_LINK_STATUS, &ok);
-    if (ok == GL_FALSE) {
-        char log_msg[SHADER_LOG_MSG_CAPACITY];
-        int msg_len = 0;
-        db_gl_get_program_info_log(program, sizeof(log_msg), &msg_len, log_msg);
-        const int msg_len_i32 =
-            db_checked_int_to_i32(BACKEND_NAME, "program_log_msg_len", msg_len);
-        runtime_failf("Program link failed: %.*s", msg_len_i32, log_msg);
-    }
-    return program;
-}
-
 static int db_init_vertices_for_mode(
     const db_renderer_runtime_contract_t *resolved_runtime) {
     if (resolved_runtime == NULL) {
@@ -403,11 +436,15 @@ static int db_init_vertices_for_mode(
     db_gl_vertex_init_t init_state = {0};
     if (!db_init_vertices_for_execution_config(BACKEND_NAME, &init_state,
                                                &runtime_state,
-                                               DB_VERTEX_FLOAT_STRIDE)) {
+                                               GL3_INSTANCE_FLOAT_COUNT)) {
         return 0;
     }
 
     g_state.geometry.vertex = init_state;
+    static const float unit_quad[GL3_UNIT_QUAD_FLOAT_COUNT] = {
+        0.0F, 0.0F, 1.0F, 0.0F, 1.0F, 1.0F, 0.0F, 0.0F, 1.0F, 1.0F, 0.0F, 1.0F,
+    };
+    memcpy(g_state.geometry.vertex.vertices, unit_quad, sizeof(unit_quad));
     g_state.runtime = runtime_state;
     return 1;
 }
@@ -418,6 +455,23 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
         runtime_failf("missing resolved runtime");
     }
     g_state.target.format = resolved_runtime->format.surface_pixel_format;
+    g_state.diagnostics = resolved_runtime->diagnostics;
+    if (g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_SEMANTIC) {
+        g_state.presentation.gradient_conformance = DB_CONFORMANCE_CONFORMING;
+        g_state.presentation.gradient_implementation =
+            DB_GRADIENT_IMPLEMENTATION_SEMANTIC;
+        g_state.presentation.qualification_source =
+            DB_QUALIFICATION_SOURCE_DIAGNOSTIC;
+        g_state.presentation.qualification_reason = "diagnostic_forced";
+    } else if (g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_ROW_FILL) {
+        g_state.presentation.gradient_conformance =
+            DB_CONFORMANCE_NONCONFORMING;
+        g_state.presentation.gradient_implementation =
+            DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES;
+        g_state.presentation.qualification_source =
+            DB_QUALIFICATION_SOURCE_DIAGNOSTIC;
+        g_state.presentation.qualification_reason = "diagnostic_forced";
+    }
     if (db_init_vertices_for_mode(resolved_runtime) == 0) {
         runtime_failf("failed to allocate benchmark vertex buffers");
     }
@@ -426,7 +480,7 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
     const size_t vertex_float_count =
         db_checked_mul_size(BACKEND_NAME, "vertex_float_count",
                             (size_t)g_state.geometry.vertex.draw_vertex_count,
-                            DB_VERTEX_FLOAT_STRIDE);
+                            GL3_INSTANCE_FLOAT_COUNT);
     g_state.geometry.buffers.vbo_bytes = db_checked_mul_size(
         BACKEND_NAME, "vertex_buffer_bytes", vertex_float_count, sizeof(float));
     db_gl_geometry_stream_init_result_t stream_init = {0};
@@ -434,7 +488,7 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
             &g_state.geometry.stream, &stream_init, BACKEND_NAME,
             g_state.geometry.buffers.vbo_bytes,
             g_state.geometry.vertex.vertices, g_state.geometry.vertex.vertices,
-            g_state.geometry.buffers.vbo_bytes, 1, 0) == 0) {
+            GL3_UNIT_QUAD_FLOAT_COUNT * sizeof(float), 1, 0) == 0) {
         runtime_failf("failed to initialize GL3 vertex stream");
     }
     if (g_state.geometry.stream.buffer == 0U) {
@@ -446,7 +500,10 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
     }
 
     db_gl_enable_vertex_attrib_array(ATTR_POSITION_LOC);
+    db_gl_enable_vertex_attrib_array(ATTR_RECT_LOC);
     db_gl_enable_vertex_attrib_array(ATTR_COLOR_LOC);
+    db_gl_enable_vertex_attrib_array(ATTR_END_COLOR_LOC);
+    db_gl_enable_vertex_attrib_array(ATTR_GRADIENT_LOC);
     gl3_bind_main_vbo_layout();
 
     gl3_refresh_capability_mode();
@@ -463,10 +520,10 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
         g_state.runtime.backbuffer_replay_enabled, "geometry_stream");
     db_gl_upload_stream_log_selection(&g_state.geometry.stream, BACKEND_NAME,
                                       "rectangle_geometry");
-    g_state.presentation.draw_program =
-        build_program(db_gl3_rect_vert_source, db_gl3_rect_frag_source);
-    g_state.presentation.present_program =
-        build_program(db_gl3_present_vert_source, db_gl3_present_frag_source);
+    g_state.presentation.draw_program = db_gl3_build_program(
+        db_gl3_ir_execute_vert_source, db_gl3_ir_execute_frag_source);
+    g_state.presentation.present_program = db_gl3_build_program(
+        db_gl3_presentation_vert_source, db_gl3_presentation_frag_source);
     g_state.presentation.sampler_location = db_gl_get_uniform_location(
         g_state.presentation.present_program, "backing_texture");
     g_state.presentation.hdr_output_location = db_gl_get_uniform_location(
@@ -484,8 +541,9 @@ void db_gl3_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
         BACKEND_NAME, plan->grid_cols, plan->grid_rows, &viewport_width_px,
         &viewport_height_px, &g_state.presentation.viewport.last_viewport_w,
         &g_state.presentation.viewport.last_viewport_h);
-    if (plan->geometry_overflowed != 0) {
-        DB_RUNTIME_FAIL(BACKEND_NAME, "canonical geometry emitter overflow");
+    if ((plan->update_metadata.status != DB_RENDER_IR_OK) ||
+        (plan->rebuild_metadata.status != DB_RENDER_IR_OK)) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "canonical render IR is invalid");
     }
 
     int presentation_fbo = 0;
@@ -497,55 +555,70 @@ void db_gl3_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
         BACKEND_NAME, "logical_raster_width", plan->pixel_width);
     const int backing_height = db_checked_u32_to_i32(
         BACKEND_NAME, "logical_raster_height", plan->pixel_height);
-    const int recreated = ensure_backing_target(backing_width, backing_height);
+    const int recreated =
+        db_gl3_target_ensure(&g_state.target, backing_width, backing_height);
     db_damage_trace_emit_frame_plan(DB_DAMAGE_TRACE_BACKEND_GL3, "gl3_backing",
                                     g_state.target.generation, plan);
     const int rebuild =
         DB_BOOL((recreated != 0) || (g_state.target.valid == 0) ||
                 (plan->rebuild_required != 0));
     const int use_raster_seed =
-        DB_BOOL((rebuild != 0) &&
-                (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_RASTER));
+        DB_BOOL((rebuild != 0) && (plan->external_bindings.count > 0U));
     if (use_raster_seed != 0) {
-        gl3_restore_raster_seed(&plan->rebuild_seed);
+        db_gl3_target_restore(&g_state.target, plan);
     }
-    const db_colored_f64_block_view_t draw_view =
-        ((rebuild != 0) &&
-         (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_GEOMETRY))
-            ? plan->rebuild_seed.geometry
-            : plan->geometry.current_blocks;
-    if ((rebuild != 0) && (use_raster_seed == 0) && (draw_view.count == 0U)) {
+    if ((rebuild != 0) && (use_raster_seed == 0) &&
+        (plan->rebuild_ir.fill_count == 0U) &&
+        (db_render_ir_final_damage_covers(&plan->update_ir, plan->grid_cols,
+                                          plan->grid_rows) == 0)) {
         runtime_failf(
             "persistent backing rebuild has no authoritative geometry");
     }
     db_gl_bind_framebuffer(GL_FRAMEBUFFER, g_state.target.fbo);
     db_gl_set_viewport_px(backing_width, backing_height);
     db_gl_use_program(g_state.presentation.draw_program);
-    const uint32_t draw_vertices = db_gl3_draw_canonical_geometry(draw_view);
-    (void)db_damage_trace_emit_colored_grid(
-        &(const db_damage_trace_event_t){
-            .frame_index = plan->frame_index,
-            .backend = DB_DAMAGE_TRACE_BACKEND_GL3,
-            .stage = DB_DAMAGE_TRACE_STAGE_RENDERER_WRITE,
-            .operation = (rebuild != 0) ? DB_DAMAGE_TRACE_OP_REBUILD
-                                        : DB_DAMAGE_TRACE_OP_INCREMENTAL,
-            .source = DB_DAMAGE_TRACE_BUFFER_LOGICAL_PLAN,
-            .destination = DB_DAMAGE_TRACE_BUFFER_GL_FBO,
-            .space = DB_DAMAGE_TRACE_SPACE_GRID,
-            .width = plan->grid_cols,
-            .height = plan->grid_rows,
-            .pixel_format = g_state.target.format,
-            .transfer_size_bytes = db_checked_mul_size(
-                BACKEND_NAME, "trace_vertex_bytes",
-                db_checked_mul_size(BACKEND_NAME, "trace_vertex_float_count",
-                                    (size_t)draw_vertices,
-                                    DB_VERTEX_FLOAT_STRIDE),
-                sizeof(float)),
-            .result = DB_DAMAGE_TRACE_RESULT_EXECUTED,
-            .target = "gl3_backing",
-            .target_generation = g_state.target.generation,
-        },
-        draw_view.blocks, draw_view.count);
+    const db_render_ir_view_t *const rebuild_draw_ir =
+        ((rebuild != 0) && (use_raster_seed == 0)) ? &plan->rebuild_ir : NULL;
+    uint32_t semantic_gradients = 0U;
+    uint32_t fallback_instances = 0U;
+    const uint32_t total_gradient_commands =
+        plan->update_metadata.gradient_count +
+        ((rebuild != 0) ? plan->rebuild_metadata.gradient_count : 0U);
+    if ((total_gradient_commands > 0U) &&
+        (g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_AUTO)) {
+        gl3_resolve_gradient_qualification();
+    }
+    uint32_t draw_instances =
+        draw_ir_fills(rebuild_draw_ir, &plan->update_ir, &semantic_gradients,
+                      &fallback_instances);
+    if ((total_gradient_commands > 0U) && (rebuild != 0) &&
+        (g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_SEMANTIC)) {
+        (void)db_gl3_qualify_current_target(
+            plan, g_state.target.format, &g_state.hash.scratch,
+            g_state.diagnostics.gradient_divergence_path);
+    }
+    (void)db_damage_trace_emit(&(const db_damage_trace_event_t){
+        .frame_index = plan->frame_index,
+        .backend = DB_DAMAGE_TRACE_BACKEND_GL3,
+        .stage = DB_DAMAGE_TRACE_STAGE_RENDERER_WRITE,
+        .operation = (rebuild != 0) ? DB_DAMAGE_TRACE_OP_REBUILD
+                                    : DB_DAMAGE_TRACE_OP_INCREMENTAL,
+        .source = DB_DAMAGE_TRACE_BUFFER_LOGICAL_PLAN,
+        .destination = DB_DAMAGE_TRACE_BUFFER_GL_FBO,
+        .space = DB_DAMAGE_TRACE_SPACE_GRID,
+        .width = plan->grid_cols,
+        .height = plan->grid_rows,
+        .pixel_format = g_state.target.format,
+        .transfer_size_bytes = db_checked_mul_size(
+            BACKEND_NAME, "trace_vertex_bytes",
+            db_checked_mul_size(BACKEND_NAME, "trace_instance_float_count",
+                                (size_t)draw_instances,
+                                GL3_INSTANCE_FLOAT_COUNT),
+            sizeof(float)),
+        .result = DB_DAMAGE_TRACE_RESULT_EXECUTED,
+        .target = "gl3_backing",
+        .target_generation = g_state.target.generation,
+    });
     g_state.target.valid = 1;
     if (rebuild != 0) {
         db_damage_trace_emit_target_lifecycle(
@@ -579,7 +652,42 @@ void db_gl3_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
     db_gl_draw_arrays_triangles(0U, 3U);
     db_gl_texture_bind_2d(0U);
 
-    const uint32_t work_count = draw_vertices / DB_RECT_VERTEX_COUNT;
+    const uint32_t work_count = draw_instances;
+    const uint32_t gradient_commands = total_gradient_commands;
+    const uint32_t solid_commands =
+        plan->update_metadata.solid_command_count +
+        ((rebuild != 0) ? plan->rebuild_metadata.solid_command_count : 0U);
+    db_render_operation_path_t gradient_path = DB_RENDER_OPERATION_NONE;
+    if (semantic_gradients > 0U) {
+        gradient_path = DB_RENDER_OPERATION_GL3_SEMANTIC_GRADIENT;
+    } else if (gradient_commands > 0U) {
+        gradient_path = DB_RENDER_OPERATION_GL3_ROW_FILL;
+    }
+    g_state.telemetry.execution = (db_render_execution_report_t){
+        .target_strategy = DB_RENDER_TARGET_GL3_PERSISTENT_FBO,
+        .solid_path = DB_RENDER_OPERATION_GL3_INSTANCED_SOLID,
+        .gradient_path = gradient_path,
+        .solid_commands = solid_commands,
+        .gradient_commands = gradient_commands,
+        .solid_draws = DB_BOOL(draw_instances > 0U),
+        .gradient_draws = DB_BOOL(gradient_commands > 0U),
+        .fallback_instances = fallback_instances,
+        .gradient_implementation =
+            (gradient_commands > 0U)
+                ? g_state.presentation.gradient_implementation
+                : DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
+        .qualification_source = g_state.presentation.qualification_source,
+        .cache_status = g_state.presentation.cache_status,
+        .qualification_lane_count =
+            DB_BOOL(g_state.presentation.qualification_resolved != 0),
+        .qualification_reason = g_state.presentation.qualification_reason,
+        .qualified = DB_BOOL(
+            (gradient_commands == 0U) ||
+            ((g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_AUTO) &&
+             (g_state.presentation.gradient_qualified != 0))),
+        .diagnostic_forced =
+            DB_BOOL(g_state.diagnostics.gl3_gradient != DB_GL3_GRADIENT_AUTO),
+    };
     const int full_draw = rebuild;
     db_renderer_record_draw_stats_for_work(
         &g_state.telemetry.frame.full_draw_frames,
@@ -596,7 +704,7 @@ void db_gl3_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
 void db_gl3_shutdown(void) {
     db_gl_upload_stream_shutdown(&g_state.geometry.stream);
     db_gl_hash_scratch_release(&g_state.hash.scratch);
-    destroy_backing_target("shutdown");
+    db_gl3_target_destroy(&g_state.target, "shutdown");
     db_gl_delete_program(g_state.presentation.present_program);
     db_gl_delete_program(g_state.presentation.draw_program);
     db_gl_delete_vertex_arrays(1, &g_state.geometry.vao);
@@ -619,4 +727,10 @@ uint64_t db_gl3_state_hash(void) { return g_state.telemetry.frame.state_hash; }
 
 void db_gl3_draw_stats(db_renderer_draw_path_stats_t *stats) {
     db_renderer_copy_draw_path_stats(&g_state.telemetry.frame, stats);
+}
+
+void db_gl3_execution_report(db_render_execution_report_t *report) {
+    if (report != NULL) {
+        *report = g_state.telemetry.execution;
+    }
 }

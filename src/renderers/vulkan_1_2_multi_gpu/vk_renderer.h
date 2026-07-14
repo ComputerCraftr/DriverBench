@@ -36,6 +36,7 @@ uint64_t db_vk_state_hash(void);
 uint64_t db_vk_output_hash(void);
 void db_vk_set_output_hash_enabled(int enabled);
 void db_vk_draw_stats(db_renderer_draw_path_stats_t *stats);
+void db_vk_execution_report(db_render_execution_report_t *report);
 void db_vk_set_present_metrics(double frame_ema_ms, double jitter_ema_ms,
                                double p50_ms, double p95_ms, double p99_ms,
                                uint64_t retries);

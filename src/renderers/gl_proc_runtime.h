@@ -26,6 +26,9 @@ typedef void (*db_gl_delete_textures_fn_t)(GLsizei count,
 typedef void (*db_gl_disable_client_state_fn_t)(GLenum cap);
 typedef void (*db_gl_disable_fn_t)(GLenum cap);
 typedef void (*db_gl_draw_arrays_fn_t)(GLenum mode, GLint first, GLsizei count);
+typedef void (*db_gl_draw_arrays_instanced_fn_t)(GLenum mode, GLint first,
+                                                 GLsizei count,
+                                                 GLsizei instance_count);
 typedef void (*db_gl_blit_framebuffer_fn_t)(GLint src_x0, GLint src_y0,
                                             GLint src_x1, GLint src_y1,
                                             GLint dst_x0, GLint dst_y0,
@@ -124,6 +127,7 @@ typedef void (*db_gl_vertex_attrib_pointer_fn_t)(GLuint index, GLint size,
                                                  GLboolean normalized,
                                                  GLsizei stride,
                                                  const void *pointer);
+typedef void (*db_gl_vertex_attrib_divisor_fn_t)(GLuint index, GLuint divisor);
 typedef void (*db_gl_viewport_fn_t)(GLint x_px, GLint y_px, GLsizei width,
                                     GLsizei height);
 typedef void (*db_gl_scissor_fn_t)(GLint x_px, GLint y_px, GLsizei width,
@@ -152,6 +156,7 @@ typedef struct {
     db_gl_disable_client_state_fn_t disable_client_state;
     db_gl_disable_fn_t disable;
     db_gl_draw_arrays_fn_t draw_arrays;
+    db_gl_draw_arrays_instanced_fn_t draw_arrays_instanced;
     db_gl_enable_client_state_fn_t enable_client_state;
     db_gl_enable_fn_t enable;
     db_gl_enable_vertex_attrib_array_fn_t enable_vertex_attrib_array;
@@ -190,6 +195,7 @@ typedef struct {
     db_gl_unmap_buffer_fn_t unmap_buffer;
     db_gl_use_program_fn_t use_program;
     db_gl_vertex_attrib_pointer_fn_t vertex_attrib_pointer;
+    db_gl_vertex_attrib_divisor_fn_t vertex_attrib_divisor;
     db_gl_vertex_pointer_fn_t vertex_pointer;
     db_gl_viewport_fn_t viewport;
     db_gl_scissor_fn_t scissor;

@@ -10,10 +10,6 @@ db_test_parse_list_var(TEST_FORBIDDEN_PATTERNS)
 db_test_run_command(combined_output skip_reason run_status "${TEST_ARGS}"
                     "Output-expectation run failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(
-        STATUS
-            "Output-expectation test skipped: ${skip_reason}\n${combined_output}"
-    )
     return()
 endif()
 

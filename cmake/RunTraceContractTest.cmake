@@ -14,7 +14,6 @@ db_test_parse_pipe_list_var(TEST_TRACE_FORBIDDEN)
 db_test_run_command(output skip_reason status "${TEST_ARGS}"
                     "Trace-contract run failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(STATUS "Trace-contract test skipped: ${skip_reason}")
     return()
 endif()
 

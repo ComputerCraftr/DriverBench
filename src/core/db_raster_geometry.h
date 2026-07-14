@@ -14,12 +14,12 @@ static inline void db_grid_tile_bounds_ndc_for_extent(uint32_t cols,
                                                       float *x1, float *y1) {
     const uint32_t row = tile_index / cols;
     const uint32_t col = tile_index % cols;
-    const double inv_cols = 1.0 / (double)cols;
-    const double inv_rows = 1.0 / (double)rows;
-    *x0 = db_double_to_f32((2.0 * (double)col * inv_cols) - 1.0);
-    *x1 = db_double_to_f32((2.0 * (double)(col + 1U) * inv_cols) - 1.0);
-    *y1 = db_double_to_f32(1.0 - (2.0 * (double)row * inv_rows));
-    *y0 = db_double_to_f32(1.0 - (2.0 * (double)(row + 1U) * inv_rows));
+    const double inv_cols = 1.0 / DB_TO_F64(cols);
+    const double inv_rows = 1.0 / DB_TO_F64(rows);
+    *x0 = db_double_to_f32((2.0 * DB_TO_F64(col) * inv_cols) - 1.0);
+    *x1 = db_double_to_f32((2.0 * DB_TO_F64(col + 1U) * inv_cols) - 1.0);
+    *y1 = db_double_to_f32(1.0 - (2.0 * DB_TO_F64(row) * inv_rows));
+    *y0 = db_double_to_f32(1.0 - (2.0 * DB_TO_F64(row + 1U) * inv_rows));
 }
 
 static inline void
@@ -34,12 +34,14 @@ db_grid_block_bounds_ndc_for_extent(uint32_t cols, uint32_t rows,
         db_grid_block_col_end_or_fail("raster_col_end", block);
     const uint32_t row_end =
         db_grid_block_row_end_or_fail("raster_row_end", block);
-    const double inv_cols = 1.0 / (double)cols;
-    const double inv_rows = 1.0 / (double)rows;
-    *x0 = db_double_to_f32((2.0 * (double)block->col_start * inv_cols) - 1.0);
-    *x1 = db_double_to_f32((2.0 * (double)col_end * inv_cols) - 1.0);
-    *y1 = db_double_to_f32(1.0 - (2.0 * (double)block->row_start * inv_rows));
-    *y0 = db_double_to_f32(1.0 - (2.0 * (double)row_end * inv_rows));
+    const double inv_cols = 1.0 / DB_TO_F64(cols);
+    const double inv_rows = 1.0 / DB_TO_F64(rows);
+    *x0 =
+        db_double_to_f32((2.0 * DB_TO_F64(block->col_start) * inv_cols) - 1.0);
+    *x1 = db_double_to_f32((2.0 * DB_TO_F64(col_end) * inv_cols) - 1.0);
+    *y1 =
+        db_double_to_f32(1.0 - (2.0 * DB_TO_F64(block->row_start) * inv_rows));
+    *y0 = db_double_to_f32(1.0 - (2.0 * DB_TO_F64(row_end) * inv_rows));
 }
 
 static inline void db_fill_rect_unit_pos(float *unit, float x0, float y0,

@@ -1,3 +1,4 @@
+#include "vk_diagnostics.h"
 #include "vk_init_internal.h"
 #include "vk_internal.h"
 #include "vk_state_internal.h"
@@ -12,6 +13,7 @@
 #include "../../core/db_geometry.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_render_ir.h"
 #include "core/db_render_types.h"
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
@@ -170,28 +172,24 @@ vk_group_render_lane(const db_frame_plan_t *plan,
     }
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       g_state.pipelines.pipeline);
-    VkDeviceSize offset = 0U;
-    vkCmdBindVertexBuffers(command_buffer, 0U, 1U,
-                           &g_state.pipelines.vertex_buffer, &offset);
+    const VkBuffer buffers[2] = {g_state.pipelines.vertex_buffer,
+                                 g_state.pipelines.instance_buffer};
+    const VkDeviceSize offsets[2] = {0U, 0U};
+    vkCmdBindVertexBuffers(command_buffer, 0U, 2U, buffers, offsets);
     const VkViewport viewport = {
         .width = db_u32_to_f32(g_state.backing.extent.width),
         .height = db_u32_to_f32(g_state.backing.extent.height),
         .maxDepth = 1.0F,
     };
     vkCmdSetViewport(command_buffer, 0U, 1U, &viewport);
-    const db_colored_f64_block_view_t geometry =
-        (plan->rebuild_seed.kind == DB_FRAME_REBUILD_SEED_GEOMETRY)
-            ? plan->rebuild_seed.geometry
-            : plan->geometry.current_blocks;
+    const size_t geometry_count = db_vk_frame_rect_count(plan);
     uint32_t lane_work = 0U;
     uint32_t lane_tiles[DB_VK_MAX_LANES] = {0};
     uint32_t total_tiles = 0U;
     uint8_t owner_enabled[DB_VK_MAX_LANES] = {0};
     owner_enabled[lane_index] = 1U;
-    db_vk_draw_payload_cache_t cache = {0};
     const db_vk_owner_draw_ctx_t draw_context = {
         .cmd = command_buffer,
-        .layout = g_state.pipelines.pipeline_layout,
         .extent = g_state.backing.extent,
         .have_group = 1,
         .active_gpu_count =
@@ -208,7 +206,6 @@ vk_group_render_lane(const db_frame_plan_t *plan,
         .owner_enabled = owner_enabled,
         .grid_rows = plan->grid_rows,
         .grid_cols = plan->grid_cols,
-        .payload_cache = &cache,
     };
     for (size_t assignment_index = 0U;
          assignment_index < execution_plan->assignment_count;
@@ -221,27 +218,25 @@ vk_group_render_lane(const db_frame_plan_t *plan,
         }
         const db_vk_present_piece_t *const piece =
             &execution_plan->pieces[assignment->piece_first];
-        if (piece->geometry_first >= geometry.count) {
+        if (piece->instance_first >= geometry_count) {
             continue;
         }
-        const db_colored_f64_block_t *const block =
-            &geometry.blocks[piece->geometry_first];
-        float color[3] = {0};
-        db_rgb_f64_quantize_f16_to_f32_rgb3(block->rgb, color);
-        const db_grid_block_t grid_block = {
-            .row_start = block->row_start,
-            .row_count = block->row_count,
-            .col_start = block->col_start,
-            .col_count = block->col_count,
-        };
+        db_grid_block_t grid_block = {0};
+        if (db_render_ir_rect_to_grid_block(piece->logical_rect,
+                                            plan->grid_cols, plan->grid_rows,
+                                            &grid_block) == 0) {
+            DB_RUNTIME_FAIL(BACKEND_NAME, "invalid device-group IR rectangle");
+        }
         const uint32_t work = db_grid_block_span_units_or_fail(
             "device_group_piece_work", &grid_block);
         db_vk_draw_owner_grid_row_block(
             &draw_context, &(const db_vk_grid_row_block_draw_req_t){
                                .span_units = work,
                                .owner = lane_index,
+                               .first_instance = piece->instance_first,
+                               .instance_count = piece->instance_count,
+                               .scissor = piece->destination_rect,
                                .block = grid_block,
-                               .payload = {.color = color},
                            });
         lane_work += work;
     }

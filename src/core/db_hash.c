@@ -15,16 +15,31 @@
 static _Thread_local uint8_t *g_hash_canonical_bytes = NULL;
 static _Thread_local size_t g_hash_canonical_capacity = 0U;
 
-static void db_hash_image_size_or_fail(uint32_t width, uint32_t height,
-                                       size_t bytes_per_pixel,
-                                       size_t *out_row_bytes,
-                                       size_t *out_image_bytes) {
-    const size_t row_bytes = db_checked_mul_size(
-        "db_hash", "canonical_row_bytes", (size_t)width, bytes_per_pixel);
-    const size_t image_bytes = db_checked_mul_size(
-        "db_hash", "canonical_image_bytes", row_bytes, (size_t)height);
-    *out_row_bytes = row_bytes;
-    *out_image_bytes = image_bytes;
+static int db_hash_image_size(uint32_t width, uint32_t height,
+                              size_t bytes_per_pixel, size_t *out_row_bytes,
+                              size_t *out_image_bytes) {
+    if ((out_row_bytes == NULL) || (out_image_bytes == NULL) ||
+        (db_try_mul_size((size_t)width, bytes_per_pixel, out_row_bytes) == 0) ||
+        (db_try_mul_size(*out_row_bytes, (size_t)height, out_image_bytes) ==
+         0)) {
+        return 0;
+    }
+    return 1;
+}
+
+static size_t db_hash_source_layout_size(db_pixel_format_t format,
+                                         uint32_t width, uint32_t height,
+                                         size_t stride_bytes) {
+    const size_t pixel_bytes = db_pixel_format_bytes_per_pixel(format);
+    size_t row_bytes = 0U;
+    size_t source_bytes = 0U;
+    if ((pixel_bytes == 0U) ||
+        (db_try_mul_size((size_t)width, pixel_bytes, &row_bytes) == 0) ||
+        (db_try_strided_size((size_t)height, stride_bytes, row_bytes,
+                             &source_bytes) == 0)) {
+        return 0U;
+    }
+    return source_bytes;
 }
 
 static inline uint8_t *db_hash_reserve_canonical_bytes(size_t bytes) {
@@ -37,6 +52,28 @@ static inline uint8_t *db_hash_reserve_canonical_bytes(size_t bytes) {
         bytes, sizeof(uint8_t), DB_CACHELINE_ALIGNMENT_BYTES, 0U, "db_hash",
         "canonical_bytes");
     return g_hash_canonical_bytes;
+}
+
+static void db_hash_dump_bytes_to_path(const char *path, const void *bytes,
+                                       size_t byte_count) {
+    if ((path == NULL) || (path[0] == '\0') || (bytes == NULL)) {
+        return;
+    }
+    FILE *const dump = fopen(path, "wb");
+    if (dump == NULL) {
+        return;
+    }
+    const size_t written = fwrite(bytes, 1U, byte_count, dump);
+    const int close_result = fclose(dump);
+    if ((written != byte_count) || (close_result != 0)) {
+        (void)remove(path);
+    }
+}
+
+static void db_hash_dump_bytes_from_environment(const char *variable,
+                                                const void *bytes,
+                                                size_t byte_count) {
+    db_hash_dump_bytes_to_path(getenv(variable), bytes, byte_count);
 }
 
 uint64_t db_fnv1a64_extend(uint64_t hash, const void *data, size_t size) {
@@ -64,9 +101,15 @@ uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
     }
     size_t row_bytes = 0U;
     size_t packed_bytes = 0U;
-    db_hash_image_size_or_fail(width, height, DB_RGBA8_BYTES_PER_PIXEL,
-                               &row_bytes, &packed_bytes);
+    if (db_hash_image_size(width, height, DB_RGBA8_BYTES_PER_PIXEL, &row_bytes,
+                           &packed_bytes) == 0) {
+        return 0U;
+    }
     if (stride_bytes < row_bytes) {
+        return 0U;
+    }
+    if (db_hash_source_layout_size(DB_PIXEL_FORMAT_RGBA8, width, height,
+                                   stride_bytes) == 0U) {
         return 0U;
     }
 
@@ -105,11 +148,17 @@ uint64_t db_hash_sdr_framebuffer_rgba8_canonical(
     if (stride_bytes < framebuffer_row_bytes) {
         return 0U;
     }
+    if (db_hash_source_layout_size(DB_PIXEL_FORMAT_RGBA8, framebuffer_width,
+                                   framebuffer_height, stride_bytes) == 0U) {
+        return 0U;
+    }
     size_t canonical_row_bytes = 0U;
     size_t canonical_bytes = 0U;
-    db_hash_image_size_or_fail(canonical_width, canonical_height,
-                               DB_RGBA8_BYTES_PER_PIXEL, &canonical_row_bytes,
-                               &canonical_bytes);
+    if (db_hash_image_size(canonical_width, canonical_height,
+                           DB_RGBA8_BYTES_PER_PIXEL, &canonical_row_bytes,
+                           &canonical_bytes) == 0) {
+        return 0U;
+    }
     uint8_t *const canonical = db_hash_reserve_canonical_bytes(canonical_bytes);
     const uint8_t *const source = (const uint8_t *)pixels;
     for (uint32_t y = 0U; y < canonical_height; y++) {
@@ -152,15 +201,21 @@ uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
     }
     size_t row_bytes = 0U;
     size_t packed_bytes = 0U;
-    db_hash_image_size_or_fail(width, height, DB_RGBA16F_BYTES_PER_PIXEL,
-                               &row_bytes, &packed_bytes);
+    if (db_hash_image_size(width, height, DB_RGBA16F_BYTES_PER_PIXEL,
+                           &row_bytes, &packed_bytes) == 0) {
+        return 0U;
+    }
     if (stride_bytes < row_bytes) {
+        return 0U;
+    }
+    if (db_hash_source_layout_size(DB_PIXEL_FORMAT_RGBA16F, width, height,
+                                   stride_bytes) == 0U) {
         return 0U;
     }
 
     if ((rows_bottom_to_top == 0) && (stride_bytes == row_bytes)) {
-        return db_fnv1a64_tree((const void *)pixels, packed_bytes,
-                               DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
+        return db_fnv1a64_tree(pixels, packed_bytes, DB_U32_SALT_ORIGIN_Y,
+                               DB_FNV1A64_OFFSET);
     }
 
     const uint8_t *src_bytes = (const uint8_t *)pixels;
@@ -173,9 +228,8 @@ uint64_t db_hash_rgba16f_pixels_canonical(const uint16_t *pixels,
         const size_t dst_offset = (size_t)row * row_bytes;
         memcpy(canonical_bytes + dst_offset, src_bytes + src_offset, row_bytes);
     }
-    const uint64_t hash =
-        db_fnv1a64_tree((const void *)canonical_bytes, packed_bytes,
-                        DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
+    const uint64_t hash = db_fnv1a64_tree(
+        canonical_bytes, packed_bytes, DB_U32_SALT_ORIGIN_Y, DB_FNV1A64_OFFSET);
     return hash;
 }
 
@@ -187,31 +241,26 @@ uint64_t db_hash_working_rgba8(const void *pixels, db_pixel_format_t format,
     }
     size_t row_bytes = 0U;
     size_t packed_bytes = 0U;
-    db_hash_image_size_or_fail(width, height, DB_RGBA8_BYTES_PER_PIXEL,
-                               &row_bytes, &packed_bytes);
+    if (db_hash_image_size(width, height, DB_RGBA8_BYTES_PER_PIXEL, &row_bytes,
+                           &packed_bytes) == 0) {
+        return 0U;
+    }
     uint8_t *const canonical = db_hash_reserve_canonical_bytes(packed_bytes);
     if (db_working_rgba8_canonicalize(pixels, format, width, height,
                                       stride_bytes, rows_bottom_to_top,
                                       canonical, packed_bytes) == 0) {
         return 0U;
     }
-    const char *const dump_path = getenv("DB_TEST_WORKING_RGBA8_DUMP");
-    if ((dump_path != NULL) && (dump_path[0] != '\0')) {
-        FILE *const dump = fopen(dump_path, "wb");
-        if (dump != NULL) {
-            (void)fwrite(canonical, 1U, packed_bytes, dump);
-            (void)fclose(dump);
-        }
-    }
+    db_hash_dump_bytes_from_environment("DB_TEST_WORKING_RGBA8_DUMP", canonical,
+                                        packed_bytes);
     const char *const raw_dump_path = getenv("DB_TEST_WORKING_RAW_DUMP");
     if ((raw_dump_path != NULL) && (raw_dump_path[0] != '\0')) {
-        FILE *const dump = fopen(raw_dump_path, "wb");
-        if (dump != NULL) {
-            const size_t raw_bytes = db_checked_mul_size(
-                "db_hash", "raw_dump_bytes", stride_bytes, (size_t)height);
-            (void)fwrite(pixels, 1U, raw_bytes, dump);
-            (void)fclose(dump);
+        const size_t raw_bytes =
+            db_hash_source_layout_size(format, width, height, stride_bytes);
+        if (raw_bytes == 0U) {
+            return 0U;
         }
+        db_hash_dump_bytes_to_path(raw_dump_path, pixels, raw_bytes);
     }
     return db_fnv1a64_tree(canonical, packed_bytes, DB_U32_SALT_PALETTE,
                            DB_FNV1A64_OFFSET);
@@ -223,14 +272,21 @@ int db_working_rgba8_canonicalize(const void *pixels, db_pixel_format_t format,
                                   uint8_t *destination,
                                   size_t destination_size) {
     if ((pixels == NULL) || (destination == NULL) || (width == 0U) ||
-        (height == 0U)) {
+        (height == 0U) ||
+        ((format != DB_PIXEL_FORMAT_RGBA8) &&
+         (format != DB_PIXEL_FORMAT_RGBA16F))) {
         return 0;
     }
     size_t row_bytes = 0U;
     size_t packed_bytes = 0U;
-    db_hash_image_size_or_fail(width, height, DB_RGBA8_BYTES_PER_PIXEL,
-                               &row_bytes, &packed_bytes);
+    if (db_hash_image_size(width, height, DB_RGBA8_BYTES_PER_PIXEL, &row_bytes,
+                           &packed_bytes) == 0) {
+        return 0;
+    }
     if (destination_size < packed_bytes) {
+        return 0;
+    }
+    if (db_hash_source_layout_size(format, width, height, stride_bytes) == 0U) {
         return 0;
     }
     if (format == DB_PIXEL_FORMAT_RGBA16F) {
@@ -286,7 +342,13 @@ db_rgba8_pixel_diff_t db_rgba8_pixel_diff(const uint8_t *expected,
                                           const uint8_t *actual, uint32_t width,
                                           uint32_t height) {
     db_rgba8_pixel_diff_t diff = {0};
-    if ((expected == NULL) || (actual == NULL)) {
+    size_t row_bytes = 0U;
+    if ((expected == NULL) || (actual == NULL) || (width == 0U) ||
+        (height == 0U) ||
+        (db_try_mul_size((size_t)width, DB_RGBA8_BYTES_PER_PIXEL, &row_bytes) ==
+         0) ||
+        (db_hash_source_layout_size(DB_PIXEL_FORMAT_RGBA8, width, height,
+                                    row_bytes) == 0U)) {
         return diff;
     }
     for (uint32_t y = 0U; y < height; y++) {
@@ -304,6 +366,11 @@ db_rgba8_pixel_diff_t db_rgba8_pixel_diff(const uint8_t *expected,
                 diff.max_y = y;
                 memcpy(diff.expected_rgba, expected + base, 4U);
                 memcpy(diff.actual_rgba, actual + base, 4U);
+                while ((diff.first_component < 4U) &&
+                       (diff.expected_rgba[diff.first_component] ==
+                        diff.actual_rgba[diff.first_component])) {
+                    diff.first_component++;
+                }
             } else {
                 diff.min_x = DB_MIN(diff.min_x, x);
                 diff.max_x = DB_MAX(diff.max_x, x);

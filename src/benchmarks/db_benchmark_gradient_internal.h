@@ -511,7 +511,7 @@ static inline void db_gradient_row_color_rgb3(uint32_t row_index,
 
     double blend = 1.0;
     if (window_rows > 1U) {
-        const double blend_t = (double)delta / (double)(window_rows - 1U);
+        const double blend_t = DB_TO_F64(delta) / DB_TO_F64(window_rows - 1U);
         blend = (direction_down != 0) ? (1.0 - blend_t) : blend_t;
     }
     db_blend_rgb3(source_rgb, target_rgb, blend, out_rgb);

@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 void db_gl_check_error_at(const char *file, int line, const char *func) {
     if (g_upload_proc_table.get_error == NULL) {
@@ -73,8 +74,11 @@ db_gl_generic_proc_t db_gl_get_proc(const char *name) {
     }
 
 #if defined(__APPLE__) || defined(__linux__)
-    db_gl_generic_proc_t dlsym_proc =
-        (db_gl_generic_proc_t)dlsym(RTLD_DEFAULT, name);
+    void *const symbol = dlsym(RTLD_DEFAULT, name);
+    db_gl_generic_proc_t dlsym_proc = NULL;
+    static_assert(sizeof(dlsym_proc) == sizeof(symbol),
+                  "dlsym pointer representation must fit a GL procedure");
+    memcpy((void *)&dlsym_proc, (const void *)&symbol, sizeof(dlsym_proc));
     if (dlsym_proc != NULL) {
         return dlsym_proc;
     }
@@ -267,6 +271,9 @@ void db_gl_load_upload_proc_table(void) {
             "glDisableClientState"));
     g_upload_proc_table.draw_arrays =
         (db_gl_draw_arrays_fn_t)(db_gl_get_proc("glDrawArrays"));
+    g_upload_proc_table.draw_arrays_instanced =
+        (db_gl_draw_arrays_instanced_fn_t)(db_gl_get_proc(
+            "glDrawArraysInstanced"));
     g_upload_proc_table.enable =
         (db_gl_enable_fn_t)(db_gl_get_proc("glEnable"));
     g_upload_proc_table.enable_client_state =
@@ -338,6 +345,9 @@ void db_gl_load_upload_proc_table(void) {
     g_upload_proc_table.vertex_attrib_pointer =
         (db_gl_vertex_attrib_pointer_fn_t)(db_gl_get_proc(
             "glVertexAttribPointer"));
+    g_upload_proc_table.vertex_attrib_divisor =
+        (db_gl_vertex_attrib_divisor_fn_t)(db_gl_get_proc(
+            "glVertexAttribDivisor"));
     g_upload_proc_table.vertex_pointer =
         (db_gl_vertex_pointer_fn_t)(db_gl_get_proc("glVertexPointer"));
     g_upload_proc_table.viewport =

@@ -20,6 +20,8 @@ function(db_register_canonical_matrix test_prefix test_bin benchmark_mode
     set_tests_properties(
         ${db_test_name} PROPERTIES LABELS "${golden_labels}" TIMEOUT 240
                                    RESOURCE_LOCK driverbench_gpu_matrix)
+    db_test_apply_skip_regex("${db_test_name}"
+                             "${DB_TEST_CANONICAL_SKIP_REGEX}")
 endfunction()
 
 function(db_register_gradient_family test_prefix test_bin golden_labels
@@ -195,7 +197,7 @@ function(db_register_snake_grid_family test_prefix test_bin golden_labels
         "${test_bin}"
         "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --benchmark-mode snake_grid ${DB_DETERMINISM_COMMON_ARGS} --backbuffer-draw-mode dirty --present-buffer-mode single_source --bench-speed 1 --frame-limit 3 --trace-damage 1"
         0
-        "preserve=\"single_source\"|event=frame_plan|geometry_operation=incremental"
+        "target_strategy=gl1_persistent_fbo|cpu_pixels_written=0|uploaded_bytes=0|event=frame_plan|geometry_operation=incremental"
         "compact_capacity|dirty update failed|dirty_mode_compact_fallback|event=gradient_config"
         "shadow_fallback_frames=0"
         ""

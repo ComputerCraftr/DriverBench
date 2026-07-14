@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "requirements": [
+    {
+      "capability": "unit",
+      "test_regex": "^unit_driverbench_native$",
+      "required": true,
+      "minimum_executed": 1
+    },
+    {
+      "capability": "probe_protocol",
+      "test_regex": "^probe_helper_",
+      "required": true,
+      "minimum_executed": 13
+    },
+    {
+      "capability": "source_policy",
+      "test_regex": "^(source_|config_glfw_provider_)",
+      "required": true,
+      "minimum_executed": 1
+    }
+  ]
+}

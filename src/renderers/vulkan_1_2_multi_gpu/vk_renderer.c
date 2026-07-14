@@ -44,6 +44,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.presentation.swapchain_state = ctx->swapchain_state;
     g_state.backing.targets[0] = ctx->backing_targets[0];
     g_state.runtime = ctx->runtime;
+    g_state.diagnostics = ctx->diagnostics;
     g_state.backing.extent = (VkExtent2D){
         .width = g_state.runtime.grid_cols,
         .height = g_state.runtime.grid_rows,
@@ -67,6 +68,12 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.device.device_group_mask = ctx->device_group_mask;
     g_state.pipelines.vertex_buffer = ctx->vertex_buffer;
     g_state.pipelines.vertex_memory = ctx->vertex_memory;
+    g_state.pipelines.instance_buffer = ctx->instance_buffer;
+    g_state.pipelines.instance_memory = ctx->instance_memory;
+    g_state.pipelines.instance_mapped = ctx->instance_mapped;
+    g_state.pipelines.lookup_buffer = ctx->lookup_buffer;
+    g_state.pipelines.lookup_memory = ctx->lookup_memory;
+    g_state.pipelines.lookup_mapped = ctx->lookup_mapped;
     g_state.pipelines.pipeline = ctx->pipeline;
     g_state.presentation.present_pipeline = ctx->present_pipeline;
     g_state.pipelines.composition_pipeline = ctx->composition_pipeline;

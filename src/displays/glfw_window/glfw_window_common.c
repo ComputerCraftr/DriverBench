@@ -16,15 +16,19 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#ifdef __linux__
 #include <string.h>
-#endif
 
 #include "../../config/runtime_options.h"
 #include "../../core/db_core.h"
+#include "../../core/db_frame_plan.h"
+#include "../../core/db_frame_preparation.h"
+#include "../../core/db_frame_source.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
 #include "../../core/db_poll_policy.h"
+#include "../../core/db_render_result.h"
+#include "../../core/db_render_types.h"
+#include "../../core/db_renderer_diagnostics.h"
 #include "../display_frame_loop_common.h"
 #include "../display_presentation_policy.h"
 #include "../display_runtime_config_common.h"
@@ -291,6 +295,100 @@ void db_glfw_log_presentation_buffer_age(
     db_presentation_log_buffer_age(backend_name, age);
 }
 
+int db_glfw_presentation_buffer_age_changed(
+    const db_presentation_buffer_age_t *previous,
+    const db_presentation_buffer_age_t *current) {
+    if ((previous == NULL) || (current == NULL)) {
+        return 1;
+    }
+    return DB_BOOL(
+        (previous->provider != current->provider) ||
+        (previous->raw_age != current->raw_age) ||
+        (previous->effective_replay_depth != current->effective_replay_depth) ||
+        (previous->history_capacity != current->history_capacity) ||
+        (previous->valid != current->valid) ||
+        (previous->force_full_repair != current->force_full_repair) ||
+        (strcmp(previous->fallback_reason, current->fallback_reason) != 0));
+}
+
+db_frame_preparation_t db_glfw_resolve_frame_preparation(
+    db_gl_renderer_t renderer, db_gl1_target_request_t gl1_target,
+    db_glfw_framebuffer_extent_t extent, db_pixel_format_t framebuffer_format,
+    uint32_t framebuffer_generation,
+    const db_presentation_buffer_age_t *buffer_age,
+    const db_frame_requirements_t *requirements) {
+    const db_presentation_buffer_age_t age =
+        (buffer_age != NULL) ? *buffer_age : (db_presentation_buffer_age_t){0};
+    db_render_target_strategy_t target = DB_RENDER_TARGET_GL3_PERSISTENT_FBO;
+    if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
+        switch (gl1_target) {
+        case DB_GL1_TARGET_DIRECT_WINDOW:
+            target = DB_RENDER_TARGET_GL1_DIRECT_WINDOW;
+            break;
+        case DB_GL1_TARGET_CPU_UPLOAD:
+            target = DB_RENDER_TARGET_GL1_CPU_UPLOAD;
+            break;
+        case DB_GL1_TARGET_AUTO:
+        case DB_GL1_TARGET_PERSISTENT_FBO:
+            target = DB_RENDER_TARGET_GL1_PERSISTENT_FBO;
+            break;
+        }
+    }
+    const int force_rebuild =
+        DB_BOOL((target == DB_RENDER_TARGET_GL1_DIRECT_WINDOW) &&
+                ((age.valid == 0) || (age.force_full_repair != 0)));
+    return (db_frame_preparation_t){
+        .framebuffer_width = extent.width,
+        .framebuffer_height = extent.height,
+        .framebuffer_format = (uint32_t)framebuffer_format,
+        .framebuffer_generation = framebuffer_generation,
+        .raw_buffer_age = age.raw_age,
+        .replay_depth = age.effective_replay_depth,
+        .requirements_token =
+            (requirements != NULL) ? requirements->requirements_token : 0U,
+        .target_strategy = target,
+        .rebuild_reason =
+            force_rebuild ? DB_FRAME_REBUILD_EXPLICIT : DB_FRAME_REBUILD_NONE,
+        .buffer_age_valid = age.valid,
+        .force_rebuild = force_rebuild,
+    };
+}
+
+db_frame_plan_status_t db_glfw_prepare_frame_transaction(
+    db_frame_source_t *source, uint32_t frame_index,
+    db_frame_plan_request_t *request, db_gl_renderer_t renderer,
+    db_gl1_target_request_t gl1_target, db_glfw_framebuffer_extent_t extent,
+    db_pixel_format_t framebuffer_format, uint32_t framebuffer_generation,
+    const db_presentation_buffer_age_t *buffer_age,
+    db_frame_preparation_t *preparation) {
+    if ((source == NULL) || (request == NULL) || (preparation == NULL)) {
+        return DB_FRAME_PLAN_INVALID;
+    }
+    db_frame_requirements_t requirements = {0};
+    const db_frame_plan_status_t probe_status =
+        db_frame_source_probe(source, frame_index, request, &requirements);
+    if ((probe_status != DB_FRAME_PLAN_OK) &&
+        (probe_status != DB_FRAME_PLAN_CHECKPOINT_REQUIRED)) {
+        return probe_status;
+    }
+    *preparation = db_glfw_resolve_frame_preparation(
+        renderer, gl1_target, extent, framebuffer_format,
+        framebuffer_generation, buffer_age, &requirements);
+    if (requirements.checkpoint_required != 0) {
+        db_frame_checkpoint_binding_t binding = {0};
+        if (db_frame_source_provision(source, &requirements, &binding) !=
+            DB_FRAME_PLAN_OK) {
+            return DB_FRAME_PLAN_CHECKPOINT_UNAVAILABLE;
+        }
+        preparation->checkpoint_binding_token = binding.binding_token;
+    }
+    request->force_rebuild = preparation->force_rebuild;
+    request->rebuild_reason = preparation->rebuild_reason;
+    request->preparation_token = db_frame_preparation_token(preparation);
+    request->presentation_replay_depth = preparation->replay_depth;
+    return DB_FRAME_PLAN_OK;
+}
+
 static int db_glfw_loop_should_continue(void *user_data) {
     const db_glfw_loop_t *loop = (const db_glfw_loop_t *)user_data;
     return DB_BOOL((loop != NULL) &&
@@ -308,7 +406,7 @@ static db_sync_wait_result_t db_glfw_resize_wait_attempt(void *user_data,
                                                          uint64_t timeout_ns) {
     db_glfw_resize_wait_context_t *const context =
         (db_glfw_resize_wait_context_t *)user_data;
-    const double timeout_seconds = (double)timeout_ns / 1000000000.0;
+    const double timeout_seconds = DB_TO_F64(timeout_ns) / 1000000000.0;
     glfwWaitEventsTimeout(timeout_seconds);
     context->observed_framebuffer =
         db_glfw_get_framebuffer_extent(context->window, context->backend);
@@ -384,8 +482,8 @@ static void db_glfw_loop_apply_scheduled_resize(void *user_data,
         DB_LOG_I64("new_window_height", new_window_height),
         DB_LOG_U64("new_framebuffer_width", new_framebuffer.width),
         DB_LOG_U64("new_framebuffer_height", new_framebuffer.height),
-        DB_LOG_DOUBLE("content_scale_x", content_scale_x),
-        DB_LOG_DOUBLE("content_scale_y", content_scale_y),
+        DB_LOG_DOUBLE("content_scale_x", db_f32_to_double(content_scale_x)),
+        DB_LOG_DOUBLE("content_scale_y", db_f32_to_double(content_scale_y)),
         DB_LOG_BOOL("observed", observed),
         DB_LOG_BOOL("timeout", observed == 0),
     };

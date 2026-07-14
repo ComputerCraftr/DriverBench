@@ -267,33 +267,41 @@ db_gl_shadow_present_clear_shadow_matches(db_gl_shadow_present_state_t *state) {
     }
 }
 
-static int gl_shadow_present_runtime_mode_is_explicit(void) {
-    const char *runtime_mode =
-        db_runtime_option_get(DB_RUNTIME_OPT_PRESENT_BUFFER_MODE);
-    return (runtime_mode != NULL) && (runtime_mode[0] != '\0') &&
-           (strcmp(runtime_mode, "auto") != 0);
-}
+typedef struct {
+    db_gl_shadow_present_preserve_mode_t preserve_mode;
+    int explicit_mode;
+} db_gl_shadow_present_runtime_policy_t;
 
-static db_gl_shadow_present_preserve_mode_t
-db_gl_shadow_present_apply_runtime_mode(
+static db_gl_shadow_present_runtime_policy_t
+db_gl_shadow_present_resolve_runtime_policy(
     db_gl_shadow_present_preserve_mode_t default_mode) {
+    db_gl_shadow_present_runtime_policy_t policy = {
+        .preserve_mode = default_mode,
+        .explicit_mode = 0,
+    };
+    const char *const runtime_text =
+        db_runtime_option_get(DB_RUNTIME_OPT_PRESENT_BUFFER_MODE);
     db_gl_present_buffer_mode_t runtime_mode = DB_GL_PRESENT_BUFFER_MODE_AUTO;
-    if (db_gl_present_buffer_mode_parse(
-            db_runtime_option_get(DB_RUNTIME_OPT_PRESENT_BUFFER_MODE),
-            &runtime_mode) == 0) {
-        return default_mode;
+    if (db_gl_present_buffer_mode_parse(runtime_text, &runtime_mode) == 0) {
+        return policy;
     }
+    policy.explicit_mode =
+        DB_BOOL(runtime_mode != DB_GL_PRESENT_BUFFER_MODE_AUTO);
     switch (runtime_mode) {
     case DB_GL_PRESENT_BUFFER_MODE_REPLACE:
-        return DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS;
+        policy.preserve_mode = DB_GL_SHADOW_PRESENT_REPLACE_CONTENTS;
+        break;
     case DB_GL_PRESENT_BUFFER_MODE_SINGLE_SOURCE:
-        return DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+        policy.preserve_mode = DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+        break;
     case DB_GL_PRESENT_BUFFER_MODE_RING:
-        return DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT;
+        policy.preserve_mode = DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT;
+        break;
     case DB_GL_PRESENT_BUFFER_MODE_AUTO:
     default:
-        return default_mode;
+        break;
     }
+    return policy;
 }
 
 void db_gl_shadow_present_refresh_effective_mode(
@@ -335,7 +343,7 @@ void db_gl_shadow_present_refresh_effective_mode(
             &state->upload_slots[i].stream.capability,
             state->upload_slots[i].stream.target);
     }
-    if ((gl_shadow_present_runtime_mode_is_explicit() != 0) &&
+    if ((state->runtime_preserve_mode_explicit != 0) &&
         (resolution.downgraded != 0)) {
         DB_RUNTIME_FAIL(
             "renderer_gl_shadow_present",
@@ -433,10 +441,19 @@ void db_gl_shadow_present_init_runtime(
         (hdr_output_enabled != 0)
             ? DB_GL_SHADOW_PRESENT_TEXTURE_BT2020_PQ_RGB10A2
             : resolved_format->present_texture_format;
-    const int supports_unpack_row_length_upload =
+    const db_pixel_format_t upload_probe_format =
         (selected_texture_format == DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)
-            ? db_gl_probe_shadow_present_partial_upload_support_rgba16f()
-            : db_gl_probe_shadow_present_partial_upload_support_rgba8();
+            ? DB_PIXEL_FORMAT_RGBA16F
+            : DB_PIXEL_FORMAT_RGBA8;
+    const int supports_unpack_row_length_upload =
+        db_gl_probe_shadow_present_partial_upload_support(upload_probe_format);
+    const db_gl_shadow_present_preserve_mode_t default_preserve_mode =
+        ((prefer_unpack_pbo != 0) &&
+         (db_gl_context_has_pbo_upload_procs() != 0))
+            ? DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT
+            : DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE;
+    const db_gl_shadow_present_runtime_policy_t runtime_policy =
+        db_gl_shadow_present_resolve_runtime_policy(default_preserve_mode);
     const int sync_supported = 1;
     const db_gl_stream_upload_capability_t unpack_probe_capability =
         ((prefer_unpack_pbo != 0) &&
@@ -482,12 +499,10 @@ void db_gl_shadow_present_init_runtime(
         .write_slot_index = 0U,
         .present_slot_index = 0U,
         .selected_texture_format = selected_texture_format,
-        .requested_preserve_mode = db_gl_shadow_present_apply_runtime_mode(
-            ((prefer_unpack_pbo != 0) &&
-             (db_gl_context_has_pbo_upload_procs() != 0))
-                ? DB_GL_SHADOW_PRESENT_PRESERVE_RING_COHERENT
-                : DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE),
+        .requested_preserve_mode = runtime_policy.preserve_mode,
         .preserve_mode = DB_GL_SHADOW_PRESENT_PRESERVE_SINGLE_SOURCE,
+        .runtime_preserve_mode = runtime_policy.preserve_mode,
+        .runtime_preserve_mode_explicit = runtime_policy.explicit_mode,
         .requested_preserved_framebuffer_count =
             gl_shadow_present_clamped_preserved_framebuffer_count(
                 preserved_framebuffer_count),
@@ -551,7 +566,9 @@ void db_gl_shadow_present_set_preserve_mode(
         return;
     }
     state->requested_preserve_mode =
-        db_gl_shadow_present_apply_runtime_mode(preserve_mode);
+        (state->runtime_preserve_mode_explicit != 0)
+            ? state->runtime_preserve_mode
+            : preserve_mode;
     db_gl_shadow_present_refresh_effective_mode(state, 0);
 }
 

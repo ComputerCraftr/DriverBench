@@ -61,6 +61,12 @@ typedef struct {
     SwapchainState swapchain_state;
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_memory;
+    VkBuffer instance_buffer;
+    VkDeviceMemory instance_memory;
+    void *instance_mapped;
+    VkBuffer lookup_buffer;
+    VkDeviceMemory lookup_memory;
+    void *lookup_mapped;
 } db_vk_init_pipeline_resources_phase_t;
 
 typedef struct {
@@ -76,6 +82,17 @@ typedef enum {
     DB_VK_MULTI_DEVICE_POLICY_GROUP_ONLY = 1,
     DB_VK_MULTI_DEVICE_POLICY_INDEPENDENT_OK = 2,
 } db_vk_multi_device_policy_t;
+
+static inline VkFormat
+db_vk_image_format_from_pixel_format(db_pixel_format_t format) {
+    switch (format) {
+    case DB_PIXEL_FORMAT_RGBA8:
+        return VK_FORMAT_R8G8B8A8_UNORM;
+    case DB_PIXEL_FORMAT_RGBA16F:
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
+    }
+    return VK_FORMAT_UNDEFINED;
+}
 
 extern char g_vk_capability_mode[DB_VK_CAPABILITY_MODE_MAX];
 
@@ -99,7 +116,9 @@ void db_vk_probe_device_interop_extensions(VkInstance instance,
                                            db_vk_physical_device_info_t *info);
 void db_vk_probe_device_hdr_surface(VkPhysicalDevice phys, VkSurfaceKHR surface,
                                     db_vk_physical_device_info_t *info);
-int db_vk_probe_external_image_interop(VkPhysicalDevice phys, VkFormat format);
+int db_vk_probe_external_image_interop(
+    VkPhysicalDevice phys, VkFormat format, VkImageUsageFlags usage,
+    VkExternalMemoryFeatureFlagBits required_feature);
 int db_vk_probe_external_buffer_interop(VkPhysicalDevice phys);
 int db_vk_find_common_drm_modifier(VkPhysicalDevice worker,
                                    VkPhysicalDevice primary, VkFormat format,
@@ -116,6 +135,7 @@ void db_vk_init_phase_instance_surface(
 void db_vk_init_phase_device(VkInstance instance, VkSurfaceKHR surface,
                              int vsync_enabled,
                              db_output_format_request_t output_request,
+                             db_pixel_format_t working_format,
                              db_vk_init_device_phase_t *out_phase);
 void db_vk_init_phase_pipeline_resources(
     const db_vk_wsi_config_t *wsi_config, VkSurfaceKHR surface,

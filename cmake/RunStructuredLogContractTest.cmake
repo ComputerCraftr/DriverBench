@@ -7,7 +7,6 @@ db_test_default_string(TEST_ARGS "")
 db_test_run_command(output skip_reason status "${TEST_ARGS}"
                     "Structured-log command failed")
 if(NOT "${skip_reason}" STREQUAL "")
-    message(STATUS "Structured-log test skipped: ${skip_reason}")
     return()
 endif()
 

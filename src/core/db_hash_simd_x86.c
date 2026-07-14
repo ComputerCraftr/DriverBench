@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <immintrin.h>
 
@@ -13,6 +14,12 @@
 #define DB_HASH_TARGET_SSE2
 #define DB_HASH_TARGET_AVX2
 #endif
+
+static int64_t db_hash_u64_bits_to_i64(uint64_t value) {
+    int64_t result = 0;
+    memcpy(&result, &value, sizeof(result));
+    return result;
+}
 
 DB_HASH_TARGET_SSE2 static inline __m128i
 db_fnv1a64_multiply_sse2(__m128i value) {
@@ -46,7 +53,8 @@ DB_HASH_TARGET_SSE2 void
 db_fnv1a64_2x_sse2(const uint8_t *data0, const uint8_t *data1, size_t length,
                    uint64_t initial0, uint64_t initial1,
                    uint64_t out_hashes[DB_FNV_TREE_SSE2_LANES]) {
-    __m128i hashes = _mm_set_epi64x((int64_t)initial1, (int64_t)initial0);
+    __m128i hashes = _mm_set_epi64x(db_hash_u64_bits_to_i64(initial1),
+                                    db_hash_u64_bits_to_i64(initial0));
     for (size_t index = 0U; index < length; index++) {
         const __m128i bytes =
             _mm_set_epi64x((int64_t)data1[index], (int64_t)data0[index]);
@@ -61,8 +69,9 @@ db_fnv1a64_4x_avx2(const uint8_t *data0, const uint8_t *data1,
                    uint64_t initial0, uint64_t initial1, uint64_t initial2,
                    uint64_t initial3,
                    uint64_t out_hashes[DB_FNV_TREE_AVX2_LANES]) {
-    __m256i hashes = _mm256_set_epi64x((int64_t)initial3, (int64_t)initial2,
-                                       (int64_t)initial1, (int64_t)initial0);
+    __m256i hashes = _mm256_set_epi64x(
+        db_hash_u64_bits_to_i64(initial3), db_hash_u64_bits_to_i64(initial2),
+        db_hash_u64_bits_to_i64(initial1), db_hash_u64_bits_to_i64(initial0));
     for (size_t index = 0U; index < length; index++) {
         const __m256i bytes =
             _mm256_set_epi64x((int64_t)data3[index], (int64_t)data2[index],

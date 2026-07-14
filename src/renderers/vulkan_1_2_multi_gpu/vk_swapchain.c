@@ -1,4 +1,5 @@
 #include "core/db_log.h"
+#include "vk_diagnostics.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -55,8 +56,11 @@ VkPresentModeKHR db_vk_choose_present_mode(VkPhysicalDevice present_phys,
     uint32_t mode_count = 0;
     DB_VK_CHECK(BACKEND_NAME, vkGetPhysicalDeviceSurfacePresentModesKHR(
                                   present_phys, surface, &mode_count, NULL));
-    VkPresentModeKHR *modes =
-        (VkPresentModeKHR *)calloc(mode_count, sizeof(VkPresentModeKHR));
+    if (mode_count == 0U) {
+        runtime_failf("Vulkan surface exposes no present modes");
+    }
+    VkPresentModeKHR *modes = (VkPresentModeKHR *)db_calloc_array_or_fail(
+        BACKEND_NAME, "present modes", mode_count, sizeof(*modes));
     DB_VK_CHECK(BACKEND_NAME, vkGetPhysicalDeviceSurfacePresentModesKHR(
                                   present_phys, surface, &mode_count, modes));
     if (vsync_enabled != 0) {
@@ -349,19 +353,25 @@ void db_vk_create_swapchain_state(const db_vk_wsi_config_t *wsi_config,
         db_vk_fail(BACKEND_NAME, "vkGetSwapchainImagesKHR(count)",
                    get_images_result, __FILE__, __LINE__);
     }
-    state->images = (VkImage *)calloc(state->image_count, sizeof(VkImage));
+    if (state->image_count == 0U) {
+        runtime_failf("Vulkan swapchain exposes no images");
+    }
+    state->images = (VkImage *)db_calloc_array_or_fail(
+        BACKEND_NAME, "swapchain images", state->image_count,
+        sizeof(*state->images));
     get_images_result = vkGetSwapchainImagesKHR(
         device, state->swapchain, &state->image_count, state->images);
     if (get_images_result != VK_SUCCESS) {
-        free((void *)state->images);
+        db_free_opaque_handle_array((void *)state->images);
         state->images = NULL;
         state->image_count = 0;
         db_vk_fail(BACKEND_NAME, "vkGetSwapchainImagesKHR(images)",
                    get_images_result, __FILE__, __LINE__);
     }
 
-    state->views =
-        (VkImageView *)calloc(state->image_count, sizeof(VkImageView));
+    state->views = (VkImageView *)db_calloc_array_or_fail(
+        BACKEND_NAME, "swapchain image views", state->image_count,
+        sizeof(*state->views));
     for (uint32_t i = 0; i < state->image_count; i++) {
         VkImageViewCreateInfo ivci = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -375,10 +385,12 @@ void db_vk_create_swapchain_state(const db_vk_wsi_config_t *wsi_config,
                     vkCreateImageView(device, &ivci, NULL, &state->views[i]));
     }
 
-    state->framebuffers =
-        (VkFramebuffer *)calloc(state->image_count, sizeof(VkFramebuffer));
-    state->image_layouts =
-        (VkImageLayout *)calloc(state->image_count, sizeof(VkImageLayout));
+    state->framebuffers = (VkFramebuffer *)db_calloc_array_or_fail(
+        BACKEND_NAME, "swapchain framebuffers", state->image_count,
+        sizeof(*state->framebuffers));
+    state->image_layouts = (VkImageLayout *)db_calloc_array_or_fail(
+        BACKEND_NAME, "swapchain image layouts", state->image_count,
+        sizeof(*state->image_layouts));
     for (uint32_t i = 0; i < state->image_count; i++) {
         VkFramebufferCreateInfo fbci = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};

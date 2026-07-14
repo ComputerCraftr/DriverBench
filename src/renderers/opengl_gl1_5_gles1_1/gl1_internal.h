@@ -4,10 +4,65 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../../core/db_conformance.h"
+#include "../../core/db_conformance_cache.h"
 #include "../../core/db_frame_plan.h"
+#include "../../core/db_render_ir_snapshot.h"
+#include "../../core/db_renderer_diagnostics.h"
+#include "../../core/db_replay_policy.h"
 #include "../gl_common.h"
+#include "../gl_hash_readback.h"
 #include "core/db_format_contract.h"
 #include "core/db_render_types.h"
+
+typedef enum {
+    GL1_STRATEGY_UNRESOLVED = 0,
+    GL1_STRATEGY_DIRECT_WINDOW,
+    GL1_STRATEGY_PERSISTENT_FBO,
+    GL1_STRATEGY_CPU_UPLOAD,
+} gl1_strategy_t;
+
+typedef struct {
+    gl1_strategy_t strategy;
+    unsigned int fbo;
+    unsigned int direct_fbo;
+    db_gl_upload_stream_t vertex_stream;
+    db_gl_framebuffer_hash_scratch_t hash_scratch;
+    float *vertices;
+    size_t vertex_capacity;
+    size_t storage_bytes;
+    uint32_t generation;
+    uint32_t width;
+    uint32_t height;
+    int valid;
+    db_conformance_result_t row_fill_conformance;
+    db_gradient_implementation_t gradient_implementation;
+    db_qualification_source_t qualification_source;
+    db_conformance_cache_status_t cache_status;
+    const char *qualification_reason;
+    int gradient_qualified;
+    int qualification_resolved;
+} gl1_native_target_t;
+
+typedef struct {
+    db_render_ir_snapshot_t update;
+    uint32_t frame_index;
+    uint32_t target_generation;
+    uint32_t width;
+    uint32_t height;
+    db_pixel_format_t format;
+    int replay_boundary;
+    int valid;
+} gl1_replay_entry_t;
+
+typedef struct {
+    db_replay_policy_t policy;
+    gl1_replay_entry_t entries[DB_REPLAY_CAPACITY_MAX];
+    uint32_t next_entry;
+    uint32_t target_generation;
+    size_t allocation_bytes;
+    int available;
+} gl1_replay_history_t;
 
 #define BACKEND_NAME "renderer_opengl_gl1_5_gles1_1"
 #define runtime_failf(...) DB_RUNTIME_FAIL(BACKEND_NAME, __VA_ARGS__)
@@ -45,14 +100,18 @@ typedef struct {
     char capability_mode[DB_GL_CAPABILITY_MODE_MAX];
     db_renderer_frame_stats_t frame;
     gl1_backing_stats_t backing;
+    db_render_execution_report_t execution;
 } gl1_telemetry_t;
 
 typedef struct {
     db_renderer_execution_config_t runtime;
+    db_renderer_diagnostic_config_t diagnostics;
     db_gl_viewport_cache_t viewport;
     gl1_backing_storage_t backing;
     gl1_upload_workspace_t upload;
     gl1_presentation_state_t presentation;
+    gl1_native_target_t native;
+    gl1_replay_history_t replay;
     gl1_telemetry_t telemetry;
 } renderer_state_t;
 
@@ -82,6 +141,20 @@ int db_gl1_present_backing(db_pixel_block_view_t blocks_view,
                            uint32_t pixel_width, uint32_t pixel_height);
 void db_gl1_refresh_capability_mode(void);
 int db_gl1_init_runtime(const db_renderer_execution_config_t *runtime_state);
+int db_gl1_native_init(void);
+int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
+                         uint32_t logical_height, int presentation_fbo,
+                         int viewport_width, int viewport_height);
+void db_gl1_native_shutdown(void);
+int db_gl1_replay_init(void);
+void db_gl1_replay_shutdown(void);
+void db_gl1_replay_reset(void);
+size_t db_gl1_replay_collect(const db_frame_plan_t *plan,
+                             db_render_ir_view_t *views, size_t view_capacity,
+                             int *use_rebuild);
+int db_gl1_replay_commit(const db_frame_plan_t *plan, uint32_t width,
+                         uint32_t height, db_pixel_format_t format,
+                         int replay_boundary);
 void db_gl1_render_geometry_to_backing(const db_frame_plan_t *plan,
                                        int viewport_width, int viewport_height);
 

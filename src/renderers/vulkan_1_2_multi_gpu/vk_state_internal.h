@@ -26,6 +26,12 @@ typedef struct db_vk_state_init_ctx {
     uint32_t device_group_mask;
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_memory;
+    VkBuffer instance_buffer;
+    VkDeviceMemory instance_memory;
+    void *instance_mapped;
+    VkBuffer lookup_buffer;
+    VkDeviceMemory lookup_memory;
+    void *lookup_mapped;
     VkPipeline pipeline;
     VkPipeline present_pipeline;
     VkPipeline composition_pipeline;
@@ -43,6 +49,7 @@ typedef struct db_vk_state_init_ctx {
     VkQueryPool timing_query_pool;
     int gpu_timing_enabled;
     db_renderer_execution_config_t runtime;
+    db_renderer_diagnostic_config_t diagnostics;
     const char *capability_mode;
     int no_present_mode;
     const double *ema_ms_per_work_unit;
@@ -96,6 +103,12 @@ typedef struct {
 typedef struct {
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_memory;
+    VkBuffer instance_buffer;
+    VkDeviceMemory instance_memory;
+    void *instance_mapped;
+    VkBuffer lookup_buffer;
+    VkDeviceMemory lookup_memory;
+    void *lookup_mapped;
     VkPipeline pipeline;
     VkPipeline composition_pipeline;
     VkPipelineLayout pipeline_layout;
@@ -113,13 +126,18 @@ typedef struct {
     uint32_t content_generation;
     uint32_t last_active_lane_count;
     uint32_t worker_share_bps;
-    db_vk_multi_gpu_phase_t multi_gpu_phase;
     double ema_ms_per_work_unit[MAX_GPU_COUNT];
     int have_prev_timing_frame;
     uint8_t prev_frame_owner_used[MAX_GPU_COUNT];
     uint32_t prev_frame_work_units[MAX_GPU_COUNT];
     uint64_t cumulative_work_units[MAX_GPU_COUNT];
     uint64_t cumulative_frames_with_work[MAX_GPU_COUNT];
+    db_lane_qualification_t gradient_lanes[MAX_GPU_COUNT];
+    uint32_t gradient_lane_indices[MAX_GPU_COUNT];
+    db_topology_qualification_t gradient_topology;
+    db_qualification_source_t gradient_qualification_source;
+    db_conformance_cache_status_t gradient_cache_status;
+    int gradient_qualification_resolved;
 } db_vk_scheduler_runtime_t;
 
 typedef struct {
@@ -170,7 +188,9 @@ typedef struct {
     db_vk_metrics_runtime_t metrics;
     db_vk_hash_runtime_t hash;
     db_renderer_execution_config_t runtime;
+    db_renderer_diagnostic_config_t diagnostics;
     db_renderer_frame_stats_t frame;
+    db_render_execution_report_t execution;
     const char *capability_mode;
     const char *log_backend_name;
     int initialized;

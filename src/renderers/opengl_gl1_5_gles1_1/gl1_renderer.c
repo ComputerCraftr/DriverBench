@@ -5,7 +5,9 @@
 #include "../../core/db_geometry.h"
 #include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
+#include "../gl_api.h"
 #include "../gl_common.h"
+#include "../gl_hash_readback.h"
 #include "../renderer_viewport_common.h"
 #include "core/db_log.h"
 #include "core/db_render_result.h"
@@ -31,6 +33,7 @@ void db_gl1_init(const db_renderer_runtime_contract_t *resolved_runtime) {
     }
     const db_renderer_execution_config_t runtime_state =
         resolved_runtime->execution;
+    g_state.diagnostics = resolved_runtime->diagnostics;
     const uint32_t default_preserved_framebuffer_count =
         resolved_runtime->preserved_framebuffer_count;
     if (db_gl1_init_runtime(&runtime_state) == 0) {
@@ -43,6 +46,9 @@ void db_gl1_init(const db_renderer_runtime_contract_t *resolved_runtime) {
                                       default_preserved_framebuffer_count);
     g_state.backing.texture_format =
         g_state.presentation.shadow.selected_texture_format;
+    if ((db_gl1_native_init() == 0) || (db_gl1_replay_init() == 0)) {
+        g_state.native.strategy = GL1_STRATEGY_CPU_UPLOAD;
+    }
     g_state.upload.capacity = DB_CANONICAL_GEOMETRY_BLOCK_CAPACITY;
     g_state.upload.blocks = (db_damage_block_t *)db_malloc_or_fail(
         BACKEND_NAME, "backing_upload_blocks", g_state.upload.capacity,
@@ -55,7 +61,9 @@ void db_gl1_init(const db_renderer_runtime_contract_t *resolved_runtime) {
                      (g_state.runtime.backbuffer_draw_full != 0)
                          ? "full_present"
                          : "dirty_present"),
-        DB_LOG_TOKEN("geometry_storage", "cpu_backing"),
+        DB_LOG_TOKEN("geometry_storage", "runtime_selected"),
+        DB_LOG_TOKEN("target_strategy_candidate", "persistent_fbo"),
+        DB_LOG_TOKEN("fallback_target_strategy", "cpu_upload"),
         DB_LOG_TOKEN(
             "present_geometry_storage",
             (g_state.presentation.shadow.presentation_quad_uses_vbo != 0)
@@ -102,17 +110,27 @@ void db_gl1_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
                                          force_full_presentation);
     g_state.presentation.current_present_full =
         DB_BOOL(force_full_presentation != 0);
-    db_gl1_render_geometry_to_backing(
-        plan,
-        db_checked_u32_to_i32(BACKEND_NAME, "logical_raster_width",
-                              plan->pixel_width),
-        db_checked_u32_to_i32(BACKEND_NAME, "logical_raster_height",
-                              plan->pixel_height));
+    int presentation_fbo = 0;
+    db_gl_get_integerv(GL_DRAW_FRAMEBUFFER_BINDING, &presentation_fbo);
+    const int native_rendered = db_gl1_native_render(
+        plan, plan->pixel_width, plan->pixel_height, presentation_fbo,
+        viewport_width_px, viewport_height_px);
+    if (native_rendered == 0) {
+        g_state.native.strategy = GL1_STRATEGY_CPU_UPLOAD;
+        db_gl1_render_geometry_to_backing(
+            plan,
+            db_checked_u32_to_i32(BACKEND_NAME, "logical_raster_width",
+                                  plan->pixel_width),
+            db_checked_u32_to_i32(BACKEND_NAME, "logical_raster_height",
+                                  plan->pixel_height));
+    }
     g_state.telemetry.frame.state_hash = plan->expected_state_hash;
     g_state.telemetry.frame.frame_index++;
 }
 
 void db_gl1_shutdown(void) {
+    db_gl1_replay_shutdown();
+    db_gl1_native_shutdown();
     free(g_state.backing.pixels);
     free(g_state.upload.blocks);
     db_gl_shadow_present_shutdown(&g_state.presentation.shadow);
@@ -129,13 +147,38 @@ const char *db_gl1_capability_mode(void) {
 uint64_t db_gl1_state_hash(void) { return g_state.telemetry.frame.state_hash; }
 
 uint64_t db_gl1_working_hash(void) {
+    if ((g_state.native.strategy == GL1_STRATEGY_DIRECT_WINDOW) &&
+        (g_state.native.valid != 0)) {
+        db_gl_bind_framebuffer(GL_FRAMEBUFFER, g_state.native.direct_fbo);
+        return db_gl_hash_framebuffer_rgba8_or_fail(
+            BACKEND_NAME, g_state.native.width, g_state.native.height,
+            &g_state.native.hash_scratch, 1);
+    }
+    if ((g_state.native.strategy == GL1_STRATEGY_PERSISTENT_FBO) &&
+        (g_state.native.fbo != 0U)) {
+        db_gl_bind_framebuffer(GL_FRAMEBUFFER, g_state.native.fbo);
+        const uint64_t hash =
+            (g_state.backing.texture_format ==
+             DB_GL_SHADOW_PRESENT_TEXTURE_RGBA16F)
+                ? db_gl_hash_framebuffer_rgba16f_or_fail(
+                      BACKEND_NAME, g_state.native.width, g_state.native.height,
+                      &g_state.native.hash_scratch, 1)
+                : db_gl_hash_framebuffer_rgba8_or_fail(
+                      BACKEND_NAME, g_state.native.width, g_state.native.height,
+                      &g_state.native.hash_scratch, 1);
+        db_gl_bind_framebuffer(GL_FRAMEBUFFER, 0U);
+        return hash;
+    }
     const db_pixel_surface_t surface = gl1_backing_surface(
         g_state.backing.pixel_width, g_state.backing.pixel_height);
     const size_t pixel_bytes =
         (surface.format == DB_PIXEL_FORMAT_RGBA16F) ? 8U : 4U;
+    const size_t row_stride_bytes =
+        db_checked_mul_size(BACKEND_NAME, "working hash row stride",
+                            surface.pixel_width, pixel_bytes);
     return db_hash_working_rgba8(surface.pixels, surface.format,
                                  surface.pixel_width, surface.pixel_height,
-                                 (size_t)surface.pixel_width * pixel_bytes, 0);
+                                 row_stride_bytes, 0);
 }
 
 uint32_t db_gl1_work_unit_count(void) {
@@ -144,4 +187,10 @@ uint32_t db_gl1_work_unit_count(void) {
 
 void db_gl1_draw_stats(db_renderer_draw_path_stats_t *stats) {
     db_renderer_copy_draw_path_stats(&g_state.telemetry.frame, stats);
+}
+
+void db_gl1_execution_report(db_render_execution_report_t *report) {
+    if (report != NULL) {
+        *report = g_state.telemetry.execution;
+    }
 }

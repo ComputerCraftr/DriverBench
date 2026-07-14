@@ -124,8 +124,7 @@ static uint32_t vk_split_best_share_index(const db_vk_split_search_t *search,
         const uint64_t current = vk_split_median(search, best);
         const uint64_t uncertainty = vk_split_uncertainty(search, index) +
                                      vk_split_uncertainty(search, best);
-        const uint64_t delta =
-            (candidate > current) ? candidate - current : current - candidate;
+        const uint64_t delta = db_u64_abs_diff(candidate, current);
         if (((candidate < current) && (delta > uncertainty)) ||
             ((delta <= uncertainty) &&
              (search->shares_bps[index] < search->shares_bps[best]))) {
@@ -242,9 +241,9 @@ db_vk_evaluate_calibration(const db_vk_calibration_pair_t *pairs,
             return result;
         }
         const double primary_uncertainty_ms =
-            (double)pairs[index].primary_uncertainty_ns / DB_NS_PER_MS;
+            DB_TO_F64(pairs[index].primary_uncertainty_ns) / DB_NS_PER_MS;
         const double candidate_uncertainty_ms =
-            (double)pairs[index].candidate_uncertainty_ns / DB_NS_PER_MS;
+            DB_TO_F64(pairs[index].candidate_uncertainty_ns) / DB_NS_PER_MS;
         primary[index] = pairs[index].primary_ms - primary_uncertainty_ms;
         candidate[index] = pairs[index].candidate_ms + candidate_uncertainty_ms;
         if (primary[index] <= 0.0) {
@@ -346,7 +345,7 @@ vk_predicted_lane_ns(double ms_per_unit, uint64_t work_units, double extra_ns) {
     if (ms_per_unit <= 0.0) {
         return 0.0;
     }
-    return (ms_per_unit * HOST_COHERENT_MSCALE_NS * (double)work_units) +
+    return (ms_per_unit * HOST_COHERENT_MSCALE_NS * DB_TO_F64(work_units)) +
            extra_ns;
 }
 
@@ -392,7 +391,7 @@ uint32_t db_vk_select_owner_for_work(uint32_t gpu_count, uint32_t work_units,
     }
 
     const uint64_t units = DB_MAX((uint64_t)work_units, 1ULL);
-    const double budget_limit_ns = (double)(budget_ns - safety_ns);
+    const double budget_limit_ns = DB_TO_F64(budget_ns - safety_ns);
 
     uint32_t best_owner = 0U;
     double best_makespan_ns = vk_projected_makespan_ns(
@@ -431,7 +430,7 @@ void db_vk_update_ema_fallback(uint32_t gpu_count,
         total_work_units += frame_work_units[g];
     }
     const uint32_t work_unit_divisor = DB_MAX(total_work_units, 1U);
-    const double ms_per_work_unit = frame_ms / (double)work_unit_divisor;
+    const double ms_per_work_unit = frame_ms / DB_TO_F64(work_unit_divisor);
     for (uint32_t g = 0; g < gpu_count; g++) {
         if (frame_work_units[g] == 0U) {
             continue;
@@ -469,9 +468,9 @@ double db_vk_scheduler_percentile_sorted(const double *samples, size_t count,
     if (pct >= DB_VK_PERCENTILE_MAX) {
         return samples[count - 1U];
     }
-    const double rank = ((pct / DB_VK_PERCENTILE_MAX) * (double)(count - 1U));
+    const double rank = (pct / DB_VK_PERCENTILE_MAX) * DB_TO_F64(count - 1U);
     const size_t index = (size_t)rank;
     const size_t next = DB_MIN(index + 1U, count - 1U);
-    const double frac = rank - (double)index;
+    const double frac = rank - DB_TO_F64(index);
     return (samples[index] * (1.0 - frac)) + (samples[next] * frac);
 }

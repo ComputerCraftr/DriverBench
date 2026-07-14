@@ -8,6 +8,7 @@
 #include "../config/runtime_options.h"
 #include "../core/db_core.h"
 #include "../core/db_log.h"
+#include "../core/db_renderer_log.h"
 #include "../core/db_renderer_runtime_contract.h"
 #include "../core/db_renderer_support.h"
 #include "../core/db_trace.h"
@@ -464,6 +465,11 @@ db_display_renderer_runtime_from_cli(
     }
     db_renderer_execution_config_t renderer =
         db_benchmark_renderer_execution_config(&benchmark);
+    renderer.frame_limit = safe_cfg.frame_limit;
+    const char *const metrics_mode =
+        db_runtime_option_get(DB_RUNTIME_OPT_METRICS_MODE);
+    renderer.dual_metrics_enabled =
+        DB_BOOL((metrics_mode != NULL) && (strcmp(metrics_mode, "dual") == 0));
     db_trace_config_t trace = {0};
     (void)db_parse_int_text(db_runtime_option_get(DB_RUNTIME_OPT_TRACE_DAMAGE),
                             &trace.damage);
@@ -511,6 +517,7 @@ db_display_renderer_runtime_from_cli(
                 .format = format,
                 .format_contract =
                     db_render_format_contract_from_display(&format),
+                .diagnostics = db_renderer_diagnostic_config_resolve(),
                 .preserved_framebuffer_count = preserved_framebuffer_count,
             },
         .presentation = db_display_presentation_transform(
@@ -717,10 +724,11 @@ static inline void db_display_log_draw_stats_with_fn(
 static inline void db_display_log_renderer_final_summary(
     const char *api_name, const char *renderer_name, const char *backend,
     uint64_t frames, uint32_t work_unit_count, double elapsed_ms,
-    void (*draw_stats)(db_renderer_draw_path_stats_t *)) {
-    db_display_log_draw_stats_with_fn(backend, draw_stats);
-    db_benchmark_log_final(api_name, renderer_name, backend, frames,
-                           work_unit_count, elapsed_ms);
+    void (*draw_stats)(db_renderer_draw_path_stats_t *),
+    void (*execution_report)(db_render_execution_report_t *)) {
+    db_renderer_log_final_summary(api_name, renderer_name, backend, frames,
+                                  work_unit_count, elapsed_ms, draw_stats,
+                                  execution_report);
 }
 
 #endif

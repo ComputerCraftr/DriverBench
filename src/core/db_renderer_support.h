@@ -20,9 +20,11 @@ typedef struct {
     uint32_t work_unit_count;
     uint32_t grid_cols;
     uint32_t grid_rows;
+    uint32_t frame_limit;
     double seed_rgba_f64[4];
     int backbuffer_draw_full;
     int backbuffer_replay_enabled;
+    int dual_metrics_enabled;
     db_renderer_pipeline_flags_t pipeline;
     db_trace_config_t trace;
 } db_renderer_execution_config_t;

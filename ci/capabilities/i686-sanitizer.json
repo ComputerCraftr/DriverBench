@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "requirements": [
+    {
+      "capability": "i686_unit",
+      "test_regex": "^unit_driverbench_native$",
+      "required": true,
+      "minimum_executed": 1
+    },
+    {
+      "capability": "i686_asan",
+      "test_regex": "^(i686_asan_runtime_smoke|driverbench_asan_activation_elf32)$",
+      "required": true,
+      "minimum_executed": 2
+    },
+    {
+      "capability": "i686_ubsan",
+      "test_regex": "^(i686_ubsan_runtime_smoke|driverbench_ubsan_activation_elf32)$",
+      "required": true,
+      "minimum_executed": 2
+    }
+  ]
+}
