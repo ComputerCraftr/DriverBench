@@ -3,7 +3,7 @@
 #include "../core/db_hash.h"
 #include "../core/db_log.h"
 #include "../core/db_numeric.h"
-#include "../core/db_poll_policy.h"
+#include "../core/db_progress_policy.h"
 #include "core/db_format_contract.h"
 #include "core/db_render_types.h"
 #include "gl_api.h"
@@ -115,33 +115,59 @@ void db_gl_error_trace_reset(db_gl_error_trace_t *trace) {
     *trace = (db_gl_error_trace_t){0};
 }
 
+typedef struct {
+    db_gl_error_trace_t *trace;
+    const char *phase;
+    const char *target;
+    const char *context;
+} db_gl_error_drain_context_t;
+
+static db_progress_drain_item_t db_gl_error_drain_next(void *user_data) {
+    db_gl_error_drain_context_t *const drain =
+        (db_gl_error_drain_context_t *)user_data;
+    const uint32_t error_code = (uint32_t)g_upload_proc_table.get_error();
+    if (error_code == (uint32_t)GL_NO_ERROR) {
+        return (db_progress_drain_item_t){
+            .native_result = error_code,
+            .done = 1,
+        };
+    }
+    if ((drain->trace != NULL) &&
+        (drain->trace->count < DB_GL_ERROR_TRACE_CAPACITY)) {
+        drain->trace->records[drain->trace->count++] = (db_gl_error_record_t){
+            .error_code = error_code,
+            .phase = drain->phase,
+            .target = drain->target,
+            .context = drain->context,
+        };
+    }
+    return (db_progress_drain_item_t){
+        .native_result = error_code,
+        .done = 0,
+    };
+}
+
 size_t db_gl_error_trace_drain(db_gl_error_trace_t *trace, const char *phase,
                                const char *target, const char *context) {
-    size_t drained_count = 0U;
     if (g_upload_proc_table.get_error == NULL) {
         return 0U;
     }
-    const db_poll_policy_t *const policy =
-        db_progress_policy_get(DB_PROGRESS_GL_ERROR_DRAIN);
-    for (uint32_t index = 0U; index < policy->max_attempts; index++) {
-        const uint32_t error_code = (uint32_t)g_upload_proc_table.get_error();
-        if (error_code == (uint32_t)GL_NO_ERROR) {
-            break;
-        }
-        if ((trace != NULL) && (trace->count < DB_GL_ERROR_TRACE_CAPACITY)) {
-            trace->records[trace->count++] = (db_gl_error_record_t){
-                .error_code = error_code,
-                .phase = phase,
-                .target = target,
-                .context = context,
-            };
-        }
-        drained_count++;
-    }
-    if (drained_count == policy->max_attempts) {
+    db_gl_error_drain_context_t drain = {
+        .trace = trace,
+        .phase = phase,
+        .target = target,
+        .context = context,
+    };
+    const db_progress_drain_result_t result = db_progress_drain_execute(
+        DB_PROGRESS_GL_ERROR_DRAIN, db_gl_error_drain_next, &drain);
+    if (result.truncated != 0) {
         const db_log_field_t fields[] = {
             DB_LOG_TOKEN("code", "error_queue_limit"),
-            DB_LOG_U64("drained_count", drained_count),
+            DB_LOG_U64("drained_count", result.drained_count),
+            DB_LOG_U64("emitted_count", (trace != NULL) ? trace->count : 0U),
+            DB_LOG_U64("omitted_count",
+                       (trace != NULL) ? result.drained_count - trace->count
+                                       : result.drained_count),
             DB_LOG_BOOL("truncated", 1),
             DB_LOG_STRING("phase", phase),
             DB_LOG_STRING("target", target),
@@ -150,7 +176,7 @@ size_t db_gl_error_trace_drain(db_gl_error_trace_t *trace, const char *phase,
         db_log_error("renderer_gl_runtime", "gl_error_drain", fields,
                      DB_LOG_FIELD_COUNT(fields));
     }
-    return drained_count;
+    return result.drained_count;
 }
 
 void db_gl_shadow_upload_trace_reset(db_gl_shadow_upload_trace_t *trace) {

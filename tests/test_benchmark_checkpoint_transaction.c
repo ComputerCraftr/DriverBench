@@ -21,8 +21,8 @@ db_test_benchmark_generate_plan(db_benchmark_core_t *core, uint32_t frame_index,
                                 const db_frame_plan_request_t *request,
                                 db_frame_plan_t *plan) {
     db_frame_requirements_t requirements = {0};
-    db_frame_plan_status_t status = db_benchmark_core_probe_frame(
-        core, frame_index, request, &requirements);
+    db_frame_plan_status_t status =
+        db_benchmark_core_probe_frame(core, frame_index, &requirements);
     if ((status == DB_FRAME_PLAN_CHECKPOINT_REQUIRED) ||
         ((status == DB_FRAME_PLAN_OK) &&
          requirements.checkpoint_required != 0)) {
@@ -69,7 +69,7 @@ static void db_test_overlapping_checkpoint_is_fixed_and_transactional(
     DB_TEST_EXPECT_EQ_INT(state, core.checkpoint.enabled, 0);
     db_frame_requirements_t requirements = {0};
     DB_TEST_EXPECT_EQ_INT(
-        state, db_benchmark_core_probe_frame(&core, 0U, NULL, &requirements),
+        state, db_benchmark_core_probe_frame(&core, 0U, &requirements),
         DB_FRAME_PLAN_CHECKPOINT_REQUIRED);
     DB_TEST_EXPECT_TRUE(state, requirements.checkpoint_required != 0);
     const uint64_t requirements_token = requirements.requirements_token;

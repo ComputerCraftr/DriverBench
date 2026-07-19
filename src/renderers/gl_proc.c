@@ -1,5 +1,4 @@
 #include "core/db_log.h"
-#include "core/db_poll_policy.h"
 #include "gl_api.h"
 #include "gl_common.h"
 #include "gl_proc_runtime.h"
@@ -12,26 +11,12 @@ void db_gl_check_error_at(const char *file, int line, const char *func) {
     if (g_upload_proc_table.get_error == NULL) {
         return;
     }
-    const db_poll_policy_t *const policy =
-        db_progress_policy_get(DB_PROGRESS_GL_ERROR_DRAIN);
-    for (uint32_t index = 0U; index < policy->max_attempts; index++) {
-        const GLenum error = g_upload_proc_table.get_error();
-        if (error == GL_NO_ERROR) {
-            return;
-        }
+    db_gl_error_trace_t trace = {0};
+    (void)db_gl_error_trace_drain(&trace, "api", "gl", func);
+    for (size_t index = 0U; index < trace.count; index++) {
         DB_RUNTIME_ERROR("gl_error", "%s:%d (%s) GL error: 0x%04X", file, line,
-                         func, (unsigned int)error);
+                         func, trace.records[index].error_code);
     }
-    const db_log_field_t fields[] = {
-        DB_LOG_TOKEN("code", "error_queue_limit"),
-        DB_LOG_U64("drained_count", policy->max_attempts),
-        DB_LOG_BOOL("truncated", 1),
-        DB_LOG_STRING("file", file),
-        DB_LOG_I64("line", line),
-        DB_LOG_STRING("function", func),
-    };
-    db_log_error("gl_error", "gl_error_drain", fields,
-                 DB_LOG_FIELD_COUNT(fields));
 }
 
 void db_gl_require_upload_proc_table_loaded(const char *func_name) {
@@ -47,18 +32,10 @@ uint32_t db_gl_get_error_value(void) {
     if (g_upload_proc_table.get_error == NULL) {
         return (uint32_t)GL_NO_ERROR;
     }
-    const uint32_t first_error = (uint32_t)g_upload_proc_table.get_error();
-    if (first_error == (uint32_t)GL_NO_ERROR) {
-        return first_error;
-    }
-    const db_poll_policy_t *const policy =
-        db_progress_policy_get(DB_PROGRESS_GL_ERROR_DRAIN);
-    for (uint32_t index = 1U; index < policy->max_attempts; index++) {
-        if (g_upload_proc_table.get_error() == GL_NO_ERROR) {
-            break;
-        }
-    }
-    return first_error;
+    db_gl_error_trace_t trace = {0};
+    (void)db_gl_error_trace_drain(&trace, "api", "gl", "get_error_value");
+    return (trace.count > 0U) ? trace.records[0].error_code
+                              : (uint32_t)GL_NO_ERROR;
 }
 
 db_gl_generic_proc_t db_gl_get_proc(const char *name) {

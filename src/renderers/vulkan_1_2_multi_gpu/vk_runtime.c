@@ -2,8 +2,7 @@
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
 #include "../../core/db_render_result.h"
-#include "../../core/db_sort.h"
-#include "core/db_poll_policy.h"
+#include "core/db_progress_policy.h"
 #include "core/db_renderer_log.h"
 #include "core/db_renderer_support.h"
 #include "vk_diagnostics.h"
@@ -29,43 +28,42 @@ void db_vk_shutdown(void) {
                                            : BACKEND_NAME,
         g_state.metrics.bench_frames, g_state.runtime.work_unit_count, bench_ms,
         db_vk_draw_stats, db_vk_execution_report);
-    double render_p50_ms = 0.0;
-    double render_p95_ms = 0.0;
-    double render_p99_ms = 0.0;
-    if ((g_state.metrics.render_frame_samples_ms != NULL) &&
-        (g_state.metrics.render_frame_samples_count > 0U)) {
-        if (db_sort_f64_ascending(g_state.metrics.render_frame_samples_ms,
-                                  g_state.metrics.render_frame_samples_count) !=
-            DB_SORT_OK) {
-            runtime_failf("failed to sort render frame samples");
-        }
-        render_p50_ms = db_vk_scheduler_percentile_sorted(
-            g_state.metrics.render_frame_samples_ms,
-            g_state.metrics.render_frame_samples_count, DB_VK_PERCENTILE_P50);
-        render_p95_ms = db_vk_scheduler_percentile_sorted(
-            g_state.metrics.render_frame_samples_ms,
-            g_state.metrics.render_frame_samples_count, DB_VK_PERCENTILE_P95);
-        render_p99_ms = db_vk_scheduler_percentile_sorted(
-            g_state.metrics.render_frame_samples_ms,
-            g_state.metrics.render_frame_samples_count, DB_VK_PERCENTILE_P99);
-    }
     const db_log_field_t metric_fields[] = {
+        DB_LOG_TOKEN("percentile_scope", "recent_window"),
+        DB_LOG_U64("window_capacity",
+                   g_state.metrics.render_metric_window_capacity),
+        DB_LOG_U64("render_window_sample_count",
+                   g_state.metrics.render_metric_window_sample_count),
+        DB_LOG_U64("render_total_samples",
+                   g_state.metrics.render_metric_total_samples),
         DB_LOG_TOKEN("secondary_kind",
                      (g_state.presentation.no_present_mode != 0) ? "loop"
                                                                  : "present"),
         DB_LOG_DOUBLE("render_frame_ema_ms", g_state.metrics.frame_time_ema_ms),
         DB_LOG_DOUBLE("render_jitter_ema_ms",
                       g_state.metrics.frame_jitter_ema_ms),
-        DB_LOG_DOUBLE("render_p50_ms", render_p50_ms),
-        DB_LOG_DOUBLE("render_p95_ms", render_p95_ms),
-        DB_LOG_DOUBLE("render_p99_ms", render_p99_ms),
+        DB_LOG_DOUBLE("render_window_p50_ms",
+                      g_state.metrics.render_frame_window_p50_ms),
+        DB_LOG_DOUBLE("render_window_p95_ms",
+                      g_state.metrics.render_frame_window_p95_ms),
+        DB_LOG_DOUBLE("render_window_p99_ms",
+                      g_state.metrics.render_frame_window_p99_ms),
         DB_LOG_DOUBLE("secondary_frame_ema_ms",
                       g_state.metrics.present_frame_ema_ms),
         DB_LOG_DOUBLE("secondary_jitter_ema_ms",
                       g_state.metrics.present_jitter_ema_ms),
-        DB_LOG_DOUBLE("secondary_p50_ms", g_state.metrics.present_frame_p50_ms),
-        DB_LOG_DOUBLE("secondary_p95_ms", g_state.metrics.present_frame_p95_ms),
-        DB_LOG_DOUBLE("secondary_p99_ms", g_state.metrics.present_frame_p99_ms),
+        DB_LOG_U64("secondary_window_sample_count",
+                   g_state.metrics.present_metric_window_sample_count),
+        DB_LOG_U64("secondary_window_capacity",
+                   g_state.metrics.present_metric_window_capacity),
+        DB_LOG_U64("secondary_total_samples",
+                   g_state.metrics.present_metric_total_samples),
+        DB_LOG_DOUBLE("secondary_window_p50_ms",
+                      g_state.metrics.present_frame_window_p50_ms),
+        DB_LOG_DOUBLE("secondary_window_p95_ms",
+                      g_state.metrics.present_frame_window_p95_ms),
+        DB_LOG_DOUBLE("secondary_window_p99_ms",
+                      g_state.metrics.present_frame_window_p99_ms),
         DB_LOG_U64("retries", g_state.metrics.present_retries),
     };
     db_log_info(BACKEND_NAME, "vk_metrics", metric_fields,
@@ -159,7 +157,6 @@ void db_vk_shutdown(void) {
     db_vk_cleanup_runtime(&cleanup);
     free(g_state.scheduler.assignment_storage);
     free(g_state.scheduler.piece_storage);
-    free(g_state.metrics.render_frame_samples_ms);
     g_state = (renderer_state_t){0};
 }
 

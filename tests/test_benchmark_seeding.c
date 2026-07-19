@@ -14,8 +14,8 @@
 #include "benchmarks/db_snake_collect_internal.h"
 #include "benchmarks/db_snake_shape_internal.h"
 #include "config/benchmark_config.h"
+#include "core/db_benchmark_model.h"
 #include "core/db_frame_plan.h"
-#include "core/db_frame_source.h"
 #include "core/db_hash.h"
 #include "core/db_numeric.h"
 #include "core/db_render_ir.h"
@@ -35,8 +35,8 @@ db_test_benchmark_generate_plan(db_benchmark_core_t *core, uint32_t frame_index,
                                 const db_frame_plan_request_t *request,
                                 db_frame_plan_t *plan) {
     db_frame_requirements_t requirements = {0};
-    db_frame_plan_status_t status = db_benchmark_core_probe_frame(
-        core, frame_index, request, &requirements);
+    db_frame_plan_status_t status =
+        db_benchmark_core_probe_frame(core, frame_index, &requirements);
     if ((status == DB_FRAME_PLAN_CHECKPOINT_REQUIRED) ||
         ((status == DB_FRAME_PLAN_OK) &&
          (requirements.checkpoint_required != 0))) {
@@ -351,8 +351,8 @@ db_test_forced_rebuild_uses_authoritative_geometry(db_test_state_t *state) {
     db_benchmark_core_shutdown(&core);
 }
 
-static void
-db_test_frame_source_commits_only_successful_results(db_test_state_t *state) {
+static void db_test_benchmark_model_commits_only_successful_results(
+    db_test_state_t *state) {
     db_benchmark_runtime_init_t runtime = {0};
     const db_benchmark_runtime_options_t options = {
         .benchmark_mode_text = DB_BENCHMARK_MODE_SNAKE_GRID,
@@ -361,29 +361,30 @@ db_test_frame_source_commits_only_successful_results(db_test_state_t *state) {
     };
     DB_TEST_EXPECT_TRUE(state, db_init_benchmark_runtime_from_options(
                                    "test", &options, &runtime) != 0);
-    db_frame_source_t source = {0};
+    db_benchmark_model_t model = {0};
     DB_TEST_EXPECT_TRUE(
-        state, db_frame_source_init(
-                   &source, &(const db_frame_source_config_t){
-                                .benchmark_configuration = &runtime,
-                                .working_format = DB_PIXEL_FORMAT_RGBA16F,
-                            }) != 0);
+        state, db_benchmark_model_init(
+                   &model, &(const db_benchmark_model_config_t){
+                               .benchmark_configuration = &runtime,
+                               .working_format = DB_PIXEL_FORMAT_RGBA16F,
+                           }) != 0);
 
     db_frame_plan_t first = {0};
-    db_frame_source_generate(&source, 0U, NULL, &first);
-    db_frame_source_commit(&source, &first,
-                           &(const db_render_result_t){.success = 0});
+    (void)db_benchmark_model_generate(&model, 0U, NULL, &first);
+    db_benchmark_model_commit(&model, &first,
+                              &(const db_render_result_t){.success = 0});
     db_frame_plan_t retry = {0};
-    db_frame_source_generate(&source, 0U, NULL, &retry);
+    (void)db_benchmark_model_generate(&model, 0U, NULL, &retry);
     DB_TEST_EXPECT_TRUE(state,
                         retry.expected_state_hash == first.expected_state_hash);
 
-    db_frame_source_commit_success(&source, &retry);
+    db_benchmark_model_commit(&model, &retry,
+                              &(const db_render_result_t){.success = 1});
     db_frame_plan_t next = {0};
-    db_frame_source_generate(&source, 1U, NULL, &next);
+    (void)db_benchmark_model_generate(&model, 1U, NULL, &next);
     DB_TEST_EXPECT_TRUE(state,
                         next.expected_state_hash != retry.expected_state_hash);
-    db_frame_source_shutdown(&source);
+    db_benchmark_model_shutdown(&model);
 }
 
 static db_benchmark_runtime_init_t
@@ -711,8 +712,8 @@ unsigned db_benchmark_seeding_test_run_all(void) {
          db_test_snake_fast_forward_is_boundary_bounded},
         {"forced_rebuild_uses_authoritative_geometry",
          db_test_forced_rebuild_uses_authoritative_geometry},
-        {"frame_source_commits_only_successful_results",
-         db_test_frame_source_commits_only_successful_results},
+        {"benchmark_model_commits_only_successful_results",
+         db_test_benchmark_model_commits_only_successful_results},
         {"checkpoint_scope_and_working_format",
          db_test_checkpoint_scope_and_working_format},
         {"checkpoint_rebuild_matches_incremental",

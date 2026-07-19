@@ -93,7 +93,8 @@ if(RULE_SET STREQUAL "display_glfw_policy")
 
     set(DB_PP_KMS_FORMAT_FILES
         "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_cpu.c"
-        "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_core.c")
+        "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_core.c"
+        "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_gl_frame.c")
     db_pp_check_forbidden_in_files(
         DB_PP_KMS_FORMAT_FILES "GBM_FORMAT_(XRGB8888|XRGB2101010)"
         "KMS producers must consume the centralized native output format")

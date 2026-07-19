@@ -4,21 +4,16 @@
 #include "core/db_conformance.h"
 #include "core/db_conformance_cache.h"
 #include "core/db_core.h"
-#include "core/db_poll_policy.h"
 #include "core/db_probe_process.h"
-#include "core/db_process_environment.h"
 #include "core/db_render_types.h"
 
-#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <spawn.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -90,115 +85,15 @@ static int spawn_capture(const char *executable, const char *const *arguments,
     for (size_t index = 0U; index < argument_count; index++) {
         valid &= argv[index + 1U] != NULL;
     }
-    int pipe_fds[2] = {-1, -1};
-    if ((valid == 0) || (pipe(pipe_fds) != 0)) {
-        valid = 0;
-    }
-    pid_t pid = -1;
     if (valid != 0) {
-        posix_spawn_file_actions_t actions;
-        int error = posix_spawn_file_actions_init(&actions);
-        error |= posix_spawn_file_actions_adddup2(&actions, pipe_fds[1],
-                                                  STDOUT_FILENO);
-        error |= posix_spawn_file_actions_adddup2(&actions, pipe_fds[1],
-                                                  STDERR_FILENO);
-        error |= posix_spawn_file_actions_addclose(&actions, pipe_fds[0]);
-        if (error == 0) {
-            error = posix_spawn(&pid, executable, &actions, NULL, argv,
-                                db_process_environment());
-        }
-        (void)posix_spawn_file_actions_destroy(&actions);
-        valid = error == 0;
+        valid = db_probe_process_capture_output(executable, argv, output,
+                                                output_capacity);
     }
-    if (pipe_fds[1] >= 0) {
-        (void)close(pipe_fds[1]);
-    }
-    size_t output_size = 0U;
-    int status = 0;
-    int done = 0;
-    int pipe_eof = 0;
-    if (valid != 0) {
-        const db_poll_policy_t *const child_policy =
-            db_progress_policy_get(DB_PROGRESS_CONFORMANCE_HELPER);
-        const db_poll_policy_t *const reap_policy =
-            db_progress_policy_get(DB_PROGRESS_CONFORMANCE_REAP);
-        if ((child_policy == NULL) || (reap_policy == NULL)) {
-            valid = 0;
-        }
-        const int flags = fcntl(pipe_fds[0], F_GETFL, 0);
-        if (flags >= 0) {
-            (void)fcntl(pipe_fds[0], F_SETFL, flags | O_NONBLOCK);
-        }
-        const db_deadline_t deadline = db_deadline_after(
-            db_now_ns_monotonic(),
-            (child_policy != NULL) ? child_policy->total_timeout_ns : 0U);
-        while ((valid != 0) && ((done == 0) || (pipe_eof == 0)) &&
-               (output_size + 1U < output_capacity)) {
-            for (;;) {
-                const ssize_t count = read(pipe_fds[0], output + output_size,
-                                           output_capacity - output_size - 1U);
-                if (count > 0) {
-                    output_size += (size_t)count;
-                    if (output_size + 1U >= output_capacity) {
-                        valid = 0;
-                        break;
-                    }
-                    continue;
-                }
-                if (count == 0) {
-                    pipe_eof = 1;
-                    break;
-                }
-                // NOLINTNEXTLINE(misc-include-cleaner) -- public <errno.h>.
-                if (errno == EINTR) {
-                    continue;
-                }
-                // NOLINTNEXTLINE(misc-include-cleaner) -- public <errno.h>.
-                if (errno != EAGAIN) {
-                    valid = 0;
-                }
-                break;
-            }
-            if (done == 0) {
-                const pid_t waited = waitpid(pid, &status, WNOHANG);
-                if (waited == pid) {
-                    done = 1;
-                } else if (waited < 0) {
-                    valid = 0;
-                }
-            }
-            if ((valid == 0) || ((done != 0) && (pipe_eof != 0))) {
-                break;
-            }
-            if (db_deadline_expired(&deadline, db_now_ns_monotonic()) != 0) {
-                valid = 0;
-                break;
-            }
-            const int poll_result = db_probe_process_wait_output(
-                pipe_fds[0], DB_PROBE_PROCESS_POLL_INTERVAL_MS);
-            if (poll_result < 0) {
-                // NOLINTNEXTLINE(misc-include-cleaner) -- public <errno.h>.
-                if (errno == EINTR) {
-                    continue;
-                }
-                valid = 0;
-            }
-        }
-        if (done == 0) {
-            db_probe_process_terminate_and_reap(
-                pid,
-                (reap_policy != NULL) ? reap_policy->total_timeout_ns : 0U);
-        }
-    }
-    if (pipe_fds[0] >= 0) {
-        (void)close(pipe_fds[0]);
-    }
-    output[output_size] = '\0';
     for (size_t index = 0U; index < argument_count + 1U; index++) {
         free(argv[index]);
     }
     free(argv_storage);
-    return valid && done && WIFEXITED(status) && (WEXITSTATUS(status) == 0);
+    return valid;
 }
 
 static int parse_aggregate_hash(const char *output, uint64_t *hash) {

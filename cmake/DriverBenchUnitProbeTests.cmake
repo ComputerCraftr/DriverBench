@@ -11,15 +11,17 @@ function(db_register_unit_and_probe_tests)
         tests/test_damage_trace.c
         tests/test_display_gl_runtime.c
         tests/test_display_hdr.c
+        tests/test_frame_coordinator.c
         tests/test_gl_shadow_present.c
         tests/test_gl1_replay.c
         tests/test_hash.c
+        tests/test_metrics_policy.c
         tests/test_numeric.c
-        tests/test_poll_policy.c)
+        tests/test_progress_policy.c)
     target_sources(
         driverbench_unit_tests
         PRIVATE tests/test_render_ir.c tests/test_render_ir_snapshot.c
-                tests/test_sort.c)
+                tests/test_run_session.c tests/test_sort.c)
     if(DB_BUILD_VULKAN AND DB_VULKAN_LIB)
         target_sources(driverbench_unit_tests PRIVATE tests/test_vk_scheduler.c)
     endif()

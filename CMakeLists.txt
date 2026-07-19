@@ -31,21 +31,21 @@ if(DB_COMPILER_IS_CLANG OR DB_COMPILER_IS_GNU)
 endif()
 include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchWarnings.cmake)
 
-set(DB_CORE_SOURCES
+set(DB_FOUNDATION_SOURCES
     src/config/runtime_options.c
     src/core/db_buffer_convert.c
     src/core/db_core.c
-    src/core/db_conformance.c
-    src/core/db_conformance_cache.c
-    src/core/db_conformance_service.c
-    src/core/db_frame_plan.c
-    src/core/db_frame_preparation.c
-    src/core/db_gradient_divergence.c
     src/core/db_log.c
-    src/core/db_poll_policy.c
-    src/core/db_process_environment.c
-    src/core/db_probe_process.c
-    src/core/db_probe_protocol.c
+    src/core/db_metrics_policy.c
+    src/core/db_progress_policy.c
+    src/core/db_renderer_diagnostics.c
+    src/core/db_sort.c
+    src/core/db_hash.c
+    src/core/db_hash_simd.c
+    src/core/db_trace.c)
+
+set(DB_RENDER_IR_SOURCES
+    src/core/db_frame_plan.c
     src/core/db_render_ir.c
     src/core/db_render_ir_query.c
     src/core/db_render_ir_ranges.c
@@ -55,22 +55,36 @@ set(DB_CORE_SOURCES
     src/core/db_render_ir_snapshot.c
     src/core/db_render_ir_surface.c
     src/core/db_render_ir_validate.c
-    src/core/db_replay_policy.c
-    src/core/db_renderer_diagnostics.c
-    src/core/db_sort.c
+    src/core/db_replay_policy.c)
+
+set(DB_PLATFORM_PROCESS_SOURCES
+    src/core/db_process_environment.c src/core/db_probe_process.c
+    src/core/db_probe_protocol.c)
+
+set(DB_QUALIFICATION_CONTRACT_SOURCES src/core/db_conformance.c
+                                      src/core/db_qualification_contracts.c)
+
+set(DB_QUALIFICATION_SERVICE_SOURCES
+    src/core/db_conformance_cache.c src/core/db_conformance_service.c
+    src/core/db_gradient_divergence.c)
+
+set(DB_FRAME_CONTRACT_SOURCES src/core/db_frame_contracts.c)
+
+set(DB_BENCHMARK_MODEL_SOURCES
     src/benchmarks/db_benchmark_core.c
     src/benchmarks/db_benchmark_workspace.c
     src/benchmarks/db_benchmark_requirements.c
     src/benchmarks/db_snake_fast_forward.c
     src/benchmarks/db_benchmark_checkpoint.c
     src/benchmarks/db_benchmark_emitters.c
-    src/benchmarks/db_frame_source.c
-    src/core/db_hash.c
-    src/core/db_hash_simd.c)
+    src/benchmarks/db_benchmark_model.c)
+
+set(DB_FRAME_COORDINATOR_SOURCES src/core/db_frame_coordinator.c)
+set(DB_RUN_SESSION_SOURCES src/core/db_run_session.c)
+
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|i[3-6]86)$")
-    list(APPEND DB_CORE_SOURCES src/core/db_hash_simd_x86.c)
+    list(APPEND DB_FOUNDATION_SOURCES src/core/db_hash_simd_x86.c)
 endif()
-list(APPEND DB_CORE_SOURCES src/core/db_trace.c)
 
 option(DB_BUILD_VULKAN "Build Vulkan benchmark backend" ON)
 option(DB_BUILD_GLFW_WINDOW_DISPLAY "Build GLFW window display backend" ON)

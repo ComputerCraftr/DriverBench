@@ -6,7 +6,6 @@
 #include "core/db_frame_plan.h"
 #include "core/db_numeric.h"
 #include "core/db_render_result.h"
-#include "core/db_renderer_diagnostics.h"
 #include "core/db_renderer_support.h"
 #include "vk_init_internal.h"
 #include "vk_internal.h"
@@ -36,7 +35,7 @@ db_vk_finalize_frame(const db_vk_frame_finalize_input_t *input) {
         const uint64_t frame_end_ns = db_now_ns_monotonic();
         const double frame_ms =
             DB_TO_F64(frame_end_ns - input->frame_start_ns) / DB_NS_PER_MS;
-        db_vk_record_render_frame_sample(frame_ms);
+        db_vk_record_render_frame_duration(frame_ms);
         db_vk_scheduler_update_frame_pacing(
             frame_ms, &g_state.metrics.frame_time_ema_ms,
             &g_state.metrics.frame_jitter_ema_ms);
@@ -104,17 +103,14 @@ db_vk_finalize_frame(const db_vk_frame_finalize_input_t *input) {
         .lookup_words = db_checked_size_to_u32(
             BACKEND_NAME, "lookup_word_count", input->lookup_word_count),
         .gradient_implementation = input->gradient_implementation,
-        .qualification_source = g_state.scheduler.gradient_qualification_source,
-        .cache_status = g_state.scheduler.gradient_cache_status,
-        .qualification_lane_count = db_checked_size_to_u32(
-            BACKEND_NAME, "qualification_lane_count",
-            g_state.scheduler.gradient_topology.lane_count),
-        .qualification_reason = g_state.scheduler.gradient_topology.reason,
-        .qualified =
-            DB_BOOL((g_state.diagnostics.vk_gradient == DB_VK_GRADIENT_AUTO) &&
-                    (g_state.scheduler.gradient_topology.qualified != 0)),
+        .qualification_source = g_state.scheduler.gradient_applied.source,
+        .cache_status = g_state.scheduler.gradient_applied.cache_status,
+        .qualification_lane_count =
+            g_state.scheduler.gradient_applied.lane_count,
+        .qualification_reason = g_state.scheduler.gradient_applied.reason,
+        .qualified = g_state.scheduler.gradient_applied.production_qualified,
         .diagnostic_forced =
-            DB_BOOL(g_state.diagnostics.vk_gradient != DB_VK_GRADIENT_AUTO),
+            g_state.scheduler.gradient_applied.diagnostic_forced,
     };
     for (uint32_t gpu = 0U; gpu < input->gpu_count; gpu++) {
         g_state.scheduler.cumulative_work_units[gpu] +=

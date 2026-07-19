@@ -4,6 +4,7 @@ endif()
 
 set(DB_KMS_FILES
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_core.c"
+    "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_gl_frame.c"
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_cpu.c"
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_display.c"
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_egl.c"

@@ -6,6 +6,7 @@
 #include <vulkan/vulkan_core.h>
 
 #include "../gl_common.h"
+#include "core/db_frame_contracts.h"
 #include "core/db_renderer_runtime_contract.h"
 
 typedef enum {
@@ -37,8 +38,15 @@ uint64_t db_vk_output_hash(void);
 void db_vk_set_output_hash_enabled(int enabled);
 void db_vk_draw_stats(db_renderer_draw_path_stats_t *stats);
 void db_vk_execution_report(db_render_execution_report_t *report);
+const db_renderer_qualification_ops_t *db_vk_qualification_ops(void);
+double db_vk_last_render_critical_ms(void);
 void db_vk_set_present_metrics(double frame_ema_ms, double jitter_ema_ms,
                                double p50_ms, double p95_ms, double p99_ms,
+                               uint32_t window_sample_count,
+                               uint32_t window_capacity, uint64_t total_samples,
                                uint64_t retries);
+void db_vk_set_render_metrics(double p50_ms, double p95_ms, double p99_ms,
+                              uint32_t window_sample_count,
+                              uint32_t window_capacity, uint64_t total_samples);
 
 #endif

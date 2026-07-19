@@ -258,4 +258,11 @@ function(db_register_source_policy_tests)
     set_tests_properties(source_kms_presentation_policy PROPERTIES LABELS
                                                                    "regression")
 
+    add_test(
+        NAME source_frame_lifecycle_migration
+        COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
+                ${CMAKE_SOURCE_DIR}/cmake/CheckFrameLifecycleMigration.cmake)
+    set_tests_properties(source_frame_lifecycle_migration
+                         PROPERTIES LABELS "regression")
+
 endfunction()

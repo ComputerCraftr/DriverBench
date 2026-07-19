@@ -3,7 +3,7 @@
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_geometry.h"
 #include "../../core/db_numeric.h"
-#include "../../core/db_poll_policy.h"
+#include "../../core/db_progress_policy.h"
 #include "../../core/db_render_result.h"
 #include "../damage_trace.h"
 #include "core/db_log.h"
@@ -62,16 +62,18 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
         plan->update_metadata.gradient_count +
         ((plan->rebuild_required != 0) ? plan->rebuild_metadata.gradient_count
                                        : 0U);
+    const char *const probe_implementation =
+        getenv("DRIVERBENCH_PROBE_GRADIENT_IMPLEMENTATION");
+    const int probe_child = getenv("DRIVERBENCH_PROBE_CHILD") != NULL;
     if ((planned_gradient_commands > 0U) &&
-        (g_state.diagnostics.vk_gradient == DB_VK_GRADIENT_AUTO)) {
-        db_vk_resolve_gradient_qualification();
-        if (g_state.scheduler.gradient_topology.qualified == 0) {
+        (g_state.diagnostics.vk_gradient == DB_VK_GRADIENT_AUTO) &&
+        (probe_child == 0)) {
+        if (g_state.scheduler.gradient_applied.generation == 0U) {
             const db_log_field_t fields[] = {
                 DB_LOG_TOKEN("code", "gradient_path_unqualified"),
-                DB_LOG_TOKEN("reason",
-                             g_state.scheduler.gradient_topology.reason),
+                DB_LOG_TOKEN("reason", "run_snapshot_unavailable"),
                 DB_LOG_U64("retained_lanes",
-                           g_state.scheduler.gradient_topology.lane_count),
+                           g_state.device.selection.active_lane_count),
             };
             db_log_error(BACKEND_NAME, "vk_execution_error", fields,
                          DB_LOG_FIELD_COUNT(fields));
@@ -80,9 +82,6 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
     }
     db_gradient_implementation_t gradient_implementation =
         DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES;
-    const char *const probe_implementation =
-        getenv("DRIVERBENCH_PROBE_GRADIENT_IMPLEMENTATION");
-    const int probe_child = getenv("DRIVERBENCH_PROBE_CHILD") != NULL;
     if (probe_child && (probe_implementation != NULL) &&
         (strcmp(probe_implementation, "exact_lookup") == 0)) {
         gradient_implementation = DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP;
@@ -90,7 +89,7 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
         gradient_implementation = DB_GRADIENT_IMPLEMENTATION_SEMANTIC;
     } else if (g_state.diagnostics.vk_gradient == DB_VK_GRADIENT_AUTO) {
         gradient_implementation =
-            g_state.scheduler.gradient_topology.implementation;
+            g_state.scheduler.gradient_applied.implementation;
     }
     const int accelerated_gradient = DB_BOOL(
         gradient_implementation != DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES);

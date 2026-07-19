@@ -4,6 +4,7 @@
 #include "kms_hdr.h"
 #include "kms_runner.h"
 
+#include "../display_frame_loop_common.h"
 #include "../display_presentation_policy.h"
 #include "core/db_geometry.h"
 
@@ -15,7 +16,7 @@
 #include <gbm.h>
 #include <stdint.h>
 
-#include "../../core/db_frame_source.h"
+#include "../../core/db_run_session.h"
 
 #define DRM_SRC_FP_SHIFT 16U
 #define LOG_MSG_CAPACITY 2048U
@@ -84,8 +85,8 @@ typedef struct {
     int last_age_valid;
 } db_kms_egl_presentation_t;
 
-typedef struct fb *(*db_kms_atomic_next_fb_fn_t)(void *user_ctx,
-                                                 uint32_t frame_index);
+typedef db_display_frame_loop_result_t (*db_kms_atomic_frame_fn_t)(
+    void *user_ctx, uint32_t frame_index);
 
 typedef struct {
     db_api_t api;
@@ -103,7 +104,16 @@ typedef struct {
 } db_kms_atomic_frame_loop_t;
 
 typedef struct {
+    db_run_session_t *session;
+    const db_kms_atomic_frame_loop_t *loop;
+    struct fb *pending_fb;
+    uint64_t generation;
+    int initial_modeset;
+} db_kms_frame_transaction_t;
+
+typedef struct {
     const char *backend;
+    db_gl_renderer_t gl_renderer;
     int debug_clear_default_framebuffer;
     int kms_fd;
     EGLDisplay dpy;
@@ -111,12 +121,14 @@ typedef struct {
     struct gbm_surface *gbm_surf;
     const db_display_renderer_runtime_t *resolved_runtime;
     const db_kms_atomic_renderer_vtable_t *renderer;
-    db_frame_source_t *core;
     uint32_t pixel_width;
     uint32_t pixel_height;
     uint32_t destination_width;
     uint32_t destination_height;
     db_kms_egl_presentation_t presentation;
+    db_kms_egl_presentation_t pending_presentation;
+    db_kms_frame_transaction_t transaction;
+    int pending_presentation_valid;
 } db_kms_atomic_gl_frame_producer_t;
 
 typedef struct {
@@ -126,14 +138,19 @@ typedef struct {
     uint32_t height;
     const char *backend;
     db_pixel_surface_t surface;
-    db_frame_source_t *core;
+    const db_display_renderer_runtime_t *resolved_runtime;
     db_native_output_format_t native_output_format;
     db_kms_cpu_scanout_slot_t slots[DB_KMS_CPU_SCANOUT_SLOT_COUNT];
     db_presentation_damage_history_t damage_history;
+    db_presentation_damage_history_t pending_damage_history;
     db_grid_block_t logical_damage[DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME];
     db_damage_block_t pixel_damage[DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME];
     uint32_t next_slot;
+    uint32_t pending_slot;
     uint64_t present_serial;
+    int pending_slot_valid;
+    int pending_damage_history_valid;
+    db_kms_frame_transaction_t transaction;
 } db_kms_atomic_cpu_frame_producer_t;
 
 void db_kms_atomic_cpu_scanout_shutdown(
@@ -150,7 +167,7 @@ typedef struct {
 typedef struct {
     const db_kms_atomic_frame_loop_t *loop;
     void *producer_ctx;
-    db_kms_atomic_next_fb_fn_t next_fb_fn;
+    db_kms_atomic_frame_fn_t frame_fn;
     double *next_progress_log_due_ms;
 } db_kms_atomic_shared_loop_ctx_t;
 
@@ -185,13 +202,21 @@ struct fb *fb_from_bo(int fd, struct gbm_bo *bo, int is_surface_buffer);
 void fb_release(int fd, struct gbm_surface *gbm_surf, struct fb *fb);
 struct fb *db_kms_atomic_prime_first_frame_and_modeset(
     const struct kms_atomic *kms, uint32_t width, uint32_t height,
-    void *producer_ctx, db_kms_atomic_next_fb_fn_t next_fb_fn);
+    void *producer_ctx, db_kms_frame_transaction_t *transaction,
+    db_kms_atomic_frame_fn_t frame_fn);
 db_kms_atomic_loop_run_result_t
 db_kms_atomic_run_frame_loop_timed(const db_kms_atomic_frame_loop_t *loop,
                                    void *producer_ctx,
-                                   db_kms_atomic_next_fb_fn_t next_fb_fn);
-struct fb *db_kms_atomic_next_gl_fb(void *user_ctx, uint32_t frame_index);
-struct fb *db_kms_atomic_next_cpu_fb(void *user_ctx, uint32_t frame_index);
+                                   db_kms_atomic_frame_fn_t frame_fn);
+db_display_frame_loop_result_t db_kms_atomic_gl_frame(void *user_ctx,
+                                                      uint32_t frame_index);
+int db_kms_gl_run_session_init(db_kms_atomic_gl_frame_producer_t *producer);
+db_display_frame_loop_result_t db_kms_atomic_cpu_frame(void *user_ctx,
+                                                       uint32_t frame_index);
+int db_kms_cpu_run_session_init(db_kms_atomic_cpu_frame_producer_t *producer);
+db_present_result_t
+db_kms_present_pending(db_kms_frame_transaction_t *transaction,
+                       const db_renderer_frame_output_t *output);
 void db_kms_egl_presentation_init(const char *backend, EGLDisplay dpy,
                                   EGLSurface surf,
                                   db_kms_egl_presentation_t *presentation);

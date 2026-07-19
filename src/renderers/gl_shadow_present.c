@@ -1,6 +1,6 @@
 #include "../config/runtime_options.h"
 #include "../core/db_numeric.h"
-#include "../core/db_poll_policy.h"
+#include "../core/db_progress_policy.h"
 #include "core/db_format_contract.h"
 #include "core/db_log.h"
 #include "core/db_render_types.h"
@@ -61,13 +61,13 @@ int db_gl_shadow_present_slot_sync_pending_nonblocking(
         (g_upload_proc_table.delete_sync == NULL)) {
         return 1;
     }
-    const db_sync_wait_result_t result = db_gl_upload_stream_probe_sync(
+    const db_progress_outcome_t result = db_gl_upload_stream_probe_sync(
         slot->stream.in_flight_sync, DB_PROGRESS_GL_SHADOW_SLOT_PROBE);
-    if (result.status == DB_SYNC_WAIT_COMPLETED) {
+    if (result.status == DB_PROGRESS_COMPLETED) {
         db_gl_shadow_present_clear_slot_sync(slot);
         return 0;
     }
-    if (result.status == DB_SYNC_WAIT_FAILED) {
+    if (result.status == DB_PROGRESS_FAILED) {
         DB_RUNTIME_ERROR("shadow_present",
                          "GL slot sync probe failed operation=%s target=%s",
                          "slot_pending_probe",

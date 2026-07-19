@@ -1,12 +1,9 @@
-#include "../../core/db_alloc_policy.h"
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
-#include "../../core/db_metrics_policy.h"
-#include "../../core/db_numeric.h"
 #include "../../core/db_render_ir.h"
 #include "../../core/db_render_types.h"
 #include "core/db_log.h"
-#include "core/db_poll_policy.h"
+#include "core/db_progress_policy.h"
 #include "vk_diagnostics.h"
 #include "vk_init_internal.h"
 #include "vk_internal.h"
@@ -350,55 +347,8 @@ int db_vk_dual_metrics_enabled(void) {
     return g_state.runtime.dual_metrics_enabled;
 }
 
-uint32_t db_vk_metrics_sample_capacity_hint(void) {
-    if (g_state.runtime.frame_limit == 0U) {
-        return DB_METRIC_SAMPLE_INITIAL_CAPACITY;
-    }
-    return DB_MIN(
-        DB_MAX(g_state.runtime.frame_limit, DB_METRIC_SAMPLE_INITIAL_CAPACITY),
-        DB_METRIC_SAMPLE_MAX_CAPACITY);
-}
-
-void db_vk_record_render_frame_sample(double frame_ms) {
-    if (db_vk_dual_metrics_enabled() == 0) {
-        return;
-    }
-    if (g_state.metrics.render_frame_samples_ms == NULL) {
-        g_state.metrics.render_frame_samples_capacity =
-            db_vk_metrics_sample_capacity_hint();
-        g_state.metrics.render_frame_samples_ms = (double *)db_malloc_or_fail(
-            BACKEND_NAME, "render_frame_samples",
-            g_state.metrics.render_frame_samples_capacity, sizeof(double));
-    }
-    if (g_state.metrics.render_frame_samples_count >=
-        g_state.metrics.render_frame_samples_capacity) {
-        if (g_state.metrics.render_frame_samples_capacity >=
-            DB_METRIC_SAMPLE_MAX_CAPACITY) {
-            return;
-        }
-        const uint32_t new_capacity = db_u32_grow_capacity_3_2(
-            g_state.metrics.render_frame_samples_capacity,
-            g_state.metrics.render_frame_samples_count + 1U,
-            db_vk_metrics_sample_capacity_hint());
-        const uint32_t bounded_capacity =
-            DB_MIN(new_capacity, DB_METRIC_SAMPLE_MAX_CAPACITY);
-        if (bounded_capacity <= g_state.metrics.render_frame_samples_capacity) {
-            DB_RUNTIME_FAIL(BACKEND_NAME,
-                            "render frame sample capacity overflow");
-        }
-        size_t sample_capacity = db_checked_u32_to_size(
-            BACKEND_NAME, "sample_capacity",
-            g_state.metrics.render_frame_samples_capacity);
-        db_reserve_array_capacity_or_fail(
-            (void **)&g_state.metrics.render_frame_samples_ms, &sample_capacity,
-            (size_t)bounded_capacity, db_vk_metrics_sample_capacity_hint(),
-            sizeof(double), BACKEND_NAME, "render_frame_samples");
-        g_state.metrics.render_frame_samples_capacity = db_checked_size_to_u32(
-            BACKEND_NAME, "render_frame_samples_capacity", sample_capacity);
-    }
-    g_state.metrics
-        .render_frame_samples_ms[g_state.metrics.render_frame_samples_count++] =
-        frame_ms;
+void db_vk_record_render_frame_duration(double frame_ms) {
+    g_state.metrics.last_render_critical_ms = frame_ms;
 }
 
 void db_vk_recreate_swapchain_and_backing_targets_with_reset(void) {

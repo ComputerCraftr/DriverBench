@@ -4,6 +4,7 @@
 #include "core/db_core.h"
 #include "core/db_probe_process.h"
 #include "core/db_probe_protocol.h"
+#include "core/db_qualification_contracts.h"
 #include "core/db_render_types.h"
 
 #include <stdint.h>
@@ -23,6 +24,8 @@ enum {
     DB_TEST_BATCH_FAILURE = 9,
     DB_TEST_BATCH_DEDUP_FAILURE = 10,
     DB_TEST_BATCH_DEADLINE_FAILURE = 11,
+    DB_TEST_TOPOLOGY_SERVICE_FAILURE = 12,
+    DB_TEST_TOPOLOGY_BUILD_VERSION_OFFSET = 10U,
 };
 static const uint64_t db_test_protocol_timeout_ns = UINT64_C(500000000);
 
@@ -168,6 +171,46 @@ static int test_cache_service(const char *helper_path) {
         (strcmp(expired.reason, "aggregate_deadline") != 0)) {
         return service_failure(DB_TEST_BATCH_DEADLINE_FAILURE,
                                "aggregate_deadline", &expired);
+    }
+
+    (void)setenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE", "conforming", 1);
+    db_qualification_topology_request_t topology_request = {
+        .lane_count = 2U,
+        .lanes =
+            {
+                {.is_primary = 1},
+                {.is_primary = 0},
+            },
+    };
+    static const db_gradient_implementation_t implementations[] = {
+        DB_GRADIENT_IMPLEMENTATION_SEMANTIC,
+        DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP,
+        DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
+    };
+    for (size_t lane_index = 0U; lane_index < topology_request.lane_count;
+         lane_index++) {
+        for (size_t implementation_index = 0U;
+             implementation_index < DB_CONFORMANCE_IMPLEMENTATIONS_PER_LANE;
+             implementation_index++) {
+            topology_request.keys[lane_index][implementation_index] = key;
+            topology_request.keys[lane_index][implementation_index]
+                .implementation = implementations[implementation_index];
+            topology_request.keys[lane_index][implementation_index]
+                .build_version +=
+                DB_TEST_TOPOLOGY_BUILD_VERSION_OFFSET + (uint32_t)lane_index;
+        }
+    }
+    db_qualification_topology_result_t topology_result = {0};
+    if ((db_qualification_service_resolve_topology(&topology_request, &query,
+                                                   UINT64_C(1000000000),
+                                                   &topology_result) == 0) ||
+        (topology_result.topology.qualified == 0) ||
+        (topology_result.topology.implementation !=
+         DB_GRADIENT_IMPLEMENTATION_SEMANTIC) ||
+        (topology_result.topology.retained_lane_mask != UINT32_C(3)) ||
+        (topology_result.source != DB_QUALIFICATION_SOURCE_HELPER)) {
+        return service_failure(DB_TEST_TOPOLOGY_SERVICE_FAILURE,
+                               "topology_service", NULL);
     }
     return 0;
 }

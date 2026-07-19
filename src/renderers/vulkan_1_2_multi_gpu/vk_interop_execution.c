@@ -9,7 +9,7 @@
 
 #ifdef __linux__
 #include "core/db_log.h"
-#include "core/db_poll_policy.h"
+#include "core/db_progress_policy.h"
 #include "core/db_render_types.h"
 #include "vk_runtime_internal.h"
 #include "vk_state_internal.h"

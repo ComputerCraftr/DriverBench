@@ -1,7 +1,7 @@
 #include "db_core.h"
 #include "db_log.h"
 #include "db_numeric.h"
-#include "db_poll_policy.h"
+#include "db_progress_policy.h"
 #include "db_trace.h"
 
 #include "../config/runtime_options.h"
@@ -313,38 +313,47 @@ uint64_t db_now_ns_monotonic(void) {
     return ((uint64_t)ts.tv_sec * DB_NS_PER_SECOND_U64) + (uint64_t)ts.tv_nsec;
 }
 
-void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
-                         double fps_cap) {
-    if (fps_cap <= 0.0) {
-        return;
-    }
-
-    const double frame_budget_ns = DB_NS_PER_SECOND / fps_cap;
-    const uint64_t budget_ns = (uint64_t)frame_budget_ns;
-    const db_deadline_t deadline = db_deadline_after(frame_start_ns, budget_ns);
+static void db_sleep_until_deadline(const db_deadline_t *deadline) {
     uint64_t remaining_ns =
-        db_deadline_remaining_ns(&deadline, db_now_ns_monotonic());
+        db_deadline_remaining_ns(deadline, db_now_ns_monotonic());
     while (remaining_ns > 0U) {
         const double sleep_ns =
             db_min_f64(DB_TO_F64(remaining_ns), DB_MAX_SLEEP_NS);
         const long sleep_ns_long =
-            db_checked_double_to_long(backend, "sleep_ns", sleep_ns);
+            db_checked_double_to_long("core", "sleep_ns", sleep_ns);
         if (sleep_ns_long <= 0L) {
             break;
         }
 
-        struct timespec request = {0};
-        request.tv_nsec = sleep_ns_long;
+        const struct timespec request = {.tv_nsec = sleep_ns_long};
         struct timespec unslept = {0};
-        // EINTR is provided by <errno.h>; include-cleaner attributes the token
-        // to an architecture-specific internal errno header.
+        // Recompute from the absolute deadline after EINTR so repeated signals
+        // cannot extend the pacing interval.
         // NOLINTNEXTLINE(misc-include-cleaner)
         if ((nanosleep(&request, &unslept) != 0) && (errno != EINTR)) {
             break;
         }
         remaining_ns =
-            db_deadline_remaining_ns(&deadline, db_now_ns_monotonic());
+            db_deadline_remaining_ns(deadline, db_now_ns_monotonic());
     }
+}
+
+void db_sleep_until_ns(uint64_t deadline_ns) {
+    db_sleep_until_deadline(&(const db_deadline_t){
+        .expires_ns = deadline_ns,
+    });
+}
+
+void db_sleep_to_fps_cap(uint64_t frame_start_ns, double fps_cap) {
+    if (fps_cap <= 0.0) {
+        return;
+    }
+
+    const double frame_budget_ns = DB_NS_PER_SECOND / fps_cap;
+    const uint64_t budget_ns =
+        db_checked_double_to_u64("core", "frame_budget_ns", frame_budget_ns);
+    const db_deadline_t deadline = db_deadline_after(frame_start_ns, budget_ns);
+    db_sleep_until_deadline(&deadline);
 }
 
 int db_format_benchmark_log(char *buffer, size_t buffer_size,

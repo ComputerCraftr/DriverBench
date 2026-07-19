@@ -2,7 +2,6 @@
 #include "support/test_harness.h"
 
 #include "core/db_geometry.h"
-#include "core/db_poll_policy.h"
 #include "core/db_render_types.h"
 
 #include <stdint.h>
@@ -21,6 +20,7 @@ static size_t db_test_gl_error_sequence_index = 0U;
 enum {
     DB_TEST_GL_INVALID_ENUM = 0x0500,
     DB_TEST_GL_INVALID_VALUE = 0x0501,
+    DB_TEST_GL_ERROR_DRAIN_LIMIT = 64U,
 };
 
 static uint32_t db_test_get_error_stub(void) {
@@ -304,9 +304,7 @@ static void db_test_gl_error_trace_drain_is_bounded(db_test_state_t *state) {
     g_upload_proc_table = saved_table;
     memset(db_test_gl_error_sequence, 0, sizeof(db_test_gl_error_sequence));
     db_test_gl_error_sequence_index = 0U;
-    const db_poll_policy_t *const policy =
-        db_progress_policy_get(DB_PROGRESS_GL_ERROR_DRAIN);
-    DB_TEST_EXPECT_EQ_SIZE(state, drained_count, policy->max_attempts);
+    DB_TEST_EXPECT_EQ_SIZE(state, drained_count, DB_TEST_GL_ERROR_DRAIN_LIMIT);
     DB_TEST_EXPECT_EQ_SIZE(state, trace.count, DB_GL_ERROR_TRACE_CAPACITY);
 }
 

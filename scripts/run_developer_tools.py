@@ -44,7 +44,7 @@ def tracked_files(source_root: Path) -> list[Path]:
     return [
         source_root / item.decode("utf-8")
         for item in result.stdout.split(b"\0")
-        if item
+        if item and (source_root / item.decode("utf-8")).is_file()
     ]
 
 

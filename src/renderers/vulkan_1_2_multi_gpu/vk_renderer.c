@@ -125,13 +125,14 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     g_state.metrics.frame_jitter_ema_ms = 0.0;
     g_state.metrics.present_frame_ema_ms = 0.0;
     g_state.metrics.present_jitter_ema_ms = 0.0;
-    g_state.metrics.present_frame_p50_ms = 0.0;
-    g_state.metrics.present_frame_p95_ms = 0.0;
-    g_state.metrics.present_frame_p99_ms = 0.0;
+    g_state.metrics.present_frame_window_p50_ms = 0.0;
+    g_state.metrics.present_frame_window_p95_ms = 0.0;
+    g_state.metrics.present_frame_window_p99_ms = 0.0;
+    g_state.metrics.present_metric_total_samples = 0U;
+    g_state.metrics.present_metric_window_sample_count = 0U;
+    g_state.metrics.present_metric_window_capacity = 0U;
     g_state.metrics.present_retries = 0U;
-    g_state.metrics.render_frame_samples_ms = NULL;
-    g_state.metrics.render_frame_samples_count = 0U;
-    g_state.metrics.render_frame_samples_capacity = 0U;
+    g_state.metrics.last_render_critical_ms = 0.0;
     g_state.scheduler.piece_storage =
         (db_vk_present_piece_t *)db_calloc_or_fail(
             BACKEND_NAME, "piece_storage", DB_VK_MAX_PIECES_PER_FRAME,
@@ -149,11 +150,32 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
 
 void db_vk_set_present_metrics(double frame_ema_ms, double jitter_ema_ms,
                                double p50_ms, double p95_ms, double p99_ms,
+                               uint32_t window_sample_count,
+                               uint32_t window_capacity, uint64_t total_samples,
                                uint64_t retries) {
     g_state.metrics.present_frame_ema_ms = frame_ema_ms;
     g_state.metrics.present_jitter_ema_ms = jitter_ema_ms;
-    g_state.metrics.present_frame_p50_ms = p50_ms;
-    g_state.metrics.present_frame_p95_ms = p95_ms;
-    g_state.metrics.present_frame_p99_ms = p99_ms;
+    g_state.metrics.present_frame_window_p50_ms = p50_ms;
+    g_state.metrics.present_frame_window_p95_ms = p95_ms;
+    g_state.metrics.present_frame_window_p99_ms = p99_ms;
+    g_state.metrics.present_metric_window_sample_count = window_sample_count;
+    g_state.metrics.present_metric_window_capacity = window_capacity;
+    g_state.metrics.present_metric_total_samples = total_samples;
     g_state.metrics.present_retries = retries;
+}
+
+double db_vk_last_render_critical_ms(void) {
+    return g_state.metrics.last_render_critical_ms;
+}
+
+void db_vk_set_render_metrics(double p50_ms, double p95_ms, double p99_ms,
+                              uint32_t window_sample_count,
+                              uint32_t window_capacity,
+                              uint64_t total_samples) {
+    g_state.metrics.render_frame_window_p50_ms = p50_ms;
+    g_state.metrics.render_frame_window_p95_ms = p95_ms;
+    g_state.metrics.render_frame_window_p99_ms = p99_ms;
+    g_state.metrics.render_metric_window_sample_count = window_sample_count;
+    g_state.metrics.render_metric_window_capacity = window_capacity;
+    g_state.metrics.render_metric_total_samples = total_samples;
 }

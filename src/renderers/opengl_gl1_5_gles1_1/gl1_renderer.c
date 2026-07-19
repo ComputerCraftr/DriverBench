@@ -10,6 +10,7 @@
 #include "../gl_hash_readback.h"
 #include "../renderer_viewport_common.h"
 #include "core/db_log.h"
+#include "core/db_qualification_contracts.h"
 #include "core/db_render_result.h"
 #include "core/db_render_types.h"
 #include "core/db_renderer_runtime_contract.h"
@@ -83,6 +84,10 @@ void db_gl1_init(const db_renderer_runtime_contract_t *resolved_runtime) {
     };
     db_log_info(BACKEND_NAME, "renderer_capability", capability_fields,
                 DB_LOG_FIELD_COUNT(capability_fields));
+}
+
+const db_renderer_qualification_ops_t *db_gl1_qualification_ops(void) {
+    return db_gl1_native_qualification_ops();
 }
 
 void db_gl1_render_frame(const db_frame_plan_t *plan, int viewport_width_px,

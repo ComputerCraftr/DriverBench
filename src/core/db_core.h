@@ -65,8 +65,8 @@ void db_validate_runtime_environment(const char *backend,
 void db_install_signal_handlers(void);
 int db_should_stop(void);
 uint64_t db_now_ns_monotonic(void);
-void db_sleep_to_fps_cap(const char *backend, uint64_t frame_start_ns,
-                         double fps_cap);
+void db_sleep_until_ns(uint64_t deadline_ns);
+void db_sleep_to_fps_cap(uint64_t frame_start_ns, double fps_cap);
 
 // Benchmark logging contract:
 // - progress logs contain throughput fields only

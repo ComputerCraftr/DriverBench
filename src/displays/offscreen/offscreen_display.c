@@ -7,11 +7,14 @@
 #include "../../config/runtime_options.h"
 #include "../../core/db_core.h"
 #include "../../core/db_format_contract.h"
+#include "../../core/db_frame_contracts.h"
 #include "../../core/db_frame_plan.h"
-#include "../../core/db_frame_source.h"
 #include "../../core/db_hash.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_qualification_contracts.h"
 #include "../../core/db_render_result.h"
+#include "../../core/db_renderer_diagnostics.h"
+#include "../../core/db_run_session.h"
 #include "../../driverbench_config.h"
 #include "../../renderers/cpu_renderer/cpu_renderer.h"
 #include "../../renderers/gl_common.h"
@@ -42,13 +45,13 @@ typedef struct {
     int framebuffer_width_px;
     int framebuffer_height_px;
     unsigned int offscreen_fbo;
-    db_frame_source_t *core;
+    db_run_session_t *session;
 } db_offscreen_gl3_loop_ctx_t;
 
 typedef struct {
     const db_display_frame_step_t *frame_step;
     db_pixel_surface_t surface;
-    db_frame_source_t *core;
+    db_run_session_t *session;
 } db_offscreen_cpu_loop_ctx_t;
 
 #ifdef DB_HAS_VULKAN_API
@@ -57,9 +60,76 @@ typedef struct {
     db_display_hash_tracker_t *state_hash_tracker;
     db_display_hash_tracker_t *output_hash_tracker;
     uint32_t frame_limit;
-    db_frame_source_t *core;
+    uint32_t pixel_width;
+    uint32_t pixel_height;
+    db_committed_frame_summary_t last_committed;
+    db_run_session_t *session;
 } db_offscreen_vulkan_loop_ctx_t;
 #endif
+
+static int
+db_offscreen_default_presenter_validate(void *context,
+                                        const db_presenter_facts_t *facts) {
+    (void)context;
+    return DB_BOOL((facts != NULL) && (facts->valid != 0));
+}
+
+static db_present_result_t
+db_offscreen_present(void *context, const db_frame_plan_t *plan,
+                     const db_renderer_frame_output_t *output) {
+    (void)context;
+    (void)plan;
+    return ((output != NULL) && (output->result.success != 0))
+               ? DB_PRESENT_ACCEPTED
+               : DB_PRESENT_FATAL;
+}
+
+static int
+db_offscreen_fixed_target_provision(void *context,
+                                    const db_renderer_preflight_t *preflight,
+                                    db_renderer_target_t *target) {
+    (void)context;
+    if ((preflight == NULL) || (target == NULL)) {
+        return 0;
+    }
+    *target = (db_renderer_target_t){
+        .identity = 1U,
+        .generation = 1U,
+        .strategy = preflight->target_strategy,
+        .valid = 1,
+    };
+    return 1;
+}
+
+static int
+db_offscreen_fixed_target_validate(void *context,
+                                   const db_renderer_target_t *target) {
+    (void)context;
+    return DB_BOOL((target != NULL) && (target->valid != 0) &&
+                   (target->generation == 1U));
+}
+
+static db_display_frame_loop_result_t
+db_offscreen_drive_session(db_run_session_t *session,
+                           db_committed_frame_summary_t *summary) {
+    const db_run_step_result_t result = db_run_session_step(session);
+    switch (result.outcome) {
+    case DB_RUN_FRAME_COMMITTED:
+        if (summary != NULL) {
+            *summary = result.committed_frame;
+        }
+        return DB_DISPLAY_FRAME_LOOP_CONTINUE;
+    case DB_RUN_WAIT:
+        db_sleep_until_ns(result.wait_until.nanoseconds);
+        return DB_DISPLAY_FRAME_LOOP_RETRY;
+    case DB_RUN_PROGRESS:
+        return DB_DISPLAY_FRAME_LOOP_RETRY;
+    case DB_RUN_COMPLETE:
+    case DB_RUN_FAILED:
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
+    return DB_DISPLAY_FRAME_LOOP_STOP;
+}
 
 static uint64_t
 db_offscreen_cpu_surface_hash(const db_pixel_surface_t *surface) {
@@ -118,41 +188,95 @@ static void db_offscreen_cpu_surface_destroy(db_pixel_surface_t *surface) {
     *surface = (db_pixel_surface_t){0};
 }
 
+static int db_offscreen_cpu_acquire(void *user_data, uint32_t frame_index,
+                                    db_presenter_facts_t *facts) {
+    (void)frame_index;
+    const db_offscreen_cpu_loop_ctx_t *const ctx =
+        (const db_offscreen_cpu_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (facts == NULL)) {
+        return 0;
+    }
+    *facts = (db_presenter_facts_t){
+        .destination_width = ctx->surface.pixel_width,
+        .destination_height = ctx->surface.pixel_height,
+        .native_hash_format = ctx->surface.format,
+        .generation = 1U,
+        .valid = 1,
+    };
+    return 1;
+}
+
+static int
+db_offscreen_cpu_preflight(void *user_data,
+                           const db_presenter_facts_t *presenter,
+                           const db_frame_requirements_t *requirements,
+                           const db_qualification_snapshot_t *qualification,
+                           db_renderer_preflight_t *preflight) {
+    (void)user_data;
+    (void)requirements;
+    if ((presenter == NULL) || (preflight == NULL)) {
+        return 0;
+    }
+    return db_renderer_preflight_policy_resolve(
+        &(const db_renderer_preflight_policy_input_t){
+            .profile = DB_RENDERER_PREFLIGHT_CPU,
+            .plan_request =
+                {
+                    .pixel_width = presenter->destination_width,
+                    .pixel_height = presenter->destination_height,
+                },
+        },
+        presenter, qualification, preflight);
+}
+
+static db_renderer_execute_status_t
+db_offscreen_cpu_execute(void *user_data, const db_frame_plan_t *plan,
+                         const db_renderer_target_t *target,
+                         db_renderer_frame_output_t *output) {
+    db_offscreen_cpu_loop_ctx_t *const ctx =
+        (db_offscreen_cpu_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (plan == NULL) || (target == NULL) ||
+        (target->valid == 0) || (output == NULL)) {
+        return DB_RENDER_FATAL;
+    }
+    (void)db_cpu_render_frame_to_surface(plan, &ctx->surface, NULL);
+    output->result = db_render_result_success();
+    db_cpu_execution_report(&output->result.execution);
+    const int hash_output = db_display_frame_step_should_hash_output(
+        ctx->frame_step, plan->frame_index);
+    if (hash_output != 0) {
+        output->result.working_hash =
+            db_offscreen_cpu_surface_hash(&ctx->surface);
+        output->result.working_hash_valid = 1;
+    }
+    output->target_content = DB_TARGET_CONTENT_VALID_UNCOMMITTED;
+    return DB_RENDER_EXECUTED;
+}
+
 static db_display_frame_loop_result_t
 db_offscreen_cpu_frame_step(void *user_data, uint32_t frame_index,
                             double elapsed_ms) {
     db_offscreen_cpu_loop_ctx_t *ctx = (db_offscreen_cpu_loop_ctx_t *)user_data;
-    if ((ctx == NULL) || (ctx->frame_step == NULL) || (ctx->core == NULL)) {
+    if ((ctx == NULL) || (ctx->frame_step == NULL) || (ctx->session == NULL)) {
         return DB_DISPLAY_FRAME_LOOP_STOP;
     }
-    db_frame_plan_t plan;
-    if (db_frame_source_generate(ctx->core, frame_index, NULL, &plan) !=
-        DB_FRAME_PLAN_OK) {
-        return DB_DISPLAY_FRAME_LOOP_STOP;
+    db_committed_frame_summary_t summary = {0};
+    const db_display_frame_loop_result_t frame_result =
+        db_offscreen_drive_session(ctx->session, &summary);
+    if (frame_result != DB_DISPLAY_FRAME_LOOP_CONTINUE) {
+        return frame_result;
     }
-    (void)db_cpu_render_frame_to_surface(&plan, &ctx->surface, NULL);
     const int hash_output =
         db_display_frame_step_should_hash_output(ctx->frame_step, frame_index);
     const int hash_state =
         db_display_frame_step_should_hash_state(ctx->frame_step, frame_index);
-    uint64_t output_hash = 0U;
-    db_render_execution_report_t execution = {0};
-    db_cpu_execution_report(&execution);
-    if (hash_output != 0) {
-        output_hash = db_offscreen_cpu_surface_hash(&ctx->surface);
-        db_frame_source_commit_success_with_hash_and_execution(
-            ctx->core, &plan, output_hash, &execution);
-    } else {
-        db_frame_source_commit_success_with_execution(ctx->core, &plan,
-                                                      &execution);
-    }
     if (hash_state != 0) {
         db_display_hash_tracker_record(ctx->frame_step->state_hash_tracker,
-                                       plan.expected_state_hash);
+                                       summary.expected_state_hash);
     }
-    if (hash_output != 0) {
+    if ((hash_output != 0) && (summary.working_hash_valid != 0)) {
         db_display_hash_tracker_record(ctx->frame_step->output_hash_tracker,
-                                       output_hash);
+                                       summary.working_hash);
     }
     db_log_progress_periodic(
         ctx->frame_step->api_name, ctx->frame_step->renderer_name,
@@ -163,47 +287,104 @@ db_offscreen_cpu_frame_step(void *user_data, uint32_t frame_index,
 }
 
 #ifdef DB_HAS_VULKAN_API
+static int db_offscreen_vulkan_acquire(void *user_data, uint32_t frame_index,
+                                       db_presenter_facts_t *facts) {
+    (void)frame_index;
+    const db_offscreen_vulkan_loop_ctx_t *const ctx =
+        (const db_offscreen_vulkan_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (facts == NULL)) {
+        return 0;
+    }
+    *facts = (db_presenter_facts_t){
+        .destination_width = ctx->pixel_width,
+        .destination_height = ctx->pixel_height,
+        .generation = 1U,
+        .valid = 1,
+    };
+    return 1;
+}
+
+static int
+db_offscreen_vulkan_preflight(void *user_data,
+                              const db_presenter_facts_t *presenter,
+                              const db_frame_requirements_t *requirements,
+                              const db_qualification_snapshot_t *qualification,
+                              db_renderer_preflight_t *preflight) {
+    (void)user_data;
+    (void)requirements;
+    if ((presenter == NULL) || (preflight == NULL)) {
+        return 0;
+    }
+    return db_renderer_preflight_policy_resolve(
+        &(const db_renderer_preflight_policy_input_t){
+            .profile = DB_RENDERER_PREFLIGHT_VULKAN_PERSISTENT,
+            .plan_request =
+                {
+                    .pixel_width = presenter->destination_width,
+                    .pixel_height = presenter->destination_height,
+                },
+        },
+        presenter, qualification, preflight);
+}
+
+static db_renderer_execute_status_t
+db_offscreen_vulkan_execute(void *user_data, const db_frame_plan_t *plan,
+                            const db_renderer_target_t *target,
+                            db_renderer_frame_output_t *output) {
+    const db_offscreen_vulkan_loop_ctx_t *const ctx =
+        (const db_offscreen_vulkan_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (plan == NULL) || (target == NULL) ||
+        (target->valid == 0) || (output == NULL)) {
+        return DB_RENDER_FATAL;
+    }
+    const int hash_output = db_display_hash_tracker_should_sample(
+        ctx->output_hash_tracker, plan->frame_index, ctx->frame_limit);
+    db_vk_set_output_hash_enabled(hash_output);
+    const db_vk_frame_result_t result = db_vk_render_frame(plan);
+    if (result == DB_VK_FRAME_RETRY) {
+        output->target_content = DB_TARGET_CONTENT_PARTIALLY_MODIFIED;
+        return DB_RENDER_RETRYABLE;
+    }
+    if (result != DB_VK_FRAME_OK) {
+        output->target_content = DB_TARGET_CONTENT_LOST;
+        return DB_RENDER_FATAL;
+    }
+    output->result = db_render_result_success();
+    db_vk_execution_report(&output->result.execution);
+    if (hash_output != 0) {
+        output->result.working_hash = db_vk_output_hash();
+        output->result.working_hash_valid = 1;
+    }
+    output->target_content = DB_TARGET_CONTENT_VALID_UNCOMMITTED;
+    return DB_RENDER_EXECUTED;
+}
+
 static db_display_frame_loop_result_t
 db_offscreen_vulkan_frame_step(void *user_data, uint32_t frame_index,
                                double elapsed_ms) {
     (void)elapsed_ms;
-    const db_offscreen_vulkan_loop_ctx_t *ctx =
-        (const db_offscreen_vulkan_loop_ctx_t *)user_data;
-    if ((ctx == NULL) || (ctx->core == NULL)) {
+    db_offscreen_vulkan_loop_ctx_t *const ctx =
+        (db_offscreen_vulkan_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (ctx->session == NULL)) {
         return DB_DISPLAY_FRAME_LOOP_STOP;
     }
-    db_frame_plan_t plan;
-    if (db_frame_source_generate(ctx->core, frame_index, NULL, &plan) !=
-        DB_FRAME_PLAN_OK) {
-        return DB_DISPLAY_FRAME_LOOP_STOP;
+    db_committed_frame_summary_t summary = {0};
+    const db_display_frame_loop_result_t frame_result =
+        db_offscreen_drive_session(ctx->session, &summary);
+    if (frame_result != DB_DISPLAY_FRAME_LOOP_CONTINUE) {
+        return frame_result;
     }
-    const int hash_output = db_display_hash_tracker_should_sample(
-        ctx->output_hash_tracker, frame_index, ctx->frame_limit);
     const int hash_state = db_display_hash_tracker_should_sample(
         ctx->state_hash_tracker, frame_index, ctx->frame_limit);
-    db_vk_set_output_hash_enabled(hash_output);
-    const db_vk_frame_result_t frame_result = db_vk_render_frame(&plan);
-    uint64_t output_hash = 0U;
-    if ((frame_result == DB_VK_FRAME_OK) && (hash_output != 0)) {
-        output_hash = db_vk_output_hash();
-        db_frame_source_commit_success_with_hash(ctx->core, &plan, output_hash);
-    } else if (frame_result == DB_VK_FRAME_OK) {
-        db_frame_source_commit_success(ctx->core, &plan);
-    }
-    if ((hash_state != 0) && (frame_result == DB_VK_FRAME_OK)) {
+    if (hash_state != 0) {
         db_display_hash_tracker_record(ctx->state_hash_tracker,
-                                       plan.expected_state_hash);
+                                       summary.expected_state_hash);
     }
-    if ((hash_output != 0) && (frame_result == DB_VK_FRAME_OK)) {
-        db_display_hash_tracker_record(ctx->output_hash_tracker, output_hash);
+    if (summary.working_hash_valid != 0) {
+        db_display_hash_tracker_record(ctx->output_hash_tracker,
+                                       summary.working_hash);
     }
-    if ((ctx != NULL) && (frame_result == DB_VK_FRAME_STOP)) {
-        DB_RUNTIME_STATUS(ctx->backend_name, "renderer requested stop");
-        return DB_DISPLAY_FRAME_LOOP_STOP;
-    }
-    if (frame_result == DB_VK_FRAME_RETRY) {
-        return DB_DISPLAY_FRAME_LOOP_RETRY;
-    }
+    ctx->last_committed = summary;
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
 
@@ -223,14 +404,6 @@ static int db_run_offscreen_vulkan(const db_cli_config_t *cfg) {
                      &resolved_runtime.renderer);
     db_vk_set_output_hash_enabled(
         resolved_runtime.hash_settings.output_hash_enabled);
-    db_frame_source_t core;
-    db_frame_source_init(
-        &core, &(const db_frame_source_config_t){
-                   .benchmark_configuration = &resolved_runtime.benchmark,
-                   .working_format =
-                       resolved_runtime.renderer.format.surface_pixel_format,
-               });
-
     db_display_dual_hash_trackers_t hash_trackers =
         db_display_dual_hash_trackers_create_from_resolved_runtime(
             DB_BACKEND_NAME_DISPLAY_OFFSCREEN, &resolved_runtime,
@@ -240,25 +413,76 @@ static int db_run_offscreen_vulkan(const db_cli_config_t *cfg) {
         .state_hash_tracker = &hash_trackers.state,
         .output_hash_tracker = &hash_trackers.output,
         .frame_limit = resolved_runtime.display.frame_limit,
-        .core = &core,
+        .pixel_width = resolved_runtime.renderer.execution.grid_cols,
+        .pixel_height = resolved_runtime.renderer.execution.grid_rows,
     };
+    const db_renderer_diagnostic_config_t *const diagnostics =
+        &resolved_runtime.renderer.diagnostics;
+    if (db_run_session_create(
+            &(const db_run_session_config_t){
+                .benchmark =
+                    {
+                        .benchmark_configuration = &resolved_runtime.benchmark,
+                        .working_format = resolved_runtime.renderer.format
+                                              .surface_pixel_format,
+                    },
+                .presenter_ops =
+                    {
+                        .acquire = db_offscreen_vulkan_acquire,
+                        .validate = db_offscreen_default_presenter_validate,
+                        .present = db_offscreen_present,
+                    },
+                .renderer_ops =
+                    {
+                        .preflight = db_offscreen_vulkan_preflight,
+                        .provision = db_offscreen_fixed_target_provision,
+                        .validate = db_offscreen_fixed_target_validate,
+                        .execute = db_offscreen_vulkan_execute,
+                    },
+                .qualification_ops = *db_vk_qualification_ops(),
+                .qualification_query =
+                    {
+                        .ignore_cache = diagnostics->ignore_conformance_cache,
+                        .rerun_probe = diagnostics->rerun_conformance_probe,
+                        .diagnostic_forced =
+                            diagnostics->vk_gradient != DB_VK_GRADIENT_AUTO,
+                    },
+                .presenter_context = &loop_ctx,
+                .renderer_context = &loop_ctx,
+                .fps_cap = resolved_runtime.display.fps_cap,
+                .frame_limit = resolved_runtime.display.frame_limit,
+                .recent_metrics_enabled = db_display_dual_metrics_enabled(),
+            },
+            &loop_ctx.session) != DB_RUN_SESSION_OK) {
+        DB_RUNTIME_FAIL(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
+                        "failed to initialize run session");
+    }
     const db_display_frame_loop_t loop = {
         .backend = DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
-        .fps_cap = resolved_runtime.display.fps_cap,
+        .fps_cap = 0.0,
         .frame_limit = resolved_runtime.display.frame_limit,
         .user_data = &loop_ctx,
         .should_continue_fn = NULL,
         .pre_frame_fn = NULL,
         .frame_fn = db_offscreen_vulkan_frame_step,
     };
-    const db_display_frame_loop_run_result_t loop_result =
-        db_display_run_frame_loop(&loop);
+    (void)db_display_run_frame_loop(&loop);
+    const db_run_metrics_snapshot_t *const metrics =
+        &loop_ctx.last_committed.metrics;
     db_vk_set_present_metrics(
-        loop_result.frame_ema_ms, loop_result.jitter_ema_ms,
-        loop_result.frame_p50_ms, loop_result.frame_p95_ms,
-        loop_result.frame_p99_ms, loop_result.retries);
+        metrics->frame_ema_ms, metrics->jitter_ema_ms,
+        metrics->frame_window_p50_ms, metrics->frame_window_p95_ms,
+        metrics->frame_window_p99_ms, metrics->metric_window_sample_count,
+        metrics->metric_window_capacity, metrics->metric_total_samples,
+        metrics->retries);
+    db_vk_set_render_metrics(metrics->renderer_window_p50_ms,
+                             metrics->renderer_window_p95_ms,
+                             metrics->renderer_window_p99_ms,
+                             metrics->renderer_metric_window_sample_count,
+                             metrics->metric_window_capacity,
+                             metrics->renderer_metric_total_samples);
+    db_run_session_destroy(loop_ctx.session);
     db_vk_shutdown();
-    db_frame_source_shutdown(&core);
     db_display_dual_hash_trackers_log_final(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
                                             &hash_trackers);
     return EXIT_SUCCESS;
@@ -272,21 +496,58 @@ static void offscreen_gl3_pre_frame(void *user_data, uint32_t frame_index) {
     glfwPollEvents();
 }
 
-static db_display_frame_loop_result_t
-db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
-                            double elapsed_ms) {
-    db_offscreen_gl3_loop_ctx_t *ctx = (db_offscreen_gl3_loop_ctx_t *)user_data;
-    if ((ctx == NULL) || (ctx->frame_step == NULL) ||
-        (ctx->renderer_ops == NULL) || (ctx->core == NULL)) {
-        return DB_DISPLAY_FRAME_LOOP_STOP;
+static int db_offscreen_gl3_acquire(void *user_data, uint32_t frame_index,
+                                    db_presenter_facts_t *facts) {
+    (void)frame_index;
+    const db_offscreen_gl3_loop_ctx_t *const ctx =
+        (const db_offscreen_gl3_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (facts == NULL)) {
+        return 0;
     }
+    *facts = (db_presenter_facts_t){
+        .destination_width = db_checked_int_to_u32(
+            ctx->backend_name, "offscreen_width", ctx->framebuffer_width_px),
+        .destination_height = db_checked_int_to_u32(
+            ctx->backend_name, "offscreen_height", ctx->framebuffer_height_px),
+        .generation = 1U,
+        .valid = 1,
+    };
+    return 1;
+}
 
-    db_frame_plan_t plan;
-    if (db_frame_source_generate(ctx->core, frame_index, NULL, &plan) !=
-        DB_FRAME_PLAN_OK) {
-        return DB_DISPLAY_FRAME_LOOP_STOP;
+static int
+db_offscreen_gl3_preflight(void *user_data,
+                           const db_presenter_facts_t *presenter,
+                           const db_frame_requirements_t *requirements,
+                           const db_qualification_snapshot_t *qualification,
+                           db_renderer_preflight_t *preflight) {
+    (void)user_data;
+    (void)requirements;
+    if ((presenter == NULL) || (preflight == NULL)) {
+        return 0;
     }
+    return db_renderer_preflight_policy_resolve(
+        &(const db_renderer_preflight_policy_input_t){
+            .profile = DB_RENDERER_PREFLIGHT_GL3_PERSISTENT,
+            .plan_request =
+                {
+                    .pixel_width = presenter->destination_width,
+                    .pixel_height = presenter->destination_height,
+                },
+        },
+        presenter, qualification, preflight);
+}
 
+static db_renderer_execute_status_t
+db_offscreen_gl3_execute(void *user_data, const db_frame_plan_t *plan,
+                         const db_renderer_target_t *target,
+                         db_renderer_frame_output_t *output) {
+    db_offscreen_gl3_loop_ctx_t *const ctx =
+        (db_offscreen_gl3_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (plan == NULL) || (target == NULL) ||
+        (target->valid == 0) || (output == NULL)) {
+        return DB_RENDER_FATAL;
+    }
     db_gl_bind_framebuffer(GL_FRAMEBUFFER, ctx->offscreen_fbo);
     db_gl_set_viewport_px(ctx->framebuffer_width_px,
                           ctx->framebuffer_height_px);
@@ -300,26 +561,40 @@ db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
         .force_full = 1,
         .repair_reason = "offscreen_full",
     };
-    db_display_gl_render_frame(ctx->renderer_ops->renderer, &plan,
+    db_display_gl_render_frame(ctx->renderer_ops->renderer, plan,
                                &presentation);
+    output->result = db_render_result_success();
+    ctx->renderer_ops->execution_report(&output->result.execution);
+    if (db_display_frame_step_should_hash_output(ctx->frame_step,
+                                                 plan->frame_index) != 0) {
+        output->result.working_hash = ctx->renderer_ops->working_hash();
+        output->result.working_hash_valid = 1;
+    }
+    output->target_content = DB_TARGET_CONTENT_VALID_UNCOMMITTED;
+    return DB_RENDER_EXECUTED;
+}
+
+static db_display_frame_loop_result_t
+db_offscreen_gl3_frame_step(void *user_data, uint32_t frame_index,
+                            double elapsed_ms) {
+    db_offscreen_gl3_loop_ctx_t *ctx = (db_offscreen_gl3_loop_ctx_t *)user_data;
+    if ((ctx == NULL) || (ctx->frame_step == NULL) ||
+        (ctx->renderer_ops == NULL) || (ctx->session == NULL)) {
+        return DB_DISPLAY_FRAME_LOOP_STOP;
+    }
+    db_committed_frame_summary_t summary = {0};
+    const db_display_frame_loop_result_t frame_result =
+        db_offscreen_drive_session(ctx->session, &summary);
+    if (frame_result != DB_DISPLAY_FRAME_LOOP_CONTINUE) {
+        return frame_result;
+    }
     const int hash_output =
         db_display_frame_step_should_hash_output(ctx->frame_step, frame_index);
     const int hash_state =
         db_display_frame_step_should_hash_state(ctx->frame_step, frame_index);
-    uint64_t output_hash_value = 0U;
-    db_render_execution_report_t execution = {0};
-    ctx->renderer_ops->execution_report(&execution);
-    if (hash_output != 0) {
-        output_hash_value = ctx->renderer_ops->working_hash();
-        db_frame_source_commit_success_with_hash_and_execution(
-            ctx->core, &plan, output_hash_value, &execution);
-    } else {
-        db_frame_source_commit_success_with_execution(ctx->core, &plan,
-                                                      &execution);
-    }
     db_display_gl_frame_step(ctx->frame_step, frame_index, elapsed_ms,
-                             hash_state, plan.expected_state_hash, hash_output,
-                             output_hash_value);
+                             hash_state, summary.expected_state_hash,
+                             hash_output, summary.working_hash);
     return DB_DISPLAY_FRAME_LOOP_CONTINUE;
 }
 
@@ -383,14 +658,6 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
                         "failed to create GL3 offscreen framebuffer");
     }
 
-    db_frame_source_t core;
-    db_frame_source_init(
-        &core, &(const db_frame_source_config_t){
-                   .benchmark_configuration = &resolved_runtime.benchmark,
-                   .working_format =
-                       resolved_runtime.renderer.format.surface_pixel_format,
-               });
-
     db_display_dual_hash_trackers_t hash_trackers =
         db_display_dual_hash_trackers_create_from_resolved_runtime(
             DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO, &resolved_runtime,
@@ -410,11 +677,51 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
         .framebuffer_width_px = offscreen_width,
         .framebuffer_height_px = offscreen_height,
         .offscreen_fbo = offscreen_fbo,
-        .core = &core,
     };
+    const db_renderer_diagnostic_config_t *const diagnostics =
+        &resolved_runtime.renderer.diagnostics;
+    if (db_run_session_create(
+            &(const db_run_session_config_t){
+                .benchmark =
+                    {
+                        .benchmark_configuration = &resolved_runtime.benchmark,
+                        .working_format = resolved_runtime.renderer.format
+                                              .surface_pixel_format,
+                    },
+                .presenter_ops =
+                    {
+                        .acquire = db_offscreen_gl3_acquire,
+                        .validate = db_offscreen_default_presenter_validate,
+                        .present = db_offscreen_present,
+                    },
+                .renderer_ops =
+                    {
+                        .preflight = db_offscreen_gl3_preflight,
+                        .provision = db_offscreen_fixed_target_provision,
+                        .validate = db_offscreen_fixed_target_validate,
+                        .execute = db_offscreen_gl3_execute,
+                    },
+                .qualification_ops = *renderer_ops.qualification_ops,
+                .qualification_query =
+                    {
+                        .ignore_cache = diagnostics->ignore_conformance_cache,
+                        .rerun_probe = diagnostics->rerun_conformance_probe,
+                        .diagnostic_forced =
+                            diagnostics->gl3_gradient != DB_GL3_GRADIENT_AUTO,
+                    },
+                .presenter_context = &loop_ctx,
+                .renderer_context = &loop_ctx,
+                .fps_cap = resolved_runtime.display.fps_cap,
+                .frame_limit = resolved_runtime.display.frame_limit,
+                .recent_metrics_enabled = db_display_dual_metrics_enabled(),
+            },
+            &loop_ctx.session) != DB_RUN_SESSION_OK) {
+        DB_RUNTIME_FAIL(DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO,
+                        "failed to initialize run session");
+    }
     const db_display_frame_loop_t loop = {
         .backend = DB_BACKEND_NAME_DISPLAY_OFFSCREEN_GL3_FBO,
-        .fps_cap = resolved_runtime.display.fps_cap,
+        .fps_cap = 0.0,
         .frame_limit = resolved_runtime.display.frame_limit,
         .user_data = &loop_ctx,
         .should_continue_fn = NULL,
@@ -440,7 +747,7 @@ static int db_run_offscreen_gl3_fbo(const db_cli_config_t *cfg) {
     if (offscreen_texture != 0U) {
         db_gl_texture_delete_if_valid(&offscreen_texture);
     }
-    db_frame_source_shutdown(&core);
+    db_run_session_destroy(loop_ctx.session);
     renderer_ops.shutdown();
     db_glfw_destroy_window(window);
     return EXIT_SUCCESS;
@@ -457,14 +764,6 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
             DB_NATIVE_OUTPUT_RESOLVE_IMMEDIATE);
     db_cpu_init(&resolved_runtime.renderer);
     const uint32_t work_unit_count = db_cpu_work_unit_count();
-
-    db_frame_source_t core;
-    db_frame_source_init(
-        &core, &(const db_frame_source_config_t){
-                   .benchmark_configuration = &resolved_runtime.benchmark,
-                   .working_format =
-                       resolved_runtime.renderer.format.surface_pixel_format,
-               });
 
     double next_progress_log_due_ms = 0.0;
     db_display_dual_hash_trackers_t hash_trackers =
@@ -484,11 +783,41 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
             resolved_runtime.renderer.format.surface_pixel_format,
             resolved_runtime.renderer.execution.grid_cols,
             resolved_runtime.renderer.execution.grid_rows),
-        .core = &core,
     };
+    if (db_run_session_create(
+            &(const db_run_session_config_t){
+                .benchmark =
+                    {
+                        .benchmark_configuration = &resolved_runtime.benchmark,
+                        .working_format = resolved_runtime.renderer.format
+                                              .surface_pixel_format,
+                    },
+                .presenter_ops =
+                    {
+                        .acquire = db_offscreen_cpu_acquire,
+                        .validate = db_offscreen_default_presenter_validate,
+                        .present = db_offscreen_present,
+                    },
+                .renderer_ops =
+                    {
+                        .preflight = db_offscreen_cpu_preflight,
+                        .provision = db_offscreen_fixed_target_provision,
+                        .validate = db_offscreen_fixed_target_validate,
+                        .execute = db_offscreen_cpu_execute,
+                    },
+                .presenter_context = &loop_ctx,
+                .renderer_context = &loop_ctx,
+                .fps_cap = resolved_runtime.display.fps_cap,
+                .frame_limit = resolved_runtime.display.frame_limit,
+                .recent_metrics_enabled = db_display_dual_metrics_enabled(),
+            },
+            &loop_ctx.session) != DB_RUN_SESSION_OK) {
+        DB_RUNTIME_FAIL(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
+                        "failed to initialize run session");
+    }
     const db_display_frame_loop_t loop = {
         .backend = DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
-        .fps_cap = resolved_runtime.display.fps_cap,
+        .fps_cap = 0.0,
         .frame_limit = resolved_runtime.display.frame_limit,
         .user_data = &loop_ctx,
         .should_continue_fn = NULL,
@@ -507,8 +836,8 @@ static int db_run_offscreen_cpu(const db_cli_config_t *cfg) {
         NULL, db_cpu_execution_report);
     db_display_dual_hash_trackers_log_final(DB_BACKEND_NAME_DISPLAY_OFFSCREEN,
                                             &hash_trackers);
+    db_run_session_destroy(loop_ctx.session);
     db_offscreen_cpu_surface_destroy(&loop_ctx.surface);
-    db_frame_source_shutdown(&core);
     db_cpu_shutdown();
     return EXIT_SUCCESS;
 }

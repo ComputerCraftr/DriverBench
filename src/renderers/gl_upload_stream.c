@@ -1,6 +1,6 @@
 #include "../core/db_core.h"
 #include "../core/db_numeric.h"
-#include "../core/db_poll_policy.h"
+#include "../core/db_progress_policy.h"
 #include "core/db_log.h"
 #include "gl_api.h"
 #include "gl_common.h"
@@ -12,10 +12,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-enum {
-    DB_GL_UPLOAD_STREAM_PREPARE_RETRY_LIMIT = 3U,
-};
 
 static const char *db_gl_client_wait_result_name(GLenum result) {
     switch (result) {
@@ -37,7 +33,7 @@ typedef struct {
     uint32_t attempts;
 } db_gl_sync_wait_context_t;
 
-static db_sync_wait_result_t db_gl_sync_wait_attempt(void *user_data,
+static db_progress_outcome_t db_gl_sync_wait_attempt(void *user_data,
                                                      uint64_t timeout_ns) {
     db_gl_sync_wait_context_t *const context =
         (db_gl_sync_wait_context_t *)user_data;
@@ -46,29 +42,29 @@ static db_sync_wait_result_t db_gl_sync_wait_attempt(void *user_data,
     const GLenum result =
         g_upload_proc_table.client_wait_sync(context->sync, flags, timeout_ns);
     if ((result == GL_ALREADY_SIGNALED) || (result == GL_CONDITION_SATISFIED)) {
-        return db_sync_wait_result_make(DB_SYNC_WAIT_COMPLETED, 0U, 0U,
+        return db_progress_outcome_make(DB_PROGRESS_COMPLETED, 0U, 0U,
                                         (uint32_t)result,
                                         db_gl_client_wait_result_name(result));
     }
     if (result == GL_WAIT_FAILED) {
-        return db_sync_wait_result_make(DB_SYNC_WAIT_FAILED, 0U, 0U,
+        return db_progress_outcome_make(DB_PROGRESS_FAILED, 0U, 0U,
                                         (uint32_t)result, "gl_wait_failed");
     }
-    return db_sync_wait_result_make(DB_SYNC_WAIT_TIMEOUT, 0U, 0U,
+    return db_progress_outcome_make(DB_PROGRESS_TIMEOUT, 0U, 0U,
                                     (uint32_t)result,
                                     db_gl_client_wait_result_name(result));
 }
 
-static db_sync_wait_result_t
+static db_progress_outcome_t
 db_gl_upload_stream_wait_sync_with_policy(GLsync sync,
                                           db_progress_policy_id_t policy_id) {
     if (sync == NULL) {
-        return db_sync_wait_result_make(DB_SYNC_WAIT_INVALID, 0U, 0U, 0U,
+        return db_progress_outcome_make(DB_PROGRESS_INVALID, 0U, 0U, 0U,
                                         "missing_sync");
     }
     db_gl_require_upload_proc_table_loaded("db_gl_upload_stream_wait");
     if (g_upload_proc_table.client_wait_sync == NULL) {
-        return db_sync_wait_result_make(DB_SYNC_WAIT_UNSUPPORTED, 0U, 0U, 0U,
+        return db_progress_outcome_make(DB_PROGRESS_UNSUPPORTED, 0U, 0U, 0U,
                                         "client_wait_sync_unavailable");
     }
 
@@ -76,7 +72,7 @@ db_gl_upload_stream_wait_sync_with_policy(GLsync sync,
     return db_progress_execute(policy_id, db_gl_sync_wait_attempt, &context);
 }
 
-db_sync_wait_result_t
+db_progress_outcome_t
 db_gl_upload_stream_probe_sync(void *sync, db_progress_policy_id_t policy_id) {
     return db_gl_upload_stream_wait_sync_with_policy((GLsync)sync, policy_id);
 }
@@ -344,6 +340,99 @@ int db_gl_geometry_stream_init(db_gl_upload_stream_t *stream,
     return 1;
 }
 
+typedef struct {
+    db_gl_upload_stream_t *stream;
+    const char *backend;
+    size_t required_bytes;
+} db_gl_upload_prepare_context_t;
+
+static int
+db_gl_upload_prepare_client_storage(db_gl_upload_prepare_context_t *context) {
+    db_gl_upload_stream_t *const stream = context->stream;
+    if ((stream->client_storage != NULL) &&
+        (stream->client_reserved_bytes >= context->required_bytes)) {
+        return 1;
+    }
+    void *const resized =
+        realloc(stream->client_storage, context->required_bytes);
+    if ((resized == NULL) && (context->required_bytes > 0U)) {
+        (void)gl_upload_stream_log_and_demote(
+            stream, context->backend, DB_GL_UPLOAD_FAILURE_STORAGE_ALLOC,
+            "client_staging_realloc", GL_NO_ERROR);
+        return 0;
+    }
+    stream->client_storage = resized;
+    stream->client_reserved_bytes = context->required_bytes;
+    return 1;
+}
+
+static db_progress_outcome_t db_gl_upload_prepare_attempt(void *user_data,
+                                                          uint64_t timeout_ns) {
+    (void)timeout_ns;
+    db_gl_upload_prepare_context_t *const context =
+        (db_gl_upload_prepare_context_t *)user_data;
+    db_gl_upload_stream_t *const stream = context->stream;
+    db_gl_probe_drain_errors();
+
+    const int uses_buffer =
+        db_gl_stream_upload_uses_buffer_object(&stream->capability);
+    const int needs_client_staging =
+        (uses_buffer == 0) || (stream->capability.effective_mode ==
+                               DB_GL_STREAM_UPLOAD_MODE_SUB_DATA);
+    if ((needs_client_staging != 0) &&
+        (db_gl_upload_prepare_client_storage(context) == 0)) {
+        return db_progress_outcome_make(DB_PROGRESS_FAILED, 0U, 0U, 0U,
+                                        "client_staging_allocation_failed");
+    }
+    if (uses_buffer == 0) {
+        return db_progress_outcome_make(DB_PROGRESS_COMPLETED, 0U, 0U, 0U,
+                                        "client_compatibility_ready");
+    }
+    if ((stream->hot_path_fixed_capacity_bytes != 0U) &&
+        (context->required_bytes > stream->hot_path_fixed_capacity_bytes)) {
+        (void)gl_upload_stream_log_and_demote(
+            stream, context->backend, DB_GL_UPLOAD_FAILURE_STORAGE_ALLOC,
+            "hot_path_capacity_exceeded", GL_NO_ERROR);
+        return db_progress_outcome_make(DB_PROGRESS_FAILED, 0U, 0U, 0U,
+                                        "hot_path_capacity_exceeded");
+    }
+    if (stream->buffer == 0U) {
+        (void)gl_upload_stream_log_and_demote(
+            stream, context->backend, DB_GL_UPLOAD_FAILURE_TARGET_ACQUIRE,
+            "buffer_create", GL_NO_ERROR);
+        if (db_gl_stream_upload_uses_buffer_object(&stream->capability) == 0) {
+            return (db_gl_upload_prepare_client_storage(context) != 0)
+                       ? db_progress_outcome_make(DB_PROGRESS_COMPLETED, 0U, 0U,
+                                                  0U,
+                                                  "client_compatibility_ready")
+                       : db_progress_outcome_make(
+                             DB_PROGRESS_FAILED, 0U, 0U, 0U,
+                             "client_staging_allocation_failed");
+        }
+        return db_progress_outcome_make(DB_PROGRESS_FAILED, 0U, 0U, 0U,
+                                        "buffer_unavailable");
+    }
+    if (stream->buffer_reserved_bytes >= context->required_bytes) {
+        return db_progress_outcome_make(DB_PROGRESS_COMPLETED, 0U, 0U, 0U,
+                                        "buffer_storage_ready");
+    }
+    if (gl_upload_stream_alloc_buffer_storage(stream, context->backend,
+                                              context->required_bytes) != 0) {
+        return db_progress_outcome_make(DB_PROGRESS_COMPLETED, 0U, 0U, 0U,
+                                        "buffer_storage_ready");
+    }
+    if (db_gl_stream_upload_uses_buffer_object(&stream->capability) == 0) {
+        return (db_gl_upload_prepare_client_storage(context) != 0)
+                   ? db_progress_outcome_make(DB_PROGRESS_COMPLETED, 0U, 0U, 0U,
+                                              "client_compatibility_ready")
+                   : db_progress_outcome_make(
+                         DB_PROGRESS_FAILED, 0U, 0U, 0U,
+                         "client_staging_allocation_failed");
+    }
+    return db_progress_outcome_make(DB_PROGRESS_TIMEOUT, 0U, 0U, 0U,
+                                    "storage_demoted_retry");
+}
+
 int db_gl_upload_stream_prepare_storage(db_gl_upload_stream_t *stream,
                                         const char *backend,
                                         size_t required_bytes) {
@@ -352,67 +441,23 @@ int db_gl_upload_stream_prepare_storage(db_gl_upload_stream_t *stream,
     }
     stream->active_bytes = required_bytes;
     stream->capability.staging_storage_bytes = required_bytes;
-    for (uint32_t retry = 0U; retry < DB_GL_UPLOAD_STREAM_PREPARE_RETRY_LIMIT;
-         retry++) {
-        db_gl_probe_drain_errors();
-        const int needs_client_staging =
-            (db_gl_stream_upload_uses_buffer_object(&stream->capability) ==
-             0) ||
-            (stream->capability.effective_mode ==
-             DB_GL_STREAM_UPLOAD_MODE_SUB_DATA);
-        if (needs_client_staging != 0) {
-            if ((stream->client_storage == NULL) ||
-                (stream->client_reserved_bytes < required_bytes)) {
-                void *resized = realloc(stream->client_storage, required_bytes);
-                if ((resized == NULL) && (required_bytes > 0U)) {
-                    (void)gl_upload_stream_log_and_demote(
-                        stream, backend, DB_GL_UPLOAD_FAILURE_STORAGE_ALLOC,
-                        "client_staging_realloc", GL_NO_ERROR);
-                    return 0;
-                }
-                stream->client_storage = resized;
-                stream->client_reserved_bytes = required_bytes;
-            }
-            if (db_gl_stream_upload_uses_buffer_object(&stream->capability) ==
-                0) {
-                return 1;
-            }
-        }
-        if ((stream->hot_path_fixed_capacity_bytes != 0U) &&
-            (required_bytes > stream->hot_path_fixed_capacity_bytes)) {
-            (void)gl_upload_stream_log_and_demote(
-                stream, backend, DB_GL_UPLOAD_FAILURE_STORAGE_ALLOC,
-                "hot_path_capacity_exceeded", GL_NO_ERROR);
-            return 0;
-        }
-        if ((stream->buffer == 0U) && (db_gl_stream_upload_uses_buffer_object(
-                                           &stream->capability) != 0)) {
-            (void)gl_upload_stream_log_and_demote(
-                stream, backend, DB_GL_UPLOAD_FAILURE_TARGET_ACQUIRE,
-                "buffer_create", GL_NO_ERROR);
-            if (db_gl_stream_upload_uses_buffer_object(&stream->capability) ==
-                0) {
-                continue;
-            }
-            return 0;
-        }
-        if (stream->buffer_reserved_bytes >= required_bytes) {
-            return 1;
-        }
-        if (gl_upload_stream_alloc_buffer_storage(stream, backend,
-                                                  required_bytes) != 0) {
-            return 1;
-        }
-        // If allocation failed, it might have demoted to client storage.
-        // Continue loop to allow client storage allocation if needed.
-        if (db_gl_stream_upload_uses_buffer_object(&stream->capability) == 0) {
-            continue;
-        }
-        return 0;
+    db_gl_upload_prepare_context_t context = {
+        .stream = stream,
+        .backend = backend,
+        .required_bytes = required_bytes,
+    };
+    const db_progress_outcome_t result = db_progress_execute(
+        DB_PROGRESS_GL_UPLOAD_PREPARE, db_gl_upload_prepare_attempt, &context);
+    if (result.status == DB_PROGRESS_COMPLETED) {
+        return 1;
     }
-    (void)gl_upload_stream_log_and_demote(
-        stream, backend, DB_GL_UPLOAD_FAILURE_STORAGE_ALLOC,
-        "prepare_storage_retry_exhausted", GL_NO_ERROR);
+    db_progress_log_outcome(backend, "upload_storage_prepare",
+                            DB_PROGRESS_GL_UPLOAD_PREPARE, &result);
+    if (result.status == DB_PROGRESS_TIMEOUT) {
+        (void)gl_upload_stream_log_and_demote(
+            stream, backend, DB_GL_UPLOAD_FAILURE_STORAGE_ALLOC,
+            "prepare_storage_retry_exhausted", GL_NO_ERROR);
+    }
     return 0;
 }
 
@@ -641,12 +686,12 @@ int db_gl_upload_stream_wait(db_gl_upload_stream_t *stream) {
         (db_gl_stream_upload_sync_enabled(&stream->capability) == 0)) {
         return 1;
     }
-    const db_sync_wait_result_t result =
+    const db_progress_outcome_t result =
         db_gl_upload_stream_wait_sync_with_policy(
             (GLsync)stream->in_flight_sync, DB_PROGRESS_GL_UPLOAD_REUSE);
     db_progress_log_outcome("renderer_gl_upload_stream", "upload_stream_wait",
                             DB_PROGRESS_GL_UPLOAD_REUSE, &result);
-    if (result.status == DB_SYNC_WAIT_UNSUPPORTED) {
+    if (result.status == DB_PROGRESS_UNSUPPORTED) {
         DB_RUNTIME_STATUS(
             "renderer_gl_upload_stream",
             "GL sync wait unsupported target=%s operation=%s reason=%s",
@@ -658,7 +703,7 @@ int db_gl_upload_stream_wait(db_gl_upload_stream_t *stream) {
         stream->in_flight_sync = NULL;
         return 1;
     }
-    if (result.status == DB_SYNC_WAIT_INVALID) {
+    if (result.status == DB_PROGRESS_INVALID) {
         DB_RUNTIME_FAIL(
             "renderer_gl_upload_stream",
             "invalid GL upload stream sync wait target=%s operation=%s "
@@ -666,8 +711,8 @@ int db_gl_upload_stream_wait(db_gl_upload_stream_t *stream) {
             db_gl_upload_target_name(stream->target), "upload_stream_wait",
             result.reason);
     }
-    if ((result.status == DB_SYNC_WAIT_TIMEOUT) ||
-        (result.status == DB_SYNC_WAIT_FAILED)) {
+    if ((result.status == DB_PROGRESS_TIMEOUT) ||
+        (result.status == DB_PROGRESS_FAILED)) {
         return 0;
     }
     if (g_upload_proc_table.delete_sync != NULL) {
@@ -690,12 +735,12 @@ void db_gl_upload_stream_record_sync(db_gl_upload_stream_t *stream) {
     if (stream->in_flight_sync != NULL) {
         if ((g_upload_proc_table.client_wait_sync != NULL) &&
             (g_upload_proc_table.delete_sync != NULL)) {
-            const db_sync_wait_result_t result =
+            const db_progress_outcome_t result =
                 db_gl_upload_stream_wait_sync_with_policy(
                     (GLsync)stream->in_flight_sync,
                     DB_PROGRESS_GL_PENDING_SYNC_PROBE);
-            if ((result.status == DB_SYNC_WAIT_COMPLETED) ||
-                (result.status == DB_SYNC_WAIT_FAILED)) {
+            if ((result.status == DB_PROGRESS_COMPLETED) ||
+                (result.status == DB_PROGRESS_FAILED)) {
                 g_upload_proc_table.delete_sync((GLsync)stream->in_flight_sync);
                 stream->in_flight_sync = NULL;
             } else {
@@ -703,7 +748,7 @@ void db_gl_upload_stream_record_sync(db_gl_upload_stream_t *stream) {
                                 "attempted to overwrite pending stream sync "
                                 "operation=%s status=%s polls=%u reason=%s",
                                 "upload_stream_pending_probe",
-                                db_sync_wait_status_name(result.status),
+                                db_progress_status_name(result.status),
                                 result.attempts, result.reason);
             }
         } else {

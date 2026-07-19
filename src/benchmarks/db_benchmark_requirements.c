@@ -49,7 +49,6 @@ checkpoint_binding(const db_benchmark_checkpoint_t *checkpoint) {
 db_frame_plan_status_t
 db_benchmark_core_probe_frame(const db_benchmark_core_t *core,
                               uint32_t frame_index,
-                              const db_frame_plan_request_t *request,
                               db_frame_requirements_t *requirements) {
     if ((core == NULL) || (requirements == NULL) || (core->initialized == 0)) {
         return DB_FRAME_PLAN_INVALID;
@@ -73,7 +72,6 @@ db_benchmark_core_probe_frame(const db_benchmark_core_t *core,
     if (db_try_mul_size((size_t)width, pixel_bytes, &row_stride) == 0) {
         return DB_FRAME_PLAN_ARITHMETIC_OVERFLOW;
     }
-    (void)request;
     *requirements = (db_frame_requirements_t){
         .checkpoint_format = core->working_format,
         .checkpoint_width = width,

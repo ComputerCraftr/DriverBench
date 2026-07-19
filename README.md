@@ -11,10 +11,14 @@ Runtime execution follows one ownership pipeline:
 
 ```text
 CLI + runtime capabilities
-    -> benchmark engine
-    -> immutable canonical frame plan
-    -> renderer logical backing
-    -> presentation transform/native output
+    -> immutable qualification snapshot
+    -> frame coordinator
+       -> presenter facts
+       -> benchmark requirements/provisioning
+       -> renderer preflight
+       -> one immutable canonical frame plan
+       -> render + accepted presentation
+       -> transactional commit
 ```
 
 Benchmark implementations live under `src/benchmarks` and privately own mode
@@ -22,17 +26,20 @@ parsing, simulation state, gradient/bands/snake generation, rebuild sources,
 and state hashing. They publish one immutable logical-resolution
 `db_frame_plan_t`. Renderers execute only its generic geometry, rebuild, repair,
 seed, and upload requirements; they do not inspect benchmark modes or
-simulation cursors. A frame source commits benchmark progression only after the
-renderer has successfully executed the published plan. Displays resolve a
-separate presentation transform from that source extent to the current window
-framebuffer or KMS mode:
+simulation cursors. The coordinator commits benchmark and renderer
+transactional state only after the presenter accepts the rendered frame.
+Stale presenter or target generations abandon that preparation transaction;
+GPU writes are classified for repair rather than treated as reversible.
+Displays resolve a separate presentation transform from the logical extent to
+the current window framebuffer or KMS mode:
 
 - CPU renders canonical geometry into one persistent pixel surface.
-- GL1 keeps one authoritative CPU backing store and one persistent presentation
-  texture. Two bounded streaming PBOs transfer changed regions; their contents
-  are temporary and direct client upload is used only when PBO support fails.
-  A fixed presentation-quad VBO is preferred, with client arrays retained only
-  as the compatibility fallback.
+- GL1 selects verified direct-window or persistent-FBO fixed-function
+  execution when available. Its compatibility strategy keeps one authoritative
+  CPU backing store and one persistent presentation texture. Two bounded
+  streaming PBOs transfer changed regions; direct client upload is used only
+  when PBO support fails. Direct-window replay retains at most eight optimized
+  update-IR snapshots under its fixed byte budget.
 - GL3 keeps one persistent logical-resolution working-format FBO. Geometry
   updates that target and a fullscreen texture-sampling pass presents it; there
   is no history ping-pong copy.

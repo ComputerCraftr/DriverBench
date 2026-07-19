@@ -1,6 +1,8 @@
 #include "gl3_renderer.h"
+
 #include "core/db_conformance.h"
 #include "core/db_log.h"
+#include "core/db_qualification_contracts.h"
 #include "core/db_renderer_diagnostics.h"
 #include "core/db_renderer_runtime_contract.h"
 #include "core/db_renderer_support.h"
@@ -12,8 +14,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../../core/db_conformance_cache.h"
-#include "../../core/db_conformance_service.h"
 #include "../../core/db_core.h"
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_geometry.h"
@@ -67,13 +67,7 @@ typedef struct {
     int sampler_location;
     int hdr_output_location;
     int hdr_output_enabled;
-    db_conformance_result_t gradient_conformance;
-    db_gradient_implementation_t gradient_implementation;
-    db_qualification_source_t qualification_source;
-    db_conformance_cache_status_t cache_status;
-    const char *qualification_reason;
-    int gradient_qualified;
-    int qualification_resolved;
+    db_renderer_applied_selection_t applied;
     db_gl_viewport_cache_t viewport;
 } gl3_presentation_pipeline_t;
 
@@ -98,43 +92,6 @@ typedef struct {
 } renderer_state_t;
 
 static renderer_state_t g_state = {0};
-
-static void gl3_resolve_gradient_qualification(void) {
-    if (g_state.presentation.qualification_resolved != 0) {
-        return;
-    }
-    const db_conformance_decision_t semantic = db_gl3_qualify_implementation(
-        g_state.target.format, g_state.runtime.grid_cols,
-        g_state.runtime.grid_rows, &g_state.diagnostics,
-        DB_GRADIENT_IMPLEMENTATION_SEMANTIC);
-    if (semantic.result == DB_CONFORMANCE_CONFORMING) {
-        g_state.presentation.gradient_conformance = semantic.result;
-        g_state.presentation.gradient_implementation =
-            DB_GRADIENT_IMPLEMENTATION_SEMANTIC;
-        g_state.presentation.gradient_qualified = 1;
-        g_state.presentation.qualification_source = semantic.source;
-        g_state.presentation.cache_status = semantic.cache_status;
-        g_state.presentation.qualification_reason = "semantic_conforming";
-    } else {
-        const db_conformance_decision_t rows = db_gl3_qualify_implementation(
-            g_state.target.format, g_state.runtime.grid_cols,
-            g_state.runtime.grid_rows, &g_state.diagnostics,
-            DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES);
-        g_state.presentation.gradient_conformance =
-            DB_CONFORMANCE_NONCONFORMING;
-        g_state.presentation.gradient_implementation =
-            DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES;
-        g_state.presentation.gradient_qualified =
-            rows.result == DB_CONFORMANCE_CONFORMING;
-        g_state.presentation.qualification_source = rows.source;
-        g_state.presentation.cache_status = rows.cache_status;
-        g_state.presentation.qualification_reason =
-            g_state.presentation.gradient_qualified
-                ? "semantic_rejected_row_instances"
-                : "qualification_unavailable";
-    }
-    g_state.presentation.qualification_resolved = 1;
-}
 
 uint64_t db_gl3_working_hash(void) {
     if ((g_state.target.fbo == 0U) || (g_state.target.width <= 0) ||
@@ -321,8 +278,8 @@ static size_t gl3_append_ir_instances(const db_render_ir_view_t *ir,
                 end = swap;
             }
             if ((command->clip_region == DB_RENDER_IR_INVALID_ID) &&
-                (g_state.presentation.gradient_conformance ==
-                 DB_CONFORMANCE_CONFORMING)) {
+                (g_state.presentation.applied.implementation ==
+                 DB_GRADIENT_IMPLEMENTATION_SEMANTIC)) {
                 if (gl3_append_instance(gradient->bounds, start, end, 1.0F,
                                         gradient->axis_start,
                                         gradient->axis_end, count++) == 0) {
@@ -457,20 +414,13 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
     g_state.target.format = resolved_runtime->format.surface_pixel_format;
     g_state.diagnostics = resolved_runtime->diagnostics;
     if (g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_SEMANTIC) {
-        g_state.presentation.gradient_conformance = DB_CONFORMANCE_CONFORMING;
-        g_state.presentation.gradient_implementation =
+        g_state.presentation.applied.implementation =
             DB_GRADIENT_IMPLEMENTATION_SEMANTIC;
-        g_state.presentation.qualification_source =
-            DB_QUALIFICATION_SOURCE_DIAGNOSTIC;
-        g_state.presentation.qualification_reason = "diagnostic_forced";
+        g_state.presentation.applied.diagnostic_forced = 1;
     } else if (g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_ROW_FILL) {
-        g_state.presentation.gradient_conformance =
-            DB_CONFORMANCE_NONCONFORMING;
-        g_state.presentation.gradient_implementation =
+        g_state.presentation.applied.implementation =
             DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES;
-        g_state.presentation.qualification_source =
-            DB_QUALIFICATION_SOURCE_DIAGNOSTIC;
-        g_state.presentation.qualification_reason = "diagnostic_forced";
+        g_state.presentation.applied.diagnostic_forced = 1;
     }
     if (db_init_vertices_for_mode(resolved_runtime) == 0) {
         runtime_failf("failed to allocate benchmark vertex buffers");
@@ -532,6 +482,88 @@ void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime) {
         resolved_runtime->format.native_hdr_enabled;
     db_gl_use_program(g_state.presentation.draw_program);
 }
+
+static int gl3_qualification_describe(
+    void *renderer, db_renderer_qualification_descriptor_store_t *output) {
+    (void)renderer;
+    const int forced = g_state.diagnostics.gl3_gradient != DB_GL3_GRADIENT_AUTO;
+    return db_gl3_describe_qualification(
+        g_state.target.format, g_state.runtime.grid_cols,
+        g_state.runtime.grid_rows, g_state.presentation.applied.implementation,
+        forced, output);
+}
+
+static db_renderer_prepare_status_t
+gl3_qualification_prepare(void *renderer,
+                          const db_qualification_snapshot_t *snapshot,
+                          db_renderer_selection_candidate_t *candidate) {
+    (void)renderer;
+    if ((snapshot == NULL) || (candidate == NULL) ||
+        ((snapshot->production_qualified == 0) &&
+         (snapshot->diagnostic_forced == 0))) {
+        return DB_RENDERER_PREPARE_UNAVAILABLE;
+    }
+    if ((snapshot->implementation != DB_GRADIENT_IMPLEMENTATION_SEMANTIC) &&
+        (snapshot->implementation !=
+         DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES)) {
+        return DB_RENDERER_PREPARE_UNAVAILABLE;
+    }
+    *candidate = (db_renderer_selection_candidate_t){
+        .snapshot = *snapshot,
+        .renderer_generation = g_state.target.generation,
+        .prepared = 1,
+    };
+    return DB_RENDERER_PREPARE_OK;
+}
+
+static db_renderer_commit_status_t
+gl3_qualification_commit(void *renderer,
+                         db_renderer_selection_candidate_t *candidate,
+                         db_renderer_applied_selection_t *applied) {
+    (void)renderer;
+    if ((candidate == NULL) || (applied == NULL) ||
+        (candidate->prepared == 0)) {
+        return DB_RENDERER_COMMIT_FAILED;
+    }
+    if (candidate->renderer_generation != g_state.target.generation) {
+        return DB_RENDERER_COMMIT_STALE;
+    }
+    *applied = (db_renderer_applied_selection_t){
+        .generation = candidate->snapshot.generation,
+        .implementation = candidate->snapshot.implementation,
+        .retained_lanes = candidate->snapshot.retained_lanes,
+        .lane_count = candidate->snapshot.lane_count,
+        .strategy = candidate->snapshot.strategy,
+        .source = candidate->snapshot.source,
+        .cache_status = candidate->snapshot.cache_status,
+        .production_qualified = candidate->snapshot.production_qualified,
+        .diagnostic_forced = candidate->snapshot.diagnostic_forced,
+    };
+    (void)db_snprintf(applied->reason, sizeof(applied->reason), "%s",
+                      candidate->snapshot.reason);
+    g_state.presentation.applied = *applied;
+    candidate->prepared = 0;
+    return DB_RENDERER_COMMIT_OK;
+}
+
+static void
+gl3_qualification_abort(void *renderer,
+                        db_renderer_selection_candidate_t *candidate) {
+    (void)renderer;
+    if (candidate != NULL) {
+        *candidate = (db_renderer_selection_candidate_t){0};
+    }
+}
+
+const db_renderer_qualification_ops_t *db_gl3_qualification_ops(void) {
+    static const db_renderer_qualification_ops_t operations = {
+        .describe = gl3_qualification_describe,
+        .prepare_apply = gl3_qualification_prepare,
+        .commit_apply = gl3_qualification_commit,
+        .abort_apply = gl3_qualification_abort,
+    };
+    return &operations;
+}
 void db_gl3_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
                          int viewport_height_px) {
     if (plan == NULL) {
@@ -584,10 +616,6 @@ void db_gl3_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
     const uint32_t total_gradient_commands =
         plan->update_metadata.gradient_count +
         ((rebuild != 0) ? plan->rebuild_metadata.gradient_count : 0U);
-    if ((total_gradient_commands > 0U) &&
-        (g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_AUTO)) {
-        gl3_resolve_gradient_qualification();
-    }
     uint32_t draw_instances =
         draw_ir_fills(rebuild_draw_ir, &plan->update_ir, &semantic_gradients,
                       &fallback_instances);
@@ -674,19 +702,17 @@ void db_gl3_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
         .fallback_instances = fallback_instances,
         .gradient_implementation =
             (gradient_commands > 0U)
-                ? g_state.presentation.gradient_implementation
+                ? g_state.presentation.applied.implementation
                 : DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
-        .qualification_source = g_state.presentation.qualification_source,
-        .cache_status = g_state.presentation.cache_status,
-        .qualification_lane_count =
-            DB_BOOL(g_state.presentation.qualification_resolved != 0),
-        .qualification_reason = g_state.presentation.qualification_reason,
-        .qualified = DB_BOOL(
-            (gradient_commands == 0U) ||
-            ((g_state.diagnostics.gl3_gradient == DB_GL3_GRADIENT_AUTO) &&
-             (g_state.presentation.gradient_qualified != 0))),
-        .diagnostic_forced =
-            DB_BOOL(g_state.diagnostics.gl3_gradient != DB_GL3_GRADIENT_AUTO),
+        .qualification_source = g_state.presentation.applied.source,
+        .cache_status = g_state.presentation.applied.cache_status,
+        .qualification_lane_count = g_state.presentation.applied.lane_count,
+        .qualification_reason = g_state.presentation.applied.reason,
+        .qualified =
+            DB_BOOL((gradient_commands == 0U) ||
+                    ((g_state.presentation.applied.generation != 0U) &&
+                     (g_state.presentation.applied.diagnostic_forced == 0))),
+        .diagnostic_forced = g_state.presentation.applied.diagnostic_forced,
     };
     const int full_draw = rebuild;
     db_renderer_record_draw_stats_for_work(

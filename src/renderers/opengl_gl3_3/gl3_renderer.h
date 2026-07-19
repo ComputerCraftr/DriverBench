@@ -6,6 +6,7 @@
 #include "../gl_common.h"
 #include "core/db_renderer_runtime_contract.h"
 
+#include "../../core/db_frame_contracts.h"
 #include "../../core/db_frame_plan.h"
 
 void db_gl3_init(const db_renderer_runtime_contract_t *resolved_runtime);
@@ -18,5 +19,6 @@ uint64_t db_gl3_state_hash(void);
 uint64_t db_gl3_working_hash(void);
 void db_gl3_draw_stats(db_renderer_draw_path_stats_t *stats);
 void db_gl3_execution_report(db_render_execution_report_t *report);
+const db_renderer_qualification_ops_t *db_gl3_qualification_ops(void);
 
 #endif

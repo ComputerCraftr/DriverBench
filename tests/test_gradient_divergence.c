@@ -2,21 +2,14 @@
 
 #include "core/db_conformance.h"
 #include "core/db_conformance_cache.h"
-#include "core/db_frame_plan.h"
-#include "core/db_frame_preparation.h"
 #include "core/db_gradient_divergence.h"
 #include "core/db_render_ir.h"
-#include "core/db_render_result.h"
 #include "core/db_replay_policy.h"
 
 #include <stdint.h>
 #include <stdio.h>
 
-enum {
-    DB_TEST_DIVERGENCE_LINE_CAPACITY = 1024,
-    DB_TEST_FRAMEBUFFER_HEIGHT = 600U,
-    DB_TEST_FRAMEBUFFER_WIDTH = 1000U,
-};
+enum { DB_TEST_DIVERGENCE_LINE_CAPACITY = 1024 };
 
 static void compare_equal(db_test_state_t *state) {
     const uint8_t pixels[] = {1U, 2U, 3U, 255U, 4U, 5U, 6U, 255U};
@@ -57,30 +50,6 @@ static void compare_readback_failure(db_test_state_t *state) {
     const db_gradient_divergence_t result =
         db_gradient_compare_rgba8(expected, NULL, 1U, 1U, NULL);
     DB_TEST_EXPECT_EQ_INT(state, result.stage, DB_GRADIENT_DIVERGENCE_READBACK);
-}
-
-static void preparation_token_detects_stale_generation(db_test_state_t *state) {
-    db_frame_preparation_t preparation = {
-        .framebuffer_width = DB_TEST_FRAMEBUFFER_WIDTH,
-        .framebuffer_height = DB_TEST_FRAMEBUFFER_HEIGHT,
-        .framebuffer_generation = 4U,
-        .raw_buffer_age = 2U,
-        .replay_depth = 1U,
-        .target_strategy = DB_RENDER_TARGET_GL1_DIRECT_WINDOW,
-        .buffer_age_valid = 1,
-    };
-    const db_frame_plan_t plan = {
-        .preparation_token = db_frame_preparation_token(&preparation),
-    };
-    DB_TEST_EXPECT_TRUE(state,
-                        db_frame_preparation_matches(&plan, &preparation));
-    preparation.requirements_token++;
-    DB_TEST_EXPECT_TRUE(state,
-                        db_frame_preparation_matches(&plan, &preparation) == 0);
-    preparation.requirements_token--;
-    preparation.framebuffer_generation++;
-    DB_TEST_EXPECT_TRUE(state,
-                        db_frame_preparation_matches(&plan, &preparation) == 0);
 }
 
 static void replay_policy_age_semantics(db_test_state_t *state) {
@@ -209,8 +178,6 @@ unsigned db_gradient_divergence_test_run_all(void) {
         {"gradient_divergence_first_conversion", compare_first_conversion},
         {"gradient_divergence_sentinel_coverage", compare_sentinel_coverage},
         {"gradient_divergence_readback_failure", compare_readback_failure},
-        {"frame_preparation_stale_generation",
-         preparation_token_detects_stale_generation},
         {"replay_policy_age_semantics", replay_policy_age_semantics},
         {"gradient_divergence_schema_two", divergence_file_uses_schema_two},
         {"bounded_vectors_preserve_original_axis_and_clips",

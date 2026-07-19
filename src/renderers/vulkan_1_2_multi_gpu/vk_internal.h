@@ -716,6 +716,5 @@ double db_vk_scheduler_percentile_sorted(const double *samples, size_t count,
                                          double pct);
 void db_vk_cleanup_runtime(const db_vk_cleanup_ctx_t *ctx);
 void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx);
-void db_vk_resolve_gradient_qualification(void);
 
 #endif

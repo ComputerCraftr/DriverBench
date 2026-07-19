@@ -5,9 +5,11 @@
 #include "db_conformance_cache.h"
 #include "db_core.h"
 #include "db_hash.h"
-#include "db_poll_policy.h"
 #include "db_probe_process.h"
 #include "db_probe_protocol.h"
+#include "db_progress_policy.h"
+#include "db_qualification_contracts.h"
+#include "db_render_result.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -23,6 +25,7 @@
 #endif
 
 #define DB_CONFORMANCE_KEY_DOMAIN UINT32_C(0x514B4559)
+#define DB_QUALIFICATION_DESCRIPTOR_DOMAIN UINT32_C(0x51444553)
 
 enum {
     DB_CONFORMANCE_KEY_SCHEMA = 1U,
@@ -46,6 +49,11 @@ enum {
     DB_CONFORMANCE_KEY_FLOAT_CONTROL_OFFSET = 72U,
     DB_CONFORMANCE_KEY_PALETTE_HASH_OFFSET = 80U,
     DB_CONFORMANCE_KEY_UUID_OFFSET = 88U,
+    DB_QUALIFICATION_COMMON_SCHEMA_VERSION = 1U,
+    DB_QUALIFICATION_COMMON_EVALUATOR_VERSION = 3U,
+    DB_QUALIFICATION_COMMON_DOMAIN_VERSION = 1U,
+    DB_QUALIFICATION_COMMON_BUILD_VERSION = 1U,
+    DB_QUALIFICATION_COMMON_GRADIENT_WINDOW_ROWS = 32U,
 };
 
 static int copy_text(uint8_t *output, const char *text) {
@@ -305,14 +313,8 @@ db_conformance_qualify(const db_conformance_key_t *key,
            DB_CONFORMANCE_UUID_BYTES);
     db_probe_result_t result = {0};
     if (query->timeout_ns != 0U) {
-        const db_poll_policy_t *const reap =
-            db_progress_policy_get(DB_PROGRESS_CONFORMANCE_REAP);
-        decision.probe_status =
-            (reap != NULL)
-                ? db_probe_process_run_with_timeout(helper, &request_with_uuid,
-                                                    &result, query->timeout_ns,
-                                                    reap->total_timeout_ns)
-                : DB_PROBE_STATUS_IO_ERROR;
+        decision.probe_status = db_probe_process_run_with_timeout(
+            helper, &request_with_uuid, &result, query->timeout_ns, 0U);
     } else {
         decision.probe_status =
             db_probe_process_run(helper, &request_with_uuid, &result);
@@ -342,12 +344,9 @@ int db_conformance_qualify_batch(const db_conformance_key_t *keys,
                                  const db_conformance_query_t *query,
                                  uint64_t aggregate_timeout_ns,
                                  db_conformance_decision_t *decisions) {
-    const db_poll_policy_t *const helper_policy =
-        db_progress_policy_get(DB_PROGRESS_CONFORMANCE_HELPER);
     if ((keys == NULL) || (query == NULL) || (decisions == NULL) ||
         (key_count == 0U) || (key_count > DB_CONFORMANCE_BATCH_MAX_KEYS) ||
-        (aggregate_timeout_ns == 0U) || (helper_policy == NULL) ||
-        (helper_policy->attempt_timeout_ns == 0U)) {
+        (aggregate_timeout_ns == 0U)) {
         return 0;
     }
     const db_deadline_t deadline =
@@ -373,7 +372,8 @@ int db_conformance_qualify_batch(const db_conformance_key_t *keys,
         const uint64_t now_ns = db_now_ns_monotonic();
         const uint64_t remaining_ns =
             db_deadline_remaining_ns(&deadline, now_ns);
-        if (remaining_ns < helper_policy->attempt_timeout_ns) {
+        if (db_progress_policy_allows_start(DB_PROGRESS_CONFORMANCE_HELPER,
+                                            remaining_ns) == 0) {
             decisions[index] = (db_conformance_decision_t){
                 .outcome = DB_QUALIFICATION_OUTCOME_UNAVAILABLE,
                 .result = DB_CONFORMANCE_UNTESTED,
@@ -387,5 +387,361 @@ int db_conformance_qualify_batch(const db_conformance_key_t *keys,
         bounded_query.timeout_ns = remaining_ns;
         decisions[index] = db_conformance_qualify(&keys[index], &bounded_query);
     }
+    return 1;
+}
+
+int db_qualification_service_resolve_topology(
+    const db_qualification_topology_request_t *request,
+    const db_conformance_query_t *query, uint64_t aggregate_timeout_ns,
+    db_qualification_topology_result_t *result) {
+    if ((request == NULL) || (query == NULL) || (result == NULL) ||
+        (request->lane_count == 0U) ||
+        (request->lane_count > DB_CONFORMANCE_TOPOLOGY_MAX_LANES)) {
+        return 0;
+    }
+    *result = (db_qualification_topology_result_t){0};
+    const uint32_t supported_mask =
+        (request->supported_implementation_mask != 0U)
+            ? request->supported_implementation_mask
+            : DB_QUALIFICATION_ALL_IMPLEMENTATIONS_MASK;
+    db_conformance_key_t compact_keys[DB_CONFORMANCE_BATCH_MAX_KEYS] = {0};
+    size_t compact_lanes[DB_CONFORMANCE_BATCH_MAX_KEYS] = {0};
+    size_t compact_implementations[DB_CONFORMANCE_BATCH_MAX_KEYS] = {0};
+    size_t compact_count = 0U;
+    for (size_t lane_index = 0U; lane_index < request->lane_count;
+         lane_index++) {
+        for (size_t implementation_index = 0U;
+             implementation_index < DB_CONFORMANCE_IMPLEMENTATIONS_PER_LANE;
+             implementation_index++) {
+            if ((supported_mask & DB_QUALIFICATION_IMPLEMENTATION_BIT(
+                                      implementation_index)) == 0U) {
+                continue;
+            }
+            compact_keys[compact_count] =
+                request->keys[lane_index][implementation_index];
+            compact_lanes[compact_count] = lane_index;
+            compact_implementations[compact_count] = implementation_index;
+            compact_count++;
+        }
+    }
+    db_conformance_decision_t compact_decisions[DB_CONFORMANCE_BATCH_MAX_KEYS] =
+        {0};
+    if ((compact_count == 0U) ||
+        (db_conformance_qualify_batch(compact_keys, compact_count, query,
+                                      aggregate_timeout_ns,
+                                      compact_decisions) == 0)) {
+        return 0;
+    }
+    for (size_t compact_index = 0U; compact_index < compact_count;
+         compact_index++) {
+        result->decisions[compact_lanes[compact_index]]
+                         [compact_implementations[compact_index]] =
+            compact_decisions[compact_index];
+    }
+    result->source = DB_QUALIFICATION_SOURCE_NONE;
+    result->cache_status = DB_CONFORMANCE_CACHE_MISS;
+    for (size_t lane_index = 0U; lane_index < request->lane_count;
+         lane_index++) {
+        result->lanes[lane_index] = request->lanes[lane_index];
+        const db_conformance_decision_t *const decisions =
+            result->decisions[lane_index];
+        result->lanes[lane_index].semantic =
+            decisions[DB_QUALIFICATION_SEMANTIC_INDEX].result;
+        result->lanes[lane_index].exact_lookup =
+            decisions[DB_QUALIFICATION_EXACT_LOOKUP_INDEX].result;
+        result->lanes[lane_index].row_instances =
+            decisions[DB_QUALIFICATION_ROW_INSTANCES_INDEX].result;
+        for (size_t implementation_index = 0U;
+             implementation_index < DB_CONFORMANCE_IMPLEMENTATIONS_PER_LANE;
+             implementation_index++) {
+            const db_conformance_decision_t *const decision =
+                &decisions[implementation_index];
+            if (decision->source == DB_QUALIFICATION_SOURCE_HELPER) {
+                result->source = DB_QUALIFICATION_SOURCE_HELPER;
+            } else if ((result->source == DB_QUALIFICATION_SOURCE_NONE) &&
+                       (decision->source == DB_QUALIFICATION_SOURCE_CACHE)) {
+                result->source = DB_QUALIFICATION_SOURCE_CACHE;
+            }
+            if (decision->cache_status == DB_CONFORMANCE_CACHE_HIT) {
+                result->cache_status = DB_CONFORMANCE_CACHE_HIT;
+            }
+        }
+    }
+    result->topology =
+        db_topology_qualification_reduce(result->lanes, request->lane_count);
+    return 1;
+}
+
+static db_conformance_key_t
+descriptor_key(const db_renderer_probe_descriptor_t *descriptor) {
+    db_conformance_key_t key = {
+        .schema_version = DB_QUALIFICATION_COMMON_SCHEMA_VERSION,
+        .evaluator_version = DB_QUALIFICATION_COMMON_EVALUATOR_VERSION,
+        .domain_version = DB_QUALIFICATION_COMMON_DOMAIN_VERSION,
+        .build_version = DB_QUALIFICATION_COMMON_BUILD_VERSION,
+        .backend = descriptor->backend,
+        .implementation = descriptor->implementation,
+        .working_format = descriptor->working_format,
+        .vendor_id = descriptor->device.vendor_id,
+        .device_id = descriptor->device.device_id,
+        .driver_id = descriptor->driver.driver_id,
+        .api_version = descriptor->driver.api_version,
+        .logical_width = descriptor->logical_width,
+        .logical_height = descriptor->logical_height,
+        .gradient_window_rows = DB_QUALIFICATION_COMMON_GRADIENT_WINDOW_ROWS,
+        .implementation_hash = descriptor->implementation_hash,
+        .float_control_signature = descriptor->float_controls.value,
+        .palette_hash = descriptor->palette_hash,
+    };
+    memcpy(key.device_uuid, descriptor->device.uuid, sizeof(key.device_uuid));
+    (void)db_snprintf(key.provider, sizeof(key.provider), "%s",
+                      descriptor->provider);
+    (void)db_snprintf(key.strategy, sizeof(key.strategy), "%s",
+                      db_render_target_strategy_name(descriptor->strategy));
+    (void)db_snprintf(key.driver_name, sizeof(key.driver_name), "%s",
+                      descriptor->driver.name);
+    (void)db_snprintf(key.driver_info, sizeof(key.driver_info), "%s",
+                      descriptor->driver.info);
+    return key;
+}
+
+static uint64_t
+descriptor_identity(const db_renderer_qualification_descriptor_store_t *store) {
+    uint64_t hash = db_qualification_generation_hash(store->generation);
+    for (size_t index = 0U; index < store->count; index++) {
+        const db_renderer_probe_descriptor_t *const descriptor =
+            &store->descriptors[index];
+        hash = db_fnv1a64_mix_u64(hash, (uint64_t)descriptor->backend);
+        hash = db_fnv1a64_mix_u64(hash, (uint64_t)descriptor->strategy);
+        hash = db_fnv1a64_mix_u64(hash, (uint64_t)descriptor->implementation);
+        hash = db_fnv1a64_mix_u64(hash, descriptor->lane_index);
+        hash = db_fnv1a64_mix_u64(hash, descriptor->implementation_hash);
+        hash = db_fnv1a64_mix_u64(hash, descriptor->capability_hash);
+    }
+    return db_fnv1a64_mix_u64(hash, DB_QUALIFICATION_DESCRIPTOR_DOMAIN);
+}
+
+static uint64_t
+qualification_candidate_id(db_render_target_strategy_t strategy,
+                           db_gradient_implementation_t implementation) {
+    return ((uint64_t)strategy * DB_CONFORMANCE_IMPLEMENTATIONS_PER_LANE) +
+           (uint64_t)implementation;
+}
+
+static int candidate_is_unavailable(uint64_t candidate_id,
+                                    uint64_t unavailable_mask) {
+    return (candidate_id >= 64U) ||
+           ((unavailable_mask & (UINT64_C(1) << candidate_id)) != 0U);
+}
+
+static uint32_t lane_mask_count(uint32_t mask) {
+    uint32_t count = 0U;
+    while (mask != 0U) {
+        count += mask & UINT32_C(1);
+        mask >>= 1U;
+    }
+    return count;
+}
+
+static const db_gradient_implementation_t gl1_policy[] = {
+    DB_GRADIENT_IMPLEMENTATION_SEMANTIC,
+    DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
+};
+
+static const db_gradient_implementation_t native_policy[] = {
+    DB_GRADIENT_IMPLEMENTATION_SEMANTIC,
+    DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP,
+    DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
+};
+
+static int
+descriptor_policy(db_probe_backend_t backend,
+                  const db_gradient_implementation_t **implementations,
+                  size_t *count) {
+    if ((implementations == NULL) || (count == NULL)) {
+        return 0;
+    }
+    switch (backend) {
+    case DB_PROBE_BACKEND_GL1:
+        *implementations = gl1_policy;
+        *count = sizeof(gl1_policy) / sizeof(gl1_policy[0]);
+        return 1;
+    case DB_PROBE_BACKEND_GL3:
+    case DB_PROBE_BACKEND_VULKAN:
+        *implementations = native_policy;
+        *count = sizeof(native_policy) / sizeof(native_policy[0]);
+        return 1;
+    }
+    return 0;
+}
+
+static void set_snapshot_reason(db_qualification_snapshot_t *snapshot,
+                                const char *reason) {
+    if ((snapshot != NULL) && (reason != NULL)) {
+        (void)db_snprintf(snapshot->reason, sizeof(snapshot->reason), "%s",
+                          reason);
+    }
+}
+
+static void combine_decision_metadata(const db_conformance_decision_t *decision,
+                                      db_qualification_snapshot_t *snapshot) {
+    if ((decision == NULL) || (snapshot == NULL)) {
+        return;
+    }
+    if (decision->source == DB_QUALIFICATION_SOURCE_HELPER) {
+        snapshot->source = DB_QUALIFICATION_SOURCE_HELPER;
+    } else if (snapshot->source == DB_QUALIFICATION_SOURCE_NONE) {
+        if (decision->source == DB_QUALIFICATION_SOURCE_CACHE) {
+            snapshot->source = DB_QUALIFICATION_SOURCE_CACHE;
+        } else if (decision->source == DB_QUALIFICATION_SOURCE_BASELINE) {
+            snapshot->source = DB_QUALIFICATION_SOURCE_BASELINE;
+        }
+    }
+    if (decision->cache_status == DB_CONFORMANCE_CACHE_HIT) {
+        snapshot->cache_status = DB_CONFORMANCE_CACHE_HIT;
+    }
+}
+
+int db_qualification_service_resolve_descriptors(
+    const db_renderer_qualification_descriptor_store_t *store,
+    const db_conformance_query_t *query, uint64_t aggregate_timeout_ns,
+    uint64_t unavailable_candidate_mask,
+    db_qualification_snapshot_t *snapshot) {
+    if ((store == NULL) || (query == NULL) || (snapshot == NULL) ||
+        (store->count == 0U) ||
+        (store->count > DB_QUALIFICATION_MAX_DESCRIPTORS)) {
+        return 0;
+    }
+    *snapshot = (db_qualification_snapshot_t){
+        .generation = db_qualification_generation_hash(store->generation),
+        .descriptor_identity = descriptor_identity(store),
+        .outcome = DB_QUALIFICATION_OUTCOME_UNAVAILABLE,
+        .source = DB_QUALIFICATION_SOURCE_NONE,
+        .cache_status = DB_CONFORMANCE_CACHE_MISS,
+    };
+    if (query->diagnostic_forced != 0) {
+        const db_renderer_probe_descriptor_t *const descriptor =
+            &store->descriptors[0];
+        snapshot->candidate_id = qualification_candidate_id(
+            descriptor->strategy, descriptor->implementation);
+        snapshot->implementation = descriptor->implementation;
+        snapshot->retained_lanes = UINT32_C(1) << descriptor->lane_index;
+        snapshot->lane_count = 1U;
+        snapshot->strategy = descriptor->strategy;
+        snapshot->source = DB_QUALIFICATION_SOURCE_DIAGNOSTIC;
+        snapshot->diagnostic_forced = 1;
+        set_snapshot_reason(snapshot, "diagnostic_forced");
+        return 1;
+    }
+
+    db_conformance_key_t keys[DB_QUALIFICATION_MAX_DESCRIPTORS] = {0};
+    size_t decision_indices[DB_QUALIFICATION_MAX_DESCRIPTORS] = {0};
+    size_t key_count = 0U;
+    db_conformance_decision_t decisions[DB_QUALIFICATION_MAX_DESCRIPTORS] = {0};
+    for (size_t index = 0U; index < store->count; index++) {
+        const db_renderer_probe_descriptor_t *const descriptor =
+            &store->descriptors[index];
+        if (descriptor->compatibility_validated != 0) {
+            decisions[index] = (db_conformance_decision_t){
+                .outcome = DB_QUALIFICATION_OUTCOME_CONFORMING,
+                .result = DB_CONFORMANCE_CONFORMING,
+                .source = DB_QUALIFICATION_SOURCE_BASELINE,
+                .cache_status = DB_CONFORMANCE_CACHE_MISS,
+                .probe_status = DB_PROBE_STATUS_OK,
+            };
+            set_reason(&decisions[index], "validated_compatibility");
+            continue;
+        }
+        keys[key_count] = descriptor_key(descriptor);
+        decision_indices[key_count] = index;
+        key_count++;
+    }
+    if (key_count != 0U) {
+        db_conformance_decision_t compact[DB_QUALIFICATION_MAX_DESCRIPTORS] = {
+            0};
+        if (db_conformance_qualify_batch(keys, key_count, query,
+                                         aggregate_timeout_ns, compact) == 0) {
+            set_snapshot_reason(snapshot, "qualification_batch_failed");
+            return 1;
+        }
+        for (size_t index = 0U; index < key_count; index++) {
+            decisions[decision_indices[index]] = compact[index];
+        }
+    }
+
+    const db_gradient_implementation_t *policy = NULL;
+    size_t policy_count = 0U;
+    if (descriptor_policy(store->descriptors[0].backend, &policy,
+                          &policy_count) == 0) {
+        set_snapshot_reason(snapshot, "backend_policy_unavailable");
+        return 1;
+    }
+    for (size_t policy_index = 0U; policy_index < policy_count;
+         policy_index++) {
+        const db_gradient_implementation_t implementation =
+            policy[policy_index];
+        for (size_t descriptor_index = 0U; descriptor_index < store->count;
+             descriptor_index++) {
+            const db_renderer_probe_descriptor_t *const first =
+                &store->descriptors[descriptor_index];
+            if (first->implementation != implementation) {
+                continue;
+            }
+            const uint64_t candidate_id =
+                qualification_candidate_id(first->strategy, implementation);
+            if (candidate_is_unavailable(candidate_id,
+                                         unavailable_candidate_mask)) {
+                continue;
+            }
+            uint32_t retained_mask = 0U;
+            uint32_t primary_mask = 0U;
+            int all_conforming = 1;
+            int primary_conforming = 0;
+            for (size_t lane_index = 0U; lane_index < store->count;
+                 lane_index++) {
+                const db_renderer_probe_descriptor_t *const descriptor =
+                    &store->descriptors[lane_index];
+                if ((descriptor->strategy != first->strategy) ||
+                    (descriptor->implementation != implementation)) {
+                    continue;
+                }
+                const uint32_t lane_bit = UINT32_C(1) << descriptor->lane_index;
+                if (descriptor->is_primary != 0) {
+                    primary_mask |= lane_bit;
+                }
+                if ((decisions[lane_index].outcome ==
+                     DB_QUALIFICATION_OUTCOME_CONFORMING) ||
+                    (descriptor->compatibility_validated != 0)) {
+                    retained_mask |= lane_bit;
+                    if (descriptor->is_primary != 0) {
+                        primary_conforming = 1;
+                    }
+                } else {
+                    all_conforming = 0;
+                }
+                combine_decision_metadata(&decisions[lane_index], snapshot);
+            }
+            if ((retained_mask == 0U) || (primary_mask == 0U) ||
+                (primary_conforming == 0)) {
+                continue;
+            }
+            if ((all_conforming == 0) &&
+                (implementation != DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES)) {
+                continue;
+            }
+            snapshot->candidate_id = candidate_id;
+            snapshot->outcome = DB_QUALIFICATION_OUTCOME_CONFORMING;
+            snapshot->implementation = implementation;
+            snapshot->retained_lanes = retained_mask;
+            snapshot->lane_count = lane_mask_count(retained_mask);
+            snapshot->strategy = first->strategy;
+            snapshot->production_qualified = 1;
+            set_snapshot_reason(snapshot, (all_conforming != 0)
+                                              ? "all_lanes_conforming"
+                                              : "secondary_lanes_removed");
+            return 1;
+        }
+    }
+    set_snapshot_reason(snapshot, "no_conforming_candidate");
     return 1;
 }

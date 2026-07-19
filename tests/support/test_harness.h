@@ -138,14 +138,17 @@ unsigned db_core_logging_test_run_all(void);
 unsigned db_damage_trace_test_run_all(void);
 unsigned db_display_gl_runtime_test_run_all(void);
 unsigned db_display_hdr_test_run_all(void);
+unsigned db_frame_coordinator_test_run_all(void);
 unsigned db_gl_shadow_present_test_run_all(void);
 unsigned db_gl1_replay_test_run_all(void);
 unsigned db_gradient_divergence_test_run_all(void);
 unsigned db_hash_test_run_all(void);
+unsigned db_metrics_policy_test_run_all(void);
 unsigned db_numeric_test_run_all(void);
-unsigned db_poll_policy_test_run_all(void);
+unsigned db_progress_policy_test_run_all(void);
 unsigned db_render_ir_test_run_all(void);
 unsigned db_render_ir_snapshot_test_run_all(void);
+unsigned db_run_session_test_run_all(void);
 unsigned db_sort_test_run_all(void);
 unsigned db_vk_scheduler_test_run_all(void);
 

@@ -1,0 +1,29 @@
+{
+  "schema": 2,
+  "scoped_production_loc_baseline": 52000,
+  "categories": {
+    "production_frame_lifecycle": [
+      {
+        "path": "src/core/db_frame_coordinator.c",
+        "symbol": "db_frame_coordinator_run_frame"
+      }
+    ],
+    "display_generation_commit_decisions": [],
+    "display_benchmark_coordinator_ownership": [],
+    "display_renderer_strategy_decisions": [],
+    "backend_qualification_policy": [],
+    "backend_cache_helper_service_calls": [],
+    "backend_qualification_retry_loops": [],
+    "backend_topology_reducers": [],
+    "renderer_benchmark_internal_dependencies": [],
+    "display_backend_frame_retry_sessions": [],
+    "renderer_long_run_metric_histories": [],
+    "historical_frame_ir_owners": [
+      {
+        "path": "src/renderers/opengl_gl1_5_gles1_1/gl1_replay.c",
+        "symbol": "db_render_ir_clone_replayable"
+      }
+    ],
+    "temporary_migration_adapters": []
+  }
+}

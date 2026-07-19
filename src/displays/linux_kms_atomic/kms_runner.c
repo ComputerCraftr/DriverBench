@@ -1,7 +1,7 @@
 #include "kms_runner.h"
-#include "../../core/db_frame_source.h"
 #include "core/db_format_contract.h"
 #include "core/db_log.h"
+#include "core/db_run_session.h"
 #include "kms_internal.h"
 
 #include <EGL/egl.h>
@@ -53,7 +53,8 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         (renderer == NULL) || (renderer->init == NULL) ||
         (renderer->render_frame == NULL) || (renderer->shutdown == NULL) ||
         (renderer->capability_mode == NULL) ||
-        (renderer->work_unit_count == NULL)) {
+        (renderer->work_unit_count == NULL) ||
+        (renderer->qualification_ops == NULL)) {
         DB_RUNTIME_FAIL((backend != NULL) ? backend : BACKEND_NAME,
                         "Invalid KMS atomic run config");
     }
@@ -134,14 +135,6 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
                                          &presentation);
 
     renderer->init(&resolved_runtime.renderer);
-    db_frame_source_t benchmark_core = {0};
-    db_frame_source_init(
-        &benchmark_core,
-        &(const db_frame_source_config_t){
-            .benchmark_configuration = &resolved_runtime.benchmark,
-            .working_format =
-                resolved_runtime.renderer.format.surface_pixel_format,
-        });
     const char *capability_mode = renderer->capability_mode();
     const uint32_t work_unit_count = renderer->work_unit_count();
 
@@ -158,7 +151,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         .backend = backend,
         .renderer_name = renderer_name,
         .capability_mode = capability_mode,
-        .fps_cap = resolved_runtime.display.fps_cap,
+        .fps_cap = 0.0,
         .frame_limit = resolved_runtime.display.frame_limit,
         .work_unit_count = work_unit_count,
         .kms = &kms,
@@ -169,6 +162,7 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
     };
     db_kms_atomic_gl_frame_producer_t producer = {
         .backend = backend,
+        .gl_renderer = gl_renderer,
         .debug_clear_default_framebuffer = debug_clear_default_framebuffer,
         .kms_fd = kms.fd,
         .dpy = dpy,
@@ -176,25 +170,30 @@ int db_kms_atomic_run(const char *backend, const char *renderer_name,
         .gbm_surf = gbm_surf,
         .resolved_runtime = &resolved_runtime,
         .renderer = renderer,
-        .core = &benchmark_core,
         .pixel_width = resolved_runtime.presentation.source_width,
         .pixel_height = resolved_runtime.presentation.source_height,
         .destination_width = width,
         .destination_height = height,
     };
+    producer.transaction.loop = &loop;
+    if (db_kms_gl_run_session_init(&producer) == 0) {
+        DB_RUNTIME_FAIL(backend, "failed to initialize KMS run session");
+    }
     db_kms_egl_presentation_init(backend, dpy, surf, &producer.presentation);
     cur = db_kms_atomic_prime_first_frame_and_modeset(
-        &kms, width, height, &producer, db_kms_atomic_next_gl_fb);
+        &kms, width, height, &producer, &producer.transaction,
+        db_kms_atomic_gl_frame);
     const db_kms_atomic_loop_run_result_t loop_result =
         db_kms_atomic_run_frame_loop_timed(&loop, &producer,
-                                           db_kms_atomic_next_gl_fb);
+                                           db_kms_atomic_gl_frame);
     db_display_log_renderer_final_summary(
         db_dispatch_api_name(DB_API_OPENGL), renderer_name, backend,
         loop_result.frames, work_unit_count, loop_result.elapsed_ms,
         renderer->draw_stats, renderer->execution_report);
 
+    db_run_session_destroy(producer.transaction.session);
+    producer.transaction.session = NULL;
     renderer->shutdown();
-    db_frame_source_shutdown(&benchmark_core);
 
     fb_release(kms.fd, gbm_surf, cur);
 
@@ -249,14 +248,6 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
     db_display_log_presentation_contract(backend, &resolved_runtime,
                                          &resolved_runtime.presentation);
     db_cpu_init(&resolved_runtime.renderer);
-    db_frame_source_t benchmark_core = {0};
-    db_frame_source_init(
-        &benchmark_core,
-        &(const db_frame_source_config_t){
-            .benchmark_configuration = &resolved_runtime.benchmark,
-            .working_format =
-                resolved_runtime.renderer.format.surface_pixel_format,
-        });
     const char *capability_mode = db_cpu_capability_mode();
     const uint32_t work_unit_count = db_cpu_work_unit_count();
     const uint32_t surface_width = resolved_runtime.presentation.source_width;
@@ -296,7 +287,7 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
         .backend = backend,
         .renderer_name = renderer_name,
         .capability_mode = capability_mode,
-        .fps_cap = resolved_runtime.display.fps_cap,
+        .fps_cap = 0.0,
         .frame_limit = resolved_runtime.display.frame_limit,
         .work_unit_count = work_unit_count,
         .kms = &kms,
@@ -312,22 +303,28 @@ int db_kms_atomic_run_cpu(const char *backend, const char *renderer_name,
         .height = height,
         .backend = backend,
         .surface = cpu_surface,
-        .core = &benchmark_core,
+        .resolved_runtime = &resolved_runtime,
         .native_output_format =
             resolved_runtime.renderer.format.native_output_format,
     };
+    producer.transaction.loop = &loop;
+    if (db_kms_cpu_run_session_init(&producer) == 0) {
+        DB_RUNTIME_FAIL(backend, "failed to initialize KMS run session");
+    }
     cur = db_kms_atomic_prime_first_frame_and_modeset(
-        &kms, width, height, &producer, db_kms_atomic_next_cpu_fb);
+        &kms, width, height, &producer, &producer.transaction,
+        db_kms_atomic_cpu_frame);
     const db_kms_atomic_loop_run_result_t loop_result =
         db_kms_atomic_run_frame_loop_timed(&loop, &producer,
-                                           db_kms_atomic_next_cpu_fb);
+                                           db_kms_atomic_cpu_frame);
     db_display_log_renderer_final_summary(
         db_dispatch_api_name(DB_API_CPU), renderer_name, backend,
         loop_result.frames, work_unit_count, loop_result.elapsed_ms, NULL,
         db_cpu_execution_report);
 
+    db_run_session_destroy(producer.transaction.session);
+    producer.transaction.session = NULL;
     db_cpu_shutdown();
-    db_frame_source_shutdown(&benchmark_core);
     free(producer.surface.pixels);
     db_kms_atomic_cpu_scanout_shutdown(&producer);
     db_kms_atomic_shutdown_core(&kms, gbm);

@@ -51,7 +51,6 @@ void db_benchmark_core_init(db_benchmark_core_t *core,
 db_frame_plan_status_t
 db_benchmark_core_probe_frame(const db_benchmark_core_t *core,
                               uint32_t frame_index,
-                              const db_frame_plan_request_t *request,
                               db_frame_requirements_t *requirements);
 db_frame_plan_status_t db_benchmark_core_provision_requirements(
     db_benchmark_core_t *core, const db_frame_requirements_t *requirements,
@@ -63,6 +62,7 @@ db_benchmark_core_generate_plan(db_benchmark_core_t *core, uint32_t frame_index,
 void db_benchmark_core_apply_plan(db_benchmark_core_t *core,
                                   const db_frame_plan_t *plan,
                                   const db_render_result_t *result);
+void db_benchmark_core_abort_plan(db_benchmark_core_t *core);
 void db_benchmark_core_shutdown(db_benchmark_core_t *core);
 
 #endif

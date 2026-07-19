@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "core/db_format_contract.h"
-#include "core/db_poll_policy.h"
+#include "core/db_progress_policy.h"
 #include "core/db_render_result.h"
 #include "core/db_render_types.h"
 #include "core/db_renderer_support.h"
@@ -682,7 +682,7 @@ int db_gl_upload_stream_write(db_gl_upload_stream_t *stream,
 const void *db_gl_upload_stream_pointer(const db_gl_upload_stream_t *stream,
                                         size_t byte_offset);
 int db_gl_upload_stream_wait(db_gl_upload_stream_t *stream);
-db_sync_wait_result_t
+db_progress_outcome_t
 db_gl_upload_stream_probe_sync(void *sync, db_progress_policy_id_t policy_id);
 void db_gl_upload_stream_record_sync(db_gl_upload_stream_t *stream);
 void db_gl_upload_stream_shutdown(db_gl_upload_stream_t *stream);

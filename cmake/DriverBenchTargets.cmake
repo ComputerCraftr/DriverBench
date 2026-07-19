@@ -35,6 +35,7 @@ set(DB_CLI_CORE_SOURCES src/cli/cli_parse.c src/cli/cli_runtime_options.c
 
 set(DB_APP_SOURCES
     src/driverbench_cli.c
+    src/displays/display_dispatch.c
     src/displays/gl_display_runtime.c
     src/displays/display_presentation_policy.c
     src/displays/offscreen/offscreen_display.c
@@ -59,6 +60,16 @@ function(db_set_source_compile_options compile_options)
     set(source_files ${ARGN})
     set_source_files_properties(${source_files} PROPERTIES COMPILE_OPTIONS
                                                            "${compile_options}")
+endfunction()
+
+function(db_add_contract_library target)
+    add_library(${target} STATIC ${ARGN})
+    db_apply_perf_options(${target})
+    target_compile_definitions(${target} PRIVATE ${DB_DRIVERBENCH_DEFS})
+    target_include_directories(
+        ${target}
+        PUBLIC ${CMAKE_SOURCE_DIR}/src
+        PRIVATE ${DB_GENERATED_INCLUDE_DIR})
 endfunction()
 
 function(db_finalize_driverbench_target)
@@ -137,15 +148,58 @@ function(db_finalize_driverbench_target)
     add_custom_target(driverbench_embedded_shaders ALL
                       DEPENDS ${DB_EMBEDDED_SHADERS_HEADER})
 
-    add_library(driverbench_core STATIC ${DB_CORE_SOURCES}
-                                        src/displays/display_dispatch.c)
-    db_apply_perf_options(driverbench_core)
-    target_compile_definitions(driverbench_core PRIVATE ${DB_DRIVERBENCH_DEFS})
-    target_link_libraries(driverbench_core PRIVATE ${DB_DRIVERBENCH_LIBS})
-    target_include_directories(
+    db_add_contract_library(db_foundation ${DB_FOUNDATION_SOURCES})
+    target_link_libraries(db_foundation PRIVATE ${DB_DRIVERBENCH_LIBS})
+
+    db_add_contract_library(db_render_ir ${DB_RENDER_IR_SOURCES})
+    target_link_libraries(db_render_ir PUBLIC db_foundation)
+
+    db_add_contract_library(db_qualification_contracts
+                            ${DB_QUALIFICATION_CONTRACT_SOURCES})
+    target_link_libraries(db_qualification_contracts PUBLIC db_foundation)
+
+    db_add_contract_library(db_frame_contracts ${DB_FRAME_CONTRACT_SOURCES})
+    target_link_libraries(db_frame_contracts PUBLIC db_foundation db_render_ir
+                                                    db_qualification_contracts)
+
+    db_add_contract_library(db_benchmark_model ${DB_BENCHMARK_MODEL_SOURCES})
+    target_link_libraries(db_benchmark_model PUBLIC db_foundation db_render_ir)
+
+    db_add_contract_library(db_platform_process ${DB_PLATFORM_PROCESS_SOURCES})
+    target_link_libraries(db_platform_process PUBLIC db_foundation)
+
+    db_add_contract_library(db_qualification_service
+                            ${DB_QUALIFICATION_SERVICE_SOURCES})
+    target_link_libraries(
+        db_qualification_service PUBLIC db_foundation db_platform_process
+                                        db_qualification_contracts db_render_ir)
+
+    db_add_contract_library(db_frame_coordinator
+                            ${DB_FRAME_COORDINATOR_SOURCES})
+    target_link_libraries(
+        db_frame_coordinator PUBLIC db_foundation db_frame_contracts
+                                    db_benchmark_model)
+
+    db_add_contract_library(db_run_session ${DB_RUN_SESSION_SOURCES})
+    target_link_libraries(
+        db_run_session
+        PUBLIC db_foundation db_frame_coordinator db_frame_contracts
+               db_benchmark_model db_qualification_service)
+
+    add_library(driverbench_core INTERFACE)
+    target_link_libraries(
         driverbench_core
-        PUBLIC ${CMAKE_SOURCE_DIR}/src
-        PRIVATE ${DB_GENERATED_INCLUDE_DIR})
+        INTERFACE db_run_session
+                  db_frame_coordinator
+                  db_qualification_service
+                  db_frame_contracts
+                  db_benchmark_model
+                  db_render_ir
+                  db_qualification_contracts
+                  db_platform_process
+                  db_foundation)
+    target_include_directories(driverbench_core
+                               INTERFACE ${CMAKE_SOURCE_DIR}/src)
 
     add_library(driverbench_render_core STATIC ${DB_RENDER_CORE_SOURCES})
     db_apply_perf_options(driverbench_render_core)

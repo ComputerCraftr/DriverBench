@@ -1,17 +1,17 @@
 #include "gl3_qualification.h"
 
 #include "core/db_conformance.h"
-#include "core/db_conformance_service.h"
 #include "core/db_core.h"
 #include "core/db_frame_plan.h"
 #include "core/db_gradient_divergence.h"
 #include "core/db_hash.h"
 #include "core/db_numeric.h"
 #include "core/db_probe_protocol.h"
+#include "core/db_qualification_contracts.h"
 #include "core/db_render_ir.h"
 #include "core/db_render_ir_surface.h"
+#include "core/db_render_result.h"
 #include "core/db_render_types.h"
-#include "core/db_renderer_diagnostics.h"
 #include "renderers/gl_common.h"
 #include "renderers/gl_gradient_qualification.h"
 #include "renderers/gl_hash_readback.h"
@@ -25,43 +25,72 @@
 #define BACKEND_NAME "renderer_opengl_gl3_3"
 #define DB_GL3_PROBE_SHADER_DOMAIN UINT32_C(0x47335348)
 
-db_conformance_decision_t db_gl3_qualify_implementation(
-    db_pixel_format_t format, uint32_t logical_width, uint32_t logical_height,
-    const db_renderer_diagnostic_config_t *diagnostics,
-    db_gradient_implementation_t implementation) {
+static uint64_t gl3_implementation_hash(void) {
     uint64_t implementation_hash = db_fnv1a64_tree(
         db_gl3_ir_execute_vert_source, strlen(db_gl3_ir_execute_vert_source),
         DB_GL3_PROBE_SHADER_DOMAIN, DB_FNV1A64_OFFSET);
     implementation_hash = db_fnv1a64_tree(
         db_gl3_ir_execute_frag_source, strlen(db_gl3_ir_execute_frag_source),
         DB_GL3_PROBE_SHADER_DOMAIN, implementation_hash);
-    db_conformance_key_t key = {
-        .schema_version = 1U,
-        .evaluator_version = 3U,
-        .domain_version = 1U,
-        .build_version = 1U,
+    return implementation_hash;
+}
+
+static int
+append_descriptor(db_renderer_qualification_descriptor_store_t *store,
+                  db_pixel_format_t format,
+                  db_gradient_implementation_t implementation,
+                  uint64_t implementation_hash, uint32_t logical_width,
+                  uint32_t logical_height) {
+    db_renderer_probe_descriptor_t descriptor = {
         .backend = DB_PROBE_BACKEND_GL3,
+        .strategy = DB_RENDER_TARGET_GL3_PERSISTENT_FBO,
         .implementation = implementation,
+        .lane_index = 0U,
+        .is_primary = 1,
         .working_format = format,
+        .implementation_hash = implementation_hash,
         .logical_width = logical_width,
         .logical_height = logical_height,
-        .gradient_window_rows = 32U,
-        .implementation_hash = implementation_hash,
-        .provider = "gl_context",
-        .strategy = "persistent_fbo",
-        .driver_name = "OpenGL",
+        .compatibility_validated =
+            implementation == DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
     };
     const char *const renderer = db_gl_get_renderer_string();
     const char *const version = db_gl_get_version_string();
-    (void)db_snprintf(key.driver_name, sizeof(key.driver_name), "%s",
-                      (renderer != NULL) ? renderer : "unknown");
-    (void)db_snprintf(key.driver_info, sizeof(key.driver_info), "%s",
-                      (version != NULL) ? version : "unknown");
-    return db_conformance_qualify(
-        &key, &(const db_conformance_query_t){
-                  .ignore_cache = diagnostics->ignore_conformance_cache,
-                  .rerun_probe = diagnostics->rerun_conformance_probe,
-              });
+    (void)db_snprintf(descriptor.provider, sizeof(descriptor.provider), "%s",
+                      "gl_context");
+    (void)db_snprintf(descriptor.driver.name, sizeof(descriptor.driver.name),
+                      "%s", (renderer != NULL) ? renderer : "unknown");
+    (void)db_snprintf(descriptor.driver.info, sizeof(descriptor.driver.info),
+                      "%s", (version != NULL) ? version : "unknown");
+    return db_qualification_descriptor_store_append(store, &descriptor);
+}
+
+int db_gl3_describe_qualification(
+    db_pixel_format_t format, uint32_t logical_width, uint32_t logical_height,
+    db_gradient_implementation_t forced_implementation, int diagnostic_forced,
+    db_renderer_qualification_descriptor_store_t *store) {
+    if ((store == NULL) || (logical_width == 0U) || (logical_height == 0U)) {
+        return 0;
+    }
+    *store = (db_renderer_qualification_descriptor_store_t){
+        .generation =
+            {
+                .device_generation = 1U,
+                .implementation_generation = gl3_implementation_hash(),
+                .target_contract_generation =
+                    ((uint64_t)logical_width << 32U) | logical_height,
+            },
+    };
+    const uint64_t hash = gl3_implementation_hash();
+    if (diagnostic_forced != 0) {
+        return append_descriptor(store, format, forced_implementation, hash,
+                                 logical_width, logical_height);
+    }
+    return append_descriptor(store, format, DB_GRADIENT_IMPLEMENTATION_SEMANTIC,
+                             hash, logical_width, logical_height) &&
+           append_descriptor(store, format,
+                             DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES, hash,
+                             logical_width, logical_height);
 }
 
 int db_gl3_qualify_current_target(const db_frame_plan_t *plan,

@@ -1,20 +1,11 @@
 #include "../../core/db_format_contract.h"
-#include "../../core/db_frame_plan.h"
-#include "../../core/db_frame_source.h"
-#include "../../core/db_geometry.h"
+#include "../../core/db_frame_contracts.h"
 #include "../../core/db_numeric.h"
-#include "../display_presentation_policy.h"
 #include "kms_internal.h"
-#include "kms_runner.h"
-
-#include <EGL/egl.h>
-#include <EGL/eglext.h>
-#include <EGL/eglplatform.h>
 
 #include <fcntl.h>
 #include <gbm.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -39,7 +30,6 @@
 #include "../../core/db_core.h"
 #include "../display_dispatch.h"
 #include "../display_frame_loop_common.h"
-#include "../gl_display_runtime.h"
 
 // libdrm has two distro-dependent public include paths.
 // NOLINTBEGIN(misc-include-cleaner)
@@ -86,7 +76,6 @@ static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
     }
     return prop_id;
 }
-
 static drmModeConnector *pick_connected_connector(struct kms_atomic *kms) {
     for (int i = 0; i < kms->res->count_connectors; i++) {
         drmModeConnector *connector =
@@ -460,16 +449,44 @@ void db_kms_atomic_shutdown_core(struct kms_atomic *kms,
 
 struct fb *db_kms_atomic_prime_first_frame_and_modeset(
     const struct kms_atomic *kms, uint32_t width, uint32_t height,
-    void *producer_ctx, db_kms_atomic_next_fb_fn_t next_fb_fn) {
-    if ((kms == NULL) || (next_fb_fn == NULL)) {
+    void *producer_ctx, db_kms_frame_transaction_t *transaction,
+    db_kms_atomic_frame_fn_t frame_fn) {
+    if ((kms == NULL) || (transaction == NULL) || (frame_fn == NULL)) {
         runtime_failf("invalid kms prime args");
     }
-    struct fb *cur = next_fb_fn(producer_ctx, 0U);
-    if (cur == NULL) {
+    (void)width;
+    (void)height;
+    transaction->initial_modeset = 1;
+    if (frame_fn(producer_ctx, 0U) != DB_DISPLAY_FRAME_LOOP_CONTINUE) {
         runtime_failf("failed to create first scanout framebuffer");
     }
-    kms_atomic_commit_modeset(kms, width, height, cur->fb_id);
-    return cur;
+    return *transaction->loop->cur_fb;
+}
+
+db_present_result_t
+db_kms_present_pending(db_kms_frame_transaction_t *transaction,
+                       const db_renderer_frame_output_t *output) {
+    if ((transaction == NULL) || (transaction->loop == NULL) ||
+        (transaction->pending_fb == NULL) || (output == NULL) ||
+        (output->result.success == 0)) {
+        return DB_PRESENT_FATAL;
+    }
+    const db_kms_atomic_frame_loop_t *const loop = transaction->loop;
+    if (transaction->initial_modeset != 0) {
+        kms_atomic_commit_modeset(loop->kms, loop->kms->mode.hdisplay,
+                                  loop->kms->mode.vdisplay,
+                                  transaction->pending_fb->fb_id);
+        transaction->initial_modeset = 0;
+    } else {
+        db_kms_atomic_flip_to_fb(loop->kms, transaction->pending_fb->fb_id,
+                                 loop->event_context);
+        if (loop->release_previous_framebuffer != 0) {
+            fb_release(loop->kms->fd, loop->release_surface, *loop->cur_fb);
+        }
+    }
+    *loop->cur_fb = transaction->pending_fb;
+    transaction->pending_fb = NULL;
+    return DB_PRESENT_ACCEPTED;
 }
 
 static db_display_frame_loop_result_t
@@ -478,19 +495,16 @@ db_kms_atomic_shared_frame_step(void *user_data, uint32_t frame_index,
     db_kms_atomic_shared_loop_ctx_t *loop_ctx =
         (db_kms_atomic_shared_loop_ctx_t *)user_data;
     if ((loop_ctx == NULL) || (loop_ctx->loop == NULL) ||
-        (loop_ctx->next_fb_fn == NULL) ||
+        (loop_ctx->frame_fn == NULL) ||
         (loop_ctx->next_progress_log_due_ms == NULL)) {
         return DB_DISPLAY_FRAME_LOOP_STOP;
     }
     const db_kms_atomic_frame_loop_t *loop_cfg = loop_ctx->loop;
-    struct fb *next = loop_ctx->next_fb_fn(loop_ctx->producer_ctx, frame_index);
-    db_kms_atomic_flip_to_fb(loop_cfg->kms, next->fb_id,
-                             loop_cfg->event_context);
-    if (loop_cfg->release_previous_framebuffer != 0) {
-        fb_release(loop_cfg->kms->fd, loop_cfg->release_surface,
-                   *loop_cfg->cur_fb);
+    const db_display_frame_loop_result_t frame_result =
+        loop_ctx->frame_fn(loop_ctx->producer_ctx, frame_index);
+    if (frame_result != DB_DISPLAY_FRAME_LOOP_CONTINUE) {
+        return frame_result;
     }
-    *loop_cfg->cur_fb = next;
     db_log_progress_periodic(
         db_dispatch_api_name(loop_cfg->api), loop_cfg->renderer_name,
         loop_cfg->backend, (uint64_t)frame_index + 1U,
@@ -502,15 +516,15 @@ db_kms_atomic_shared_frame_step(void *user_data, uint32_t frame_index,
 static uint64_t
 db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
                              void *producer_ctx,
-                             db_kms_atomic_next_fb_fn_t next_fb_fn) {
+                             db_kms_atomic_frame_fn_t frame_fn) {
     double next_progress_log_due_ms = 0.0;
-    if ((loop == NULL) || (next_fb_fn == NULL)) {
+    if ((loop == NULL) || (frame_fn == NULL)) {
         return 0U;
     }
     db_kms_atomic_shared_loop_ctx_t ctx = {
         .loop = loop,
         .producer_ctx = producer_ctx,
-        .next_fb_fn = next_fb_fn,
+        .frame_fn = frame_fn,
         .next_progress_log_due_ms = &next_progress_log_due_ms,
     };
     db_display_frame_loop_t shared_loop = {
@@ -529,121 +543,14 @@ db_kms_atomic_run_frame_loop(const db_kms_atomic_frame_loop_t *loop,
 db_kms_atomic_loop_run_result_t
 db_kms_atomic_run_frame_loop_timed(const db_kms_atomic_frame_loop_t *loop,
                                    void *producer_ctx,
-                                   db_kms_atomic_next_fb_fn_t next_fb_fn) {
+                                   db_kms_atomic_frame_fn_t frame_fn) {
     const uint64_t bench_start = db_now_ns_monotonic();
     const uint64_t bench_frames =
-        db_kms_atomic_run_frame_loop(loop, producer_ctx, next_fb_fn);
+        db_kms_atomic_run_frame_loop(loop, producer_ctx, frame_fn);
     const double bench_ms =
         DB_TO_F64(db_now_ns_monotonic() - bench_start) / DB_NS_PER_MS;
     return (db_kms_atomic_loop_run_result_t){
         .frames = bench_frames,
         .elapsed_ms = bench_ms,
     };
-}
-
-struct fb *db_kms_atomic_next_gl_fb(void *user_ctx, uint32_t frame_index) {
-    db_kms_atomic_gl_frame_producer_t *producer =
-        (db_kms_atomic_gl_frame_producer_t *)user_ctx;
-    db_display_gl_debug_clear_default_framebuffer_if_enabled(
-        producer->debug_clear_default_framebuffer);
-    db_frame_plan_t plan = {0};
-    if (db_frame_source_generate(
-            producer->core, frame_index,
-            &(const db_frame_plan_request_t){
-                .pixel_width = producer->pixel_width,
-                .pixel_height = producer->pixel_height,
-                .force_rebuild = DB_BOOL(frame_index == 0U),
-                .rebuild_reason = DB_FRAME_REBUILD_INITIAL_TARGET,
-            },
-            &plan) != DB_FRAME_PLAN_OK) {
-        return NULL;
-    }
-    db_presentation_buffer_age_t age = db_presentation_buffer_age_resolve(
-        DB_PRESENTATION_BUFFER_AGE_UNAVAILABLE, 0U,
-        DB_PRESENTATION_DAMAGE_HISTORY_LENGTH);
-    if (producer->presentation.buffer_age_supported != 0) {
-        EGLint raw_age = 0;
-        if (eglQuerySurface(producer->dpy, producer->surf, EGL_BUFFER_AGE_EXT,
-                            &raw_age) == EGL_TRUE) {
-            age = db_presentation_buffer_age_resolve(
-                DB_PRESENTATION_BUFFER_AGE_EGL,
-                db_nonnegative_int_to_u32_or_zero(raw_age),
-                DB_PRESENTATION_DAMAGE_HISTORY_LENGTH);
-        }
-    }
-    if ((producer->presentation.last_age_valid == 0) ||
-        (producer->presentation.last_age.provider != age.provider) ||
-        (producer->presentation.last_age.raw_age != age.raw_age) ||
-        (producer->presentation.last_age.force_full_repair !=
-         age.force_full_repair)) {
-        db_presentation_log_buffer_age(producer->backend, &age);
-        producer->presentation.last_age = age;
-        producer->presentation.last_age_valid = 1;
-    }
-    int force_full = 1;
-    const size_t logical_count = db_presentation_damage_history_resolve_ir(
-        &producer->presentation.damage_history, &age, &plan.update_ir,
-        plan.update_metadata.damage_region, plan.grid_rows, plan.grid_cols,
-        producer->presentation.logical_damage,
-        DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME, &force_full);
-    int map_overflow = 0;
-    size_t pixel_count = db_presentation_map_logical_damage(
-        (db_grid_block_view_t){
-            .blocks = producer->presentation.logical_damage,
-            .count = logical_count,
-        },
-        plan.grid_rows, plan.grid_cols, producer->destination_width,
-        producer->destination_height, producer->presentation.pixel_damage,
-        DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME, &map_overflow);
-    if (map_overflow != 0) {
-        producer->presentation.pixel_damage[0] = (db_damage_block_t){
-            .row_count = producer->destination_height,
-            .col_count = producer->destination_width,
-        };
-        pixel_count = 1U;
-        force_full = 1;
-    }
-    const db_gl_presentation_frame_t presentation = {
-        .destination_width = producer->destination_width,
-        .destination_height = producer->destination_height,
-        .damage =
-            (db_pixel_block_view_t){
-                .blocks = producer->presentation.pixel_damage,
-                .count = pixel_count,
-            },
-        .buffer_age = age,
-        .force_full = force_full,
-        .repair_reason = force_full != 0 ? age.fallback_reason : "none",
-    };
-    producer->renderer->render_frame(&plan, &presentation);
-    db_kms_commit_renderer_frame(producer->renderer, producer->core, &plan);
-    EGLBoolean swapped = EGL_FALSE;
-    if ((producer->presentation.swap_damage_supported != 0) &&
-        (producer->presentation.swap_buffers_with_damage != NULL) &&
-        (pixel_count > 0U)) {
-        EGLint rects[DB_PRESENTATION_DAMAGE_RECTS_PER_FRAME * 4U];
-        for (size_t index = 0U; index < pixel_count; index++) {
-            const db_damage_block_t *const block =
-                &producer->presentation.pixel_damage[index];
-            const size_t base = index * 4U;
-            rects[base] = (EGLint)block->col_start;
-            rects[base + 1U] = (EGLint)(producer->destination_height -
-                                        block->row_start - block->row_count);
-            rects[base + 2U] = (EGLint)block->col_count;
-            rects[base + 3U] = (EGLint)block->row_count;
-        }
-        swapped = producer->presentation.swap_buffers_with_damage(
-            producer->dpy, producer->surf, rects, (EGLint)pixel_count);
-    } else {
-        swapped = eglSwapBuffers(producer->dpy, producer->surf);
-    }
-    if (swapped != EGL_TRUE) {
-        runtime_failf("EGL swap failed");
-    }
-
-    struct gbm_bo *next_bo = gbm_surface_lock_front_buffer(producer->gbm_surf);
-    if (next_bo == NULL) {
-        runtime_failf("lock_front_buffer failed");
-    }
-    return fb_from_bo(producer->kms_fd, next_bo, 1);
 }

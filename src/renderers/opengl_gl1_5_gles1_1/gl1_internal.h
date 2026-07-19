@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 #include "../../core/db_conformance.h"
-#include "../../core/db_conformance_cache.h"
 #include "../../core/db_frame_plan.h"
+#include "../../core/db_qualification_contracts.h"
 #include "../../core/db_render_ir_snapshot.h"
 #include "../../core/db_renderer_diagnostics.h"
 #include "../../core/db_replay_policy.h"
@@ -35,13 +35,7 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     int valid;
-    db_conformance_result_t row_fill_conformance;
-    db_gradient_implementation_t gradient_implementation;
-    db_qualification_source_t qualification_source;
-    db_conformance_cache_status_t cache_status;
-    const char *qualification_reason;
-    int gradient_qualified;
-    int qualification_resolved;
+    db_renderer_applied_selection_t applied;
 } gl1_native_target_t;
 
 typedef struct {
@@ -142,6 +136,7 @@ int db_gl1_present_backing(db_pixel_block_view_t blocks_view,
 void db_gl1_refresh_capability_mode(void);
 int db_gl1_init_runtime(const db_renderer_execution_config_t *runtime_state);
 int db_gl1_native_init(void);
+const db_renderer_qualification_ops_t *db_gl1_native_qualification_ops(void);
 int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
                          uint32_t logical_height, int presentation_fbo,
                          int viewport_width, int viewport_height);

@@ -2,7 +2,7 @@
 #define DRIVERBENCH_VK_RUNTIME_INTERNAL_H
 #include "core/db_frame_plan.h"
 #include "core/db_metrics_policy.h"
-#include "core/db_poll_policy.h"
+#include "core/db_progress_policy.h"
 #include "vk_internal.h"
 
 #include <stddef.h>
@@ -27,8 +27,7 @@ uint64_t db_vk_compute_output_hash_from_image(VkImage image,
                                               VkImageLayout old_layout,
                                               VkExtent2D extent);
 int db_vk_dual_metrics_enabled(void);
-uint32_t db_vk_metrics_sample_capacity_hint(void);
-void db_vk_record_render_frame_sample(double frame_ms);
+void db_vk_record_render_frame_duration(double frame_ms);
 void db_vk_recreate_swapchain_and_backing_targets_with_reset(void);
 VkResult db_vk_wait_fence(VkDevice device, VkFence fence,
                           db_progress_policy_id_t policy_id,

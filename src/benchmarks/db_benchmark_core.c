@@ -784,3 +784,12 @@ void db_benchmark_core_apply_plan(db_benchmark_core_t *core,
     db_benchmark_checkpoint_commit(&core->checkpoint, plan, result);
     core->runtime = core->pending_runtime;
 }
+
+void db_benchmark_core_abort_plan(db_benchmark_core_t *core) {
+    if (core == NULL) {
+        return;
+    }
+    core->pending_runtime = core->runtime;
+    core->provisioned_requirements = (db_frame_requirements_t){0};
+    core->checkpoint_binding = (db_frame_checkpoint_binding_t){0};
+}

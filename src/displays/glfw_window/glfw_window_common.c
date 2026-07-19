@@ -20,15 +20,9 @@
 
 #include "../../config/runtime_options.h"
 #include "../../core/db_core.h"
-#include "../../core/db_frame_plan.h"
-#include "../../core/db_frame_preparation.h"
-#include "../../core/db_frame_source.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
-#include "../../core/db_poll_policy.h"
-#include "../../core/db_render_result.h"
-#include "../../core/db_render_types.h"
-#include "../../core/db_renderer_diagnostics.h"
+#include "../../core/db_progress_policy.h"
 #include "../display_frame_loop_common.h"
 #include "../display_presentation_policy.h"
 #include "../display_runtime_config_common.h"
@@ -311,84 +305,6 @@ int db_glfw_presentation_buffer_age_changed(
         (strcmp(previous->fallback_reason, current->fallback_reason) != 0));
 }
 
-db_frame_preparation_t db_glfw_resolve_frame_preparation(
-    db_gl_renderer_t renderer, db_gl1_target_request_t gl1_target,
-    db_glfw_framebuffer_extent_t extent, db_pixel_format_t framebuffer_format,
-    uint32_t framebuffer_generation,
-    const db_presentation_buffer_age_t *buffer_age,
-    const db_frame_requirements_t *requirements) {
-    const db_presentation_buffer_age_t age =
-        (buffer_age != NULL) ? *buffer_age : (db_presentation_buffer_age_t){0};
-    db_render_target_strategy_t target = DB_RENDER_TARGET_GL3_PERSISTENT_FBO;
-    if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
-        switch (gl1_target) {
-        case DB_GL1_TARGET_DIRECT_WINDOW:
-            target = DB_RENDER_TARGET_GL1_DIRECT_WINDOW;
-            break;
-        case DB_GL1_TARGET_CPU_UPLOAD:
-            target = DB_RENDER_TARGET_GL1_CPU_UPLOAD;
-            break;
-        case DB_GL1_TARGET_AUTO:
-        case DB_GL1_TARGET_PERSISTENT_FBO:
-            target = DB_RENDER_TARGET_GL1_PERSISTENT_FBO;
-            break;
-        }
-    }
-    const int force_rebuild =
-        DB_BOOL((target == DB_RENDER_TARGET_GL1_DIRECT_WINDOW) &&
-                ((age.valid == 0) || (age.force_full_repair != 0)));
-    return (db_frame_preparation_t){
-        .framebuffer_width = extent.width,
-        .framebuffer_height = extent.height,
-        .framebuffer_format = (uint32_t)framebuffer_format,
-        .framebuffer_generation = framebuffer_generation,
-        .raw_buffer_age = age.raw_age,
-        .replay_depth = age.effective_replay_depth,
-        .requirements_token =
-            (requirements != NULL) ? requirements->requirements_token : 0U,
-        .target_strategy = target,
-        .rebuild_reason =
-            force_rebuild ? DB_FRAME_REBUILD_EXPLICIT : DB_FRAME_REBUILD_NONE,
-        .buffer_age_valid = age.valid,
-        .force_rebuild = force_rebuild,
-    };
-}
-
-db_frame_plan_status_t db_glfw_prepare_frame_transaction(
-    db_frame_source_t *source, uint32_t frame_index,
-    db_frame_plan_request_t *request, db_gl_renderer_t renderer,
-    db_gl1_target_request_t gl1_target, db_glfw_framebuffer_extent_t extent,
-    db_pixel_format_t framebuffer_format, uint32_t framebuffer_generation,
-    const db_presentation_buffer_age_t *buffer_age,
-    db_frame_preparation_t *preparation) {
-    if ((source == NULL) || (request == NULL) || (preparation == NULL)) {
-        return DB_FRAME_PLAN_INVALID;
-    }
-    db_frame_requirements_t requirements = {0};
-    const db_frame_plan_status_t probe_status =
-        db_frame_source_probe(source, frame_index, request, &requirements);
-    if ((probe_status != DB_FRAME_PLAN_OK) &&
-        (probe_status != DB_FRAME_PLAN_CHECKPOINT_REQUIRED)) {
-        return probe_status;
-    }
-    *preparation = db_glfw_resolve_frame_preparation(
-        renderer, gl1_target, extent, framebuffer_format,
-        framebuffer_generation, buffer_age, &requirements);
-    if (requirements.checkpoint_required != 0) {
-        db_frame_checkpoint_binding_t binding = {0};
-        if (db_frame_source_provision(source, &requirements, &binding) !=
-            DB_FRAME_PLAN_OK) {
-            return DB_FRAME_PLAN_CHECKPOINT_UNAVAILABLE;
-        }
-        preparation->checkpoint_binding_token = binding.binding_token;
-    }
-    request->force_rebuild = preparation->force_rebuild;
-    request->rebuild_reason = preparation->rebuild_reason;
-    request->preparation_token = db_frame_preparation_token(preparation);
-    request->presentation_replay_depth = preparation->replay_depth;
-    return DB_FRAME_PLAN_OK;
-}
-
 static int db_glfw_loop_should_continue(void *user_data) {
     const db_glfw_loop_t *loop = (const db_glfw_loop_t *)user_data;
     return DB_BOOL((loop != NULL) &&
@@ -402,7 +318,7 @@ typedef struct {
     db_glfw_framebuffer_extent_t observed_framebuffer;
 } db_glfw_resize_wait_context_t;
 
-static db_sync_wait_result_t db_glfw_resize_wait_attempt(void *user_data,
+static db_progress_outcome_t db_glfw_resize_wait_attempt(void *user_data,
                                                          uint64_t timeout_ns) {
     db_glfw_resize_wait_context_t *const context =
         (db_glfw_resize_wait_context_t *)user_data;
@@ -415,8 +331,8 @@ static db_sync_wait_result_t db_glfw_resize_wait_attempt(void *user_data,
                                   context->old_framebuffer.width) ||
                                  (context->observed_framebuffer.height !=
                                   context->old_framebuffer.height)));
-    return db_sync_wait_result_make(
-        changed ? DB_SYNC_WAIT_COMPLETED : DB_SYNC_WAIT_TIMEOUT, 0U, 0U, 0U,
+    return db_progress_outcome_make(
+        changed ? DB_PROGRESS_COMPLETED : DB_PROGRESS_TIMEOUT, 0U, 0U, 0U,
         changed ? "resize_observed" : "resize_pending");
 }
 
@@ -455,7 +371,7 @@ static void db_glfw_loop_apply_scheduled_resize(void *user_data,
         .old_framebuffer = old_framebuffer,
         .observed_framebuffer = old_framebuffer,
     };
-    const db_sync_wait_result_t wait_result = db_progress_execute(
+    const db_progress_outcome_t wait_result = db_progress_execute(
         DB_PROGRESS_GLFW_RESIZE, db_glfw_resize_wait_attempt, &resize_wait);
     db_progress_log_outcome(loop->backend, "observe_resize",
                             DB_PROGRESS_GLFW_RESIZE, &wait_result);

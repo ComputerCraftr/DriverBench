@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_VK_STATE_INTERNAL_H
 #define DRIVERBENCH_VK_STATE_INTERNAL_H
 
+#include "core/db_metrics_policy.h"
 #include "vk_internal.h"
 
 #define g_state g_vk_state
@@ -132,12 +133,7 @@ typedef struct {
     uint32_t prev_frame_work_units[MAX_GPU_COUNT];
     uint64_t cumulative_work_units[MAX_GPU_COUNT];
     uint64_t cumulative_frames_with_work[MAX_GPU_COUNT];
-    db_lane_qualification_t gradient_lanes[MAX_GPU_COUNT];
-    uint32_t gradient_lane_indices[MAX_GPU_COUNT];
-    db_topology_qualification_t gradient_topology;
-    db_qualification_source_t gradient_qualification_source;
-    db_conformance_cache_status_t gradient_cache_status;
-    int gradient_qualification_resolved;
+    db_renderer_applied_selection_t gradient_applied;
 } db_vk_scheduler_runtime_t;
 
 typedef struct {
@@ -161,13 +157,20 @@ typedef struct {
     double frame_jitter_ema_ms;
     double present_frame_ema_ms;
     double present_jitter_ema_ms;
-    double present_frame_p50_ms;
-    double present_frame_p95_ms;
-    double present_frame_p99_ms;
+    double present_frame_window_p50_ms;
+    double present_frame_window_p95_ms;
+    double present_frame_window_p99_ms;
+    uint64_t present_metric_total_samples;
+    uint32_t present_metric_window_sample_count;
+    uint32_t present_metric_window_capacity;
     uint64_t present_retries;
-    double *render_frame_samples_ms;
-    uint32_t render_frame_samples_count;
-    uint32_t render_frame_samples_capacity;
+    double last_render_critical_ms;
+    double render_frame_window_p50_ms;
+    double render_frame_window_p95_ms;
+    double render_frame_window_p99_ms;
+    uint64_t render_metric_total_samples;
+    uint32_t render_metric_window_sample_count;
+    uint32_t render_metric_window_capacity;
 } db_vk_metrics_runtime_t;
 
 typedef struct {
