@@ -1,12 +1,12 @@
 #include "db_hash.h"
 #include "db_hash_simd_internal.h"
 
+#include "db_alloc_policy.h"
 #include "db_core.h"
 #include "db_numeric.h"
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 #ifdef __aarch64__
 #include <arm_neon.h>
@@ -18,17 +18,23 @@ typedef struct {
     uint64_t byte_length;
 } db_fnv_tree_node_t;
 
+static _Thread_local db_fnv_tree_node_t *g_fnv_tree_nodes = NULL;
+static _Thread_local size_t g_fnv_tree_node_capacity = 0U;
+
 static_assert(DB_FNV_TREE_LEAF_HEADER_BYTES == (2U + 4U + 8U + 4U));
 static_assert(DB_FNV_TREE_PARENT_RECORD_BYTES ==
               (2U + 4U + 4U + (DB_FNV_TREE_PARENT_U64_FIELDS * 8U)));
 static_assert(DB_FNV_TREE_UNARY_RECORD_BYTES == (2U + 4U + 4U + (3U * 8U)));
 static_assert(DB_FNV_TREE_ROOT_RECORD_BYTES == (2U + 4U + 8U + 8U + 4U + 8U));
+static_assert(DB_FNV_TREE_LEAF_PREFIX != DB_FNV_TREE_PARENT_PREFIX);
+static_assert(DB_FNV_TREE_LEAF_PREFIX != DB_FNV_TREE_UNARY_PREFIX);
+static_assert(DB_FNV_TREE_LEAF_PREFIX != DB_FNV_TREE_ROOT_PREFIX);
+static_assert(DB_FNV_TREE_PARENT_PREFIX != DB_FNV_TREE_UNARY_PREFIX);
+static_assert(DB_FNV_TREE_PARENT_PREFIX != DB_FNV_TREE_ROOT_PREFIX);
+static_assert(DB_FNV_TREE_UNARY_PREFIX != DB_FNV_TREE_ROOT_PREFIX);
 
 uint64_t db_fnv1a64_tree_multiply(uint64_t value) {
-    return value + (value << DB_FNV_PRIME_SHIFT_1) +
-           (value << DB_FNV_PRIME_SHIFT_4) + (value << DB_FNV_PRIME_SHIFT_5) +
-           (value << DB_FNV_PRIME_SHIFT_7) + (value << DB_FNV_PRIME_SHIFT_8) +
-           (value << DB_FNV_PRIME_SHIFT_40);
+    return value * DB_FNV1A64_PRIME;
 }
 
 static uint64_t db_fnv_tree_extend(uint64_t hash, const uint8_t *bytes,
@@ -39,10 +45,15 @@ static uint64_t db_fnv_tree_extend(uint64_t hash, const uint8_t *bytes,
     return hash;
 }
 
-static size_t db_fnv_tree_put_u8(uint8_t *record, size_t offset,
-                                 uint8_t value) {
-    record[offset] = value;
-    return offset + 1U;
+void db_fnv1a64_tree_prefix_bytes(uint16_t prefix, uint8_t output[2]) {
+    output[0] = (uint8_t)prefix;
+    output[1] = (uint8_t)(prefix >> DB_FNV_TREE_PREFIX_TAG_SHIFT);
+}
+
+static size_t db_fnv_tree_put_prefix(uint8_t *record, size_t offset,
+                                     uint16_t prefix) {
+    db_fnv1a64_tree_prefix_bytes(prefix, &record[offset]);
+    return offset + 2U;
 }
 
 static size_t db_fnv_tree_put_u32_le(uint8_t *record, size_t offset,
@@ -66,8 +77,7 @@ db_fnv_tree_encode_leaf_header(uint8_t record[DB_FNV_TREE_LEAF_HEADER_BYTES],
                                uint32_t domain, uint64_t leaf_index,
                                uint32_t payload_length) {
     size_t offset = 0U;
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_VERSION);
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_LEAF_TAG);
+    offset = db_fnv_tree_put_prefix(record, offset, DB_FNV_TREE_LEAF_PREFIX);
     offset = db_fnv_tree_put_u32_le(record, offset, domain);
     offset = db_fnv_tree_put_u64_le(record, offset, leaf_index);
     (void)db_fnv_tree_put_u32_le(record, offset, payload_length);
@@ -79,8 +89,7 @@ db_fnv_tree_encode_parent(uint8_t record[DB_FNV_TREE_PARENT_RECORD_BYTES],
                           const db_fnv_tree_node_t *left,
                           const db_fnv_tree_node_t *right) {
     size_t offset = 0U;
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_VERSION);
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_PARENT_TAG);
+    offset = db_fnv_tree_put_prefix(record, offset, DB_FNV_TREE_PARENT_PREFIX);
     offset = db_fnv_tree_put_u32_le(record, offset, domain);
     offset = db_fnv_tree_put_u32_le(record, offset, level);
     offset = db_fnv_tree_put_u64_le(record, offset, left->first_leaf);
@@ -97,8 +106,7 @@ db_fnv_tree_encode_unary(uint8_t record[DB_FNV_TREE_UNARY_RECORD_BYTES],
                          uint32_t domain, uint32_t level,
                          const db_fnv_tree_node_t *child) {
     size_t offset = 0U;
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_VERSION);
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_UNARY_TAG);
+    offset = db_fnv_tree_put_prefix(record, offset, DB_FNV_TREE_UNARY_PREFIX);
     offset = db_fnv_tree_put_u32_le(record, offset, domain);
     offset = db_fnv_tree_put_u32_le(record, offset, level);
     offset = db_fnv_tree_put_u64_le(record, offset, child->first_leaf);
@@ -112,8 +120,7 @@ static uint64_t db_fnv_tree_encode_root(uint32_t domain, uint64_t total_bytes,
                                         uint64_t initial_hash) {
     uint8_t record[DB_FNV_TREE_ROOT_RECORD_BYTES];
     size_t offset = 0U;
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_VERSION);
-    offset = db_fnv_tree_put_u8(record, offset, DB_FNV_TREE_ROOT_TAG);
+    offset = db_fnv_tree_put_prefix(record, offset, DB_FNV_TREE_ROOT_PREFIX);
     offset = db_fnv_tree_put_u32_le(record, offset, domain);
     offset = db_fnv_tree_put_u64_le(record, offset, total_bytes);
     offset = db_fnv_tree_put_u64_le(record, offset, leaf_count);
@@ -157,7 +164,16 @@ static void db_fnv_tree_hash_equal_length(const uint8_t *const *data,
 #if defined(__x86_64__) || defined(__i386__)
     const int kernel = (force_scalar != 0) ? DB_HASH_X86_KERNEL_SCALAR
                                            : db_hash_select_x86_kernel();
-    if (kernel == DB_HASH_X86_KERNEL_AVX2) {
+    if (kernel == DB_HASH_X86_KERNEL_AVX512) {
+        for (; index + DB_FNV_TREE_AVX2_LANES <= count;
+             index += DB_FNV_TREE_AVX2_LANES) {
+            db_fnv1a64_4x_avx512(
+                data[index], data[index + 1U], data[index + 2U],
+                data[index + 3U], length, initial_hashes[index],
+                initial_hashes[index + 1U], initial_hashes[index + 2U],
+                initial_hashes[index + 3U], &out_hashes[index]);
+        }
+    } else if (kernel == DB_HASH_X86_KERNEL_AVX2) {
         for (; index + DB_FNV_TREE_AVX2_LANES <= count;
              index += DB_FNV_TREE_AVX2_LANES) {
             db_fnv1a64_4x_avx2(data[index], data[index + 1U], data[index + 2U],
@@ -167,8 +183,15 @@ static void db_fnv_tree_hash_equal_length(const uint8_t *const *data,
                                initial_hashes[index + 3U], &out_hashes[index]);
         }
     }
-    if ((kernel == DB_HASH_X86_KERNEL_AVX2) ||
-        (kernel == DB_HASH_X86_KERNEL_SSE2)) {
+    if (kernel == DB_HASH_X86_KERNEL_AVX512) {
+        for (; index + DB_FNV_TREE_SSE2_LANES <= count;
+             index += DB_FNV_TREE_SSE2_LANES) {
+            db_fnv1a64_2x_avx512(
+                data[index], data[index + 1U], length, initial_hashes[index],
+                initial_hashes[index + 1U], &out_hashes[index]);
+        }
+    } else if ((kernel == DB_HASH_X86_KERNEL_AVX2) ||
+               (kernel == DB_HASH_X86_KERNEL_SSE2)) {
         for (; index + DB_FNV_TREE_SSE2_LANES <= count;
              index += DB_FNV_TREE_SSE2_LANES) {
             db_fnv1a64_2x_sse2(data[index], data[index + 1U], length,
@@ -313,10 +336,16 @@ static uint64_t db_fnv1a64_tree_internal(const void *data, size_t len_bytes,
         db_failf("hash", "FNV tree node allocation overflow for %zu bytes",
                  len_bytes);
     }
-    db_fnv_tree_node_t *nodes = calloc(leaf_count, sizeof(*nodes));
-    if (nodes == NULL) {
-        db_failf("hash", "failed to allocate %zu FNV tree nodes", leaf_count);
+    db_reserve_aligned_array_capacity_or_fail(
+        (void **)&g_fnv_tree_nodes, &g_fnv_tree_node_capacity, leaf_count,
+        DB_FNV_TREE_AVX2_LANES, sizeof(*g_fnv_tree_nodes),
+        DB_CACHELINE_ALIGNMENT_BYTES, 0U, "hash", "fnv_tree_nodes");
+    if (db_pointer_is_aligned(g_fnv_tree_nodes, DB_CACHELINE_ALIGNMENT_BYTES) ==
+        0) {
+        db_failf("hash", "FNV tree workspace is not cacheline aligned");
     }
+    db_fnv_tree_node_t *const nodes = (db_fnv_tree_node_t *)DB_ASSUME_ALIGNED(
+        g_fnv_tree_nodes, DB_CACHELINE_ALIGNMENT_BYTES);
     db_fnv_tree_hash_leaves((const uint8_t *)data, len_bytes, domain,
                             initial_hash, nodes, leaf_count, force_scalar);
     size_t node_count = leaf_count;
@@ -329,7 +358,6 @@ static uint64_t db_fnv1a64_tree_internal(const void *data, size_t len_bytes,
     const uint64_t result = db_fnv_tree_encode_root(
         domain, (uint64_t)len_bytes, (uint64_t)leaf_count, depth, nodes[0].hash,
         initial_hash);
-    free(nodes);
     return result;
 }
 

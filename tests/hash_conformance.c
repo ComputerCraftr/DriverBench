@@ -29,6 +29,8 @@ static const char *db_hash_kernel_name(void) {
         return "sse2";
     case DB_HASH_X86_KERNEL_AVX2:
         return "avx2";
+    case DB_HASH_X86_KERNEL_AVX512:
+        return "avx512";
     default:
         return "unknown";
     }

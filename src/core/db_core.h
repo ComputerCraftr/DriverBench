@@ -35,6 +35,12 @@
 #define DB_ASSUME_ALIGNED(ptr, alignment) (ptr)
 #endif
 
+static inline int db_pointer_is_aligned(const void *pointer, size_t alignment) {
+    return (pointer != NULL) && (alignment != 0U) &&
+           ((alignment & (alignment - 1U)) == 0U) &&
+           (((uintptr_t)pointer & (uintptr_t)(alignment - 1U)) == 0U);
+}
+
 // Logging and diagnostics.
 void db_failf(const char *backend, const char *fmt, ...)
     __attribute__((format(printf, 2, 3), noreturn));
@@ -325,6 +331,11 @@ static inline void *db_calloc_or_fail(const char *backend,
         db_failf(backend,
                  "failed to aligned-allocate %s (%zu bytes, align=%zu)",
                  field_name, aligned_bytes, alignment);
+    }
+    if (db_pointer_is_aligned(memory, alignment) == 0) {
+        free(memory);
+        db_failf(backend, "aligned allocation for %s violated align=%zu",
+                 field_name, alignment);
     }
     memset(memory, 0, aligned_bytes);
     return memory;

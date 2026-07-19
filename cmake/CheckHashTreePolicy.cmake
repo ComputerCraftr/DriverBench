@@ -25,8 +25,15 @@ endforeach()
 file(READ "${db_hash_root}/db_hash_simd.c" db_tree_source)
 foreach(
     db_required IN
-    ITEMS DB_FNV_TREE_LEAF_TAG DB_FNV_TREE_PARENT_TAG DB_FNV_TREE_UNARY_TAG
-          DB_FNV_TREE_ROOT_TAG db_fnv_tree_put_u32_le db_fnv_tree_put_u64_le)
+    ITEMS DB_FNV_TREE_LEAF_PREFIX
+          DB_FNV_TREE_PARENT_PREFIX
+          DB_FNV_TREE_UNARY_PREFIX
+          DB_FNV_TREE_ROOT_PREFIX
+          db_fnv_tree_put_u32_le
+          db_fnv_tree_put_u64_le
+          g_fnv_tree_nodes
+          db_reserve_aligned_array_capacity_or_fail
+          DB_ASSUME_ALIGNED)
     string(FIND "${db_tree_source}" "${db_required}" db_match)
     if(db_match EQUAL -1)
         message(
@@ -34,21 +41,46 @@ foreach(
                 "Required typed tree-hash contract '${db_required}' is missing")
     endif()
 endforeach()
+foreach(db_forbidden IN ITEMS "calloc(" "free(nodes)")
+    string(FIND "${db_tree_source}" "${db_forbidden}" db_match)
+    if(NOT db_match EQUAL -1)
+        message(
+            FATAL_ERROR
+                "Tree hash must reuse one aligned in-place node workspace; found '${db_forbidden}'"
+        )
+    endif()
+endforeach()
 
 file(READ "${db_hash_root}/db_hash_simd_x86.c" db_x86_source)
 string(FIND "${db_x86_source}" "target(\"sse2\")" db_sse2_target)
 string(FIND "${db_x86_source}" "__builtin_cpu_supports(\"avx2\")" db_avx2_guard)
-if(db_sse2_target EQUAL -1 OR db_avx2_guard EQUAL -1)
+string(FIND "${db_x86_source}" "__builtin_cpu_supports(\"avx512dq\")"
+            db_avx512_guard)
+string(FIND "${db_x86_source}" "_mm256_mullo_epi64" db_avx512_multiply)
+if(db_sse2_target EQUAL -1
+   OR db_avx2_guard EQUAL -1
+   OR db_avx512_guard EQUAL -1
+   OR db_avx512_multiply EQUAL -1)
     message(
-        FATAL_ERROR "x86 tree hash must retain guarded SSE2 and AVX2 kernels")
+        FATAL_ERROR
+            "x86 tree hash must retain guarded SSE2, AVX2, and AVX-512VL/DQ kernels"
+    )
 endif()
 
-foreach(db_simd_source IN ITEMS db_tree_source db_x86_source)
-    string(FIND "${${db_simd_source}}" "* DB_FNV1A64_PRIME" db_prime_multiply)
-    if(NOT db_prime_multiply EQUAL -1)
-        message(
-            FATAL_ERROR
-                "SIMD tree kernels must implement FNV prime multiplication with shift/add"
-        )
-    endif()
-endforeach()
+string(FIND "${db_tree_source}" "return value * DB_FNV1A64_PRIME"
+            db_scalar_multiply)
+string(FIND "${db_x86_source}" "db_fnv1a64_multiply_sse2"
+            db_sse2_shift_multiply)
+string(FIND "${db_x86_source}" "db_fnv1a64_multiply_avx2"
+            db_avx2_shift_multiply)
+string(FIND "${db_tree_source}" "db_fnv1a64_multiply_neon"
+            db_neon_shift_multiply)
+if(db_scalar_multiply EQUAL -1
+   OR db_sse2_shift_multiply EQUAL -1
+   OR db_avx2_shift_multiply EQUAL -1
+   OR db_neon_shift_multiply EQUAL -1)
+    message(
+        FATAL_ERROR
+            "Tree hash must use scalar multiplication and shift/add only for SIMD ISAs without packed 64-bit multiply"
+    )
+endif()

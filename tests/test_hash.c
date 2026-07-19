@@ -27,6 +27,30 @@ static void db_test_hash_tree_fill(uint8_t *bytes, size_t length) {
     }
 }
 
+static void db_test_hash_tree_prefixes_are_distinct(db_test_state_t *state) {
+    static const struct {
+        uint16_t prefix;
+        uint8_t tag;
+    } records[] = {
+        {DB_FNV_TREE_LEAF_PREFIX, DB_FNV_TREE_LEAF_TAG},
+        {DB_FNV_TREE_PARENT_PREFIX, DB_FNV_TREE_PARENT_TAG},
+        {DB_FNV_TREE_UNARY_PREFIX, DB_FNV_TREE_UNARY_TAG},
+        {DB_FNV_TREE_ROOT_PREFIX, DB_FNV_TREE_ROOT_TAG},
+    };
+    for (size_t record = 0U; record < (sizeof(records) / sizeof(records[0]));
+         record++) {
+        uint8_t encoded[2U] = {0};
+        db_fnv1a64_tree_prefix_bytes(records[record].prefix, encoded);
+        DB_TEST_EXPECT_EQ_U32(state, encoded[0], DB_FNV_TREE_VERSION);
+        DB_TEST_EXPECT_EQ_U32(state, encoded[1], records[record].tag);
+        for (size_t other = record + 1U;
+             other < (sizeof(records) / sizeof(records[0])); other++) {
+            DB_TEST_EXPECT_TRUE(state, records[record].prefix !=
+                                           records[other].prefix);
+        }
+    }
+}
+
 static void db_test_byte_codec_round_trips_and_hex(db_test_state_t *state) {
     uint8_t u32_wire[DB_U32_WIRE_BYTES] = {0};
     uint8_t u64_wire[DB_U64_WIRE_BYTES] = {0};
@@ -263,6 +287,8 @@ unsigned db_hash_test_run_all(void) {
         {"hash_rejects_overflowing_layouts",
          db_test_hash_rejects_overflowing_layouts},
         {"hash_tree_vectors", db_test_hash_tree_vectors},
+        {"hash_tree_prefixes_are_distinct",
+         db_test_hash_tree_prefixes_are_distinct},
         {"hash_tree_domain_and_seed", db_test_hash_tree_domain_and_seed},
         {"hash_tree_structure_is_bound", db_test_hash_tree_structure_is_bound},
         {"conformance_cache_round_trip", db_test_conformance_cache_round_trip},

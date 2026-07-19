@@ -216,6 +216,8 @@ static void db_test_aligned_calloc_is_zero_initialized(db_test_state_t *state) {
     uint32_t *const values = (uint32_t *)db_calloc_or_fail(
         "test_numeric", "zeroed_values", DB_TEST_ELEMENT_COUNT, sizeof(*values),
         DB_CACHELINE_ALIGNMENT_BYTES);
+    DB_TEST_EXPECT_TRUE(state, db_pointer_is_aligned(
+                                   values, DB_CACHELINE_ALIGNMENT_BYTES) != 0);
     for (size_t index = 0U; index < DB_TEST_ELEMENT_COUNT; index++) {
         DB_TEST_EXPECT_EQ_U32(state, values[index], 0U);
     }
