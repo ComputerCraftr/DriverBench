@@ -3,16 +3,43 @@
 
 #include <math.h>
 #include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "core/db_core.h"
+#include "core/db_numeric.h"
 
 typedef struct {
     unsigned failures;
 } db_test_state_t;
 
 enum { DB_TEST_FAIL_PREFIX_SIZE = 128 };
+
+static inline const void *db_test_pointer_from_uintptr(uintptr_t address) {
+    union {
+        uintptr_t address;
+        const void *pointer;
+    } representation = {.address = address};
+    _Static_assert(sizeof(representation.pointer) == sizeof(address),
+                   "uintptr_t must preserve object pointer bits");
+    return representation.pointer;
+}
+
+static inline int db_test_memory_is_filled(const void *storage, size_t size,
+                                           uint8_t value) {
+    if ((storage == NULL) && (size > 0U)) {
+        return 0;
+    }
+    const uint8_t *const bytes = storage;
+    for (size_t index = 0U; index < size; index++) {
+        if (bytes[index] != value) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 static inline __attribute__((format(printf, 4, 5))) void
 db_test_failf_impl(db_test_state_t *state, const char *file, int line,
@@ -94,7 +121,9 @@ db_test_failf_impl(db_test_state_t *state, const char *file, int line,
         const typeof(b) _b_value = (b);                                        \
         const double _a = DB_TO_F64(_a_value);                                 \
         const double _b = DB_TO_F64(_b_value);                                 \
-        if (fabs(_a - _b) > 0.000001) {                                        \
+        const double _difference = _a - _b;                                    \
+        if (!isfinite(_a) || !isfinite(_b) || (_difference < -0.000001) ||     \
+            (_difference > 0.000001)) {                                        \
             DB_TEST_FAILF((state), "expected %s == %s (%f != %f)", #a, #b, _a, \
                           _b);                                                 \
         }                                                                      \
@@ -146,7 +175,12 @@ unsigned db_hash_test_run_all(void);
 unsigned db_metrics_policy_test_run_all(void);
 unsigned db_numeric_test_run_all(void);
 unsigned db_progress_policy_test_run_all(void);
+unsigned db_render_ir_clip_test_run_all(void);
+unsigned db_render_ir_malformed_test_run_all(void);
+unsigned db_render_ir_policy_test_run_all(void);
+unsigned db_render_ir_ranges_test_run_all(void);
 unsigned db_render_ir_test_run_all(void);
+unsigned db_render_ir_upload_test_run_all(void);
 unsigned db_render_ir_snapshot_test_run_all(void);
 unsigned db_run_session_test_run_all(void);
 unsigned db_sort_test_run_all(void);

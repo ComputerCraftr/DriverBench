@@ -1,8 +1,12 @@
 #ifndef DRIVERBENCH_GL_SHADOW_PRESENT_INTERNAL_H
 #define DRIVERBENCH_GL_SHADOW_PRESENT_INTERNAL_H
 
+#include "core/db_frame_plan.h"
+#include "core/db_geometry.h"
+#include "core/db_render_types.h"
 #include "gl_common.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -46,10 +50,18 @@ db_gl_upload_stream_t *
 db_gl_shadow_present_acquire_unpack_stream(db_gl_shadow_present_state_t *state,
                                            const char *backend,
                                            size_t required_bytes);
+void db_gl_shadow_present_prepare_hdr_upload_workspace(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    uint32_t pixel_width, uint32_t pixel_height);
 void db_gl_shadow_present_upload_hdr_damage_blocks(
     db_gl_shadow_present_state_t *state, const char *backend,
     const db_pixel_surface_t *source, const db_damage_block_t *blocks,
     size_t block_count);
+int db_gl_shadow_present_hdr_ir_direct_eligible(const db_frame_plan_t *plan);
+int db_gl_shadow_present_upload_hdr_ir(db_gl_shadow_present_state_t *state,
+                                       const char *backend,
+                                       const db_pixel_surface_t *source,
+                                       const db_frame_plan_t *plan);
 void db_gl_shadow_present_repair_full_upload_target_from_pixels(
     db_gl_shadow_present_state_t *state,
     db_gl_shadow_present_full_upload_target_t *target,

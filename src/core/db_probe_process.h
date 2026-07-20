@@ -5,7 +5,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
 
 db_probe_status_t db_probe_process_run(const char *helper_path,
                                        const db_probe_request_t *request,

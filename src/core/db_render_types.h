@@ -6,6 +6,8 @@
 #include "db_geometry.h"
 #include "db_log.h"
 #include "db_numeric.h"
+#include <stddef.h>
+#include <stdint.h>
 
 #define DB_RECT_VERTEX_COUNT 6U
 #define DB_VERTEX_POSITION_FLOAT_COUNT 2U

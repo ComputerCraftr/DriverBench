@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_CORE_DB_QUALIFICATION_CONTRACTS_H
 #define DRIVERBENCH_CORE_DB_QUALIFICATION_CONTRACTS_H
 
+#include "core/db_conformance_cache.h"
 #include "db_conformance.h"
 #include "db_probe_protocol.h"
 #include "db_render_result.h"
@@ -11,6 +12,7 @@
 
 enum {
     DB_QUALIFICATION_MAX_DESCRIPTORS = 24U,
+    DB_QUALIFICATION_MAX_LANES = 8U,
     DB_QUALIFICATION_IDENTITY_TEXT_CAPACITY = 96U,
     DB_QUALIFICATION_REASON_CAPACITY = 48U,
 };
@@ -140,6 +142,8 @@ int db_qualification_generation_equal(
     db_qualification_identity_generation_t right);
 uint64_t db_qualification_generation_hash(
     db_qualification_identity_generation_t generation);
+int db_qualification_descriptor_validate(
+    const db_renderer_probe_descriptor_t *descriptor);
 int db_qualification_descriptor_store_append(
     db_renderer_qualification_descriptor_store_t *store,
     const db_renderer_probe_descriptor_t *descriptor);

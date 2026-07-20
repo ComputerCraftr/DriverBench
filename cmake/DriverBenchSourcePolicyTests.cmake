@@ -27,6 +27,23 @@ function(db_register_source_policy_tests)
                      ${CMAKE_SOURCE_DIR}/cmake/CheckIoResultPolicy.cmake)
     set_tests_properties(source_io_result_policy PROPERTIES LABELS "regression")
 
+    add_test(
+        NAME source_structured_control_flow_policy
+        COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
+                ${CMAKE_SOURCE_DIR}/cmake/CheckStructuredControlFlowPolicy.cmake
+    )
+    set_tests_properties(source_structured_control_flow_policy
+                         PROPERTIES LABELS "regression")
+
+    add_test(
+        NAME source_structured_control_flow_policy_contract
+        COMMAND
+            ${CMAKE_COMMAND}
+            -DCHECKER=${CMAKE_SOURCE_DIR}/cmake/CheckStructuredControlFlowPolicy.cmake
+            -P ${CMAKE_SOURCE_DIR}/cmake/TestStructuredControlFlowPolicy.cmake)
+    set_tests_properties(source_structured_control_flow_policy_contract
+                         PROPERTIES LABELS "regression")
+
     add_test(NAME source_compiler_warning_policy
              COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
                      ${CMAKE_SOURCE_DIR}/cmake/CheckCompilerWarningPolicy.cmake)
@@ -78,6 +95,14 @@ function(db_register_source_policy_tests)
                 ${CMAKE_SOURCE_DIR}/tests/test_run_clang_tidy.py
                 ${CMAKE_COMMAND} ${CMAKE_SOURCE_DIR}/cmake/RunClangTidy.cmake)
         set_tests_properties(source_clang_tidy_runner_contract
+                             PROPERTIES LABELS "regression")
+        add_test(
+            NAME source_header_clang_tidy_runner_contract
+            COMMAND
+                ${DB_SOURCE_POLICY_PYTHON}
+                ${CMAKE_SOURCE_DIR}/tests/test_header_clang_tidy.py
+                ${CMAKE_SOURCE_DIR}/scripts/run_header_clang_tidy.py)
+        set_tests_properties(source_header_clang_tidy_runner_contract
                              PROPERTIES LABELS "regression")
     endif()
 
@@ -192,6 +217,15 @@ function(db_register_source_policy_tests)
             ${CMAKE_SOURCE_DIR}/cmake/CheckPlatformPolicyBoundaries.cmake)
     set_tests_properties(source_sorting_policy PROPERTIES LABELS "regression")
 
+    add_test(
+        NAME source_sorting_policy_contract
+        COMMAND
+            ${DB_SOURCE_POLICY_PYTHON}
+            ${CMAKE_SOURCE_DIR}/tests/test_sorting_policy.py
+            ${CMAKE_SOURCE_DIR}/cmake/CheckPlatformPolicyBoundaries.cmake)
+    set_tests_properties(source_sorting_policy_contract PROPERTIES LABELS
+                                                                   "regression")
+
     add_test(NAME source_hash_tree_policy
              COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
                      ${CMAKE_SOURCE_DIR}/cmake/CheckHashTreePolicy.cmake)
@@ -203,6 +237,12 @@ function(db_register_source_policy_tests)
                      ${CMAKE_SOURCE_DIR}/cmake/CheckVulkanMultiGpuPolicy.cmake)
     set_tests_properties(source_vulkan_multi_gpu_policy PROPERTIES LABELS
                                                                    "regression")
+
+    add_test(NAME source_semantic_ir_policy
+             COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
+                     ${CMAKE_SOURCE_DIR}/cmake/CheckSemanticIRPolicy.cmake)
+    set_tests_properties(source_semantic_ir_policy PROPERTIES LABELS
+                                                              "regression;ir")
 
     add_test(
         NAME config_glfw_provider_default_vendored

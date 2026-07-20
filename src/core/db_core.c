@@ -7,6 +7,7 @@
 #include "../config/runtime_options.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <signal.h>
@@ -24,6 +25,66 @@
 static volatile sig_atomic_t db_stop_requested = 0;
 
 enum { DB_LEGACY_LOG_MESSAGE_CAPACITY = 4096U };
+
+int db_memory_ranges_overlap(const void *lhs, size_t lhs_size, const void *rhs,
+                             size_t rhs_size, int *overlap) {
+    if ((overlap == NULL) || ((lhs == NULL) && (lhs_size > 0U)) ||
+        ((rhs == NULL) && (rhs_size > 0U))) {
+        return 0;
+    }
+    *overlap = 0;
+    if ((lhs_size == 0U) || (rhs_size == 0U)) {
+        return 1;
+    }
+    const uintptr_t lhs_start = (uintptr_t)lhs;
+    const uintptr_t rhs_start = (uintptr_t)rhs;
+    if ((lhs_size > (UINTPTR_MAX - lhs_start)) ||
+        (rhs_size > (UINTPTR_MAX - rhs_start))) {
+        return 0;
+    }
+    *overlap = DB_BOOL((lhs_start < (rhs_start + rhs_size)) &&
+                       (rhs_start < (lhs_start + lhs_size)));
+    return 1;
+}
+
+int db_copy_strided_rows_tight(void *destination, size_t destination_size,
+                               const void *source, size_t source_size,
+                               size_t row_count, size_t source_row_stride,
+                               size_t row_bytes) {
+    size_t source_required = 0U;
+    size_t destination_required = 0U;
+    if ((destination == NULL) || (source == NULL) || (row_count == 0U) ||
+        (row_bytes == 0U) ||
+        (db_try_strided_size(row_count, source_row_stride, row_bytes,
+                             &source_required) == 0) ||
+        (db_try_mul_size(row_count, row_bytes, &destination_required) == 0) ||
+        (source_required > source_size) ||
+        (destination_required > destination_size)) {
+        return 0;
+    }
+    const uintptr_t source_address = (uintptr_t)source;
+    const uintptr_t destination_address = (uintptr_t)destination;
+    int ranges_overlap = 0;
+    if (db_memory_ranges_overlap(source, source_required, destination,
+                                 destination_required, &ranges_overlap) == 0) {
+        return 0;
+    }
+    if ((ranges_overlap != 0) && (destination_address > source_address) &&
+        (source_row_stride != row_bytes)) {
+        /* Packing padded rows forward can overwrite a later source row. */
+        return 0;
+    }
+    const int copy_bottom_to_top = DB_BOOL(
+        (ranges_overlap != 0) && (source_address < destination_address));
+    for (size_t row_offset = 0U; row_offset < row_count; row_offset++) {
+        const size_t row = (copy_bottom_to_top != 0)
+                               ? row_count - 1U - row_offset
+                               : row_offset;
+        memmove((uint8_t *)destination + (row * row_bytes),
+                (const uint8_t *)source + (row * source_row_stride), row_bytes);
+    }
+    return 1;
+}
 
 static int db_ascii_ieq_char(char lhs, char rhs) {
     if ((lhs >= 'A') && (lhs <= 'Z')) {
@@ -160,6 +221,26 @@ int db_parse_u32_prefix(const char *value, int base, uint32_t *out_value,
         return 0;
     }
     *out_value = (uint32_t)parsed;
+    *out_end = end;
+    return 1;
+}
+
+int db_parse_u64_prefix(const char *value, int base, uint64_t *out_value,
+                        const char **out_end) {
+    if ((value == NULL) || (value[0] == '\0') || (out_value == NULL) ||
+        (out_end == NULL) || (value[0] == '-') ||
+        ((base != DB_PARSE_BASE_AUTODETECT) &&
+         ((base < DB_PARSE_BASE_MIN) || (base > DB_PARSE_BASE_MAX)))) {
+        return 0;
+    }
+    errno = 0;
+    char *end = NULL;
+    const uintmax_t parsed = strtoumax(value, &end, base);
+    if ((end == value) || (end == NULL) || (errno == ERANGE) ||
+        (parsed > UINT64_MAX)) {
+        return 0;
+    }
+    *out_value = (uint64_t)parsed;
     *out_end = end;
     return 1;
 }

@@ -1,4 +1,5 @@
 #include "damage_trace.h"
+#include "damage_trace_region.h"
 
 #include "../core/db_core.h"
 #include "../core/db_frame_plan.h"
@@ -95,7 +96,8 @@ static void emit_render_ir_detail(uint32_t frame_index, const char *phase,
                     DB_LOG_FIELD_COUNT(fields));
         if (command->opcode == DB_RENDER_IR_OP_FILL_LINEAR_GRADIENT) {
             const db_render_ir_linear_gradient_command_t *const gradient =
-                (const db_render_ir_linear_gradient_command_t *)command;
+                DB_RENDER_IR_COMMAND_AS(db_render_ir_linear_gradient_command_t,
+                                        command);
             const db_log_field_t gradient_fields[] = {
                 DB_LOG_U64("frame", frame_index),
                 DB_LOG_TOKEN("phase", phase),
@@ -128,7 +130,7 @@ static void emit_render_ir_detail(uint32_t frame_index, const char *phase,
             continue;
         }
         const db_render_ir_fill_command_t *const fill_command =
-            (const db_render_ir_fill_command_t *)command;
+            DB_RENDER_IR_COMMAND_AS(db_render_ir_fill_command_t, command);
         const size_t detail_count = db_damage_trace_detail_count(
             fill_command->fill_count, db_damage_trace_level());
         for (size_t index = 0U; index < detail_count; index++) {
@@ -221,83 +223,7 @@ db_damage_trace_surface_hash_oriented(const db_pixel_surface_t *surface,
 
 db_damage_trace_summary_t
 db_damage_trace_summarize(const db_damage_trace_event_t *event) {
-    db_damage_trace_summary_t summary = {0};
-    if ((event == NULL) || (event->blocks == NULL) ||
-        (event->block_count == 0U)) {
-        return summary;
-    }
-
-    const size_t count = event->block_count;
-    uint64_t summed_units = 0U;
-    uint32_t min_x = UINT32_MAX;
-    uint32_t min_y = UINT32_MAX;
-    uint32_t max_x = 0U;
-    uint32_t max_y = 0U;
-
-    for (size_t i = 0U; i < count; i++) {
-        const db_damage_block_t block = event->blocks[i];
-        const uint64_t x_end64 =
-            (uint64_t)block.col_start + (uint64_t)block.col_count;
-        const uint64_t y_end64 =
-            (uint64_t)block.row_start + (uint64_t)block.row_count;
-        if ((block.col_count == 0U) || (block.row_count == 0U) ||
-            (x_end64 > event->width) || (y_end64 > event->height)) {
-            summary.rejected_block_count++;
-            continue;
-        }
-        const uint32_t x_end = (uint32_t)x_end64;
-        const uint32_t y_end = (uint32_t)y_end64;
-        min_x = DB_MIN(min_x, block.col_start);
-        min_y = DB_MIN(min_y, block.row_start);
-        max_x = DB_MAX(max_x, x_end);
-        max_y = DB_MAX(max_y, y_end);
-        summed_units += (uint64_t)block.col_count * (uint64_t)block.row_count;
-        summary.valid_block_count++;
-    }
-    if (summary.valid_block_count == 0U) {
-        return summary;
-    }
-    summary.bounds = (db_damage_block_t){
-        .row_start = min_y,
-        .row_count = max_y - min_y,
-        .col_start = min_x,
-        .col_count = max_x - min_x,
-    };
-
-    const size_t map_size = db_checked_mul_size(
-        "damage_trace", "coverage_map_size", event->width, event->height);
-    uint8_t *const coverage = (uint8_t *)calloc(map_size, sizeof(*coverage));
-    if (coverage == NULL) {
-        DB_RUNTIME_FAIL("damage_trace",
-                        "failed to allocate %zu-byte coverage map", map_size);
-    }
-    for (size_t i = 0U; i < count; i++) {
-        const db_damage_block_t block = event->blocks[i];
-        const uint64_t x_end64 =
-            (uint64_t)block.col_start + (uint64_t)block.col_count;
-        const uint64_t y_end64 =
-            (uint64_t)block.row_start + (uint64_t)block.row_count;
-        if ((block.col_count == 0U) || (block.row_count == 0U) ||
-            (x_end64 > event->width) || (y_end64 > event->height)) {
-            continue;
-        }
-        for (uint32_t y = block.row_start; y < (uint32_t)y_end64; y++) {
-            const size_t row_offset = db_checked_mul_size(
-                "damage_trace", "coverage_row", y, event->width);
-            for (uint32_t x = block.col_start; x < (uint32_t)x_end64; x++) {
-                uint8_t *const cell = &coverage[row_offset + x];
-                if (*cell == 0U) {
-                    *cell = 1U;
-                    summary.covered_units++;
-                }
-            }
-        }
-    }
-    summary.duplicate_units = summed_units - summary.covered_units;
-    summary.union_hash = db_fnv1a64_tree(
-        coverage, map_size, DB_U32_SALT_PALETTE, DB_FNV1A64_OFFSET);
-    free(coverage);
-    return summary;
+    return db_damage_trace_summarize_regions(event);
 }
 
 db_damage_trace_summary_t
@@ -311,7 +237,9 @@ db_damage_trace_emit(const db_damage_trace_event_t *event) {
         g_trace_sequence = 0U;
     }
     summary = db_damage_trace_summarize(event);
-    summary.sequence = ++g_trace_sequence;
+    g_trace_sequence = db_checked_add_u64("damage_trace", "trace_sequence",
+                                          g_trace_sequence, 1U);
+    summary.sequence = g_trace_sequence;
     const char *const reason = (event->reason != NULL) ? event->reason : "none";
     const char *const format =
         (event->pixel_format == DB_PIXEL_FORMAT_RGBA16F) ? "rgba16f" : "rgba8";
@@ -343,6 +271,11 @@ db_damage_trace_emit(const db_damage_trace_event_t *event) {
         DB_LOG_U64("valid", summary.valid_block_count),
         DB_LOG_U64("rejected", summary.rejected_block_count),
         DB_LOG_BOOL("truncated", summary.truncated),
+        DB_LOG_U64("band_block_comparisons", summary.band_block_comparisons),
+        DB_LOG_U64("interval_sort_comparisons",
+                   summary.interval_sort_comparisons),
+        DB_LOG_U64("interval_merge_comparisons",
+                   summary.interval_merge_comparisons),
         DB_LOG_U64("pixels", summary.covered_units),
         DB_LOG_U64("duplicate_pixels", summary.duplicate_units),
         DB_LOG_HEX64("union_hash", summary.union_hash),

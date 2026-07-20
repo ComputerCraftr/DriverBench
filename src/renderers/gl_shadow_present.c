@@ -1,9 +1,11 @@
 #include "../config/runtime_options.h"
+#include "../core/db_core.h"
 #include "../core/db_numeric.h"
 #include "../core/db_progress_policy.h"
 #include "core/db_format_contract.h"
 #include "core/db_log.h"
 #include "core/db_render_types.h"
+#include "damage_trace.h"
 #include "gl_api.h"
 #include "gl_common.h"
 #include "gl_probe_internal.h"
@@ -507,6 +509,15 @@ void db_gl_shadow_present_init_runtime(
             gl_shadow_present_clamped_preserved_framebuffer_count(
                 preserved_framebuffer_count),
     };
+    if (db_damage_trace_level() >= 2) {
+        state->upload_trace.upload_spans =
+            (db_gl_upload_span_trace_t *)db_calloc_array_or_fail(
+                "shadow_present", "upload_trace_spans",
+                DB_GL_DIRTY_TRACE_UPLOAD_SPAN_CAPACITY,
+                sizeof(*state->upload_trace.upload_spans));
+        state->upload_trace.upload_span_capacity =
+            DB_GL_DIRTY_TRACE_UPLOAD_SPAN_CAPACITY;
+    }
     state->upload_profile.requested_full.partial_updates_supported = 0;
     state->upload_profile.effective_full.partial_updates_supported = 0;
     state->upload_profile.requested_partial.partial_updates_supported =
@@ -699,6 +710,7 @@ void db_gl_shadow_present_shutdown(db_gl_shadow_present_state_t *state) {
         slot->slot_matches_presented_texture = 0;
     }
     db_gl_texture_delete_if_valid(&state->texture);
+    free(state->upload_trace.upload_spans);
     free(state->encoded_upload_scratch);
     *state = (db_gl_shadow_present_state_t){0};
 }
@@ -719,6 +731,10 @@ void db_gl_shadow_present_prepare_texture(db_gl_shadow_present_state_t *state,
     if ((target_width == 0U) || (target_height == 0U)) {
         DB_RUNTIME_FAIL(backend,
                         "shadow texture extent exceeds u32 power-of-two range");
+    }
+    if (state->hdr_output_enabled != 0) {
+        db_gl_shadow_present_prepare_hdr_upload_workspace(
+            state, backend, pixel_width, pixel_height);
     }
     const int content_size_changed = (state->content_width != pixel_width) ||
                                      (state->content_height != pixel_height);

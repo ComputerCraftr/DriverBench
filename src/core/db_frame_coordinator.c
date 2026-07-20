@@ -62,6 +62,18 @@ static void reset_transaction(db_frame_coordinator_t *coordinator) {
     coordinator->retry.reason = DB_FRAME_RETRY_NONE;
 }
 
+static int take_transaction_id(db_frame_coordinator_t *coordinator,
+                               uint64_t *transaction_id) {
+    if ((coordinator == NULL) || (transaction_id == NULL) ||
+        (coordinator->next_transaction_id == 0U) ||
+        (coordinator->next_transaction_id == UINT64_MAX)) {
+        return 0;
+    }
+    *transaction_id = coordinator->next_transaction_id;
+    coordinator->next_transaction_id++;
+    return 1;
+}
+
 static db_frame_step_result_t
 restart_transaction(db_frame_coordinator_t *coordinator,
                     db_frame_phase_t completed,
@@ -71,6 +83,10 @@ restart_transaction(db_frame_coordinator_t *coordinator,
     if (retry.outcome != DB_FRAME_STEP_WAIT) {
         return retry;
     }
+    uint64_t next_transaction_id = 0U;
+    if (take_transaction_id(coordinator, &next_transaction_id) == 0) {
+        return fail_transaction(coordinator, completed);
+    }
     coordinator->benchmark_ops.abort(coordinator->model);
     if (coordinator->renderer_ops.finalize != NULL) {
         coordinator->renderer_ops.finalize(
@@ -79,7 +95,7 @@ restart_transaction(db_frame_coordinator_t *coordinator,
             &coordinator->renderer.output, 0);
     }
     const db_progress_session_t retry_progress = coordinator->retry.progress;
-    coordinator->identity.transaction_id = coordinator->next_transaction_id++;
+    coordinator->identity.transaction_id = next_transaction_id;
     reset_transaction(coordinator);
     coordinator->retry.progress = retry_progress;
     coordinator->retry.reason = reason;
@@ -129,8 +145,12 @@ int db_frame_coordinator_begin(db_frame_coordinator_t *coordinator,
         (coordinator->active != 0)) {
         return 0;
     }
+    uint64_t transaction_id = 0U;
+    if (take_transaction_id(coordinator, &transaction_id) == 0) {
+        return 0;
+    }
     coordinator->identity = (db_frame_identity_t){
-        .transaction_id = coordinator->next_transaction_id++,
+        .transaction_id = transaction_id,
         .frame_index = frame_index,
     };
     coordinator->phase = DB_FRAME_ACQUIRE;
@@ -300,14 +320,14 @@ db_frame_coordinator_step(db_frame_coordinator_t *coordinator) {
     }
     case DB_FRAME_COMMIT:
         coordinator->renderer.output.result.success = 1;
-        coordinator->benchmark_ops.commit(coordinator->model,
-                                          &coordinator->plan.published,
-                                          &coordinator->renderer.output.result);
         if (coordinator->renderer_ops.finalize != NULL) {
             coordinator->renderer_ops.finalize(
                 coordinator->renderer_context, &coordinator->plan.published,
                 &coordinator->renderer.output, 1);
         }
+        coordinator->benchmark_ops.commit(coordinator->model,
+                                          &coordinator->plan.published,
+                                          &coordinator->renderer.output.result);
         coordinator->benchmark.pending = 0;
         coordinator->active = 0;
         db_progress_session_reset(&coordinator->retry.progress);

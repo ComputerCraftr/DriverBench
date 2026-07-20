@@ -2,8 +2,11 @@
 #define DRIVERBENCH_RENDERER_SNAKE_COMMON_TYPES_INTERNAL_H
 
 #include "../config/benchmark_config.h"
-#include "benchmarks/db_benchmark_types_internal.h"
 #include "benchmarks/db_snake_shape_internal.h"
+#include "core/db_geometry.h"
+#include "core/db_hash.h"
+#include <stddef.h>
+#include <stdint.h>
 
 #define DB_SNAKE_COMMON_BACKEND "renderer_snake_common"
 #define DB_SNAKE_COMMON_COLOR_BIAS 0.20

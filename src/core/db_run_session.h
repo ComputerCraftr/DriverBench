@@ -1,10 +1,10 @@
 #ifndef DRIVERBENCH_CORE_DB_RUN_SESSION_H
 #define DRIVERBENCH_CORE_DB_RUN_SESSION_H
 
+#include "core/db_render_result.h"
 #include "db_benchmark_model.h"
 #include "db_conformance_service.h"
 #include "db_frame_contracts.h"
-#include "db_metrics_policy.h"
 #include "db_qualification_contracts.h"
 
 #include <stdint.h>
@@ -33,6 +33,7 @@ typedef enum {
     DB_RUN_STOP_FRAME_LIMIT,
     DB_RUN_STOP_FRAME_FAILED,
     DB_RUN_STOP_QUALIFICATION_FAILED,
+    DB_RUN_STOP_FRAME_INDEX_EXHAUSTED,
     DB_RUN_STOP_EXTERNAL,
 } db_run_stop_reason_t;
 

@@ -1,3 +1,4 @@
+#include "kms_hdr.h"
 #include "kms_internal.h"
 
 #include "core/db_format_contract.h"

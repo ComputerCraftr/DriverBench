@@ -1,5 +1,6 @@
 #include "core/db_geometry.h"
 #include "core/db_render_ir.h"
+#include "core/db_render_ir_surface.h"
 #include "core/db_render_types.h"
 #include "support/test_harness.h"
 
@@ -27,6 +28,8 @@ enum {
     TEST_GRADIENT_SAMPLE_ROW = 8,
     TEST_DAMAGE_AREA = 3900,
     TEST_MUTATED_RECT_X = 99,
+    TEST_TARGET_HEIGHT = 80,
+    TEST_TOUCHED_HEIGHT = 6,
 };
 
 static const double test_quarter = 0.25;
@@ -41,6 +44,10 @@ typedef struct {
     db_render_ir_region_t regions[TEST_CAPACITY];
     db_render_ir_band_t bands[TEST_CAPACITY];
     db_render_ir_span_t spans[TEST_CAPACITY];
+    db_render_ir_band_t optimizer_coverage_bands[TEST_CAPACITY];
+    db_render_ir_band_t optimizer_coverage_band_scratch[TEST_CAPACITY];
+    db_render_ir_span_t optimizer_coverage_spans[TEST_CAPACITY];
+    db_render_ir_span_t optimizer_coverage_span_scratch[TEST_CAPACITY];
     db_render_ir_store_t store;
 } test_store_t;
 
@@ -59,6 +66,20 @@ static void init_store(test_store_t *fixture) {
         .band_capacity = TEST_CAPACITY,
         .spans = fixture->spans,
         .span_capacity = TEST_CAPACITY,
+    };
+}
+
+static db_render_ir_optimizer_workspace_t
+optimizer_workspace(test_store_t *fixture, db_render_ir_fill_t *primary,
+                    db_render_ir_fill_t *secondary) {
+    return (db_render_ir_optimizer_workspace_t){
+        .primary = primary,
+        .secondary = secondary,
+        .coverage_bands = fixture->optimizer_coverage_bands,
+        .coverage_band_scratch = fixture->optimizer_coverage_band_scratch,
+        .coverage_spans = fixture->optimizer_coverage_spans,
+        .coverage_span_scratch = fixture->optimizer_coverage_span_scratch,
+        .capacity = TEST_CAPACITY,
     };
 }
 
@@ -141,6 +162,133 @@ static void packed_iteration_is_aligned(db_test_state_t *state) {
     DB_TEST_EXPECT_TRUE(state, db_render_ir_iterator_next(&iterator) == NULL);
 }
 
+static void optimizer_preserves_fragmented_clip_pixels(db_test_state_t *state) {
+    test_store_t raw = {0};
+    test_store_t optimized = {0};
+    db_render_ir_fill_t primary[TEST_CAPACITY] = {0};
+    db_render_ir_fill_t secondary[TEST_CAPACITY] = {0};
+    static uint32_t raw_pixels[TEST_WIDE_WIDTH * TEST_TARGET_HEIGHT];
+    static uint32_t optimized_pixels[TEST_WIDE_WIDTH * TEST_TARGET_HEIGHT];
+    memset(raw_pixels, 0, sizeof(raw_pixels));
+    memset(optimized_pixels, 0, sizeof(optimized_pixels));
+    init_store(&raw);
+    init_store(&optimized);
+    const db_render_ir_resource_id_t target = add_target(state, &raw);
+    db_render_ir_region_id_t unused = DB_RENDER_IR_INVALID_ID;
+    (void)db_render_ir_add_rect_region(
+        &raw.store, (db_render_ir_rect_t){.width = 1, .height = 1}, &unused);
+    (void)db_render_ir_add_rect_region(
+        &raw.store, (db_render_ir_rect_t){.x = 2, .width = 1, .height = 1},
+        &unused);
+    const db_render_ir_fill_t clip_fills[] = {
+        {.rect = {.x = 3, .y = 4, .width = 5, .height = 2}},
+        {.rect = {.x = 11, .y = 7, .width = 4, .height = 3}},
+    };
+    db_render_ir_region_id_t raw_clip = DB_RENDER_IR_INVALID_ID;
+    (void)db_render_ir_add_fill_region(&raw.store, clip_fills, 2U, &raw_clip);
+    const db_render_ir_fill_t full = {
+        .rect = {.width = TEST_WIDE_WIDTH, .height = TEST_TARGET_HEIGHT},
+        .color = {.rgba = {1.0, test_quarter, test_half, 1.0}},
+    };
+    (void)db_render_ir_begin_target(&raw.store, target);
+    (void)db_render_ir_fill_rects(&raw.store, target, &full, 1U, raw_clip);
+    (void)db_render_ir_end_target(&raw.store, target);
+    const db_render_ir_view_t raw_view = db_render_ir_store_view(&raw.store);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_render_ir_optimize(
+            &raw_view, &optimized.store,
+            optimizer_workspace(&optimized, primary, secondary)),
+        DB_RENDER_IR_OK);
+    const db_render_ir_view_t optimized_view =
+        db_render_ir_store_view(&optimized.store);
+    db_render_ir_iterator_t iterator = {0};
+    db_render_ir_iterator_begin(&iterator, &optimized_view);
+    (void)db_render_ir_iterator_next(&iterator);
+    const db_render_ir_command_header_t *const optimized_fill =
+        db_render_ir_iterator_next(&iterator);
+    DB_TEST_EXPECT_TRUE(state, optimized_fill != NULL);
+    if (optimized_fill == NULL) {
+        return;
+    }
+    DB_TEST_EXPECT_TRUE(state,
+                        optimized_fill->clip_region != DB_RENDER_IR_INVALID_ID);
+    DB_TEST_EXPECT_TRUE(state, optimized_fill->clip_region != raw_clip);
+    DB_TEST_EXPECT_EQ_U64(state,
+                          db_render_ir_region_area(
+                              &optimized_view, optimized_fill->touched_region),
+                          22U);
+    const db_pixel_surface_t raw_surface = {
+        .pixels = raw_pixels,
+        .pixel_width = TEST_WIDE_WIDTH,
+        .pixel_height = TEST_TARGET_HEIGHT,
+        .format = DB_PIXEL_FORMAT_RGBA8,
+    };
+    const db_pixel_surface_t optimized_surface = {
+        .pixels = optimized_pixels,
+        .pixel_width = TEST_WIDE_WIDTH,
+        .pixel_height = TEST_TARGET_HEIGHT,
+        .format = DB_PIXEL_FORMAT_RGBA8,
+    };
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_render_ir_rasterize_surface(&raw_view, TEST_WIDE_WIDTH,
+                                       TEST_TARGET_HEIGHT, &raw_surface),
+        DB_RENDER_IR_OK);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_render_ir_rasterize_surface(&optimized_view, TEST_WIDE_WIDTH,
+                                       TEST_TARGET_HEIGHT, &optimized_surface),
+        DB_RENDER_IR_OK);
+    DB_TEST_EXPECT_TRUE(
+        state, memcmp(raw_pixels, optimized_pixels, sizeof(raw_pixels)) == 0);
+}
+
+static void optimizer_canonicalizes_full_target_clip(db_test_state_t *state) {
+    test_store_t raw = {0};
+    test_store_t optimized = {0};
+    db_render_ir_fill_t primary[TEST_CAPACITY] = {0};
+    db_render_ir_fill_t secondary[TEST_CAPACITY] = {0};
+    init_store(&raw);
+    init_store(&optimized);
+    const db_render_ir_resource_id_t target = add_target(state, &raw);
+    db_render_ir_region_id_t clip = DB_RENDER_IR_INVALID_ID;
+    (void)db_render_ir_add_rect_region(
+        &raw.store,
+        (db_render_ir_rect_t){.width = TEST_WIDE_WIDTH,
+                              .height = TEST_TARGET_HEIGHT},
+        &clip);
+    (void)db_render_ir_begin_target(&raw.store, target);
+    (void)db_render_ir_fill_rects(
+        &raw.store, target,
+        &(const db_render_ir_fill_t){
+            .rect = {.width = TEST_WIDE_WIDTH, .height = TEST_TARGET_HEIGHT},
+            .color = {.rgba = {test_quarter, test_half, test_three_quarters,
+                               1.0}}},
+        1U, clip);
+    (void)db_render_ir_end_target(&raw.store, target);
+    const db_render_ir_view_t raw_view = db_render_ir_store_view(&raw.store);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_render_ir_optimize(
+            &raw_view, &optimized.store,
+            optimizer_workspace(&optimized, primary, secondary)),
+        DB_RENDER_IR_OK);
+    const db_render_ir_view_t optimized_view =
+        db_render_ir_store_view(&optimized.store);
+    db_render_ir_iterator_t iterator = {0};
+    db_render_ir_iterator_begin(&iterator, &optimized_view);
+    (void)db_render_ir_iterator_next(&iterator);
+    const db_render_ir_command_header_t *const fill =
+        db_render_ir_iterator_next(&iterator);
+    DB_TEST_EXPECT_TRUE(state, fill != NULL);
+    DB_TEST_EXPECT_EQ_U32(state, fill->clip_region, DB_RENDER_IR_INVALID_ID);
+    DB_TEST_EXPECT_TRUE(state, fill->touched_region != DB_RENDER_IR_INVALID_ID);
+    DB_TEST_EXPECT_EQ_U64(
+        state, db_render_ir_region_area(&optimized_view, fill->touched_region),
+        (uint64_t)TEST_WIDE_WIDTH * 80U);
+}
+
 static void overwrite_eliminates_hidden_fill(db_test_state_t *state) {
     test_store_t raw = {0};
     test_store_t optimized = {0};
@@ -164,9 +312,7 @@ static void overwrite_eliminates_hidden_fill(db_test_state_t *state) {
         state,
         db_render_ir_optimize(
             &raw_view, &optimized.store,
-            (db_render_ir_optimizer_workspace_t){.primary = primary,
-                                                 .secondary = secondary,
-                                                 .capacity = TEST_CAPACITY}),
+            optimizer_workspace(&optimized, primary, secondary)),
         DB_RENDER_IR_OK);
     DB_TEST_EXPECT_EQ_SIZE(state, optimized.store.fill_count, 1U);
     DB_TEST_EXPECT_DOUBLE_EQUAL(state, optimized.store.fills[0].color.rgba[1],
@@ -197,9 +343,7 @@ partial_overwrite_preserves_visible_remainder(db_test_state_t *state) {
     const db_render_ir_view_t raw_view = db_render_ir_store_view(&raw.store);
     (void)db_render_ir_optimize(
         &raw_view, &optimized.store,
-        (db_render_ir_optimizer_workspace_t){.primary = primary,
-                                             .secondary = secondary,
-                                             .capacity = TEST_CAPACITY});
+        optimizer_workspace(&optimized, primary, secondary));
     DB_TEST_EXPECT_EQ_SIZE(state, optimized.store.fill_count, 2U);
     uint64_t area = 0U;
     for (size_t index = 0U; index < optimized.store.fill_count; index++) {
@@ -255,7 +399,8 @@ rectangle_conversion_rejects_invalid_bounds(db_test_state_t *state) {
                           0);
 }
 
-static void validation_rejects_out_of_target_fills(db_test_state_t *state) {
+static void
+validation_accepts_clippable_out_of_target_fills(db_test_state_t *state) {
     test_store_t fixture = {0};
     init_store(&fixture);
     const db_render_ir_resource_id_t target = add_target(state, &fixture);
@@ -268,8 +413,62 @@ static void validation_rejects_out_of_target_fills(db_test_state_t *state) {
                                 1U, DB_RENDER_IR_INVALID_ID),
         DB_RENDER_IR_OK);
     const db_render_ir_view_t view = db_render_ir_store_view(&fixture.store);
-    DB_TEST_EXPECT_EQ_INT(state, db_render_ir_validate(&view),
+    DB_TEST_EXPECT_EQ_INT(state, db_render_ir_validate(&view), DB_RENDER_IR_OK);
+}
+
+static void rectangle_endpoint_overflow_is_rejected_transactionally(
+    db_test_state_t *state) {
+    enum {
+        REJECTED_X_ENDPOINT = 17,
+        REJECTED_Y_ENDPOINT = 23,
+    };
+    test_store_t fixture = {0};
+    init_store(&fixture);
+    const db_render_ir_resource_id_t target = add_target(state, &fixture);
+    const size_t command_size = fixture.store.command_size;
+    const size_t command_count = fixture.store.command_count;
+    const size_t fill_count = fixture.store.fill_count;
+    const db_render_ir_status_t status = fixture.store.status;
+    const db_render_ir_fill_t invalid = {
+        .rect = {.x = INT32_MAX, .width = 1, .height = 1},
+        .color = {.rgba = {0.0, 0.0, 0.0, 1.0}},
+    };
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_render_ir_fill_rects(&fixture.store, target,
+                                                  &invalid, 1U,
+                                                  DB_RENDER_IR_INVALID_ID),
                           DB_RENDER_IR_INVALID);
+    DB_TEST_EXPECT_EQ_SIZE(state, fixture.store.command_size, command_size);
+    DB_TEST_EXPECT_EQ_SIZE(state, fixture.store.command_count, command_count);
+    DB_TEST_EXPECT_EQ_SIZE(state, fixture.store.fill_count, fill_count);
+    DB_TEST_EXPECT_EQ_INT(state, fixture.store.status, status);
+
+    const db_render_ir_fill_t valid = {
+        .rect = {.width = 1, .height = 1},
+        .color = {.rgba = {0.0, 0.0, 0.0, 1.0}},
+    };
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_render_ir_fill_rects(&fixture.store, target,
+                                                  &valid, 1U,
+                                                  DB_RENDER_IR_INVALID_ID),
+                          DB_RENDER_IR_OK);
+    fixture.fills[0].rect = invalid.rect;
+    const db_render_ir_view_t malformed =
+        db_render_ir_store_view(&fixture.store);
+    DB_TEST_EXPECT_EQ_INT(state, db_render_ir_validate(&malformed),
+                          DB_RENDER_IR_INVALID);
+    db_render_ir_rect_iterator_t iterator = {0};
+    db_render_ir_fill_t decoded = {0};
+    db_render_ir_rect_iterator_begin(&iterator, &malformed);
+    DB_TEST_EXPECT_TRUE(
+        state, db_render_ir_rect_iterator_next(&iterator, &decoded) == 0);
+
+    int32_t x_end = REJECTED_X_ENDPOINT;
+    int32_t y_end = REJECTED_Y_ENDPOINT;
+    DB_TEST_EXPECT_TRUE(
+        state, db_render_ir_rect_endpoints(invalid.rect, &x_end, &y_end) == 0);
+    DB_TEST_EXPECT_EQ_INT(state, x_end, REJECTED_X_ENDPOINT);
+    DB_TEST_EXPECT_EQ_INT(state, y_end, REJECTED_Y_ENDPOINT);
 }
 
 static void validation_rejects_invalid_upload_bounds(db_test_state_t *state) {
@@ -319,6 +518,34 @@ static void validation_rejects_missing_counted_storage(db_test_state_t *state) {
     };
     DB_TEST_EXPECT_EQ_INT(state, db_render_ir_validate(&missing_spans),
                           DB_RENDER_IR_INVALID);
+    const db_render_ir_view_t missing_commands = {
+        .command_size = sizeof(db_render_ir_command_header_t),
+        .command_count = 1U,
+    };
+    db_render_ir_iterator_t iterator = {0};
+    db_render_ir_iterator_begin(&iterator, &missing_commands);
+    DB_TEST_EXPECT_TRUE(state, db_render_ir_iterator_next(&iterator) == NULL);
+    DB_TEST_EXPECT_EQ_U64(state, db_render_ir_hash(&missing_commands), 0U);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_render_ir_metadata(&missing_commands, DB_RENDER_IR_OK, 1U, 1U)
+            .status,
+        DB_RENDER_IR_INVALID);
+}
+
+static void
+truncated_command_header_is_rejected_safely(db_test_state_t *state) {
+    const max_align_t truncated = {0};
+    const db_render_ir_view_t view = {
+        .commands = &truncated,
+        .command_size = 1U,
+        .command_count = 1U,
+    };
+    db_render_ir_iterator_t iterator = {0};
+    db_render_ir_iterator_begin(&iterator, &view);
+    DB_TEST_EXPECT_TRUE(state, db_render_ir_iterator_next(&iterator) == NULL);
+    DB_TEST_EXPECT_EQ_INT(state, db_render_ir_validate(&view),
+                          DB_RENDER_IR_INVALID);
 }
 
 static void semantic_hash_includes_command_payload(db_test_state_t *state) {
@@ -362,12 +589,15 @@ typedef struct {
 
 static int
 count_gradient(void *opaque_context, db_render_ir_resource_id_t target,
-               const db_render_ir_linear_gradient_command_t *gradient) {
+               const db_render_ir_linear_gradient_command_t *gradient,
+               db_render_ir_rect_t coverage) {
     test_lowering_context_t *const context =
         (test_lowering_context_t *)opaque_context;
     if ((context == NULL) || (target != 0U) || (gradient == NULL) ||
         (gradient->bounds.width != TEST_WIDE_WIDTH) ||
         (gradient->bounds.height != TEST_GRADIENT_HEIGHT) ||
+        (coverage.width != TEST_WIDE_WIDTH) ||
+        (coverage.height != TEST_GRADIENT_HEIGHT) ||
         (gradient->axis_start != TEST_GRADIENT_START) ||
         (gradient->axis_end != TEST_GRADIENT_END)) {
         return 0;
@@ -405,9 +635,7 @@ gradient_survives_optimization_and_lowering(db_test_state_t *state) {
         state,
         db_render_ir_optimize(
             &raw_view, &optimized.store,
-            (db_render_ir_optimizer_workspace_t){.primary = primary,
-                                                 .secondary = secondary,
-                                                 .capacity = TEST_CAPACITY}),
+            optimizer_workspace(&optimized, primary, secondary)),
         DB_RENDER_IR_OK);
     const db_render_ir_view_t optimized_view =
         db_render_ir_store_view(&optimized.store);
@@ -420,7 +648,8 @@ gradient_survives_optimization_and_lowering(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_INT(state, command->opcode,
                           DB_RENDER_IR_OP_FILL_LINEAR_GRADIENT);
     const db_render_ir_linear_gradient_command_t *const gradient =
-        (const db_render_ir_linear_gradient_command_t *)command;
+        DB_RENDER_IR_COMMAND_AS(db_render_ir_linear_gradient_command_t,
+                                command);
     const db_render_ir_color_t midpoint = db_render_ir_linear_gradient_color_at(
         gradient, TEST_GRADIENT_SAMPLE_ROW);
     DB_TEST_EXPECT_TRUE(state, midpoint.rgba[0] < test_half);
@@ -467,9 +696,7 @@ static void ordered_stream_damage_unions_all_writes(db_test_state_t *state) {
         state,
         db_render_ir_optimize(
             &raw_view, &optimized.store,
-            (db_render_ir_optimizer_workspace_t){.primary = primary,
-                                                 .secondary = secondary,
-                                                 .capacity = TEST_CAPACITY}),
+            optimizer_workspace(&optimized, primary, secondary)),
         DB_RENDER_IR_OK);
     const db_render_ir_view_t optimized_view =
         db_render_ir_store_view(&optimized.store);
@@ -486,13 +713,14 @@ static int count_upload(void *opaque_context, db_render_ir_resource_id_t target,
                         db_render_ir_external_binding_view_t bindings) {
     test_lowering_context_t *const context =
         (test_lowering_context_t *)opaque_context;
+    db_render_ir_external_binding_t binding = {0};
     if ((context == NULL) || (upload == NULL) || (target != 0U) ||
         (upload->source != 1U) ||
         (upload->source_rect.width != TEST_UPLOAD_WIDTH) ||
         (upload->source_rect.height != TEST_UPLOAD_HEIGHT) ||
         (upload->destination_x != 2) || (upload->destination_y != 3) ||
         (bindings.count != 1U) ||
-        (db_render_ir_find_binding(bindings, upload->source) == NULL)) {
+        (db_render_ir_find_binding(bindings, upload->source, &binding) == 0)) {
         return 0;
     }
     context->uploads++;
@@ -537,9 +765,7 @@ static void upload_survives_optimization_and_lowering(db_test_state_t *state) {
         state,
         db_render_ir_optimize(
             &raw_view, &optimized.store,
-            (db_render_ir_optimizer_workspace_t){.primary = primary,
-                                                 .secondary = secondary,
-                                                 .capacity = TEST_CAPACITY}),
+            optimizer_workspace(&optimized, primary, secondary)),
         DB_RENDER_IR_OK);
     const db_render_ir_view_t optimized_view =
         db_render_ir_store_view(&optimized.store);
@@ -589,6 +815,29 @@ static void upload_survives_optimization_and_lowering(db_test_state_t *state) {
             (db_render_ir_external_binding_view_t){
                 .bindings = &undersized_binding, .count = 1U}),
         DB_RENDER_IR_INVALID);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_render_ir_lower(
+            &optimized_view,
+            (db_render_ir_external_binding_view_t){
+                .bindings = &undersized_binding, .count = 1U},
+            &(const db_render_ir_lowering_ops_t){.upload_image = count_upload},
+            &context),
+        DB_RENDER_IR_INVALID);
+    DB_TEST_EXPECT_EQ_U32(state, context.uploads, 0U);
+
+    db_render_ir_view_t malformed_view = optimized_view;
+    malformed_view.resources = NULL;
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_render_ir_lower(
+            &malformed_view,
+            (db_render_ir_external_binding_view_t){.bindings = &valid_binding,
+                                                   .count = 1U},
+            &(const db_render_ir_lowering_ops_t){.upload_image = count_upload},
+            &context),
+        DB_RENDER_IR_INVALID);
+    DB_TEST_EXPECT_EQ_U32(state, context.uploads, 0U);
     DB_TEST_EXPECT_EQ_INT(
         state,
         db_render_ir_lower(
@@ -647,6 +896,10 @@ static void y_banded_region_boolean_operations(db_test_state_t *state) {
 unsigned db_render_ir_test_run_all(void) {
     static const db_test_case_t cases[] = {
         {"packed_iteration_is_aligned", packed_iteration_is_aligned},
+        {"optimizer_preserves_fragmented_clip_pixels",
+         optimizer_preserves_fragmented_clip_pixels},
+        {"optimizer_canonicalizes_full_target_clip",
+         optimizer_canonicalizes_full_target_clip},
         {"extent_conversion_is_checked", extent_conversion_is_checked},
         {"overwrite_eliminates_hidden_fill", overwrite_eliminates_hidden_fill},
         {"partial_overwrite_preserves_visible_remainder",
@@ -654,12 +907,16 @@ unsigned db_render_ir_test_run_all(void) {
         {"capacity_failure_is_typed", capacity_failure_is_typed},
         {"rectangle_conversion_rejects_invalid_bounds",
          rectangle_conversion_rejects_invalid_bounds},
-        {"validation_rejects_out_of_target_fills",
-         validation_rejects_out_of_target_fills},
+        {"validation_accepts_clippable_out_of_target_fills",
+         validation_accepts_clippable_out_of_target_fills},
+        {"rectangle_endpoint_overflow_is_rejected_transactionally",
+         rectangle_endpoint_overflow_is_rejected_transactionally},
         {"validation_rejects_invalid_upload_bounds",
          validation_rejects_invalid_upload_bounds},
         {"validation_rejects_missing_counted_storage",
          validation_rejects_missing_counted_storage},
+        {"truncated_command_header_is_rejected_safely",
+         truncated_command_header_is_rejected_safely},
         {"semantic_hash_includes_command_payload",
          semantic_hash_includes_command_payload},
         {"y_banded_region_boolean_operations",
@@ -671,6 +928,5 @@ unsigned db_render_ir_test_run_all(void) {
         {"ordered_stream_damage_unions_all_writes",
          ordered_stream_damage_unions_all_writes},
     };
-    return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0])) +
-           db_render_ir_snapshot_test_run_all();
+    return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

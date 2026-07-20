@@ -113,10 +113,10 @@ db_test_benchmark_core_plan_owns_expected_state_hash(db_test_state_t *state) {
     db_test_benchmark_generate_plan(&core, 0U, NULL, &plan);
     DB_TEST_EXPECT_TRUE(state, plan.rebuild_metadata.instance_count > 0U);
     int found_seed_color = 0;
-    for (size_t index = 0U; index < db_render_ir_rect_count(&plan.rebuild_ir);
-         index++) {
-        db_render_ir_fill_t fill = {0};
-        (void)db_render_ir_rect_at(&plan.rebuild_ir, index, &fill);
+    db_render_ir_rect_iterator_t iterator = {0};
+    db_render_ir_rect_iterator_begin(&iterator, &plan.rebuild_ir);
+    db_render_ir_fill_t fill = {0};
+    while (db_render_ir_rect_iterator_next(&iterator, &fill) != 0) {
         const double value = fill.color.rgba[0];
         if ((value <= BENCH_GRID_PHASE0_R) && (value >= BENCH_GRID_PHASE0_R)) {
             found_seed_color = 1;
@@ -444,9 +444,15 @@ db_test_checkpoint_scope_and_working_format(db_test_state_t *state) {
                           DB_PIXEL_FORMAT_RGBA16F);
     const size_t pixel_count =
         (size_t)db_grid_cols_effective() * db_grid_rows_effective();
-    DB_TEST_EXPECT_EQ_SIZE(state, shape_core.checkpoint.allocation_size_bytes,
-                           (2U * pixel_count * DB_RGBA16F_BYTES_PER_PIXEL) +
-                               (2U * pixel_count * sizeof(uint32_t)));
+    const size_t dirty_span_extent =
+        pixel_count + (size_t)db_grid_rows_effective();
+    const size_t dirty_span_capacity =
+        (dirty_span_extent / 2U) + (dirty_span_extent % 2U);
+    DB_TEST_EXPECT_EQ_SIZE(
+        state, shape_core.checkpoint.allocation_size_bytes,
+        (2U * pixel_count * DB_RGBA16F_BYTES_PER_PIXEL) +
+            (pixel_count * sizeof(uint32_t)) +
+            (dirty_span_capacity * sizeof(db_benchmark_checkpoint_span_t)));
     db_benchmark_core_shutdown(&shape_core);
 
     db_benchmark_runtime_init_t grid =
@@ -723,6 +729,5 @@ unsigned db_benchmark_seeding_test_run_all(void) {
         {"gradient_rebuild_is_not_steady_state",
          db_test_gradient_rebuild_is_not_steady_state},
     };
-    return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0])) +
-           db_benchmark_checkpoint_transaction_test_run_all();
+    return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

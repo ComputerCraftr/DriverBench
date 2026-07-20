@@ -132,12 +132,11 @@ static void vk_group_transition_slot(VkCommandBuffer command_buffer,
                          NULL, 0U, NULL, 1U, &barrier);
 }
 
-static uint32_t
-vk_group_render_lane(const db_frame_plan_t *plan,
-                     const db_vk_execution_plan_t *execution_plan,
-                     VkCommandBuffer command_buffer, uint32_t lane_index,
-                     uint32_t slot_index, uint32_t *frame_work_units,
-                     uint8_t *frame_owner_used, uint8_t *frame_owner_finished) {
+static uint32_t vk_group_render_lane(
+    const db_frame_plan_t *plan, const db_vk_execution_plan_t *execution_plan,
+    size_t instance_count, VkCommandBuffer command_buffer, uint32_t lane_index,
+    uint32_t slot_index, uint32_t *frame_work_units, uint8_t *frame_owner_used,
+    uint8_t *frame_owner_finished) {
     db_vk_independent_lane_runtime_t *const runtime =
         &g_state.scheduler.independent_lanes[lane_index];
     if ((runtime->active == 0) || (runtime->initialized == 0)) {
@@ -182,7 +181,6 @@ vk_group_render_lane(const db_frame_plan_t *plan,
         .maxDepth = 1.0F,
     };
     vkCmdSetViewport(command_buffer, 0U, 1U, &viewport);
-    const size_t geometry_count = db_vk_frame_rect_count(plan);
     uint32_t lane_work = 0U;
     uint32_t lane_tiles[DB_VK_MAX_LANES] = {0};
     uint32_t total_tiles = 0U;
@@ -218,7 +216,7 @@ vk_group_render_lane(const db_frame_plan_t *plan,
         }
         const db_vk_present_piece_t *const piece =
             &execution_plan->pieces[assignment->piece_first];
-        if (piece->instance_first >= geometry_count) {
+        if (piece->instance_first >= instance_count) {
             continue;
         }
         db_grid_block_t grid_block = {0};
@@ -312,6 +310,7 @@ static void vk_group_compose(const db_frame_plan_t *plan,
 
 uint32_t db_vk_device_group_record(const db_frame_plan_t *plan,
                                    const db_vk_execution_plan_t *execution_plan,
+                                   size_t instance_count,
                                    VkCommandBuffer command_buffer,
                                    uint32_t *frame_work_units,
                                    uint8_t *frame_owner_used,
@@ -325,8 +324,8 @@ uint32_t db_vk_device_group_record(const db_frame_plan_t *plan,
          lane++) {
         for (uint32_t slot = 0U; slot < DB_VK_LANE_SLOT_COUNT; slot++) {
             total_work += vk_group_render_lane(
-                plan, execution_plan, command_buffer, lane, slot,
-                frame_work_units, frame_owner_used, frame_owner_finished);
+                plan, execution_plan, instance_count, command_buffer, lane,
+                slot, frame_work_units, frame_owner_used, frame_owner_finished);
         }
     }
     vk_group_compose(plan, execution_plan, command_buffer);

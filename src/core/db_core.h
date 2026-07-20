@@ -59,6 +59,8 @@ int db_parse_int_text(const char *value, int *out_value);
 int db_parse_fps_cap_text(const char *value, double *out_value);
 int db_parse_u32_prefix(const char *value, int base, uint32_t *out_value,
                         const char **out_end);
+int db_parse_u64_prefix(const char *value, int base, uint64_t *out_value,
+                        const char **out_end);
 int db_parse_long_prefix(const char *value, int base, long *out_value,
                          const char **out_end);
 int db_parse_double_prefix(const char *value, double *out_value,
@@ -399,20 +401,28 @@ static inline uint64_t db_checked_double_to_u64(const char *backend,
     return (uint64_t)value;
 }
 
+static inline int db_try_add_u32(uint32_t lhs, uint32_t rhs, uint32_t *out) {
+    if (out == NULL) {
+        return 0;
+    }
+#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
+    return !ckd_add(out, lhs, rhs);
+#else
+    if (rhs > (UINT32_MAX - lhs)) {
+        return 0;
+    }
+    *out = lhs + rhs;
+    return 1;
+#endif
+}
+
 static inline uint32_t db_checked_add_u32(const char *backend,
                                           const char *field_name, uint32_t lhs,
                                           uint32_t rhs) {
     uint32_t out = 0U;
-#if defined(DB_HAVE_STDCKDINT) && DB_HAVE_STDCKDINT
-    if (ckd_add(&out, lhs, rhs)) {
+    if (db_try_add_u32(lhs, rhs, &out) == 0) {
         db_failf(backend, "%s u32 add overflow: %u + %u", field_name, lhs, rhs);
     }
-#else
-    if (rhs > (UINT32_MAX - lhs)) {
-        db_failf(backend, "%s u32 add overflow: %u + %u", field_name, lhs, rhs);
-    }
-    out = lhs + rhs;
-#endif
     return out;
 }
 
@@ -527,6 +537,9 @@ static inline int db_size_range_fits(size_t total_size, size_t offset,
     return (offset <= total_size) && (length <= (total_size - offset));
 }
 
+int db_memory_ranges_overlap(const void *lhs, size_t lhs_size, const void *rhs,
+                             size_t rhs_size, int *overlap);
+
 static inline int db_try_strided_size(size_t row_count, size_t row_stride,
                                       size_t row_bytes, size_t *out_size) {
     if ((out_size == NULL) || (row_count == 0U) || (row_stride < row_bytes)) {
@@ -536,6 +549,11 @@ static inline int db_try_strided_size(size_t row_count, size_t row_stride,
     return db_try_mul_size(row_count - 1U, row_stride, &last_row_offset) &&
            db_try_add_size(last_row_offset, row_bytes, out_size);
 }
+
+int db_copy_strided_rows_tight(void *destination, size_t destination_size,
+                               const void *source, size_t source_size,
+                               size_t row_count, size_t source_row_stride,
+                               size_t row_bytes);
 
 static inline size_t db_checked_mul_size(const char *backend,
                                          const char *field_name, size_t lhs,

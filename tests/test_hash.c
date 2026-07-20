@@ -11,12 +11,14 @@
 #include "core/db_core.h"
 #include "core/db_hash.h"
 #include "core/db_hash_simd_internal.h"
+#include "core/db_render_types.h"
 
 enum {
     DB_TEST_TREE_MAX_BYTES = 8193U,
     DB_TEST_TREE_BYTE_MULTIPLIER = 37U,
     DB_TEST_TREE_BYTE_OFFSET = 11U,
     DB_TEST_CACHE_PATH_BYTES = 128U,
+    DB_TEST_OVERLAP_STORAGE_BYTES = 20U,
 };
 
 static void db_test_hash_tree_fill(uint8_t *bytes, size_t length) {
@@ -68,6 +70,16 @@ static void db_test_byte_codec_round_trips_and_hex(db_test_state_t *state) {
     DB_TEST_EXPECT_STR_EQ(state, hex, "123456789abcdef0");
     DB_TEST_EXPECT_TRUE(state, db_hex_encode_lower(u64_wire, sizeof(u64_wire),
                                                    hex, sizeof(hex) - 1U) == 0);
+}
+
+static void db_test_u64_hash_mix_is_little_endian(db_test_state_t *state) {
+    const uint64_t value = UINT64_C(0xf0debc9a78563412);
+    uint8_t encoded[DB_U64_WIRE_BYTES] = {0};
+    db_store_u64_le(encoded, value);
+    const uint64_t expected =
+        db_fnv1a64_extend(DB_FNV1A64_OFFSET, encoded, sizeof(encoded));
+    DB_TEST_EXPECT_EQ_U64(state, db_fnv1a64_mix_u64(DB_FNV1A64_OFFSET, value),
+                          expected);
 }
 
 static void db_test_hash_tree_vectors(db_test_state_t *state) {
@@ -240,6 +252,19 @@ static void db_test_hash_rejects_overflowing_layouts(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_SIZE(state, diff.mismatch_count, 0U);
 }
 
+static void
+db_test_hash_canonicalization_rejects_overlap(db_test_state_t *state) {
+    uint8_t storage[DB_TEST_OVERLAP_STORAGE_BYTES] = {0};
+    uint8_t original[sizeof(storage)] = {0};
+    memcpy(original, storage, sizeof(storage));
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_working_rgba8_canonicalize(storage, DB_PIXEL_FORMAT_RGBA8, 2U, 2U,
+                                      8U, 0, storage + 1U, 16U),
+        0);
+    DB_TEST_EXPECT_TRUE(state, memcmp(storage, original, sizeof(storage)) == 0);
+}
+
 static void db_test_conformance_cache_round_trip(db_test_state_t *state) {
     char path[DB_TEST_CACHE_PATH_BYTES];
     (void)db_snprintf(path, sizeof(path), "/tmp/driverbench-probe-%ld.cache",
@@ -272,6 +297,28 @@ static void db_test_conformance_cache_round_trip(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_INT(
         state, db_conformance_cache_read(path, key, sizeof(key), &result),
         DB_CONFORMANCE_CACHE_INVALID);
+    uint8_t oversized_key[DB_CONFORMANCE_CACHE_MAX_KEY_BYTES + 1U] = {0};
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_conformance_cache_read(path, oversized_key,
+                                                    sizeof(oversized_key),
+                                                    &result),
+                          DB_CONFORMANCE_CACHE_MISS);
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_conformance_cache_write(path, oversized_key,
+                                                     sizeof(oversized_key),
+                                                     DB_CONFORMANCE_CONFORMING),
+                          DB_CONFORMANCE_CACHE_IO_ERROR);
+#if SIZE_MAX > UINT32_MAX
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_conformance_cache_read(path, key, (size_t)UINT32_MAX + 1U, &result),
+        DB_CONFORMANCE_CACHE_MISS);
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_conformance_cache_write(path, key,
+                                                     (size_t)UINT32_MAX + 1U,
+                                                     DB_CONFORMANCE_CONFORMING),
+                          DB_CONFORMANCE_CACHE_IO_ERROR);
+#endif
     (void)remove(path);
 }
 
@@ -279,6 +326,8 @@ unsigned db_hash_test_run_all(void) {
     const db_test_case_t cases[] = {
         {"byte_codec_round_trips_and_hex",
          db_test_byte_codec_round_trips_and_hex},
+        {"u64_hash_mix_is_little_endian",
+         db_test_u64_hash_mix_is_little_endian},
         {"hash_retina_normalization", db_test_hash_retina_normalization},
         {"hash_canonicalizes_alpha_and_origin",
          db_test_hash_canonicalizes_alpha_and_origin},
@@ -286,6 +335,8 @@ unsigned db_hash_test_run_all(void) {
          db_test_hash_rejects_invalid_framebuffers},
         {"hash_rejects_overflowing_layouts",
          db_test_hash_rejects_overflowing_layouts},
+        {"hash_canonicalization_rejects_overlap",
+         db_test_hash_canonicalization_rejects_overlap},
         {"hash_tree_vectors", db_test_hash_tree_vectors},
         {"hash_tree_prefixes_are_distinct",
          db_test_hash_tree_prefixes_are_distinct},

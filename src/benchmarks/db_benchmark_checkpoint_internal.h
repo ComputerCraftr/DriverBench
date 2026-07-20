@@ -10,12 +10,20 @@
 #include <stdint.h>
 
 typedef struct {
+    uint32_t row;
+    uint32_t col_start;
+    uint32_t col_end;
+} db_benchmark_checkpoint_span_t;
+
+typedef struct {
     db_pixel_surface_t surface;
     void *overlay_pixels;
     uint32_t *overlay_generation;
-    uint32_t *overlay_dirty_indices;
+    db_benchmark_checkpoint_span_t *overlay_dirty_spans;
     size_t pixel_count;
-    size_t overlay_dirty_count;
+    size_t overlay_dirty_span_count;
+    size_t overlay_dirty_span_capacity;
+    uint64_t dirty_span_search_comparisons;
     uint32_t active_overlay_generation;
     size_t surface_size_bytes;
     size_t allocation_size_bytes;
@@ -23,6 +31,7 @@ typedef struct {
     uint64_t content_revision;
     uint32_t committed_frame_index;
     int committed_frame_valid;
+    int overlay_valid;
     int enabled;
 } db_benchmark_checkpoint_t;
 
@@ -53,13 +62,13 @@ void db_benchmark_checkpoint_overlay_write(
     db_benchmark_checkpoint_t *checkpoint, uint32_t row_start,
     uint32_t row_count, uint32_t col_start, uint32_t col_count,
     const double rgb[3]);
-void db_benchmark_checkpoint_overlay_publish(
+int db_benchmark_checkpoint_overlay_publish(
     db_benchmark_checkpoint_t *checkpoint, db_benchmark_ir_emitter_t *emitter);
 void db_benchmark_checkpoint_read_with_overlay(
     const db_benchmark_checkpoint_t *checkpoint, uint32_t row, uint32_t col,
     double out_rgb[3]);
-void db_benchmark_checkpoint_commit(db_benchmark_checkpoint_t *checkpoint,
-                                    const db_frame_plan_t *plan,
-                                    const db_render_result_t *result);
+int db_benchmark_checkpoint_commit(db_benchmark_checkpoint_t *checkpoint,
+                                   const db_frame_plan_t *plan,
+                                   const db_render_result_t *result);
 
 #endif

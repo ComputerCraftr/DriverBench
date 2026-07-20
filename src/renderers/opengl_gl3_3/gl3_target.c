@@ -9,6 +9,7 @@
 #include "renderers/damage_trace.h"
 #include "renderers/gl_api.h"
 #include "renderers/gl_common.h"
+#include "renderers/gl_probe_internal.h"
 
 #include <stdint.h>
 
@@ -132,7 +133,8 @@ int db_gl3_target_ensure(gl3_persistent_target_t *target, int width,
     }
     target->width = width;
     target->height = height;
-    target->generation++;
+    target->generation = db_checked_add_u32(
+        BACKEND_NAME, "persistent_target_generation", target->generation, 1U);
     db_damage_trace_emit_target_lifecycle(&(const db_target_lifecycle_event_t){
         .backend = DB_DAMAGE_TRACE_BACKEND_GL3,
         .action = (had_target != 0) ? DB_TARGET_LIFECYCLE_RECREATE
@@ -154,35 +156,31 @@ int db_gl3_target_ensure(gl3_persistent_target_t *target, int width,
 
 void db_gl3_target_restore(gl3_persistent_target_t *target,
                            const db_frame_plan_t *plan) {
-    db_render_ir_iterator_t iterator = {0};
-    db_render_ir_iterator_begin(&iterator, &plan->rebuild_ir);
-    const db_render_ir_upload_command_t *upload = NULL;
-    const db_render_ir_command_header_t *command = NULL;
-    while ((command = db_render_ir_iterator_next(&iterator)) != NULL) {
-        if (command->opcode == DB_RENDER_IR_OP_UPLOAD_IMAGE) {
-            upload = (const db_render_ir_upload_command_t *)command;
-            break;
-        }
-    }
-    const db_render_ir_external_binding_t *const source =
-        (upload == NULL) ? NULL
-                         : db_render_ir_find_binding(plan->external_bindings,
-                                                     upload->source);
-    if ((source == NULL) || (source->pixels == NULL) ||
-        (source->width != (uint32_t)target->width) ||
-        (source->height != (uint32_t)target->height) ||
-        (source->format != target->format)) {
+    db_render_ir_upload_command_t upload = {0};
+    db_render_ir_external_binding_t source = {0};
+    if ((db_render_ir_resolve_full_upload(&plan->rebuild_ir,
+                                          plan->external_bindings, &upload,
+                                          &source) == 0) ||
+        (source.pixels == NULL) || (source.width != (uint32_t)target->width) ||
+        (source.height != (uint32_t)target->height) ||
+        (source.format != target->format)) {
         runtime_failf("invalid canonical raster rebuild seed");
+    }
+    uint32_t row_length_pixels = 0U;
+    if (db_gl_external_binding_unpack_row_length(&source, 1,
+                                                 &row_length_pixels) == 0) {
+        runtime_failf("invalid canonical raster rebuild row stride");
     }
     db_gl_active_texture(GL_TEXTURE0);
     db_gl_texture_bind_2d(target->texture);
-    if (source->format == DB_PIXEL_FORMAT_RGBA16F) {
-        db_gl_texture_sub_image_2d_rgba16f(0U, 0U, source->width,
-                                           source->height,
-                                           (const uint16_t *)source->pixels);
+    db_gl_set_unpack_row_length_pixels(row_length_pixels);
+    if (source.format == DB_PIXEL_FORMAT_RGBA16F) {
+        db_gl_texture_sub_image_2d_rgba16f(0U, 0U, source.width, source.height,
+                                           (const uint16_t *)source.pixels);
     } else {
-        db_gl_texture_sub_image_2d_rgba(0U, 0U, source->width, source->height,
-                                        (const uint8_t *)source->pixels);
+        db_gl_texture_sub_image_2d_rgba(0U, 0U, source.width, source.height,
+                                        (const uint8_t *)source.pixels);
     }
+    db_gl_set_unpack_row_length_pixels(0U);
     db_gl_texture_bind_2d(0U);
 }

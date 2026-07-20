@@ -47,34 +47,22 @@ static const uint32_t db_drm_atomic_test_only = DRM_MODE_ATOMIC_TEST_ONLY;
 static const drmModeConnection db_drm_connected = DRM_MODE_CONNECTED;
 // NOLINTEND(misc-include-cleaner)
 
-static uint32_t get_prop_id(int fd, uint32_t obj_id, uint32_t obj_type,
-                            const char *name) {
-    drmModeObjectProperties *props =
-        drmModeObjectGetProperties(fd, obj_id, obj_type);
-    if (props == NULL) {
-        runtime_errno_fail("drmModeObjectGetProperties");
-    }
-
-    uint32_t prop_id = 0;
-    for (uint32_t i = 0; i < props->count_props; i++) {
-        drmModePropertyRes *prop = drmModeGetProperty(fd, props->props[i]);
-        if (prop == NULL) {
-            continue;
-        }
-        if (strcmp(prop->name, name) == 0) {
-            prop_id = prop->prop_id;
-            drmModeFreeProperty(prop);
-            break;
-        }
-        drmModeFreeProperty(prop);
-    }
-    drmModeFreeObjectProperties(props);
-
-    if (prop_id == 0U) {
+static uint32_t require_property_id(int fd, uint32_t object_id,
+                                    uint32_t object_type, const char *name) {
+    drmModePropertyRes *const property =
+        db_kms_find_object_property(fd, object_id, object_type, name, NULL);
+    if (property == NULL) {
         runtime_failf("Missing DRM property '%s' on object %u type %u", name,
-                      obj_id, obj_type);
+                      object_id, object_type);
     }
-    return prop_id;
+    const uint32_t property_id = property->prop_id;
+    drmModeFreeProperty(property);
+    return property_id;
+}
+
+static int crtc_mask_contains_index(uint32_t mask, int index) {
+    return DB_BOOL((index >= 0) && (index < 32) &&
+                   ((mask & (UINT32_C(1) << (uint32_t)index)) != 0U));
 }
 static drmModeConnector *pick_connected_connector(struct kms_atomic *kms) {
     for (int i = 0; i < kms->res->count_connectors; i++) {
@@ -101,7 +89,7 @@ static uint32_t pick_crtc_for_connector(struct kms_atomic *kms,
         }
 
         for (int c = 0; c < kms->res->count_crtcs; c++) {
-            if ((encoder->possible_crtcs & (1 << c)) != 0) {
+            if (crtc_mask_contains_index(encoder->possible_crtcs, c) != 0) {
                 const uint32_t crtc_id = kms->res->crtcs[c];
                 drmModeFreeEncoder(encoder);
                 return crtc_id;
@@ -131,7 +119,7 @@ static uint32_t pick_primary_plane_for_crtc(struct kms_atomic *kms,
         if (plane == NULL) {
             continue;
         }
-        if ((plane->possible_crtcs & (1 << crtc_index)) == 0) {
+        if (crtc_mask_contains_index(plane->possible_crtcs, crtc_index) == 0) {
             drmModeFreePlane(plane);
             continue;
         }
@@ -222,8 +210,8 @@ static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
         runtime_errno_fail("drmModeCreatePropertyBlob");
     }
 
-    kms->conn_prop_crtc_id =
-        get_prop_id(kms->fd, kms->conn_id, db_drm_object_connector, "CRTC_ID");
+    kms->conn_prop_crtc_id = require_property_id(
+        kms->fd, kms->conn_id, db_drm_object_connector, "CRTC_ID");
     kms->conn_colorspace_bt2020_rgb = UINT64_MAX;
     drmModePropertyRes *colorspace = db_kms_find_object_property(
         kms->fd, kms->conn_id, db_drm_object_connector, "Colorspace",
@@ -258,31 +246,31 @@ static void kms_atomic_init(struct kms_atomic *kms, const char *card) {
         drmModeFreeProperty(max_bpc);
     }
 
-    kms->crtc_prop_mode_id =
-        get_prop_id(kms->fd, kms->crtc_id, db_drm_object_crtc, "MODE_ID");
-    kms->crtc_prop_active =
-        get_prop_id(kms->fd, kms->crtc_id, db_drm_object_crtc, "ACTIVE");
+    kms->crtc_prop_mode_id = require_property_id(kms->fd, kms->crtc_id,
+                                                 db_drm_object_crtc, "MODE_ID");
+    kms->crtc_prop_active = require_property_id(kms->fd, kms->crtc_id,
+                                                db_drm_object_crtc, "ACTIVE");
 
-    kms->plane_prop_fb_id =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "FB_ID");
-    kms->plane_prop_crtc_id =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_ID");
-    kms->plane_prop_src_x =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_X");
-    kms->plane_prop_src_y =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_Y");
-    kms->plane_prop_src_w =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_W");
-    kms->plane_prop_src_h =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "SRC_H");
-    kms->plane_prop_crtc_x =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_X");
-    kms->plane_prop_crtc_y =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_Y");
-    kms->plane_prop_crtc_w =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_W");
-    kms->plane_prop_crtc_h =
-        get_prop_id(kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_H");
+    kms->plane_prop_fb_id = require_property_id(kms->fd, kms->plane_id,
+                                                db_drm_object_plane, "FB_ID");
+    kms->plane_prop_crtc_id = require_property_id(
+        kms->fd, kms->plane_id, db_drm_object_plane, "CRTC_ID");
+    kms->plane_prop_src_x = require_property_id(kms->fd, kms->plane_id,
+                                                db_drm_object_plane, "SRC_X");
+    kms->plane_prop_src_y = require_property_id(kms->fd, kms->plane_id,
+                                                db_drm_object_plane, "SRC_Y");
+    kms->plane_prop_src_w = require_property_id(kms->fd, kms->plane_id,
+                                                db_drm_object_plane, "SRC_W");
+    kms->plane_prop_src_h = require_property_id(kms->fd, kms->plane_id,
+                                                db_drm_object_plane, "SRC_H");
+    kms->plane_prop_crtc_x = require_property_id(kms->fd, kms->plane_id,
+                                                 db_drm_object_plane, "CRTC_X");
+    kms->plane_prop_crtc_y = require_property_id(kms->fd, kms->plane_id,
+                                                 db_drm_object_plane, "CRTC_Y");
+    kms->plane_prop_crtc_w = require_property_id(kms->fd, kms->plane_id,
+                                                 db_drm_object_plane, "CRTC_W");
+    kms->plane_prop_crtc_h = require_property_id(kms->fd, kms->plane_id,
+                                                 db_drm_object_plane, "CRTC_H");
 }
 
 static void kms_atomic_add_modeset_props(drmModeAtomicReq *req,

@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_GLFW_WINDOW_COMMON_H
 #define DRIVERBENCH_GLFW_WINDOW_COMMON_H
 
+#include "config/runtime_options.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -9,7 +10,6 @@ typedef struct GLFWwindow GLFWwindow;
 #include "../display_frame_loop_common.h"
 #include "../display_presentation_policy.h"
 #include "../display_runtime_config_common.h"
-#include "core/db_geometry.h"
 
 typedef enum {
     DB_GLFW_WINDOW_VISIBLE = 0,

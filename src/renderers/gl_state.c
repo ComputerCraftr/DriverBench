@@ -11,6 +11,7 @@ int g_client_state_vertex_array_enabled = -1;
 int g_cull_face_enabled_state = -1;
 int g_depth_test_enabled_state = -1;
 int g_dither_enabled_state = -1;
+int g_framebuffer_srgb_enabled_state = -1;
 unsigned int g_bound_draw_framebuffer = 0U;
 int g_bound_draw_framebuffer_valid = 0;
 unsigned int g_bound_read_framebuffer = 0U;

@@ -13,8 +13,15 @@
 #include "../core/db_renderer_support.h"
 #include "../core/db_trace.h"
 #include "../driverbench_config.h"
+#include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_benchmark_runtime_internal.h"
+#include "core/db_format_contract.h"
+#include "core/db_numeric.h"
+#include "core/db_render_result.h"
+#include "core/db_render_types.h"
+#include "core/db_renderer_diagnostics.h"
 #include "display_hash_common.h"
+#include "displays/display_types.h"
 
 enum {
     DB_DISPLAY_SDR_BIT_DEPTH = DB_SDR_NATIVE_BIT_DEPTH,

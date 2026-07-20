@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "core/db_render_ir.h"
 #include "core/db_render_types.h"
 
 void db_gl_probe_drain_errors(void);
@@ -22,6 +23,9 @@ int db_gl_context_probe_persistent_upload(size_t bytes,
 int db_gl_context_probe_map_range_upload(size_t bytes,
                                          const float *initial_vertices);
 int db_gl_context_supports_unpack_row_length_upload(void);
+int db_gl_external_binding_unpack_row_length(
+    const db_render_ir_external_binding_t *binding,
+    int unpack_row_length_supported, uint32_t *row_length_pixels);
 int db_gl_probe_shadow_present_partial_upload_support(db_pixel_format_t format);
 int db_gl_context_supports_full_npot_texture_2d(void);
 int db_gl_context_supports_shadow_present_exact_size_texture_2d(void);

@@ -9,14 +9,19 @@
 #include <stdint.h>
 #include <string.h>
 
-static void gl_shadow_present_copy_block_bytes(uint8_t *dst_bytes,
-                                               const uint8_t *src_bytes,
-                                               uint32_t pixel_width,
-                                               uint32_t pixel_bytes,
-                                               const db_damage_block_t *block) {
+static int gl_shadow_present_copy_block_bytes(uint8_t *dst_bytes,
+                                              const uint8_t *src_bytes,
+                                              uint32_t pixel_width,
+                                              uint32_t pixel_height,
+                                              uint32_t pixel_bytes,
+                                              const db_damage_block_t *block) {
     if ((dst_bytes == NULL) || (src_bytes == NULL) || (block == NULL) ||
-        (block->row_count == 0U) || (block->col_count == 0U)) {
-        return;
+        (pixel_bytes == 0U) || (block->row_count == 0U) ||
+        (block->col_count == 0U) || (block->row_start >= pixel_height) ||
+        (block->col_start >= pixel_width) ||
+        (block->row_count > (pixel_height - block->row_start)) ||
+        (block->col_count > (pixel_width - block->col_start))) {
+        return 0;
     }
     const size_t row_bytes = db_checked_mul_size(
         "renderer_gl_shadow_present", "surface_copy_row_bytes",
@@ -37,9 +42,10 @@ static void gl_shadow_present_copy_block_bytes(uint8_t *dst_bytes,
                                 "surface_copy_offset", row_offset, col_offset);
         memmove(dst_bytes + offset, src_bytes + offset, row_bytes);
     }
+    return 1;
 }
 
-static void
+static int
 db_gl_shadow_present_copy_surface_block(db_pixel_surface_t *dst,
                                         const db_pixel_surface_t *src,
                                         const db_damage_block_t *block) {
@@ -47,29 +53,33 @@ db_gl_shadow_present_copy_surface_block(db_pixel_surface_t *dst,
         (dst->pixel_width != src->pixel_width) ||
         (dst->pixel_height != src->pixel_height) ||
         (dst->format != src->format)) {
-        return;
+        return 0;
     }
     const uint32_t pixel_bytes = (uint32_t)db_pixel_surface_pixel_bytes(dst);
     uint8_t *dst_bytes = db_pixel_surface_bytes_mut(dst);
     const uint8_t *src_bytes = db_pixel_surface_bytes_const(src);
-    gl_shadow_present_copy_block_bytes(dst_bytes, src_bytes, dst->pixel_width,
-                                       pixel_bytes, block);
+    return gl_shadow_present_copy_block_bytes(
+        dst_bytes, src_bytes, dst->pixel_width, dst->pixel_height, pixel_bytes,
+        block);
 }
 
-static void gl_shadow_present_copy_pixels_block(
+static int gl_shadow_present_copy_pixels_block(
     db_pixel_surface_t *dst, const db_gl_pixel_upload_payload_t *source_pixels,
     const db_damage_block_t *block) {
     const db_pixel_surface_t *const source_surface =
         (source_pixels != NULL) ? source_pixels->surface : NULL;
     if ((dst == NULL) || (source_surface == NULL) || (block == NULL) ||
+        (dst->pixel_width != source_surface->pixel_width) ||
+        (dst->pixel_height != source_surface->pixel_height) ||
         (dst->format != source_surface->format)) {
-        return;
+        return 0;
     }
     const uint32_t pixel_bytes = (uint32_t)db_pixel_surface_pixel_bytes(dst);
     uint8_t *dst_bytes = db_pixel_surface_bytes_mut(dst);
     const uint8_t *src_bytes = db_pixel_surface_bytes_const(source_surface);
-    gl_shadow_present_copy_block_bytes(dst_bytes, src_bytes, dst->pixel_width,
-                                       pixel_bytes, block);
+    return gl_shadow_present_copy_block_bytes(
+        dst_bytes, src_bytes, dst->pixel_width, dst->pixel_height, pixel_bytes,
+        block);
 }
 
 void db_gl_shadow_present_repair_full_upload_target(
@@ -85,20 +95,28 @@ void db_gl_shadow_present_repair_full_upload_target(
         (target->pixel_surface.format != source_surface->format)) {
         return;
     }
+    db_gl_shadow_present_upload_slot_t *const slot =
+        db_gl_shadow_present_slot_or_null(state, target->slot_index);
+    if (slot != NULL) {
+        slot->slot_valid = 0;
+    }
+    int repaired = 1;
     if ((damage_view.blocks == NULL) || (damage_view.count == 0U)) {
         const db_damage_block_t full_block = db_damage_block_full(
             source_surface->pixel_height, source_surface->pixel_width);
-        db_gl_shadow_present_copy_surface_block(&target->pixel_surface,
-                                                source_surface, &full_block);
+        repaired = db_gl_shadow_present_copy_surface_block(
+            &target->pixel_surface, source_surface, &full_block);
     } else {
         for (size_t i = 0U; i < damage_view.count; i++) {
-            db_gl_shadow_present_copy_surface_block(
-                &target->pixel_surface, source_surface, &damage_view.blocks[i]);
+            if (db_gl_shadow_present_copy_surface_block(
+                    &target->pixel_surface, source_surface,
+                    &damage_view.blocks[i]) == 0) {
+                repaired = 0;
+                break;
+            }
         }
     }
-    db_gl_shadow_present_upload_slot_t *slot =
-        db_gl_shadow_present_slot_or_null(state, target->slot_index);
-    if (slot != NULL) {
+    if ((slot != NULL) && (repaired != 0)) {
         slot->slot_valid = 1;
     }
 }
@@ -117,21 +135,30 @@ void db_gl_shadow_present_repair_full_upload_target_from_pixels(
         (target->pixel_surface.format != source_surface->format)) {
         return;
     }
+    db_gl_shadow_present_upload_slot_t *const slot =
+        db_gl_shadow_present_slot_or_null(state, target->slot_index);
+    if (slot != NULL) {
+        slot->slot_valid = 0;
+        slot->slot_matches_shadow = 0;
+    }
+    int repaired = 1;
     if ((damage_blocks == NULL) || (damage_block_count == 0U)) {
         const db_damage_block_t full_block =
             db_damage_block_full(target->pixel_surface.pixel_height,
                                  target->pixel_surface.pixel_width);
-        gl_shadow_present_copy_pixels_block(&target->pixel_surface,
-                                            source_pixels, &full_block);
+        repaired = gl_shadow_present_copy_pixels_block(
+            &target->pixel_surface, source_pixels, &full_block);
     } else {
         for (size_t i = 0U; i < damage_block_count; i++) {
-            gl_shadow_present_copy_pixels_block(
-                &target->pixel_surface, source_pixels, &damage_blocks[i]);
+            if (gl_shadow_present_copy_pixels_block(&target->pixel_surface,
+                                                    source_pixels,
+                                                    &damage_blocks[i]) == 0) {
+                repaired = 0;
+                break;
+            }
         }
     }
-    db_gl_shadow_present_upload_slot_t *slot =
-        db_gl_shadow_present_slot_or_null(state, target->slot_index);
-    if (slot != NULL) {
+    if ((slot != NULL) && (repaired != 0)) {
         slot->slot_valid = 1;
         slot->slot_matches_shadow = 1;
     }

@@ -9,7 +9,12 @@
 #include "../core/db_numeric.h"
 #include "../core/db_renderer_support.h"
 #include "benchmarks/db_benchmark_mode_flags.h"
+#include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_benchmark_types_internal.h"
+#include "core/db_geometry.h"
+#include "core/db_render_types.h"
+#include <math.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 

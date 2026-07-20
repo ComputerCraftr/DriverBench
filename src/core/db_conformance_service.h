@@ -1,6 +1,8 @@
 #ifndef DRIVERBENCH_CORE_DB_CONFORMANCE_SERVICE_H
 #define DRIVERBENCH_CORE_DB_CONFORMANCE_SERVICE_H
 
+#include "core/db_conformance_cache.h"
+#include "core/db_render_types.h"
 #include "db_conformance.h"
 #include "db_probe_protocol.h"
 #include "db_qualification_contracts.h"
@@ -13,8 +15,12 @@
 #define DB_CONFORMANCE_PATH_BYTES 4096U
 #define DB_CONFORMANCE_REASON_BYTES 48U
 #define DB_CONFORMANCE_BATCH_MAX_KEYS 24U
-#define DB_CONFORMANCE_TOPOLOGY_MAX_LANES 8U
+#define DB_CONFORMANCE_TOPOLOGY_MAX_LANES DB_QUALIFICATION_MAX_LANES
 #define DB_CONFORMANCE_IMPLEMENTATIONS_PER_LANE 3U
+
+_Static_assert(DB_CONFORMANCE_KEY_WIRE_BYTES <=
+                   DB_CONFORMANCE_CACHE_MAX_KEY_BYTES,
+               "serialized conformance keys must fit the cache contract");
 
 typedef enum {
     DB_QUALIFICATION_SEMANTIC_INDEX = 0,
@@ -87,6 +93,15 @@ typedef struct {
     db_conformance_cache_status_t cache_status;
 } db_qualification_topology_result_t;
 
+typedef struct {
+    db_conformance_key_t keys[DB_QUALIFICATION_MAX_DESCRIPTORS];
+    size_t decision_indices[DB_QUALIFICATION_MAX_DESCRIPTORS];
+    size_t topology_lanes[DB_QUALIFICATION_MAX_DESCRIPTORS];
+    size_t topology_implementations[DB_QUALIFICATION_MAX_DESCRIPTORS];
+    db_conformance_decision_t decisions[DB_QUALIFICATION_MAX_DESCRIPTORS];
+    db_conformance_decision_t compact[DB_QUALIFICATION_MAX_DESCRIPTORS];
+} db_qualification_service_workspace_t;
+
 const char *db_qualification_outcome_name(db_qualification_outcome_t outcome);
 
 int db_conformance_key_serialize(const db_conformance_key_t *key,
@@ -105,10 +120,13 @@ int db_conformance_qualify_batch(const db_conformance_key_t *keys,
 int db_qualification_service_resolve_topology(
     const db_qualification_topology_request_t *request,
     const db_conformance_query_t *query, uint64_t aggregate_timeout_ns,
+    db_qualification_service_workspace_t *workspace,
     db_qualification_topology_result_t *result);
 int db_qualification_service_resolve_descriptors(
     const db_renderer_qualification_descriptor_store_t *store,
     const db_conformance_query_t *query, uint64_t aggregate_timeout_ns,
-    uint64_t unavailable_candidate_mask, db_qualification_snapshot_t *snapshot);
+    uint64_t unavailable_candidate_mask,
+    db_qualification_service_workspace_t *workspace,
+    db_qualification_snapshot_t *snapshot);
 
 #endif

@@ -20,6 +20,7 @@
 #include "../core/db_render_result.h"
 #include "../core/db_render_types.h"
 #include "benchmarks/db_benchmark_geometry_internal.h"
+#include "benchmarks/db_benchmark_gradient_internal.h"
 #include "benchmarks/db_benchmark_mode_runtime_internal.h"
 #include "benchmarks/db_benchmark_runtime_internal.h"
 #include "benchmarks/db_benchmark_types_internal.h"
@@ -213,13 +214,19 @@ db_benchmark_core_publish_emitter(db_benchmark_core_t *core,
         ir_status = db_render_ir_validate(&raw_ir);
     }
     if (ir_status == DB_RENDER_IR_OK) {
-        ir_status =
-            db_render_ir_optimize(&raw_ir, &core->ir.optimized,
-                                  (db_render_ir_optimizer_workspace_t){
-                                      .primary = core->ir.optimizer_primary,
-                                      .secondary = core->ir.optimizer_secondary,
-                                      .capacity = core->ir.fill_capacity,
-                                  });
+        ir_status = db_render_ir_optimize(
+            &raw_ir, &core->ir.optimized,
+            (db_render_ir_optimizer_workspace_t){
+                .primary = core->ir.optimizer_primary,
+                .secondary = core->ir.optimizer_secondary,
+                .coverage_bands = core->ir.optimizer_coverage_bands,
+                .coverage_band_scratch =
+                    core->ir.optimizer_coverage_band_scratch,
+                .coverage_spans = core->ir.optimizer_coverage_spans,
+                .coverage_span_scratch =
+                    core->ir.optimizer_coverage_span_scratch,
+                .capacity = core->ir.fill_capacity,
+            });
     }
     plan->update_ir = db_render_ir_store_view(&core->ir.optimized);
     plan->update_ir_hash = db_render_ir_hash(&plan->update_ir);
@@ -370,13 +377,19 @@ static void publish_gradient_ir(db_benchmark_core_t *core,
     }
     const db_render_ir_view_t raw_ir = db_render_ir_store_view(&core->ir.raw);
     if (status == DB_RENDER_IR_OK) {
-        status =
-            db_render_ir_optimize(&raw_ir, &core->ir.optimized,
-                                  (db_render_ir_optimizer_workspace_t){
-                                      .primary = core->ir.optimizer_primary,
-                                      .secondary = core->ir.optimizer_secondary,
-                                      .capacity = core->ir.fill_capacity,
-                                  });
+        status = db_render_ir_optimize(
+            &raw_ir, &core->ir.optimized,
+            (db_render_ir_optimizer_workspace_t){
+                .primary = core->ir.optimizer_primary,
+                .secondary = core->ir.optimizer_secondary,
+                .coverage_bands = core->ir.optimizer_coverage_bands,
+                .coverage_band_scratch =
+                    core->ir.optimizer_coverage_band_scratch,
+                .coverage_spans = core->ir.optimizer_coverage_spans,
+                .coverage_span_scratch =
+                    core->ir.optimizer_coverage_span_scratch,
+                .capacity = core->ir.fill_capacity,
+            });
     }
     plan->update_ir = db_render_ir_store_view(&core->ir.optimized);
     plan->update_ir_hash = db_render_ir_hash(&plan->update_ir);
@@ -549,7 +562,10 @@ db_benchmark_core_populate_snake_damage_plan(db_benchmark_core_t *core,
         }
     }
     if (core->checkpoint.enabled != 0) {
-        db_benchmark_checkpoint_overlay_publish(&core->checkpoint, &emitter);
+        if (db_benchmark_checkpoint_overlay_publish(&core->checkpoint,
+                                                    &emitter) == 0) {
+            emitter.status = DB_BENCHMARK_IR_EMITTER_CAPACITY;
+        }
     }
     db_benchmark_core_publish_emitter(core, out_plan, &emitter);
 
@@ -595,6 +611,8 @@ frame_plan_status_from_ir(db_render_ir_status_t status) {
         return DB_FRAME_PLAN_CAPACITY;
     case DB_RENDER_IR_ARITHMETIC_OVERFLOW:
         return DB_FRAME_PLAN_ARITHMETIC_OVERFLOW;
+    case DB_RENDER_IR_COMPLEXITY_LIMIT:
+        return DB_FRAME_PLAN_CAPACITY;
     case DB_RENDER_IR_INVALID:
         return DB_FRAME_PLAN_INVALID;
     }
@@ -680,43 +698,19 @@ db_benchmark_core_generate_plan(db_benchmark_core_t *core, uint32_t frame_index,
         }
         const db_gradient_damage_plan_t grad_plan =
             db_gradient_progression_eval(&core->runtime);
-        db_benchmark_ir_emitter_t emitter =
-            db_benchmark_core_emitter_sink(core);
-        (void)db_benchmark_emit_gradient(
-            out_plan->grid_cols, out_plan->grid_rows, &grad_plan, 0, &emitter);
-        db_benchmark_core_publish_emitter(core, out_plan, &emitter);
+        db_grid_block_t gradient_damage[2] = {{0}, {0}};
+        const size_t gradient_damage_count = db_gradient_collect_dirty_blocks(
+            &grad_plan, out_plan->grid_rows, out_plan->grid_cols,
+            gradient_damage,
+            sizeof(gradient_damage) / sizeof(gradient_damage[0]));
         publish_gradient_ir(
             core, out_plan, &grad_plan, out_plan->rebuild_required,
-            (db_grid_block_view_t){.blocks = emitter.logical_blocks,
-                                   .count = emitter.logical_count});
+            (db_grid_block_view_t){.blocks = gradient_damage,
+                                   .count = gradient_damage_count});
         if (out_plan->rebuild_required != 0) {
-            db_benchmark_ir_emitter_t rebuild_emitter = {
-                .logical_blocks = core->geometry.rebuild_logical_blocks,
-                .logical_capacity = core->geometry.capacity,
-                .fills = core->ir.optimizer_primary,
-                .fill_capacity = core->ir.fill_capacity,
-            };
-            (void)db_benchmark_emit_gradient(out_plan->grid_cols,
-                                             out_plan->grid_rows, &grad_plan, 1,
-                                             &rebuild_emitter);
-            core->ir.rebuild_status =
-                (rebuild_emitter.fill_count <= core->ir.fill_capacity)
-                    ? DB_RENDER_IR_OK
-                    : DB_RENDER_IR_CAPACITY;
-            size_t rebuild_bytes = 0U;
-            if (db_try_mul_size(rebuild_emitter.fill_count,
-                                sizeof(*core->ir.rebuild_fills),
-                                &rebuild_bytes) == 0) {
-                core->ir.rebuild_status = DB_RENDER_IR_ARITHMETIC_OVERFLOW;
-            }
-            if (core->ir.rebuild_status == DB_RENDER_IR_OK) {
-                memcpy(core->ir.rebuild_fills, rebuild_emitter.fills,
-                       rebuild_bytes);
-                core->ir.rebuild_fill_count = rebuild_emitter.fill_count;
-            }
-            if (rebuild_emitter.status != DB_BENCHMARK_IR_EMITTER_OK) {
-                core->ir.rebuild_status = DB_RENDER_IR_CAPACITY;
-            }
+            /* The full semantic update is authoritative on recovery frames. */
+            core->ir.rebuild_fill_count = 0U;
+            core->ir.rebuild_status = DB_RENDER_IR_OK;
         }
         core->pending_runtime = core->runtime;
         db_gradient_progression_apply(&core->pending_runtime, &grad_plan);
@@ -781,8 +775,9 @@ void db_benchmark_core_apply_plan(db_benchmark_core_t *core,
         (result->success == 0)) {
         return;
     }
-    db_benchmark_checkpoint_commit(&core->checkpoint, plan, result);
-    core->runtime = core->pending_runtime;
+    if (db_benchmark_checkpoint_commit(&core->checkpoint, plan, result) != 0) {
+        core->runtime = core->pending_runtime;
+    }
 }
 
 void db_benchmark_core_abort_plan(db_benchmark_core_t *core) {

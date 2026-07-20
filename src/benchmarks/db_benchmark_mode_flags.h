@@ -3,6 +3,7 @@
 
 #include "../core/db_core.h"
 #include "db_benchmark_runtime.h"
+#include <stdint.h>
 
 typedef struct {
     int is_bands;

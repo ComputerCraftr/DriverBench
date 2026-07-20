@@ -3,6 +3,7 @@
 
 #include "db_render_ir.h"
 #include "db_render_types.h"
+#include <stddef.h>
 #include <stdint.h>
 
 typedef enum {

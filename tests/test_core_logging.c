@@ -87,12 +87,18 @@ db_test_structured_log_serializes_all_field_types(db_test_state_t *state) {
 static void
 db_test_structured_log_rejects_invalid_contracts(db_test_state_t *state) {
     char text[DB_TEST_LOG_MEDIUM_TEXT_SIZE] = {0};
+    char overlong_token[DB_LOG_TOKEN_CAPACITY + 2U];
+    memset(overlong_token, 'a', sizeof(overlong_token));
+    overlong_token[sizeof(overlong_token) - 1U] = '\0';
     const db_log_field_t duplicate[] = {
         DB_LOG_U64("value", 1U),
         DB_LOG_U64("value", 2U),
     };
     const db_log_field_t invalid_key[] = {DB_LOG_U64("Bad-Key", 1U)};
     const db_log_field_t invalid_double[] = {DB_LOG_DOUBLE("value", HUGE_VAL)};
+    const db_log_field_t overlong[] = {
+        DB_LOG_TOKEN("value", overlong_token),
+    };
     DB_TEST_EXPECT_EQ_INT(
         state,
         db_log_format_line(
@@ -119,6 +125,20 @@ db_test_structured_log_rejects_invalid_contracts(db_test_state_t *state) {
         db_log_format_line(
             text, sizeof(text), DB_LOG_LEVEL_INFO,
             &(const db_log_event_t){"test", "BadEvent", NULL, 0U}),
+        0);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_log_format_line(text, sizeof(text), DB_LOG_LEVEL_INFO,
+                           &(const db_log_event_t){"test", "too_many_fields",
+                                                   invalid_key,
+                                                   DB_LOG_FIELD_CAPACITY + 1U}),
+        0);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_log_format_line(
+            text, sizeof(text), DB_LOG_LEVEL_INFO,
+            &(const db_log_event_t){"test", "overlong_token", overlong,
+                                    DB_LOG_FIELD_COUNT(overlong)}),
         0);
 }
 

@@ -3,10 +3,12 @@
 #include <stdint.h>
 
 #include "../../core/db_core.h"
+#include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
 #include "../../core/db_sort.h"
 #include "vk_internal.h"
 
+#define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
 #define EMA_KEEP 0.9
 #define EMA_NEW 0.1
 #define HOST_COHERENT_MSCALE_NS 1e6
@@ -93,14 +95,9 @@ static uint64_t vk_split_median(const db_vk_split_search_t *search,
     for (uint32_t index = 0U; index < DB_VK_SPLIT_SAMPLES_PER_SHARE; index++) {
         values[index] = search->samples[base + index].host_critical_path_ns;
     }
-    for (uint32_t index = 1U; index < DB_VK_SPLIT_SAMPLES_PER_SHARE; index++) {
-        const uint64_t value = values[index];
-        uint32_t position = index;
-        while ((position > 0U) && (values[position - 1U] > value)) {
-            values[position] = values[position - 1U];
-            position--;
-        }
-        values[position] = value;
+    if (db_sort_u64_ascending(values, DB_VK_SPLIT_SAMPLES_PER_SHARE) !=
+        DB_SORT_OK) {
+        DB_RUNTIME_FAIL(BACKEND_NAME, "failed to sort split-search samples");
     }
     return values[DB_VK_SPLIT_SAMPLES_PER_SHARE / 2U];
 }

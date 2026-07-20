@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../../core/db_core.h"
 #include "../../core/db_geometry.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
@@ -74,7 +75,8 @@ db_kms_cpu_execute(void *user_ctx, const db_frame_plan_t *plan,
         return DB_RENDER_FATAL;
     }
     (void)db_cpu_render_frame_to_surface(plan, &producer->surface, NULL);
-    const uint64_t pending_serial = producer->present_serial + 1U;
+    const uint64_t pending_serial = db_checked_add_u64(
+        BACKEND_NAME, "scanout_present_serial", producer->present_serial, 1U);
     db_kms_cpu_scanout_slot_t *const slot =
         &producer->slots[producer->next_slot];
     const uint32_t slot_index = producer->next_slot;
@@ -84,7 +86,8 @@ db_kms_cpu_execute(void *user_ctx, const db_frame_plan_t *plan,
         slot->fb = db_cpu_create_scanout_fb(producer->gbm, producer->kms_fd,
                                             producer->width, producer->height,
                                             producer->native_output_format);
-        slot->generation++;
+        slot->generation = db_checked_add_u64(
+            BACKEND_NAME, "scanout_slot_generation", slot->generation, 1U);
         const db_log_field_t fields[] = {
             DB_LOG_U64("slot", slot_index),
             DB_LOG_U64("generation", slot->generation),
@@ -163,6 +166,10 @@ static int db_kms_cpu_acquire(void *user_ctx, uint32_t frame_index,
         .destination_width = producer->width,
         .destination_height = producer->height,
         .generation = producer->transaction.generation,
+        .prior_content_state = (producer->transaction.initial_modeset != 0)
+                                   ? DB_TARGET_CONTENT_LOST
+                                   : DB_TARGET_CONTENT_UNCHANGED,
+        .target_recreated = producer->transaction.initial_modeset,
         .valid = 1,
     };
     return 1;
@@ -206,9 +213,6 @@ db_kms_cpu_preflight(void *user_ctx, const db_presenter_facts_t *presenter,
                     .pixel_width = producer->surface.pixel_width,
                     .pixel_height = producer->surface.pixel_height,
                 },
-            .rebuild_required =
-                DB_BOOL(producer->transaction.initial_modeset != 0),
-            .rebuild_reason = DB_FRAME_REBUILD_INITIAL_TARGET,
         },
         presenter, qualification, preflight);
 }
@@ -252,7 +256,9 @@ static void db_kms_cpu_finalize(void *user_ctx, const db_frame_plan_t *plan,
     db_kms_cpu_scanout_slot_t *const slot =
         &producer->slots[producer->pending_slot];
     if (commit != 0) {
-        producer->present_serial++;
+        producer->present_serial =
+            db_checked_add_u64(BACKEND_NAME, "scanout_present_serial",
+                               producer->present_serial, 1U);
         slot->valid = 1;
         slot->last_present_serial = producer->present_serial;
         if (producer->pending_damage_history_valid != 0) {

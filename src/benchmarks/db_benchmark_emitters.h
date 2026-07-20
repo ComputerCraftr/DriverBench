@@ -4,6 +4,8 @@
 #include "benchmarks/db_benchmark_types_internal.h"
 #include "core/db_geometry.h"
 #include "core/db_render_ir.h"
+#include <stddef.h>
+#include <stdint.h>
 
 typedef enum {
     DB_BENCHMARK_IR_EMITTER_OK = 0,

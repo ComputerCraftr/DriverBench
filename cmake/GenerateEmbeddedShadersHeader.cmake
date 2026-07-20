@@ -4,6 +4,11 @@ endif()
 if(NOT DEFINED GL3_IR_EXECUTE_VERT OR NOT DEFINED GL3_IR_EXECUTE_FRAG)
     message(FATAL_ERROR "GL3 IR execution shaders are required")
 endif()
+if(NOT DEFINED GL3_EXACT_LOOKUP_VERT
+   OR NOT DEFINED GL3_EXACT_LOOKUP_RGBA8_FRAG
+   OR NOT DEFINED GL3_EXACT_LOOKUP_RGBA16F_FRAG)
+    message(FATAL_ERROR "GL3 exact lookup shaders are required")
+endif()
 if(NOT DEFINED GL3_PRESENTATION_VERT OR NOT DEFINED GL3_PRESENTATION_FRAG)
     message(FATAL_ERROR "GL3 presentation shaders are required")
 endif()
@@ -82,6 +87,18 @@ db_read_shader_with_includes("${GL3_IR_EXECUTE_VERT}" _gl3_ir_execute_vert_text)
 db_read_shader_with_includes("${GL3_IR_EXECUTE_FRAG}" _gl3_ir_execute_frag_text)
 db_escape_c_string("${_gl3_ir_execute_vert_text}" _gl3_ir_execute_vert_escaped)
 db_escape_c_string("${_gl3_ir_execute_frag_text}" _gl3_ir_execute_frag_escaped)
+db_read_shader_with_includes("${GL3_EXACT_LOOKUP_VERT}"
+                             _gl3_exact_lookup_vert_text)
+db_read_shader_with_includes("${GL3_EXACT_LOOKUP_RGBA8_FRAG}"
+                             _gl3_exact_lookup_rgba8_frag_text)
+db_read_shader_with_includes("${GL3_EXACT_LOOKUP_RGBA16F_FRAG}"
+                             _gl3_exact_lookup_rgba16f_frag_text)
+db_escape_c_string("${_gl3_exact_lookup_vert_text}"
+                   _gl3_exact_lookup_vert_escaped)
+db_escape_c_string("${_gl3_exact_lookup_rgba8_frag_text}"
+                   _gl3_exact_lookup_rgba8_frag_escaped)
+db_escape_c_string("${_gl3_exact_lookup_rgba16f_frag_text}"
+                   _gl3_exact_lookup_rgba16f_frag_escaped)
 db_read_shader_with_includes("${GL3_PRESENTATION_VERT}"
                              _gl3_presentation_vert_text)
 db_read_shader_with_includes("${GL3_PRESENTATION_FRAG}"
@@ -151,6 +168,18 @@ file(
 file(
     APPEND "${OUT_HEADER}"
     "[[maybe_unused]] static const char db_gl3_ir_execute_frag_source[] =\n\"${_gl3_ir_execute_frag_escaped}\";\n\n"
+)
+file(
+    APPEND "${OUT_HEADER}"
+    "[[maybe_unused]] static const char db_gl3_exact_lookup_vert_source[] =\n\"${_gl3_exact_lookup_vert_escaped}\";\n\n"
+)
+file(
+    APPEND "${OUT_HEADER}"
+    "[[maybe_unused]] static const char db_gl3_exact_lookup_rgba8_frag_source[] =\n\"${_gl3_exact_lookup_rgba8_frag_escaped}\";\n\n"
+)
+file(
+    APPEND "${OUT_HEADER}"
+    "[[maybe_unused]] static const char db_gl3_exact_lookup_rgba16f_frag_source[] =\n\"${_gl3_exact_lookup_rgba16f_frag_escaped}\";\n\n"
 )
 file(
     APPEND "${OUT_HEADER}"

@@ -1,6 +1,8 @@
 #ifndef DRIVERBENCH_RENDER_IR_H
 #define DRIVERBENCH_RENDER_IR_H
 
+#include "core/db_core.h"
+#include "core/db_geometry.h"
 #include "db_render_types.h"
 
 #include <stddef.h>
@@ -92,6 +94,7 @@ typedef enum {
 } db_render_ir_opcode_t;
 
 enum {
+    DB_RENDER_IR_LAYOUT_GENERATION = 2,
     DB_RENDER_IR_RESERVED_IMAGE_OPCODE = 32,
     DB_RENDER_IR_RESERVED_COMPOSITE_OPCODE = 33,
     DB_RENDER_IR_RESERVED_GLYPH_OPCODE = 34,
@@ -119,7 +122,6 @@ enum {
 };
 
 typedef struct {
-    max_align_t alignment;
     uint16_t byte_size;
     uint8_t opcode;
     uint8_t composite;
@@ -131,6 +133,8 @@ typedef struct {
     db_render_ir_region_id_t touched_region;
     db_render_ir_region_id_t full_coverage_region;
     uint32_t flags;
+    uint32_t ordering_domain;
+    uint32_t inseparable_group;
 } db_render_ir_command_header_t;
 
 typedef struct {
@@ -180,6 +184,8 @@ typedef struct {
     size_t count;
 } db_render_ir_external_binding_view_t;
 
+enum { DB_RENDER_IR_EXTERNAL_BINDING_CAPACITY = 64U };
+
 typedef union {
     max_align_t alignment;
     db_render_ir_command_header_t header;
@@ -189,12 +195,64 @@ typedef union {
     db_render_ir_upload_command_t upload;
 } db_render_ir_command_t;
 
+#define DB_RENDER_IR_RECORD_ALIGNMENT _Alignof(max_align_t)
+#define DB_RENDER_IR_ALIGNED_RECORD_SIZE(type)                                 \
+    ((sizeof(type) + DB_RENDER_IR_RECORD_ALIGNMENT - 1U) &                     \
+     ~((size_t)DB_RENDER_IR_RECORD_ALIGNMENT - 1U))
+#define DB_RENDER_IR_COMMAND_AS(type, command)                                 \
+    ((const type *)DB_ASSUME_ALIGNED((command),                                \
+                                     _Alignof(db_render_ir_command_t)))
+
+_Static_assert(_Alignof(db_render_ir_command_header_t) <=
+                   _Alignof(db_render_ir_command_t),
+               "header alignment exceeds command arena");
+_Static_assert(_Alignof(db_render_ir_clear_command_t) <=
+                   _Alignof(db_render_ir_command_t),
+               "clear alignment exceeds command arena");
+_Static_assert(_Alignof(db_render_ir_fill_command_t) <=
+                   _Alignof(db_render_ir_command_t),
+               "fill alignment exceeds command arena");
+_Static_assert(_Alignof(db_render_ir_linear_gradient_command_t) <=
+                   _Alignof(db_render_ir_command_t),
+               "gradient alignment exceeds command arena");
+_Static_assert(_Alignof(db_render_ir_upload_command_t) <=
+                   _Alignof(db_render_ir_command_t),
+               "upload alignment exceeds command arena");
+_Static_assert(
+    (DB_RENDER_IR_ALIGNED_RECORD_SIZE(db_render_ir_command_header_t) %
+     DB_RENDER_IR_RECORD_ALIGNMENT) == 0U,
+    "header record size is not arena aligned");
+_Static_assert((DB_RENDER_IR_ALIGNED_RECORD_SIZE(db_render_ir_clear_command_t) %
+                DB_RENDER_IR_RECORD_ALIGNMENT) == 0U,
+               "clear record size is not arena aligned");
+_Static_assert((DB_RENDER_IR_ALIGNED_RECORD_SIZE(db_render_ir_fill_command_t) %
+                DB_RENDER_IR_RECORD_ALIGNMENT) == 0U,
+               "fill record size is not arena aligned");
+_Static_assert(
+    (DB_RENDER_IR_ALIGNED_RECORD_SIZE(db_render_ir_linear_gradient_command_t) %
+     DB_RENDER_IR_RECORD_ALIGNMENT) == 0U,
+    "gradient record size is not arena aligned");
+_Static_assert(
+    (DB_RENDER_IR_ALIGNED_RECORD_SIZE(db_render_ir_upload_command_t) %
+     DB_RENDER_IR_RECORD_ALIGNMENT) == 0U,
+    "upload record size is not arena aligned");
+
 typedef enum {
     DB_RENDER_IR_OK = 0,
     DB_RENDER_IR_INVALID = 1,
     DB_RENDER_IR_CAPACITY = 2,
     DB_RENDER_IR_ARITHMETIC_OVERFLOW = 3,
+    DB_RENDER_IR_COMPLEXITY_LIMIT = 4,
 } db_render_ir_status_t;
+
+typedef struct {
+    uint64_t band_comparisons;
+    uint64_t span_comparisons;
+    uint64_t region_splits;
+    uint64_t emitted_spans;
+    uint64_t region_imports;
+    uint64_t sort_merge_comparisons;
+} db_render_ir_optimizer_stats_t;
 
 typedef struct {
     db_render_ir_status_t status;
@@ -225,8 +283,14 @@ typedef struct {
     uint32_t command_count;
     db_render_ir_region_id_t region;
     uint32_t instance_count;
+    uint32_t fallback_instance_count;
+    uint32_t ordering_domain;
+    uint32_t inseparable_group;
+    db_render_ir_rect_t bounds;
     db_render_ir_prior_content_t prior_content;
     uint8_t opcode;
+    uint8_t has_bounds;
+    uint8_t semantic_gradient_eligible;
 } db_render_ir_command_range_t;
 
 const char *db_render_ir_status_name(db_render_ir_status_t status);
@@ -235,6 +299,7 @@ typedef struct {
     max_align_t *commands;
     size_t command_capacity;
     size_t command_size;
+    size_t last_command_offset;
     uint32_t command_count;
     db_render_ir_fill_t *fills;
     size_t fill_capacity;
@@ -254,6 +319,13 @@ typedef struct {
     uint32_t next_sequence;
     db_render_ir_status_t status;
 } db_render_ir_store_t;
+
+typedef enum {
+    DB_RENDER_IR_STORAGE_INVALID = 0,
+    DB_RENDER_IR_STORAGE_DISJOINT,
+    DB_RENDER_IR_STORAGE_MATCHED_ARENAS,
+    DB_RENDER_IR_STORAGE_CROSS_ALIAS,
+} db_render_ir_storage_relation_t;
 
 typedef struct {
     const max_align_t *commands;
@@ -278,9 +350,26 @@ typedef struct {
 } db_render_ir_iterator_t;
 
 typedef struct {
+    db_render_ir_iterator_t commands;
+    const db_render_ir_command_header_t *active_command;
+    db_render_ir_fill_t active_fill;
+    uint32_t fill_index;
+    uint32_t clip_band_index;
+    uint32_t clip_span_index;
+    int32_t gradient_row;
+    int active_fill_valid;
+    int active_command_checked;
+} db_render_ir_rect_iterator_t;
+
+typedef struct {
     db_render_ir_fill_t *primary;
     db_render_ir_fill_t *secondary;
+    db_render_ir_band_t *coverage_bands;
+    db_render_ir_band_t *coverage_band_scratch;
+    db_render_ir_span_t *coverage_spans;
+    db_render_ir_span_t *coverage_span_scratch;
     size_t capacity;
+    db_render_ir_optimizer_stats_t *stats;
 } db_render_ir_optimizer_workspace_t;
 
 typedef struct {
@@ -292,7 +381,8 @@ typedef struct {
                       const db_render_ir_fill_t *fills, size_t fill_count);
     int (*fill_linear_gradient)(
         void *context, db_render_ir_resource_id_t target,
-        const db_render_ir_linear_gradient_command_t *gradient);
+        const db_render_ir_linear_gradient_command_t *gradient,
+        db_render_ir_rect_t coverage);
     int (*upload_image)(void *context, db_render_ir_resource_id_t target,
                         const db_render_ir_upload_command_t *upload,
                         db_render_ir_external_binding_view_t bindings);
@@ -312,9 +402,18 @@ db_render_ir_add_rect_region(db_render_ir_store_t *store,
 db_render_ir_status_t db_render_ir_add_fill_region(
     db_render_ir_store_t *store, const db_render_ir_fill_t *fills,
     size_t fill_count, db_render_ir_region_id_t *region_id);
+db_render_ir_status_t
+db_render_ir_region_import(const db_render_ir_view_t *source,
+                           db_render_ir_region_id_t source_region,
+                           db_render_ir_store_t *destination,
+                           db_render_ir_region_id_t *destination_region);
 db_render_ir_status_t db_render_ir_set_last_command_regions(
     db_render_ir_store_t *store, db_render_ir_region_id_t touched_region,
     db_render_ir_region_id_t full_coverage_region);
+db_render_ir_status_t
+db_render_ir_set_last_command_ordering(db_render_ir_store_t *store,
+                                       uint32_t ordering_domain,
+                                       uint32_t inseparable_group);
 db_render_ir_status_t db_render_ir_region_union(
     db_render_ir_store_t *store, db_render_ir_region_id_t lhs,
     db_render_ir_region_id_t rhs, db_render_ir_region_id_t *region_id);
@@ -326,6 +425,12 @@ db_render_ir_status_t db_render_ir_region_subtract(
     db_render_ir_region_id_t rhs, db_render_ir_region_id_t *region_id);
 uint64_t db_render_ir_region_area(const db_render_ir_view_t *view,
                                   db_render_ir_region_id_t region_id);
+int db_render_ir_region_validate(const db_render_ir_view_t *view,
+                                 db_render_ir_region_id_t region_id,
+                                 size_t *span_count);
+int db_render_ir_regions_equal(const db_render_ir_view_t *view,
+                               db_render_ir_region_id_t lhs,
+                               db_render_ir_region_id_t rhs);
 db_render_ir_region_id_t
 db_render_ir_final_damage_region(const db_render_ir_view_t *view);
 int db_render_ir_final_damage_covers(const db_render_ir_view_t *view,
@@ -365,6 +470,9 @@ void db_render_ir_iterator_begin(db_render_ir_iterator_t *iterator,
 const db_render_ir_command_header_t *
 db_render_ir_iterator_next(db_render_ir_iterator_t *iterator);
 db_render_ir_status_t db_render_ir_validate(const db_render_ir_view_t *view);
+db_render_ir_storage_relation_t
+db_render_ir_view_store_relation(const db_render_ir_view_t *view,
+                                 const db_render_ir_store_t *store);
 db_render_ir_status_t
 db_render_ir_validate_bindings(const db_render_ir_view_t *view,
                                db_render_ir_external_binding_view_t bindings);
@@ -379,9 +487,13 @@ db_render_ir_lower(const db_render_ir_view_t *view,
 
 // Exact fallback lowering for backends without a conforming semantic-gradient
 // path. Semantic-capable backends should consume commands directly.
-size_t db_render_ir_rect_count(const db_render_ir_view_t *view);
-int db_render_ir_rect_at(const db_render_ir_view_t *view, size_t index,
-                         db_render_ir_fill_t *fill);
+void db_render_ir_rect_iterator_begin(db_render_ir_rect_iterator_t *iterator,
+                                      const db_render_ir_view_t *view);
+void db_render_ir_rect_iterator_begin_command(
+    db_render_ir_rect_iterator_t *iterator, const db_render_ir_view_t *view,
+    const db_render_ir_command_header_t *command);
+int db_render_ir_rect_iterator_next(db_render_ir_rect_iterator_t *iterator,
+                                    db_render_ir_fill_t *fill);
 int db_render_ir_rect_to_grid_block(db_render_ir_rect_t rect,
                                     uint32_t grid_width, uint32_t grid_height,
                                     db_grid_block_t *block);
@@ -389,11 +501,21 @@ int db_render_ir_rect_to_grid_block(db_render_ir_rect_t rect,
 db_render_ir_status_t
 db_render_ir_color_canonicalize(db_render_ir_color_t input,
                                 db_render_ir_color_t *output);
-const db_render_ir_external_binding_t *
-db_render_ir_find_binding(db_render_ir_external_binding_view_t bindings,
-                          db_render_ir_resource_id_t resource);
+// Binding views use strictly increasing resource IDs. The descriptor is copied
+// to caller-owned storage; its pixels remain valid for the binding-view
+// lifetime.
+int db_render_ir_find_binding(db_render_ir_external_binding_view_t bindings,
+                              db_render_ir_resource_id_t resource,
+                              db_render_ir_external_binding_t *output);
+int db_render_ir_resolve_full_upload(
+    const db_render_ir_view_t *view,
+    db_render_ir_external_binding_view_t bindings,
+    db_render_ir_upload_command_t *output_command,
+    db_render_ir_external_binding_t *output_binding);
 
 int db_render_ir_rect_is_empty(db_render_ir_rect_t rect);
+int db_render_ir_rect_endpoints(db_render_ir_rect_t rect, int32_t *x_end,
+                                int32_t *y_end);
 int db_render_ir_rect_from_extent(uint32_t width, uint32_t height,
                                   db_render_ir_rect_t *result);
 int db_render_ir_rect_intersect(db_render_ir_rect_t lhs,
@@ -413,15 +535,16 @@ size_t db_render_ir_collect_command_ranges(const db_render_ir_view_t *view,
                                            db_render_ir_command_range_t *ranges,
                                            size_t range_capacity,
                                            int *out_overflow);
-size_t db_render_ir_command_range_rect_count(
-    const db_render_ir_view_t *view, const db_render_ir_command_range_t *range);
-int db_render_ir_command_range_rect_at(
-    const db_render_ir_view_t *view, const db_render_ir_command_range_t *range,
-    size_t index, db_render_ir_fill_t *fill);
+int db_render_ir_commands_batch_compatible(
+    const db_render_ir_view_t *view, const db_render_ir_command_header_t *lhs,
+    const db_render_ir_command_header_t *rhs);
 size_t db_render_ir_region_copy_grid_blocks(const db_render_ir_view_t *view,
                                             db_render_ir_region_id_t region_id,
                                             db_grid_block_t *output,
                                             size_t output_capacity,
                                             int *out_overflow);
+int db_render_ir_region_row_span_count(const db_render_ir_view_t *view,
+                                       db_render_ir_region_id_t region_id,
+                                       uint32_t *count);
 
 #endif

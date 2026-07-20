@@ -48,21 +48,29 @@ static uint32_t vk_host_visible_memory_type(uint32_t type_bits) {
 }
 
 static size_t
-vk_raster_seed_size(const db_render_ir_external_binding_t *binding) {
-    size_t required_bytes = 0U;
-    if ((binding == NULL) || (binding->pixels == NULL) ||
+vk_raster_seed_size(const db_render_ir_external_binding_t *binding,
+                    size_t *row_bytes) {
+    size_t source_required_bytes = 0U;
+    size_t packed_bytes = 0U;
+    const size_t pixel_bytes =
+        (binding != NULL) ? db_pixel_format_bytes_per_pixel(binding->format)
+                          : 0U;
+    if ((binding == NULL) || (binding->pixels == NULL) || (row_bytes == NULL) ||
+        (pixel_bytes == 0U) ||
+        (db_try_mul_size(binding->width, pixel_bytes, row_bytes) == 0) ||
         (db_try_strided_size(binding->height, binding->row_stride_bytes,
-                             binding->row_stride_bytes,
-                             &required_bytes) == 0) ||
-        (required_bytes > binding->size_bytes)) {
+                             *row_bytes, &source_required_bytes) == 0) ||
+        (db_try_mul_size(binding->height, *row_bytes, &packed_bytes) == 0) ||
+        (source_required_bytes > binding->size_bytes)) {
         DB_RUNTIME_FAIL(BACKEND_NAME, "invalid Vulkan raster rebuild seed");
     }
-    return required_bytes;
+    return packed_bytes;
 }
 
 void db_vk_prepare_raster_seed_upload(
     const db_render_ir_external_binding_t *binding) {
-    const size_t required_bytes = vk_raster_seed_size(binding);
+    size_t row_bytes = 0U;
+    const size_t required_bytes = vk_raster_seed_size(binding, &row_bytes);
     if (g_state.backing.rebuild_upload_size_bytes < required_bytes) {
         db_vk_release_rebuild_upload_buffer();
         const VkBufferCreateInfo create_info = {
@@ -97,7 +105,12 @@ void db_vk_prepare_raster_seed_upload(
     DB_VK_CHECK(BACKEND_NAME, vkMapMemory(g_state.device.device,
                                           g_state.backing.rebuild_upload_memory,
                                           0U, required_bytes, 0U, &mapped));
-    memcpy(mapped, binding->pixels, required_bytes);
+    if (db_copy_strided_rows_tight(mapped, required_bytes, binding->pixels,
+                                   binding->size_bytes, binding->height,
+                                   binding->row_stride_bytes, row_bytes) == 0) {
+        DB_RUNTIME_FAIL(BACKEND_NAME,
+                        "failed to pack Vulkan raster rebuild seed");
+    }
     vkUnmapMemory(g_state.device.device, g_state.backing.rebuild_upload_memory);
 }
 

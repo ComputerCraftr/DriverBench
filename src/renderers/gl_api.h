@@ -83,8 +83,23 @@ typedef struct db_gl_sync *GLsync;
 #ifndef GL_FLOAT
 #define GL_FLOAT 0x1406U
 #endif
+#ifndef GL_RED_BITS
+#define GL_RED_BITS 0x0D52U
+#define GL_GREEN_BITS 0x0D53U
+#define GL_BLUE_BITS 0x0D54U
+#define GL_ALPHA_BITS 0x0D55U
+#endif
+#ifndef GL_SAMPLES
+#define GL_SAMPLES 0x80A9U
+#endif
+#ifndef GL_FRAMEBUFFER_SRGB
+#define GL_FRAMEBUFFER_SRGB 0x8DB9U
+#endif
 #ifndef GL_HALF_FLOAT
 #define GL_HALF_FLOAT 0x140BU
+#endif
+#ifndef GL_UNSIGNED_INT
+#define GL_UNSIGNED_INT 0x1405U
 #endif
 #ifndef GL_HALF_FLOAT_OES
 #define GL_HALF_FLOAT_OES 0x8D61U
@@ -137,6 +152,12 @@ typedef struct db_gl_sync *GLsync;
 #ifndef GL_PIXEL_UNPACK_BUFFER
 #define GL_PIXEL_UNPACK_BUFFER 0x88ECU
 #endif
+#ifndef GL_TEXTURE_BUFFER
+#define GL_TEXTURE_BUFFER 0x8C2AU
+#endif
+#ifndef GL_MAX_TEXTURE_BUFFER_SIZE
+#define GL_MAX_TEXTURE_BUFFER_SIZE 0x8C2BU
+#endif
 #ifndef GL_UNPACK_ALIGNMENT
 #define GL_UNPACK_ALIGNMENT 0x0CF5U
 #endif
@@ -163,6 +184,12 @@ typedef struct db_gl_sync *GLsync;
 #endif
 #ifndef GL_RGBA16F
 #define GL_RGBA16F 0x881AU
+#endif
+#ifndef GL_R32UI
+#define GL_R32UI 0x8236U
+#endif
+#ifndef GL_RG32UI
+#define GL_RG32UI 0x823CU
 #endif
 #ifndef GL_RGB10_A2
 #define GL_RGB10_A2 0x8059U

@@ -127,6 +127,40 @@ void db_gl_texture_delete_if_valid(unsigned int *texture) {
     *texture = 0U;
 }
 
+int db_gl_texture_buffer_create(unsigned int *texture, unsigned int buffer,
+                                unsigned int internal_format) {
+    if ((texture == NULL) || (buffer == 0U)) {
+        return 0;
+    }
+    db_gl_load_upload_proc_table();
+    if ((g_upload_proc_table.gen_textures == NULL) ||
+        (g_upload_proc_table.bind_texture == NULL) ||
+        (g_upload_proc_table.tex_buffer == NULL)) {
+        return 0;
+    }
+    db_gl_probe_drain_errors();
+    g_upload_proc_table.gen_textures(1, texture);
+    if (*texture == 0U) {
+        return 0;
+    }
+    g_upload_proc_table.bind_texture(GL_TEXTURE_BUFFER, *texture);
+    g_upload_proc_table.tex_buffer(GL_TEXTURE_BUFFER, internal_format, buffer);
+    const int error_free = db_gl_probe_step_error_free();
+    g_upload_proc_table.bind_texture(GL_TEXTURE_BUFFER, 0U);
+    if (db_gl_probe_finish(error_free) == 0) {
+        db_gl_texture_delete_if_valid(texture);
+        return 0;
+    }
+    return 1;
+}
+
+void db_gl_texture_buffer_bind(unsigned int texture) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.bind_texture != NULL) {
+        g_upload_proc_table.bind_texture(GL_TEXTURE_BUFFER, texture);
+    }
+}
+
 void db_gl_texture_bind_2d(unsigned int texture) {
     db_gl_load_upload_proc_table();
     if ((g_active_texture_unit_valid != 0) &&
@@ -307,6 +341,12 @@ void db_gl_set_dither_enabled(int enabled) {
     db_gl_load_upload_proc_table();
     gl_set_capability_enabled_cached(GL_DITHER, enabled,
                                      &g_dither_enabled_state);
+}
+
+void db_gl_set_framebuffer_srgb_enabled(int enabled) {
+    db_gl_load_upload_proc_table();
+    gl_set_capability_enabled_cached(GL_FRAMEBUFFER_SRGB, enabled,
+                                     &g_framebuffer_srgb_enabled_state);
 }
 
 void db_gl_set_pack_alignment_1(void) {

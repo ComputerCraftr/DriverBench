@@ -462,12 +462,8 @@ vk_create_unpack_pipeline(db_vk_independent_lane_runtime_t *runtime) {
     return 1;
 }
 
-int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime,
-                                  uint32_t lane_index) {
-    (void)lane_index;
-    if ((runtime == NULL) || (runtime->device == VK_NULL_HANDLE)) {
-        return 0;
-    }
+static int
+db_vk_buffer_transport_try_create(db_vk_independent_lane_runtime_t *runtime) {
     VkPhysicalDeviceProperties worker_properties = {0};
     VkPhysicalDeviceProperties primary_properties = {0};
     vkGetPhysicalDeviceProperties(runtime->phys, &worker_properties);
@@ -476,31 +472,37 @@ int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime,
     const VkDeviceSize pixel_size =
         db_pixel_format_bytes_per_pixel(g_state.backing.pixel_format);
     if (pixel_size == 0U) {
-        goto fail;
+        return 0;
     }
     VkDeviceSize pixel_count = 0U;
     VkDeviceSize size = 0U;
     if ((db_try_mul_u64(g_state.backing.extent.width,
                         g_state.backing.extent.height, &pixel_count) == 0) ||
         (db_try_mul_u64(pixel_count, pixel_size, &size) == 0)) {
-        goto fail;
+        return 0;
     }
     if ((size > worker_properties.limits.maxStorageBufferRange) ||
         (size > primary_properties.limits.maxStorageBufferRange) ||
         (vk_create_pack_pipeline(runtime) == 0)) {
-        goto fail;
+        return 0;
     }
     for (uint32_t slot = 0U; slot < DB_VK_LANE_SLOT_COUNT; slot++) {
         if (vk_create_shared_buffer(runtime, &runtime->slots[slot], size) ==
             0) {
-            goto fail;
+            return 0;
         }
     }
-    if ((vk_create_buffer_descriptors(runtime) != 0) &&
-        (vk_create_unpack_pipeline(runtime) != 0)) {
+    return DB_BOOL((vk_create_buffer_descriptors(runtime) != 0) &&
+                   (vk_create_unpack_pipeline(runtime) != 0));
+}
+
+int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime) {
+    if ((runtime == NULL) || (runtime->device == VK_NULL_HANDLE)) {
+        return 0;
+    }
+    if (db_vk_buffer_transport_try_create(runtime) != 0) {
         return 1;
     }
-fail:
     db_vk_buffer_transport_destroy(runtime);
     return 0;
 }
@@ -549,10 +551,8 @@ void db_vk_buffer_transport_destroy(db_vk_independent_lane_runtime_t *runtime) {
     }
 }
 #else
-int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime,
-                                  uint32_t lane_index) {
+int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime) {
     (void)runtime;
-    (void)lane_index;
     return 0;
 }
 void db_vk_buffer_transport_destroy(db_vk_independent_lane_runtime_t *runtime) {

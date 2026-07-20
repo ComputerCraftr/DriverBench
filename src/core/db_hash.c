@@ -9,6 +9,7 @@
 
 #include "db_alloc_policy.h"
 #include "db_buffer_convert.h"
+#include "db_byte_codec.h"
 #include "db_core.h"
 #include "db_numeric.h"
 
@@ -90,7 +91,9 @@ uint64_t db_fnv1a64_bytes(const void *data, size_t size) {
 }
 
 uint64_t db_fnv1a64_mix_u64(uint64_t hash, uint64_t value) {
-    return db_fnv1a64_extend(hash, &value, sizeof(value));
+    uint8_t encoded[DB_U64_WIRE_BYTES] = {0};
+    db_store_u64_le(encoded, value);
+    return db_fnv1a64_extend(hash, encoded, sizeof(encoded));
 }
 
 uint64_t db_hash_rgba8_pixels_canonical(const void *pixels, uint32_t width,
@@ -286,7 +289,13 @@ int db_working_rgba8_canonicalize(const void *pixels, db_pixel_format_t format,
     if (destination_size < packed_bytes) {
         return 0;
     }
-    if (db_hash_source_layout_size(format, width, height, stride_bytes) == 0U) {
+    const size_t source_bytes =
+        db_hash_source_layout_size(format, width, height, stride_bytes);
+    int ranges_overlap = 0;
+    if ((source_bytes == 0U) ||
+        (db_memory_ranges_overlap(pixels, source_bytes, destination,
+                                  packed_bytes, &ranges_overlap) == 0) ||
+        (ranges_overlap != 0)) {
         return 0;
     }
     if (format == DB_PIXEL_FORMAT_RGBA16F) {

@@ -51,6 +51,8 @@ set(DB_RENDER_IR_SOURCES
     src/core/db_render_ir_ranges.c
     src/core/db_render_ir_lowering.c
     src/core/db_render_ir_optimizer.c
+    src/core/db_render_ir_optimizer_coverage.c
+    src/core/db_render_ir_optimizer_sort.c
     src/core/db_render_ir_region.c
     src/core/db_render_ir_snapshot.c
     src/core/db_render_ir_surface.c

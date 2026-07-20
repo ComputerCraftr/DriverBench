@@ -8,11 +8,12 @@
 #include <string.h>
 
 static void *allocate_array(size_t count, size_t element_size) {
+    size_t byte_count = 0U;
     if ((count == 0U) || (element_size == 0U) ||
-        (count > (SIZE_MAX / element_size))) {
+        (db_try_mul_size(count, element_size, &byte_count) == 0)) {
         return NULL;
     }
-    return malloc(count * element_size);
+    return malloc(byte_count);
 }
 
 static int view_storage_is_valid(const db_render_ir_view_t *view) {
@@ -23,6 +24,16 @@ static int view_storage_is_valid(const db_render_ir_view_t *view) {
            ((view->region_count == 0U) || (view->regions != NULL)) &&
            ((view->band_count == 0U) || (view->bands != NULL)) &&
            ((view->span_count == 0U) || (view->spans != NULL));
+}
+
+static size_t view_last_command_offset(const db_render_ir_view_t *view) {
+    db_render_ir_iterator_t iterator = {0};
+    db_render_ir_iterator_begin(&iterator, view);
+    size_t last_offset = 0U;
+    while (db_render_ir_iterator_next(&iterator) != NULL) {
+        last_offset = iterator.offset - iterator.current.header.byte_size;
+    }
+    return last_offset;
 }
 
 int db_render_ir_owned_store_required_bytes(
@@ -57,13 +68,15 @@ int db_render_ir_snapshot_init(db_render_ir_snapshot_t *snapshot,
                                size_t command_capacity, size_t fill_capacity,
                                size_t resource_capacity, size_t region_capacity,
                                size_t band_capacity, size_t span_capacity) {
-    if ((snapshot == NULL) || (command_capacity == 0U) ||
-        (fill_capacity == 0U) || (resource_capacity == 0U) ||
-        (region_capacity == 0U) || (band_capacity == 0U) ||
-        (span_capacity == 0U)) {
+    if ((snapshot == NULL) ||
+        (snapshot->layout_generation == DB_RENDER_IR_LAYOUT_GENERATION) ||
+        (command_capacity == 0U) || (fill_capacity == 0U) ||
+        (resource_capacity == 0U) || (region_capacity == 0U) ||
+        (band_capacity == 0U) || (span_capacity == 0U)) {
         return 0;
     }
     *snapshot = (db_render_ir_snapshot_t){0};
+    snapshot->layout_generation = DB_RENDER_IR_LAYOUT_GENERATION;
     db_render_ir_store_t *const store = &snapshot->store;
     store->commands = allocate_array(command_capacity, 1U);
     store->fills = allocate_array(fill_capacity, sizeof(*store->fills));
@@ -104,10 +117,19 @@ void db_render_ir_snapshot_shutdown(db_render_ir_snapshot_t *snapshot) {
 db_render_ir_status_t
 db_render_ir_snapshot_capture(db_render_ir_snapshot_t *snapshot,
                               const db_render_ir_view_t *source) {
-    if ((snapshot == NULL) || (view_storage_is_valid(source) == 0)) {
+    if ((snapshot == NULL) ||
+        (snapshot->layout_generation != DB_RENDER_IR_LAYOUT_GENERATION) ||
+        (view_storage_is_valid(source) == 0) ||
+        (db_render_ir_validate(source) != DB_RENDER_IR_OK)) {
         return DB_RENDER_IR_INVALID;
     }
     db_render_ir_store_t *const destination = &snapshot->store;
+    const db_render_ir_storage_relation_t relation =
+        db_render_ir_view_store_relation(source, destination);
+    if ((relation != DB_RENDER_IR_STORAGE_DISJOINT) &&
+        (relation != DB_RENDER_IR_STORAGE_MATCHED_ARENAS)) {
+        return DB_RENDER_IR_INVALID;
+    }
     if ((source->command_size > destination->command_capacity) ||
         (source->fill_count > destination->fill_capacity) ||
         (source->resource_count > destination->resource_capacity) ||
@@ -152,6 +174,7 @@ db_render_ir_snapshot_capture(db_render_ir_snapshot_t *snapshot,
         memmove(destination->spans, source->spans, span_bytes);
     }
     destination->command_size = source->command_size;
+    destination->last_command_offset = view_last_command_offset(source);
     destination->command_count = source->command_count;
     destination->fill_count = source->fill_count;
     destination->resource_count = source->resource_count;
@@ -165,8 +188,10 @@ db_render_ir_snapshot_capture(db_render_ir_snapshot_t *snapshot,
 
 db_render_ir_view_t
 db_render_ir_snapshot_view(const db_render_ir_snapshot_t *snapshot) {
-    return (snapshot == NULL) ? (db_render_ir_view_t){0}
-                              : db_render_ir_store_view(&snapshot->store);
+    return ((snapshot == NULL) ||
+            (snapshot->layout_generation != DB_RENDER_IR_LAYOUT_GENERATION))
+               ? (db_render_ir_view_t){0}
+               : db_render_ir_store_view(&snapshot->store);
 }
 
 static int command_is_replayable(const db_render_ir_command_header_t *command) {
@@ -224,6 +249,7 @@ db_render_ir_clone_replayable(const db_render_ir_view_t *source,
         return DB_RENDER_IR_CLONE_CAPACITY;
     case DB_RENDER_IR_INVALID:
     case DB_RENDER_IR_ARITHMETIC_OVERFLOW:
+    case DB_RENDER_IR_COMPLEXITY_LIMIT:
         return DB_RENDER_IR_CLONE_INVALID;
     }
     return DB_RENDER_IR_CLONE_INVALID;

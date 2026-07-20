@@ -102,6 +102,7 @@ db_conformance_cache_read(const char *path, const void *serialized_key,
                           size_t key_size,
                           db_conformance_result_t *out_result) {
     if ((path == NULL) || (serialized_key == NULL) || (key_size == 0U) ||
+        (key_size > DB_CONFORMANCE_CACHE_MAX_KEY_BYTES) ||
         (out_result == NULL) || db_conformance_cache_disabled()) {
         return DB_CONFORMANCE_CACHE_MISS;
     }
@@ -119,13 +120,11 @@ db_conformance_cache_read(const char *path, const void *serialized_key,
         return DB_CONFORMANCE_CACHE_INVALID;
     }
     const uint32_t stored_size = db_load_u32_le(&header[8]);
-    const int size_valid = ((size_t)stored_size == key_size) &&
-                           (key_size <= SIZE_MAX - sizeof(header));
-    uint8_t *stored_key = size_valid ? malloc(key_size) : NULL;
+    const int size_valid = (size_t)stored_size == key_size;
+    uint8_t stored_key[DB_CONFORMANCE_CACHE_MAX_KEY_BYTES] = {0};
     const int key_ok =
-        (stored_key != NULL) && (fread(stored_key, key_size, 1U, file) == 1U);
+        size_valid && (fread(stored_key, key_size, 1U, file) == 1U);
     if (key_ok == 0) {
-        free(stored_key);
         (void)fclose(file);
         return DB_CONFORMANCE_CACHE_INVALID;
     }
@@ -144,7 +143,6 @@ db_conformance_cache_read(const char *path, const void *serialized_key,
         (db_load_u64_le(&header[16]) == expected) &&
         ((result == DB_CONFORMANCE_CONFORMING) ||
          (result == DB_CONFORMANCE_NONCONFORMING));
-    free(stored_key);
     if (!valid) {
         return DB_CONFORMANCE_CACHE_INVALID;
     }
@@ -156,6 +154,7 @@ db_conformance_cache_status_t
 db_conformance_cache_write(const char *path, const void *serialized_key,
                            size_t key_size, db_conformance_result_t result) {
     if ((path == NULL) || (serialized_key == NULL) || (key_size == 0U) ||
+        (key_size > DB_CONFORMANCE_CACHE_MAX_KEY_BYTES) ||
         ((result != DB_CONFORMANCE_CONFORMING) &&
          (result != DB_CONFORMANCE_NONCONFORMING)) ||
         db_conformance_cache_disabled()) {

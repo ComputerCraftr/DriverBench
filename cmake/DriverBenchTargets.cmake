@@ -6,6 +6,8 @@ set(DB_GL_RENDERER_SOURCES
     src/renderers/opengl_gl1_5_gles1_1/gl1_replay.c
     src/renderers/opengl_gl1_5_gles1_1/gl1_runtime.c
     src/renderers/opengl_gl3_3/gl3_renderer.c
+    src/renderers/opengl_gl3_3/gl3_exact_lookup.c
+    src/renderers/opengl_gl3_3/gl3_execute.c
     src/renderers/opengl_gl3_3/gl3_target.c
     src/renderers/opengl_gl3_3/gl3_qualification.c
     src/renderers/gl_buffer.c
@@ -27,8 +29,9 @@ set(DB_GL_RENDERER_SOURCES
     src/renderers/gl_program_wrappers.c)
 
 set(DB_RENDER_CORE_SOURCES
-    src/renderers/damage_trace.c src/renderers/gl_runtime.c
-    src/renderers/gl_runtime_capabilities.c src/renderers/gl_trace.c)
+    src/renderers/damage_trace.c src/renderers/damage_trace_region.c
+    src/renderers/gl_runtime.c src/renderers/gl_runtime_capabilities.c
+    src/renderers/gl_trace.c)
 
 set(DB_CLI_CORE_SOURCES src/cli/cli_parse.c src/cli/cli_runtime_options.c
                         src/cli/cli_validation.c)
@@ -80,7 +83,11 @@ function(db_finalize_driverbench_target)
     set(DB_EMBEDDED_SHADER_DEPS
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateEmbeddedShadersHeader.cmake)
     set(DB_GL3_SHADER_MANIFEST
-        "IR_EXECUTE_VERT|ir_execute|vert" "IR_EXECUTE_FRAG|ir_execute|frag"
+        "IR_EXECUTE_VERT|ir_execute|vert"
+        "IR_EXECUTE_FRAG|ir_execute|frag"
+        "EXACT_LOOKUP_VERT|exact_lookup|vert"
+        "EXACT_LOOKUP_RGBA8_FRAG|exact_lookup_rgba8|frag"
+        "EXACT_LOOKUP_RGBA16F_FRAG|exact_lookup_rgba16f|frag"
         "PRESENTATION_VERT|presentation|vert"
         "PRESENTATION_FRAG|presentation|frag")
     set(DB_GL3_SHADER_KEYS "")

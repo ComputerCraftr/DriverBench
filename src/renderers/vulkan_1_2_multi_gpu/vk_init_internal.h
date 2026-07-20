@@ -2,7 +2,14 @@
 #define DRIVERBENCH_VK_INIT_INTERNAL_H
 
 #include <stdint.h>
+#include <vulkan/vulkan_core.h>
 
+#include "core/db_format_contract.h"
+#include "core/db_log.h"
+#include "core/db_render_types.h"
+#include "core/db_renderer_runtime_contract.h"
+#include "core/db_renderer_support.h"
+#include "renderers/vulkan_1_2_multi_gpu/vk_renderer.h"
 #include "vk_internal.h"
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"

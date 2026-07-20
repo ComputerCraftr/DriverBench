@@ -22,6 +22,9 @@ FLOAT_FUNCTION_PATTERN = re.compile(
     r"\b(?:atof|fmax|fmaxf|fmaxl|fmin|fminf|fminl|strtof|strtold)\s*\("
 )
 STRTOD_PATTERN = re.compile(r"\bstrtod\s*\(")
+INTEGER_PARSE_PATTERN = re.compile(
+    r"\b(?:strtol|strtoul|strtoll|strtoull|strtoimax|strtoumax)\s*\("
+)
 INTEGER_LITERAL = r"(?:0[xX][0-9A-Fa-f]+|[0-9]+)(?:[uUlL]+)?"
 FLOAT_LITERAL = (
     r"(?:(?:[0-9]+\.[0-9]*|\.[0-9]+)"
@@ -86,6 +89,13 @@ CASTED_EXTREMA_PATTERN = re.compile(
     r"\((?:u?int(?:8|16|32)_t)\)\s*"
     r"DB_(?:MIN|MAX|CLAMP)\s*\("
 )
+UNCHECKED_ID_INCREMENT_PATTERN = re.compile(
+    r"(?:\b(?:[A-Za-z_][A-Za-z0-9_]*_)?"
+    r"(?:generation|epoch|revision|sequence|serial)\s*\+\+|"
+    r"\+\+\s*\b(?:[A-Za-z_][A-Za-z0-9_]*_)?"
+    r"(?:generation|epoch|revision|sequence|serial)\b)"
+)
+SIGNED_ONE_SHIFT_PATTERN = re.compile(r"(?<![A-Za-z0-9_])1\s*<<")
 
 
 def parse_args() -> argparse.Namespace:
@@ -221,6 +231,14 @@ def scan_file(source_root: Path, path: Path) -> list[Violation]:
                     "text-to-f64 conversion must use db_parse_double_prefix",
                 )
             )
+        for match in INTEGER_PARSE_PATTERN.finditer(source):
+            violations.append(
+                Violation(
+                    relative,
+                    line_at(source, match.start()),
+                    "text-to-integer conversion must use a db_parse_*_prefix helper",
+                )
+            )
     for match in EXTREMA_TERNARY_PATTERN.finditer(source):
         if is_extrema_ternary(match):
             violations.append(
@@ -332,6 +350,24 @@ def scan_file(source_root: Path, path: Path) -> list[Violation]:
                     line_at(source, match.start()),
                     "narrowing an extrema macro result must use a named "
                     "checked conversion helper",
+                )
+            )
+    if relative.parts[0] == "src":
+        for match in SIGNED_ONE_SHIFT_PATTERN.finditer(source):
+            violations.append(
+                Violation(
+                    relative,
+                    line_at(source, match.start()),
+                    "bit masks must shift an explicitly unsigned value",
+                )
+            )
+        for match in UNCHECKED_ID_INCREMENT_PATTERN.finditer(source):
+            violations.append(
+                Violation(
+                    relative,
+                    line_at(source, match.start()),
+                    "identity increments must use checked arithmetic or an "
+                    "explicit wrapping helper",
                 )
             )
     return violations

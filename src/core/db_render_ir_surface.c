@@ -20,12 +20,19 @@ typedef struct {
 static int fill_logical_rect(surface_lowering_t *lowering,
                              db_render_ir_rect_t rect, const double rgba[4]) {
     if ((lowering == NULL) || (lowering->surface == NULL) || (rgba == NULL) ||
-        (rect.x < 0) || (rect.y < 0) || (rect.width <= 0) ||
-        (rect.height <= 0)) {
+        (rect.width <= 0) || (rect.height <= 0)) {
         return 0;
     }
+    db_render_ir_rect_t logical_extent = {0};
+    db_render_ir_rect_t clipped = {0};
+    if ((db_render_ir_rect_from_extent(lowering->logical_width,
+                                       lowering->logical_height,
+                                       &logical_extent) == 0) ||
+        (db_render_ir_rect_intersect(rect, logical_extent, &clipped) == 0)) {
+        return 1;
+    }
     db_grid_block_t logical = {0};
-    if (db_render_ir_rect_to_grid_block(rect, lowering->logical_width,
+    if (db_render_ir_rect_to_grid_block(clipped, lowering->logical_width,
                                         lowering->logical_height,
                                         &logical) == 0) {
         return 0;
@@ -84,28 +91,27 @@ static int fill_rects(void *context, db_render_ir_resource_id_t target,
 
 static int
 fill_linear_gradient(void *context, db_render_ir_resource_id_t target,
-                     const db_render_ir_linear_gradient_command_t *gradient) {
+                     const db_render_ir_linear_gradient_command_t *gradient,
+                     db_render_ir_rect_t coverage) {
     surface_lowering_t *const lowering = (surface_lowering_t *)context;
     (void)target;
-    if ((gradient == NULL) || (gradient->bounds.height <= 0)) {
+    if ((gradient == NULL) || (coverage.height <= 0)) {
         return 0;
     }
-    const int64_t row_end_i64 =
-        (int64_t)gradient->bounds.y + (int64_t)gradient->bounds.height;
+    const int64_t row_end_i64 = (int64_t)coverage.y + (int64_t)coverage.height;
     if ((row_end_i64 < INT32_MIN) || (row_end_i64 > INT32_MAX)) {
         return 0;
     }
     const int32_t row_end = (int32_t)row_end_i64;
-    for (int32_t row = gradient->bounds.y; row < row_end; row++) {
+    for (int32_t row = coverage.y; row < row_end; row++) {
         const db_render_ir_color_t color =
             db_render_ir_linear_gradient_color_at(gradient, row);
-        if (fill_logical_rect(
-                lowering,
-                (db_render_ir_rect_t){.x = gradient->bounds.x,
-                                      .y = row,
-                                      .width = gradient->bounds.width,
-                                      .height = 1},
-                color.rgba) == 0) {
+        if (fill_logical_rect(lowering,
+                              (db_render_ir_rect_t){.x = coverage.x,
+                                                    .y = row,
+                                                    .width = coverage.width,
+                                                    .height = 1},
+                              color.rgba) == 0) {
             return 0;
         }
     }
@@ -116,9 +122,13 @@ static int upload_image(void *context, db_render_ir_resource_id_t target,
                         const db_render_ir_upload_command_t *upload,
                         db_render_ir_external_binding_view_t bindings) {
     surface_lowering_t *const lowering = (surface_lowering_t *)context;
+    db_render_ir_external_binding_t source_storage = {0};
     const db_render_ir_external_binding_t *const source =
-        (upload == NULL) ? NULL
-                         : db_render_ir_find_binding(bindings, upload->source);
+        ((upload != NULL) &&
+         (db_render_ir_find_binding(bindings, upload->source,
+                                    &source_storage) != 0))
+            ? &source_storage
+            : NULL;
     (void)target;
     if ((lowering == NULL) || (lowering->surface == NULL) || (source == NULL) ||
         (source->pixels == NULL) ||
@@ -127,38 +137,92 @@ static int upload_image(void *context, db_render_ir_resource_id_t target,
         (upload->semantics.conversion != DB_RENDER_IR_CONVERSION_EXACT) ||
         (db_equal_f64(upload->semantics.opacity, 1.0) == 0) ||
         (source->format != lowering->surface->format) ||
-        (upload->source_rect.x != 0) || (upload->source_rect.y != 0) ||
-        (upload->destination_x != 0) || (upload->destination_y != 0) ||
-        ((uint32_t)upload->source_rect.width != source->width) ||
-        ((uint32_t)upload->source_rect.height != source->height) ||
-        (source->width != lowering->surface->pixel_width) ||
-        (source->height != lowering->surface->pixel_height)) {
+        (lowering->logical_width != lowering->surface->pixel_width) ||
+        (lowering->logical_height != lowering->surface->pixel_height)) {
         return 0;
     }
     const size_t pixel_bytes = db_pixel_surface_pixel_bytes(lowering->surface);
-    size_t row_bytes = 0U;
+    size_t copy_row_bytes = 0U;
+    size_t source_row_bytes = 0U;
+    size_t destination_row_bytes = 0U;
     size_t source_required_bytes = 0U;
     size_t destination_required_bytes = 0U;
+    size_t source_x_bytes = 0U;
+    size_t source_y_bytes = 0U;
+    size_t source_offset = 0U;
+    size_t destination_x_bytes = 0U;
+    size_t destination_y_bytes = 0U;
+    size_t destination_offset = 0U;
+    const size_t copy_rows = (size_t)(uint32_t)upload->source_rect.height;
     if ((pixel_bytes == 0U) ||
-        (db_try_mul_size(source->width, pixel_bytes, &row_bytes) == 0) ||
+        (db_try_mul_size((size_t)(uint32_t)upload->source_rect.width,
+                         pixel_bytes, &copy_row_bytes) == 0) ||
+        (db_try_mul_size(source->width, pixel_bytes, &source_row_bytes) == 0) ||
+        (db_try_mul_size(lowering->surface->pixel_width, pixel_bytes,
+                         &destination_row_bytes) == 0) ||
         (db_try_strided_size(source->height, source->row_stride_bytes,
-                             row_bytes, &source_required_bytes) == 0) ||
+                             source_row_bytes, &source_required_bytes) == 0) ||
         (source_required_bytes > source->size_bytes) ||
-        (db_try_mul_size(source->height, row_bytes,
-                         &destination_required_bytes) == 0)) {
+        (db_try_mul_size(lowering->surface->pixel_height, destination_row_bytes,
+                         &destination_required_bytes) == 0) ||
+        (db_try_mul_size((size_t)(uint32_t)upload->source_rect.x, pixel_bytes,
+                         &source_x_bytes) == 0) ||
+        (db_try_mul_size((size_t)(uint32_t)upload->source_rect.y,
+                         source->row_stride_bytes, &source_y_bytes) == 0) ||
+        (db_try_add_size(source_y_bytes, source_x_bytes, &source_offset) ==
+         0) ||
+        (db_try_mul_size((size_t)(uint32_t)upload->destination_x, pixel_bytes,
+                         &destination_x_bytes) == 0) ||
+        (db_try_mul_size((size_t)(uint32_t)upload->destination_y,
+                         destination_row_bytes, &destination_y_bytes) == 0) ||
+        (db_try_add_size(destination_y_bytes, destination_x_bytes,
+                         &destination_offset) == 0)) {
         return 0;
     }
-    for (uint32_t row = 0U; row < source->height; row++) {
-        const size_t destination_offset = (size_t)row * row_bytes;
-        const size_t source_offset = (size_t)row * source->row_stride_bytes;
-        if ((db_size_range_fits(destination_required_bytes, destination_offset,
-                                row_bytes) == 0) ||
-            (db_size_range_fits(source->size_bytes, source_offset, row_bytes) ==
-             0)) {
-            return 0;
-        }
-        memcpy((uint8_t *)lowering->surface->pixels + destination_offset,
-               (const uint8_t *)source->pixels + source_offset, row_bytes);
+    size_t source_copy_bytes = 0U;
+    size_t destination_copy_bytes = 0U;
+    if ((db_try_strided_size(copy_rows, source->row_stride_bytes,
+                             copy_row_bytes, &source_copy_bytes) == 0) ||
+        (db_try_strided_size(copy_rows, destination_row_bytes, copy_row_bytes,
+                             &destination_copy_bytes) == 0) ||
+        (source_offset > source->size_bytes) ||
+        (source_copy_bytes > (source->size_bytes - source_offset)) ||
+        (destination_offset > destination_required_bytes) ||
+        (destination_copy_bytes >
+         (destination_required_bytes - destination_offset))) {
+        return 0;
+    }
+    const uintptr_t source_address = (uintptr_t)source->pixels;
+    const uintptr_t destination_address = (uintptr_t)lowering->surface->pixels;
+    if ((source_offset > (UINTPTR_MAX - source_address)) ||
+        (destination_offset > (UINTPTR_MAX - destination_address)) ||
+        (source_copy_bytes >
+         (UINTPTR_MAX - (source_address + source_offset))) ||
+        (destination_copy_bytes >
+         (UINTPTR_MAX - (destination_address + destination_offset)))) {
+        return 0;
+    }
+    const uint8_t *const source_bytes =
+        (const uint8_t *)source->pixels + source_offset;
+    uint8_t *const destination_bytes =
+        (uint8_t *)lowering->surface->pixels + destination_offset;
+    int overlap = 0;
+    if ((db_memory_ranges_overlap(source_bytes, source_copy_bytes,
+                                  destination_bytes, destination_copy_bytes,
+                                  &overlap) == 0) ||
+        ((overlap != 0) &&
+         (source->row_stride_bytes != destination_row_bytes))) {
+        return 0;
+    }
+    const int bottom_to_top =
+        DB_BOOL((overlap != 0) &&
+                ((uintptr_t)destination_bytes > (uintptr_t)source_bytes));
+    for (size_t row_offset = 0U; row_offset < copy_rows; row_offset++) {
+        const size_t row =
+            (bottom_to_top != 0) ? copy_rows - 1U - row_offset : row_offset;
+        memmove(destination_bytes + (row * destination_row_bytes),
+                source_bytes + (row * source->row_stride_bytes),
+                copy_row_bytes);
     }
     return 1;
 }

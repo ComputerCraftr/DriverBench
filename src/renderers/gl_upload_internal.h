@@ -11,6 +11,9 @@ static inline GLenum db_gl_upload_target_gl_enum(db_gl_upload_target_t target) {
     if (target == DB_GL_UPLOAD_TARGET_PBO_PACK_BUFFER) {
         return GL_PIXEL_PACK_BUFFER;
     }
+    if (target == DB_GL_UPLOAD_TARGET_TEXTURE_BUFFER) {
+        return GL_TEXTURE_BUFFER;
+    }
     return GL_ARRAY_BUFFER;
 }
 

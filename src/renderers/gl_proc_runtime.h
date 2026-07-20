@@ -6,7 +6,6 @@
 
 #include <limits.h>
 #include <stddef.h>
-#include <stdint.h>
 
 #define DB_GL_TRACKED_TEXTURE_UNIT_COUNT 32U
 
@@ -106,6 +105,8 @@ typedef void (*db_gl_tex_image_2d_fn_t)(GLenum target, GLint level,
 typedef void (*db_gl_tex_parameteri_fn_t)(GLenum target, GLenum pname,
                                           GLint param);
 typedef void (*db_gl_tex_envi_fn_t)(GLenum target, GLenum pname, GLint param);
+typedef void (*db_gl_tex_buffer_fn_t)(GLenum target, GLenum internal_format,
+                                      GLuint buffer);
 typedef void (*db_gl_tex_sub_image_2d_fn_t)(GLenum target, GLint level,
                                             GLint xoffset, GLint yoffset,
                                             GLsizei width, GLsizei height,
@@ -127,6 +128,9 @@ typedef void (*db_gl_vertex_attrib_pointer_fn_t)(GLuint index, GLint size,
                                                  GLboolean normalized,
                                                  GLsizei stride,
                                                  const void *pointer);
+typedef void (*db_gl_vertex_attrib_i_pointer_fn_t)(GLuint index, GLint size,
+                                                   GLenum type, GLsizei stride,
+                                                   const void *pointer);
 typedef void (*db_gl_vertex_attrib_divisor_fn_t)(GLuint index, GLuint divisor);
 typedef void (*db_gl_viewport_fn_t)(GLint x_px, GLint y_px, GLsizei width,
                                     GLsizei height);
@@ -184,6 +188,7 @@ typedef struct {
     db_gl_tex_image_2d_fn_t tex_image_2d;
     db_gl_tex_parameteri_fn_t tex_parameteri;
     db_gl_tex_envi_fn_t tex_envi;
+    db_gl_tex_buffer_fn_t tex_buffer;
     db_gl_tex_sub_image_2d_fn_t tex_sub_image_2d;
     db_gl_link_program_fn_t link_program;
     db_gl_client_wait_sync_fn_t client_wait_sync;
@@ -195,6 +200,7 @@ typedef struct {
     db_gl_unmap_buffer_fn_t unmap_buffer;
     db_gl_use_program_fn_t use_program;
     db_gl_vertex_attrib_pointer_fn_t vertex_attrib_pointer;
+    db_gl_vertex_attrib_i_pointer_fn_t vertex_attrib_i_pointer;
     db_gl_vertex_attrib_divisor_fn_t vertex_attrib_divisor;
     db_gl_vertex_pointer_fn_t vertex_pointer;
     db_gl_viewport_fn_t viewport;
@@ -236,6 +242,7 @@ extern int g_client_state_vertex_array_enabled;
 extern int g_cull_face_enabled_state;
 extern int g_depth_test_enabled_state;
 extern int g_dither_enabled_state;
+extern int g_framebuffer_srgb_enabled_state;
 extern unsigned int g_bound_draw_framebuffer;
 extern int g_bound_draw_framebuffer_valid;
 extern unsigned int g_bound_read_framebuffer;

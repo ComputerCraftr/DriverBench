@@ -155,6 +155,7 @@ void db_vk_shutdown(void) {
         .surface = g_state.presentation.surface,
     };
     db_vk_cleanup_runtime(&cleanup);
+    free(g_state.scheduler.planner_workspace.ranges);
     free(g_state.scheduler.assignment_storage);
     free(g_state.scheduler.piece_storage);
     g_state = (renderer_state_t){0};

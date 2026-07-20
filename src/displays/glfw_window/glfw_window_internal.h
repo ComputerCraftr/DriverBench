@@ -2,7 +2,6 @@
 #define DRIVERBENCH_GLFW_WINDOW_INTERNAL_H
 
 #include "core/db_format_contract.h"
-#include "core/db_hash.h"
 #include "displays/display_types.h"
 #include "driverbench_config.h"
 #include "renderers/gl_hash_readback.h"

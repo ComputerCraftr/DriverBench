@@ -2,6 +2,7 @@
 #include "../core/db_geometry.h"
 #include "../core/db_numeric.h"
 #include "core/db_format_contract.h"
+#include "core/db_frame_plan.h"
 #include "core/db_log.h"
 #include "core/db_render_types.h"
 #include "core/db_trace.h"
@@ -49,10 +50,11 @@ static void gl_shadow_present_texture_sub_image_2d(
     }
 }
 
-void db_gl_shadow_present_present_replace_pixels(
+void db_gl_shadow_present_present_replace_pixels_ir(
     db_gl_shadow_present_state_t *state, const char *backend,
     const db_gl_pixel_upload_payload_t *source_pixels,
-    const db_damage_block_t *damage_blocks, size_t damage_block_count) {
+    const db_damage_block_t *damage_blocks, size_t damage_block_count,
+    const db_frame_plan_t *plan) {
     const db_pixel_surface_t *const source_surface =
         (source_pixels != NULL) ? source_pixels->surface : NULL;
     if ((state == NULL) || (backend == NULL) || (source_surface == NULL) ||
@@ -64,6 +66,8 @@ void db_gl_shadow_present_present_replace_pixels(
     const uint32_t pixel_height = source_surface->pixel_height;
     db_gl_shadow_upload_trace_capture_pixel_payload(&state->upload_trace,
                                                     source_pixels);
+    state->last_surface_restoration_bytes = 0U;
+    state->last_encoded_span_bytes = 0U;
     db_gl_shadow_present_prepare_texture(state, backend, pixel_width,
                                          pixel_height);
     if (state->texture == 0U) {
@@ -74,6 +78,14 @@ void db_gl_shadow_present_present_replace_pixels(
     const int requires_full_upload =
         db_gl_shadow_present_requires_full_texture_upload(state, damage_blocks,
                                                           damage_block_count);
+    if ((state->hdr_output_enabled != 0) && (requires_full_upload == 0) &&
+        (plan != NULL) &&
+        (db_gl_shadow_present_upload_hdr_ir(state, backend, source_surface,
+                                            plan) != 0)) {
+        state->texture_valid = 1;
+        db_gl_shadow_present_draw(state, pixel_width, pixel_height);
+        return;
+    }
     if (requires_full_upload != 0) {
         const db_damage_block_t full_block =
             db_damage_block_full(pixel_height, pixel_width);
@@ -81,6 +93,13 @@ void db_gl_shadow_present_present_replace_pixels(
                                                   &full_block, 1U);
         state->texture_valid = 1;
         state->texture_needs_full_upload = 0;
+        if (state->hdr_output_enabled != 0) {
+            state->last_surface_restoration_bytes = db_checked_mul_size(
+                backend, "hdr_full_restoration_bytes",
+                db_checked_mul_size(backend, "hdr_full_restoration_pixels",
+                                    pixel_width, pixel_height),
+                sizeof(uint32_t));
+        }
     } else if ((damage_blocks != NULL) && (damage_block_count > 0U)) {
         db_gl_shadow_present_upload_damage_blocks(
             state, backend, source_pixels, damage_blocks, damage_block_count);
@@ -88,6 +107,14 @@ void db_gl_shadow_present_present_replace_pixels(
     }
 
     db_gl_shadow_present_draw(state, pixel_width, pixel_height);
+}
+
+void db_gl_shadow_present_present_replace_pixels(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    const db_gl_pixel_upload_payload_t *source_pixels,
+    const db_damage_block_t *damage_blocks, size_t damage_block_count) {
+    db_gl_shadow_present_present_replace_pixels_ir(
+        state, backend, source_pixels, damage_blocks, damage_block_count, NULL);
 }
 
 void db_gl_shadow_present_present_replace_pixels_direct_client(

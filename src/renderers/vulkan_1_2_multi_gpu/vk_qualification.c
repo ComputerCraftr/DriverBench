@@ -193,7 +193,9 @@ vk_qualification_commit(void *renderer,
                     DB_LOG_FIELD_COUNT(fields));
     }
     if (removed_lane != 0) {
-        g_state.scheduler.scheduling_epoch++;
+        g_state.scheduler.scheduling_epoch =
+            db_checked_add_u32(BACKEND_NAME, "scheduling_epoch",
+                               g_state.scheduler.scheduling_epoch, 1U);
         g_state.calibration.state = (db_vk_calibration_state_t){
             .phase = DB_VK_MULTI_GPU_CLOSED,
         };

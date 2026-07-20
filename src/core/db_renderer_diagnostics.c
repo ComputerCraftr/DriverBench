@@ -44,6 +44,8 @@ const char *db_gl3_gradient_request_name(db_gl3_gradient_request_t value) {
         return "auto";
     case DB_GL3_GRADIENT_SEMANTIC:
         return "semantic";
+    case DB_GL3_GRADIENT_EXACT_LOOKUP:
+        return "exact_lookup";
     case DB_GL3_GRADIENT_ROW_FILL:
         return "row_fill";
     }
@@ -90,6 +92,8 @@ db_renderer_diagnostic_config_t db_renderer_diagnostic_config_resolve(void) {
     }
     if (text_is(gl3_gradient, "semantic")) {
         result.gl3_gradient = DB_GL3_GRADIENT_SEMANTIC;
+    } else if (text_is(gl3_gradient, "exact-lookup")) {
+        result.gl3_gradient = DB_GL3_GRADIENT_EXACT_LOOKUP;
     } else if (text_is(gl3_gradient, "row-fill")) {
         result.gl3_gradient = DB_GL3_GRADIENT_ROW_FILL;
     }

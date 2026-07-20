@@ -312,10 +312,10 @@ int db_gl_geometry_stream_init(db_gl_upload_stream_t *stream,
         stream->hot_path_fixed_capacity_bytes = storage_bytes;
         if (db_gl_upload_stream_prepare_storage(stream, backend,
                                                 storage_bytes) == 0) {
+            const db_gl_stream_upload_capability_t failed_capability =
+                stream->capability;
             db_gl_upload_stream_shutdown(stream);
-            // Update capability in result after potential demotion during
-            // preparation
-            result->capability = stream->capability;
+            result->capability = failed_capability;
         }
     }
 
@@ -629,7 +629,17 @@ int db_gl_upload_stream_write(db_gl_upload_stream_t *stream,
                               size_t total_bytes, size_t dst_offset_bytes,
                               size_t size_bytes) {
     if ((stream == NULL) || (backend == NULL) || (source == NULL) ||
-        (size_bytes == 0U)) {
+        (size_bytes == 0U) ||
+        (db_size_range_fits(total_bytes, dst_offset_bytes, size_bytes) == 0)) {
+        return 0;
+    }
+    int overlaps_client_storage = 0;
+    if ((stream->client_storage != NULL) &&
+        ((db_memory_ranges_overlap(source, size_bytes, stream->client_storage,
+                                   stream->client_reserved_bytes,
+                                   &overlaps_client_storage) == 0) ||
+         ((overlaps_client_storage != 0) &&
+          (total_bytes > stream->client_reserved_bytes)))) {
         return 0;
     }
     if (db_gl_upload_stream_prepare_storage(stream, backend, total_bytes) ==
@@ -639,7 +649,7 @@ int db_gl_upload_stream_write(db_gl_upload_stream_t *stream,
     void *mapped = db_gl_upload_stream_begin_write(
         stream, backend, dst_offset_bytes, size_bytes);
     if (mapped != NULL) {
-        memcpy(mapped, source, size_bytes);
+        memmove(mapped, source, size_bytes);
         if (db_gl_upload_stream_end_write(stream, backend) == 0) {
             return 0;
         }

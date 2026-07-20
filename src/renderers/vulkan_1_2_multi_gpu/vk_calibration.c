@@ -167,6 +167,9 @@ static void vk_calibration_apply(const db_frame_plan_t *plan,
     vkCmdBeginRenderPass(command_buffer, &render_info,
                          VK_SUBPASS_CONTENTS_INLINE);
     const size_t draw_count = db_vk_frame_rect_count(plan);
+    db_vk_frame_rect_iterator_t rect_iterator = {0};
+    db_vk_frame_rect_iterator_begin(&rect_iterator, plan);
+    size_t next_rect_index = 0U;
     for (size_t index = 0U; index < execution_plan->assignment_count; index++) {
         const db_vk_lane_assignment_t *const assignment =
             &execution_plan->assignments[index];
@@ -183,9 +186,11 @@ static void vk_calibration_apply(const db_frame_plan_t *plan,
         for (uint32_t instance = 0U; instance < piece->instance_count;
              instance++) {
             db_render_ir_fill_t fill = {0};
-            if (db_vk_frame_rect_at(plan,
-                                    (size_t)piece->instance_first + instance,
-                                    &fill) == 0) {
+            const size_t target_index =
+                (size_t)piece->instance_first + instance;
+            if (db_vk_frame_rect_iterator_advance_to(
+                    &rect_iterator, &next_rect_index, target_index, &fill) ==
+                0) {
                 continue;
             }
             float color[3] = {0};
@@ -227,7 +232,8 @@ void db_vk_calibration_run_after_live(const db_frame_plan_t *plan) {
             ? g_state.calibration.split_search.selected_share_bps
             : db_vk_split_search_next_share(&g_state.calibration.split_search);
     if (db_vk_build_execution_plan_with_worker_share(
-            plan, g_state.device.selection.active_lane_count,
+            plan, &g_state.scheduler.planner_workspace,
+            g_state.device.selection.active_lane_count,
             DB_VK_SCHEDULING_STABLE_ROWS, worker_share_bps,
             g_state.scheduler.ema_ms_per_work_unit,
             g_state.scheduler.scheduling_epoch,
@@ -369,7 +375,9 @@ void db_vk_calibration_run_after_live(const db_frame_plan_t *plan) {
         if (g_state.calibration.split_search.complete != 0) {
             g_state.scheduler.worker_share_bps =
                 g_state.calibration.split_search.selected_share_bps;
-            g_state.scheduler.scheduling_epoch++;
+            g_state.scheduler.scheduling_epoch =
+                db_checked_add_u32(BACKEND_NAME, "scheduling_epoch",
+                                   g_state.scheduler.scheduling_epoch, 1U);
             const db_log_field_t selected_fields[] = {
                 DB_LOG_U64("worker_share_bps",
                            g_state.scheduler.worker_share_bps),

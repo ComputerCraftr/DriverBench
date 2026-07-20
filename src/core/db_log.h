@@ -38,6 +38,12 @@ typedef struct {
     size_t field_count;
 } db_log_event_t;
 
+enum {
+    DB_LOG_FIELD_CAPACITY = 128U,
+    DB_LOG_IDENTIFIER_CAPACITY = 128U,
+    DB_LOG_TOKEN_CAPACITY = 1024U,
+};
+
 #define DB_LOG_I64(key_, value_)                                               \
     ((db_log_field_t){.key = (key_),                                           \
                       .kind = DB_LOG_FIELD_I64,                                \

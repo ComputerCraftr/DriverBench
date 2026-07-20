@@ -2,9 +2,13 @@
 #define DRIVERBENCH_RENDERER_SNAKE_COMMON_COLLECT_INTERNAL_H
 
 #include "../config/benchmark_config.h"
-#include "benchmarks/db_benchmark_types_internal.h"
 #include "benchmarks/db_snake_shape_internal.h"
 #include "benchmarks/db_snake_types_internal.h"
+#include "core/db_core.h"
+#include "core/db_geometry.h"
+#include "core/db_hash.h"
+#include "core/db_numeric.h"
+#include <stdint.h>
 #include <string.h>
 
 static inline double db_snake_color_channel(uint32_t seed) {

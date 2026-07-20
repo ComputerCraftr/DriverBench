@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_CORE_DB_PROBE_PROTOCOL_H
 #define DRIVERBENCH_CORE_DB_PROBE_PROTOCOL_H
 
+#include "core/db_conformance_cache.h"
 #include "db_conformance.h"
 #include "db_render_types.h"
 

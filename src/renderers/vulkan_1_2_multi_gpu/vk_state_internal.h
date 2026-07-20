@@ -1,8 +1,16 @@
 #ifndef DRIVERBENCH_VK_STATE_INTERNAL_H
 #define DRIVERBENCH_VK_STATE_INTERNAL_H
 
-#include "core/db_metrics_policy.h"
+#include "core/db_qualification_contracts.h"
+#include "core/db_render_result.h"
+#include "core/db_render_types.h"
+#include "core/db_renderer_diagnostics.h"
+#include "core/db_renderer_support.h"
+#include "renderers/vulkan_1_2_multi_gpu/vk_renderer.h"
 #include "vk_internal.h"
+#include <stddef.h>
+#include <stdint.h>
+#include <vulkan/vulkan_core.h>
 
 #define g_state g_vk_state
 
@@ -62,7 +70,7 @@ typedef struct {
     VkPhysicalDevice present_phys;
     VkDevice device;
     VkQueue queue;
-    DeviceSelectionState selection;
+    db_vk_selected_device_state_t selection;
     uint32_t gpu_count;
     uint32_t device_group_mask;
     VkCommandBuffer command_buffer;
@@ -123,6 +131,7 @@ typedef struct {
     db_vk_independent_lane_runtime_t independent_lanes[MAX_GPU_COUNT];
     db_vk_present_piece_t *piece_storage;
     db_vk_lane_assignment_t *assignment_storage;
+    db_vk_planner_workspace_t planner_workspace;
     uint32_t scheduling_epoch;
     uint32_t content_generation;
     uint32_t last_active_lane_count;

@@ -1,10 +1,13 @@
 #include "core/db_format_contract.h"
+#include "core/db_frame_plan.h"
+#include "core/db_render_ir.h"
 #include "support/test_harness.h"
 
 #include "core/db_geometry.h"
 #include "core/db_render_types.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "core/db_backing_recovery.h"
@@ -21,7 +24,73 @@ enum {
     DB_TEST_GL_INVALID_ENUM = 0x0500,
     DB_TEST_GL_INVALID_VALUE = 0x0501,
     DB_TEST_GL_ERROR_DRAIN_LIMIT = 64U,
+    DB_TEST_RGBA8_PADDED_ROW_BYTES = 12U,
+    DB_TEST_INVALID_ROW_BYTES = 10U,
+    DB_TEST_RGBA16F_PADDED_ROW_BYTES = 24U,
 };
+
+static db_frame_plan_t
+db_test_hdr_plan_for_command(db_render_ir_command_t *command,
+                             size_t command_size) {
+    return (db_frame_plan_t){
+        .update_ir =
+            {
+                .commands = &command->alignment,
+                .command_size = command_size,
+                .command_count = 1U,
+            },
+    };
+}
+
+static void
+db_test_hdr_semantic_ir_eligibility_is_conservative(db_test_state_t *state) {
+    db_render_ir_command_t command = {
+        .clear =
+            {
+                .header =
+                    {
+                        .byte_size = sizeof(db_render_ir_clear_command_t),
+                        .opcode = DB_RENDER_IR_OP_CLEAR,
+                        .composite = DB_RENDER_IR_COMPOSITE_SOURCE,
+                        .clip_region = DB_RENDER_IR_INVALID_ID,
+                        .flags = DB_RENDER_IR_COMMAND_OPAQUE_SOURCE,
+                    },
+            },
+    };
+    db_frame_plan_t plan =
+        db_test_hdr_plan_for_command(&command, sizeof(command.clear));
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_shadow_present_hdr_ir_direct_eligible(&plan) != 0);
+
+    command.clear.header.composite = DB_RENDER_IR_COMPOSITE_SOURCE_OVER;
+    command.clear.header.flags = 0U;
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_shadow_present_hdr_ir_direct_eligible(&plan) == 0);
+
+    command.clear.header.composite = DB_RENDER_IR_COMPOSITE_SOURCE;
+    command.clear.header.flags = DB_RENDER_IR_COMMAND_OPAQUE_SOURCE;
+    command.clear.header.clip_region = 0U;
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_shadow_present_hdr_ir_direct_eligible(&plan) == 0);
+
+    command.clear.header.clip_region = DB_RENDER_IR_INVALID_ID;
+    plan.rebuild_required = 1;
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_shadow_present_hdr_ir_direct_eligible(&plan) == 0);
+
+    plan.rebuild_required = 0;
+    plan.external_bindings.count = 1U;
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_shadow_present_hdr_ir_direct_eligible(&plan) == 0);
+
+    plan.external_bindings.count = 0U;
+    command.upload.header = command.clear.header;
+    command.upload.header.byte_size = sizeof(db_render_ir_upload_command_t);
+    command.upload.header.opcode = DB_RENDER_IR_OP_UPLOAD_IMAGE;
+    plan = db_test_hdr_plan_for_command(&command, sizeof(command.upload));
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_shadow_present_hdr_ir_direct_eligible(&plan) == 0);
+}
 
 static uint32_t db_test_get_error_stub(void) {
     const uint32_t error_code =
@@ -259,6 +328,43 @@ db_test_upload_stream_prepare_storage_does_not_create_buffer_hot_path(
                           DB_GL_STREAM_UPLOAD_MODE_SUB_DATA);
 }
 
+static void db_test_upload_stream_rejects_borrowed_source_reallocation(
+    db_test_state_t *state) {
+    db_gl_upload_stream_t stream = {0};
+    const db_gl_stream_upload_capability_t capability = {
+        .target = DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER,
+        .requested_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+        .supported_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+        .effective_storage = DB_GL_STREAM_UPLOAD_STORAGE_CLIENT,
+        .requested_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+        .supported_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+        .effective_mode = DB_GL_STREAM_UPLOAD_MODE_SUB_DATA,
+    };
+    db_gl_upload_stream_init(&stream, DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER,
+                             capability, 0U, 1);
+    DB_TEST_EXPECT_TRUE(state, db_gl_upload_stream_prepare_storage(
+                                   &stream, "test_gl_shadow_present", 8U));
+    uint8_t *const storage = (uint8_t *)stream.client_storage;
+    for (size_t index = 0U; index < 8U; index++) {
+        storage[index] = (uint8_t)index;
+    }
+
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_upload_stream_write(&stream, "test_gl_shadow_present",
+                                         storage, 16U, 0U, 8U) == 0);
+    DB_TEST_EXPECT_TRUE(state, stream.client_storage == storage);
+    DB_TEST_EXPECT_EQ_SIZE(state, stream.client_reserved_bytes, 8U);
+
+    DB_TEST_EXPECT_TRUE(
+        state, db_gl_upload_stream_write(&stream, "test_gl_shadow_present",
+                                         storage + 1U, 8U, 0U, 4U));
+    DB_TEST_EXPECT_EQ_U32(state, storage[0], 1U);
+    DB_TEST_EXPECT_EQ_U32(state, storage[1], 2U);
+    DB_TEST_EXPECT_EQ_U32(state, storage[2], 3U);
+    DB_TEST_EXPECT_EQ_U32(state, storage[3], 4U);
+    db_gl_upload_stream_shutdown(&stream);
+}
+
 static void
 db_test_gl_error_trace_drain_records_multiple_errors(db_test_state_t *state) {
     db_gl_error_trace_t trace = {0};
@@ -409,7 +515,11 @@ db_test_full_upload_slot_choice_consumes_ring_fallback(db_test_state_t *state) {
 
 static void db_test_shadow_upload_trace_records_full_upload_fallback(
     db_test_state_t *state) {
-    db_gl_shadow_upload_trace_t trace = {0};
+    db_gl_upload_span_trace_t upload_span = {0};
+    db_gl_shadow_upload_trace_t trace = {
+        .upload_spans = &upload_span,
+        .upload_span_capacity = 1U,
+    };
     uint16_t rgba16f_pixels[64] = {0};
     const db_pixel_surface_t surface = {
         .pixel_width = 4U,
@@ -520,6 +630,90 @@ db_test_repair_full_upload_target_copies_full_surface_for_fresh_target(
 }
 
 static void
+db_test_repair_rejects_out_of_bounds_damage(db_test_state_t *state) {
+    enum { TEST_REPAIR_SENTINEL = 9U };
+    uint32_t src_pixels[4] = {1U, 2U, 3U, 4U};
+    uint32_t dst_pixels[4] = {TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL,
+                              TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL};
+    const uint32_t expected[4] = {TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL,
+                                  TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL};
+    const db_pixel_surface_t source_surface = {
+        .pixel_width = 2U,
+        .pixel_height = 2U,
+        .pixels = src_pixels,
+        .format = DB_PIXEL_FORMAT_RGBA8,
+    };
+    db_gl_shadow_present_state_t present = {
+        .slot_count = 1U,
+        .upload_slots = {{.slot_valid = 1}},
+    };
+    db_gl_shadow_present_full_upload_target_t target = {
+        .pixel_surface =
+            {
+                .pixel_width = 2U,
+                .pixel_height = 2U,
+                .pixels = dst_pixels,
+                .format = DB_PIXEL_FORMAT_RGBA8,
+            },
+        .slot_index = 0U,
+        .mode = DB_GL_SHADOW_FULL_UPLOAD_TARGET_DIRECT_CLIENT_TEXTURE_UPLOAD,
+    };
+    const db_damage_block_t invalid = {
+        .row_start = 1U,
+        .row_count = 2U,
+        .col_start = 1U,
+        .col_count = 2U,
+    };
+    db_gl_shadow_present_repair_full_upload_target(
+        &present, &target, &source_surface,
+        (db_pixel_block_view_t){.blocks = &invalid, .count = 1U});
+    DB_TEST_EXPECT_EQ_INT(state, present.upload_slots[0].slot_valid, 0);
+    DB_TEST_EXPECT_TRUE(state,
+                        memcmp(dst_pixels, expected, sizeof(expected)) == 0);
+}
+
+static void
+db_test_repair_rejects_mismatched_source_extent(db_test_state_t *state) {
+    enum { TEST_REPAIR_SENTINEL = 17U };
+    uint32_t src_pixels[2] = {1U, 2U};
+    uint32_t dst_pixels[4] = {TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL,
+                              TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL};
+    const uint32_t expected[4] = {TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL,
+                                  TEST_REPAIR_SENTINEL, TEST_REPAIR_SENTINEL};
+    const db_pixel_surface_t source_surface = {
+        .pixel_width = 2U,
+        .pixel_height = 1U,
+        .pixels = src_pixels,
+        .format = DB_PIXEL_FORMAT_RGBA8,
+    };
+    const db_gl_pixel_upload_payload_t payload =
+        db_gl_pixel_upload_payload_from_surface(&source_surface);
+    db_gl_shadow_present_state_t present = {
+        .slot_count = 1U,
+        .upload_slots = {{.slot_valid = 1, .slot_matches_shadow = 1}},
+    };
+    db_gl_shadow_present_full_upload_target_t target = {
+        .pixel_surface =
+            {
+                .pixel_width = 2U,
+                .pixel_height = 2U,
+                .pixels = dst_pixels,
+                .format = DB_PIXEL_FORMAT_RGBA8,
+            },
+        .slot_index = 0U,
+    };
+
+    db_gl_shadow_present_repair_full_upload_target_from_pixels(
+        &present, &target, &payload, NULL, 0U);
+
+    DB_TEST_EXPECT_TRUE(state,
+                        memcmp(dst_pixels, expected, sizeof(expected)) == 0);
+    DB_TEST_EXPECT_EQ_INT(state, present.upload_slots[0].slot_valid, 0);
+    DB_TEST_EXPECT_EQ_INT(state, present.upload_slots[0].slot_matches_shadow,
+                          0);
+}
+
+static void
 db_test_upload_slots_rotate_except_single_source(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_U32(state,
                           db_gl_shadow_present_next_write_slot_after_present(
@@ -550,8 +744,52 @@ static void db_test_upload_probe_prefix_is_bounded(db_test_state_t *state) {
         state, db_gl_verify_buffer_prefix(&expected, maximum + 1U) == 0);
 }
 
+static void db_test_hdr_upload_workspace_grows_only_during_provisioning(
+    db_test_state_t *state) {
+    db_gl_shadow_present_state_t present = {0};
+    db_gl_shadow_present_prepare_hdr_upload_workspace(&present, "test", 8U, 4U);
+    uint32_t *const allocated = present.encoded_upload_scratch;
+    DB_TEST_EXPECT_TRUE(state, allocated != NULL);
+    DB_TEST_EXPECT_EQ_SIZE(state, present.encoded_upload_scratch_capacity, 32U);
+    db_gl_shadow_present_prepare_hdr_upload_workspace(&present, "test", 4U, 2U);
+    DB_TEST_EXPECT_TRUE(state, present.encoded_upload_scratch == allocated);
+    DB_TEST_EXPECT_EQ_SIZE(state, present.encoded_upload_scratch_capacity, 32U);
+    free(present.encoded_upload_scratch);
+}
+
+static void db_test_external_binding_unpack_row_layout(db_test_state_t *state) {
+    db_render_ir_external_binding_t binding = {
+        .width = 2U,
+        .height = 2U,
+        .format = DB_PIXEL_FORMAT_RGBA8,
+        .row_stride_bytes = 8U,
+    };
+    uint32_t row_length = UINT32_MAX;
+    DB_TEST_EXPECT_TRUE(state, db_gl_external_binding_unpack_row_length(
+                                   &binding, 0, &row_length) != 0);
+    DB_TEST_EXPECT_EQ_U32(state, row_length, 0U);
+
+    binding.row_stride_bytes = DB_TEST_RGBA8_PADDED_ROW_BYTES;
+    DB_TEST_EXPECT_TRUE(state, db_gl_external_binding_unpack_row_length(
+                                   &binding, 1, &row_length) != 0);
+    DB_TEST_EXPECT_EQ_U32(state, row_length, 3U);
+    DB_TEST_EXPECT_TRUE(state, db_gl_external_binding_unpack_row_length(
+                                   &binding, 0, &row_length) == 0);
+
+    binding.row_stride_bytes = DB_TEST_INVALID_ROW_BYTES;
+    DB_TEST_EXPECT_TRUE(state, db_gl_external_binding_unpack_row_length(
+                                   &binding, 1, &row_length) == 0);
+    binding.format = DB_PIXEL_FORMAT_RGBA16F;
+    binding.row_stride_bytes = DB_TEST_RGBA16F_PADDED_ROW_BYTES;
+    DB_TEST_EXPECT_TRUE(state, db_gl_external_binding_unpack_row_length(
+                                   &binding, 1, &row_length) != 0);
+    DB_TEST_EXPECT_EQ_U32(state, row_length, 3U);
+}
+
 unsigned db_gl_shadow_present_test_run_all(void) {
     static const db_test_case_t cases[] = {
+        {"hdr_semantic_ir_eligibility_is_conservative",
+         db_test_hdr_semantic_ir_eligibility_is_conservative},
         {"unpack_upload_storage_reuses_client_buffer",
          db_test_unpack_upload_storage_reuses_client_buffer},
         {"ring_scheduler_selects_ready_alternate_slot",
@@ -566,6 +804,8 @@ unsigned db_gl_shadow_present_test_run_all(void) {
          db_test_pixel_upload_payload_from_surface_reports_metadata},
         {"upload_stream_prepare_storage_does_not_create_buffer_hot_path",
          db_test_upload_stream_prepare_storage_does_not_create_buffer_hot_path},
+        {"upload_stream_rejects_borrowed_source_reallocation",
+         db_test_upload_stream_rejects_borrowed_source_reallocation},
         {"gl_error_trace_drain_records_multiple_errors",
          db_test_gl_error_trace_drain_records_multiple_errors},
         {"gl_error_trace_drain_is_bounded",
@@ -586,10 +826,18 @@ unsigned db_gl_shadow_present_test_run_all(void) {
          db_test_shadow_upload_trace_does_not_mark_execution_before_upload_runs},
         {"repair_full_upload_target_copies_full_surface_for_fresh_target",
          db_test_repair_full_upload_target_copies_full_surface_for_fresh_target},
+        {"repair_rejects_mismatched_source_extent",
+         db_test_repair_rejects_mismatched_source_extent},
+        {"repair_rejects_out_of_bounds_damage",
+         db_test_repair_rejects_out_of_bounds_damage},
         {"upload_slots_rotate_except_single_source",
          db_test_upload_slots_rotate_except_single_source},
         {"upload_probe_prefix_is_bounded",
          db_test_upload_probe_prefix_is_bounded},
+        {"hdr_upload_workspace_grows_only_during_provisioning",
+         db_test_hdr_upload_workspace_grows_only_during_provisioning},
+        {"external_binding_unpack_row_layout",
+         db_test_external_binding_unpack_row_layout},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

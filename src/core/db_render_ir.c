@@ -1,12 +1,12 @@
 #include "db_render_ir.h"
+
+#include "db_core.h"
 #include "db_numeric.h"
 
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-enum { DB_RENDER_IR_ALIGNMENT = _Alignof(max_align_t) };
 
 static int add_size(size_t lhs, size_t rhs, size_t *result) {
     if ((result == NULL) || (lhs > (SIZE_MAX - rhs))) {
@@ -18,19 +18,36 @@ static int add_size(size_t lhs, size_t rhs, size_t *result) {
 
 static int align_size(size_t value, size_t *result) {
     size_t expanded = 0U;
-    if (!add_size(value, DB_RENDER_IR_ALIGNMENT - 1U, &expanded)) {
+    if (!add_size(value, DB_RENDER_IR_RECORD_ALIGNMENT - 1U, &expanded)) {
         return 0;
     }
-    *result = expanded & ~(size_t)(DB_RENDER_IR_ALIGNMENT - 1U);
+    *result = expanded & ~(size_t)(DB_RENDER_IR_RECORD_ALIGNMENT - 1U);
     return 1;
 }
 
 static int rect_has_safe_endpoints(db_render_ir_rect_t rect) {
-    const int64_t x_end = (int64_t)rect.x + (int64_t)rect.width;
-    const int64_t y_end = (int64_t)rect.y + (int64_t)rect.height;
-    return DB_BOOL((rect.x >= 0) && (rect.y >= 0) && (rect.width > 0) &&
-                   (rect.height > 0) && (x_end <= INT32_MAX) &&
-                   (y_end <= INT32_MAX));
+    int32_t x_end = 0;
+    int32_t y_end = 0;
+    return DB_BOOL((rect.x >= 0) && (rect.y >= 0) &&
+                   (db_render_ir_rect_endpoints(rect, &x_end, &y_end) != 0));
+}
+
+static int last_command_header(const db_render_ir_store_t *store,
+                               db_render_ir_command_header_t *header,
+                               unsigned char **encoded) {
+    if ((store == NULL) || (header == NULL) || (encoded == NULL) ||
+        (store->commands == NULL) || (store->command_count == 0U) ||
+        (store->last_command_offset > store->command_size) ||
+        ((store->command_size - store->last_command_offset) <
+         sizeof(*header))) {
+        return 0;
+    }
+    *encoded = (unsigned char *)store->commands + store->last_command_offset;
+    memcpy(header, *encoded, sizeof(*header));
+    return DB_BOOL((header->byte_size >= sizeof(*header)) &&
+                   (header->byte_size ==
+                    (store->command_size - store->last_command_offset)) &&
+                   (header->sequence == (store->command_count - 1U)));
 }
 
 static db_render_ir_status_t append_command(db_render_ir_store_t *store,
@@ -38,7 +55,7 @@ static db_render_ir_status_t append_command(db_render_ir_store_t *store,
                                             size_t command_size) {
     size_t aligned_size = 0U;
     size_t end = 0U;
-    if ((store == NULL) || (command == NULL) ||
+    if ((store == NULL) || (store->commands == NULL) || (command == NULL) ||
         (command_size < sizeof(db_render_ir_command_header_t)) ||
         (command_size > sizeof(db_render_ir_command_t))) {
         return DB_RENDER_IR_INVALID;
@@ -52,16 +69,26 @@ static db_render_ir_status_t append_command(db_render_ir_store_t *store,
         store->status = DB_RENDER_IR_CAPACITY;
         return store->status;
     }
+    uint32_t next_sequence = 0U;
+    uint32_t next_command_count = 0U;
+    if ((db_try_add_u32(store->next_sequence, 1U, &next_sequence) == 0) ||
+        (db_try_add_u32(store->command_count, 1U, &next_command_count) == 0)) {
+        store->status = DB_RENDER_IR_ARITHMETIC_OVERFLOW;
+        return store->status;
+    }
     unsigned char *const destination =
         (unsigned char *)store->commands + store->command_size;
+    const size_t command_offset = store->command_size;
     db_render_ir_command_t encoded = {0};
     memcpy(&encoded, command, command_size);
     encoded.header.byte_size = (uint16_t)aligned_size;
-    encoded.header.sequence = store->next_sequence++;
+    encoded.header.sequence = store->next_sequence;
     memset(destination, 0, aligned_size);
     memcpy(destination, &encoded, command_size);
     store->command_size = end;
-    store->command_count++;
+    store->last_command_offset = command_offset;
+    store->next_sequence = next_sequence;
+    store->command_count = next_command_count;
     return DB_RENDER_IR_OK;
 }
 
@@ -88,6 +115,7 @@ void db_render_ir_store_reset(db_render_ir_store_t *store) {
         return;
     }
     store->command_size = 0U;
+    store->last_command_offset = 0U;
     store->command_count = 0U;
     store->fill_count = 0U;
     store->resource_count = 0U;
@@ -120,19 +148,39 @@ db_render_ir_view_t db_render_ir_store_view(const db_render_ir_store_t *store) {
 }
 
 db_render_ir_status_t
+db_render_ir_set_last_command_ordering(db_render_ir_store_t *store,
+                                       uint32_t ordering_domain,
+                                       uint32_t inseparable_group) {
+    if ((store == NULL) || (store->commands == NULL) ||
+        (store->command_count == 0U) || (store->command_size == 0U)) {
+        return DB_RENDER_IR_INVALID;
+    }
+    db_render_ir_command_header_t header = {0};
+    unsigned char *encoded = NULL;
+    if (last_command_header(store, &header, &encoded) == 0) {
+        return DB_RENDER_IR_INVALID;
+    }
+    header.ordering_domain = ordering_domain;
+    header.inseparable_group = inseparable_group;
+    memcpy(encoded, &header, sizeof(header));
+    return DB_RENDER_IR_OK;
+}
+
+db_render_ir_status_t
 db_render_ir_add_resource(db_render_ir_store_t *store,
                           const db_render_ir_resource_t *resource,
                           db_render_ir_resource_id_t *resource_id) {
-    if ((store == NULL) || (resource == NULL) || (resource_id == NULL) ||
-        (resource->width == 0U) || (resource->height == 0U) ||
-        (resource->width > INT32_MAX) || (resource->height > INT32_MAX)) {
+    if ((store == NULL) || (store->resources == NULL) || (resource == NULL) ||
+        (resource_id == NULL) || (resource->width == 0U) ||
+        (resource->height == 0U) || (resource->width > INT32_MAX) ||
+        (resource->height > INT32_MAX)) {
         return DB_RENDER_IR_INVALID;
     }
     if (store->resource_count >= store->resource_capacity) {
         store->status = DB_RENDER_IR_CAPACITY;
         return store->status;
     }
-    if (store->resource_count > UINT32_MAX) {
+    if (store->resource_count >= UINT32_MAX) {
         store->status = DB_RENDER_IR_CAPACITY;
         return store->status;
     }
@@ -143,6 +191,23 @@ db_render_ir_add_resource(db_render_ir_store_t *store,
 
 int db_render_ir_rect_is_empty(db_render_ir_rect_t rect) {
     return DB_BOOL((rect.width <= 0) || (rect.height <= 0));
+}
+
+int db_render_ir_rect_endpoints(db_render_ir_rect_t rect, int32_t *x_end,
+                                int32_t *y_end) {
+    if ((x_end == NULL) || (y_end == NULL) || (rect.width <= 0) ||
+        (rect.height <= 0)) {
+        return 0;
+    }
+    const int64_t checked_x_end = (int64_t)rect.x + (int64_t)rect.width;
+    const int64_t checked_y_end = (int64_t)rect.y + (int64_t)rect.height;
+    if ((checked_x_end < INT32_MIN) || (checked_x_end > INT32_MAX) ||
+        (checked_y_end < INT32_MIN) || (checked_y_end > INT32_MAX)) {
+        return 0;
+    }
+    *x_end = (int32_t)checked_x_end;
+    *y_end = (int32_t)checked_y_end;
+    return 1;
 }
 
 int db_render_ir_rect_from_extent(uint32_t width, uint32_t height,
@@ -196,14 +261,15 @@ db_render_ir_status_t
 db_render_ir_add_rect_region(db_render_ir_store_t *store,
                              db_render_ir_rect_t rect,
                              db_render_ir_region_id_t *region_id) {
-    if ((store == NULL) || (region_id == NULL) ||
+    if ((store == NULL) || (store->regions == NULL) || (store->bands == NULL) ||
+        (store->spans == NULL) || (region_id == NULL) ||
         (rect_has_safe_endpoints(rect) == 0)) {
         return DB_RENDER_IR_INVALID;
     }
     if ((store->region_count >= store->region_capacity) ||
         (store->band_count >= store->band_capacity) ||
         (store->span_count >= store->span_capacity) ||
-        (store->region_count > UINT32_MAX) ||
+        (store->region_count >= UINT32_MAX) ||
         (store->band_count > UINT32_MAX) || (store->span_count > UINT32_MAX)) {
         store->status = DB_RENDER_IR_CAPACITY;
         return store->status;
@@ -225,34 +291,17 @@ db_render_ir_add_rect_region(db_render_ir_store_t *store,
 db_render_ir_status_t db_render_ir_set_last_command_regions(
     db_render_ir_store_t *store, db_render_ir_region_id_t touched_region,
     db_render_ir_region_id_t full_coverage_region) {
-    if ((store == NULL) || (store->command_count == 0U) ||
+    if ((store == NULL) || (store->commands == NULL) ||
+        (store->command_count == 0U) ||
         (touched_region >= store->region_count) ||
         (full_coverage_region >= store->region_count)) {
         return DB_RENDER_IR_INVALID;
     }
-    size_t offset = 0U;
-    size_t last_offset = 0U;
-    int has_last = 0;
-    while (offset < store->command_size) {
-        db_render_ir_command_header_t command = {0};
-        const unsigned char *const encoded =
-            (const unsigned char *)store->commands + offset;
-        memcpy(&command, encoded, sizeof(command));
-        if ((command.byte_size < sizeof(command)) ||
-            (command.byte_size > (store->command_size - offset))) {
-            return DB_RENDER_IR_INVALID;
-        }
-        last_offset = offset;
-        has_last = 1;
-        offset += command.byte_size;
-    }
-    if ((has_last == 0) || (offset != store->command_size)) {
+    db_render_ir_command_header_t last = {0};
+    unsigned char *encoded = NULL;
+    if (last_command_header(store, &last, &encoded) == 0) {
         return DB_RENDER_IR_INVALID;
     }
-    db_render_ir_command_header_t last = {0};
-    unsigned char *const encoded =
-        (unsigned char *)store->commands + last_offset;
-    memcpy(&last, encoded, sizeof(last));
     last.touched_region = touched_region;
     last.full_coverage_region = full_coverage_region;
     memcpy(encoded, &last, sizeof(last));
@@ -306,7 +355,8 @@ db_render_ir_fill_rects(db_render_ir_store_t *store,
                         db_render_ir_resource_id_t destination,
                         const db_render_ir_fill_t *fills, size_t fill_count,
                         db_render_ir_region_id_t clip_region) {
-    if ((store == NULL) || ((fills == NULL) && (fill_count > 0U))) {
+    if ((store == NULL) || ((store->fills == NULL) && (fill_count > 0U)) ||
+        ((fills == NULL) && (fill_count > 0U))) {
         return DB_RENDER_IR_INVALID;
     }
     if (fill_count == 0U) {
@@ -320,14 +370,21 @@ db_render_ir_fill_rects(db_render_ir_store_t *store,
     }
     const uint32_t first_fill = (uint32_t)store->fill_count;
     for (size_t index = 0U; index < fill_count; index++) {
-        db_render_ir_fill_t canonical = fills[index];
+        db_render_ir_color_t canonical = {0};
+        int32_t x_end = 0;
+        int32_t y_end = 0;
         const db_render_ir_status_t color_status =
-            db_render_ir_color_canonicalize(fills[index].color,
-                                            &canonical.color);
+            db_render_ir_color_canonicalize(fills[index].color, &canonical);
         if ((color_status != DB_RENDER_IR_OK) ||
-            (db_render_ir_rect_is_empty(canonical.rect) != 0)) {
+            (db_render_ir_rect_endpoints(fills[index].rect, &x_end, &y_end) ==
+             0)) {
             return DB_RENDER_IR_INVALID;
         }
+    }
+    for (size_t index = 0U; index < fill_count; index++) {
+        db_render_ir_fill_t canonical = fills[index];
+        (void)db_render_ir_color_canonicalize(fills[index].color,
+                                              &canonical.color);
         store->fills[store->fill_count + index] = canonical;
     }
     store->fill_count += fill_count;
@@ -340,7 +397,12 @@ db_render_ir_fill_rects(db_render_ir_store_t *store,
         .first_fill = first_fill,
         .fill_count = (uint32_t)fill_count,
     };
-    return append_command(store, &command, sizeof(command));
+    const db_render_ir_status_t status =
+        append_command(store, &command, sizeof(command));
+    if (status != DB_RENDER_IR_OK) {
+        store->fill_count = first_fill;
+    }
+    return status;
 }
 
 db_render_ir_status_t db_render_ir_fill_linear_gradient(
@@ -348,7 +410,10 @@ db_render_ir_status_t db_render_ir_fill_linear_gradient(
     db_render_ir_rect_t bounds, int32_t axis_start, int32_t axis_end,
     int reverse_stops, db_render_ir_color_t start_color,
     db_render_ir_color_t end_color, db_render_ir_region_id_t clip_region) {
-    if ((store == NULL) || (db_render_ir_rect_is_empty(bounds) != 0) ||
+    int32_t x_end = 0;
+    int32_t y_end = 0;
+    if ((store == NULL) ||
+        (db_render_ir_rect_endpoints(bounds, &x_end, &y_end) == 0) ||
         (axis_end < axis_start)) {
         return DB_RENDER_IR_INVALID;
     }
@@ -381,7 +446,10 @@ db_render_ir_status_t db_render_ir_upload_image(
     db_render_ir_resource_id_t source, db_render_ir_rect_t source_rect,
     int32_t destination_x, int32_t destination_y,
     db_render_ir_upload_semantics_t semantics) {
-    if ((db_render_ir_rect_is_empty(source_rect) != 0) ||
+    int32_t source_x_end = 0;
+    int32_t source_y_end = 0;
+    if ((db_render_ir_rect_endpoints(source_rect, &source_x_end,
+                                     &source_y_end) == 0) ||
         !isfinite(semantics.opacity) || (semantics.opacity < 0.0) ||
         (semantics.opacity > 1.0) ||
         (semantics.replacement != DB_RENDER_IR_UPLOAD_REPLACE_EXACT) ||
@@ -425,18 +493,31 @@ db_render_ir_color_canonicalize(db_render_ir_color_t input,
     return DB_RENDER_IR_OK;
 }
 
-const db_render_ir_external_binding_t *
-db_render_ir_find_binding(db_render_ir_external_binding_view_t bindings,
-                          db_render_ir_resource_id_t resource) {
-    if (bindings.bindings == NULL) {
-        return NULL;
+int db_render_ir_find_binding(db_render_ir_external_binding_view_t bindings,
+                              db_render_ir_resource_id_t resource,
+                              db_render_ir_external_binding_t *output) {
+    if ((bindings.bindings == NULL) || (output == NULL) ||
+        (bindings.count > DB_RENDER_IR_EXTERNAL_BINDING_CAPACITY)) {
+        return 0;
     }
-    for (size_t index = 0U; index < bindings.count; index++) {
-        if (bindings.bindings[index].resource == resource) {
-            return &bindings.bindings[index];
+    size_t lower = 0U;
+    size_t upper = bindings.count;
+    while (lower < upper) {
+        const size_t middle = lower + ((upper - lower) / 2U);
+        const db_render_ir_resource_id_t candidate =
+            bindings.bindings[middle].resource;
+        if (candidate < resource) {
+            lower = middle + 1U;
+        } else {
+            upper = middle;
         }
     }
-    return NULL;
+    if ((lower >= bindings.count) ||
+        (bindings.bindings[lower].resource != resource)) {
+        return 0;
+    }
+    *output = bindings.bindings[lower];
+    return 1;
 }
 
 db_render_ir_status_t

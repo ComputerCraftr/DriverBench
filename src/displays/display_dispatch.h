@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "../driverbench_config.h"
+#include "displays/display_types.h"
 
 typedef struct {
     int compiled;

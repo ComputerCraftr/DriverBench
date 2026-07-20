@@ -54,7 +54,20 @@ enum {
     DB_QUALIFICATION_COMMON_DOMAIN_VERSION = 1U,
     DB_QUALIFICATION_COMMON_BUILD_VERSION = 1U,
     DB_QUALIFICATION_COMMON_GRADIENT_WINDOW_ROWS = 32U,
+    DB_CONFORMANCE_BATCH_DEDUP_SLOTS = 64U,
 };
+
+typedef struct {
+    uint64_t hash;
+    size_t key_index;
+    int occupied;
+} db_conformance_dedup_slot_t;
+
+_Static_assert((DB_CONFORMANCE_BATCH_DEDUP_SLOTS &
+                (DB_CONFORMANCE_BATCH_DEDUP_SLOTS - 1U)) == 0U,
+               "conformance dedup table size must be a power of two");
+_Static_assert(DB_CONFORMANCE_BATCH_DEDUP_SLOTS > DB_CONFORMANCE_BATCH_MAX_KEYS,
+               "conformance dedup table must retain an empty slot");
 
 static int copy_text(uint8_t *output, const char *text) {
     const size_t length = (text != NULL) ? strlen(text) : 0U;
@@ -353,18 +366,32 @@ int db_conformance_qualify_batch(const db_conformance_key_t *keys,
         db_deadline_after(db_now_ns_monotonic(), aggregate_timeout_ns);
     uint8_t current[DB_CONFORMANCE_KEY_WIRE_BYTES] = {0};
     uint8_t previous[DB_CONFORMANCE_KEY_WIRE_BYTES] = {0};
+    db_conformance_dedup_slot_t dedup[DB_CONFORMANCE_BATCH_DEDUP_SLOTS] = {0};
     for (size_t index = 0U; index < key_count; index++) {
         if (db_conformance_key_serialize(&keys[index], current) == 0) {
             return 0;
         }
+        const uint64_t key_hash = db_fnv1a64_bytes(current, sizeof(current));
+        size_t slot =
+            (size_t)(key_hash & (DB_CONFORMANCE_BATCH_DEDUP_SLOTS - 1U));
         int duplicate = 0;
-        for (size_t prior = 0U; prior < index; prior++) {
-            if ((db_conformance_key_serialize(&keys[prior], previous) != 0) &&
+        for (size_t probe = 0U; probe < DB_CONFORMANCE_BATCH_DEDUP_SLOTS;
+             probe++) {
+            db_conformance_dedup_slot_t *const entry = &dedup[slot];
+            if (entry->occupied == 0) {
+                *entry = (db_conformance_dedup_slot_t){
+                    .hash = key_hash, .key_index = index, .occupied = 1};
+                break;
+            }
+            if ((entry->hash == key_hash) &&
+                (db_conformance_key_serialize(&keys[entry->key_index],
+                                              previous) != 0) &&
                 (memcmp(current, previous, sizeof(current)) == 0)) {
-                decisions[index] = decisions[prior];
+                decisions[index] = decisions[entry->key_index];
                 duplicate = 1;
                 break;
             }
+            slot = (slot + 1U) & (DB_CONFORMANCE_BATCH_DEDUP_SLOTS - 1U);
         }
         if (duplicate != 0) {
             continue;
@@ -393,20 +420,18 @@ int db_conformance_qualify_batch(const db_conformance_key_t *keys,
 int db_qualification_service_resolve_topology(
     const db_qualification_topology_request_t *request,
     const db_conformance_query_t *query, uint64_t aggregate_timeout_ns,
+    db_qualification_service_workspace_t *workspace,
     db_qualification_topology_result_t *result) {
-    if ((request == NULL) || (query == NULL) || (result == NULL) ||
-        (request->lane_count == 0U) ||
+    if ((request == NULL) || (query == NULL) || (workspace == NULL) ||
+        (result == NULL) || (request->lane_count == 0U) ||
         (request->lane_count > DB_CONFORMANCE_TOPOLOGY_MAX_LANES)) {
         return 0;
     }
-    *result = (db_qualification_topology_result_t){0};
+    *workspace = (db_qualification_service_workspace_t){0};
     const uint32_t supported_mask =
         (request->supported_implementation_mask != 0U)
             ? request->supported_implementation_mask
             : DB_QUALIFICATION_ALL_IMPLEMENTATIONS_MASK;
-    db_conformance_key_t compact_keys[DB_CONFORMANCE_BATCH_MAX_KEYS] = {0};
-    size_t compact_lanes[DB_CONFORMANCE_BATCH_MAX_KEYS] = {0};
-    size_t compact_implementations[DB_CONFORMANCE_BATCH_MAX_KEYS] = {0};
     size_t compact_count = 0U;
     for (size_t lane_index = 0U; lane_index < request->lane_count;
          lane_index++) {
@@ -417,26 +442,26 @@ int db_qualification_service_resolve_topology(
                                       implementation_index)) == 0U) {
                 continue;
             }
-            compact_keys[compact_count] =
+            workspace->keys[compact_count] =
                 request->keys[lane_index][implementation_index];
-            compact_lanes[compact_count] = lane_index;
-            compact_implementations[compact_count] = implementation_index;
+            workspace->topology_lanes[compact_count] = lane_index;
+            workspace->topology_implementations[compact_count] =
+                implementation_index;
             compact_count++;
         }
     }
-    db_conformance_decision_t compact_decisions[DB_CONFORMANCE_BATCH_MAX_KEYS] =
-        {0};
     if ((compact_count == 0U) ||
-        (db_conformance_qualify_batch(compact_keys, compact_count, query,
+        (db_conformance_qualify_batch(workspace->keys, compact_count, query,
                                       aggregate_timeout_ns,
-                                      compact_decisions) == 0)) {
+                                      workspace->compact) == 0)) {
         return 0;
     }
+    *result = (db_qualification_topology_result_t){0};
     for (size_t compact_index = 0U; compact_index < compact_count;
          compact_index++) {
-        result->decisions[compact_lanes[compact_index]]
-                         [compact_implementations[compact_index]] =
-            compact_decisions[compact_index];
+        result->decisions[workspace->topology_lanes[compact_index]]
+                         [workspace->topology_implementations[compact_index]] =
+            workspace->compact[compact_index];
     }
     result->source = DB_QUALIFICATION_SOURCE_NONE;
     result->cache_status = DB_CONFORMANCE_CACHE_MISS;
@@ -606,11 +631,18 @@ int db_qualification_service_resolve_descriptors(
     const db_renderer_qualification_descriptor_store_t *store,
     const db_conformance_query_t *query, uint64_t aggregate_timeout_ns,
     uint64_t unavailable_candidate_mask,
+    db_qualification_service_workspace_t *workspace,
     db_qualification_snapshot_t *snapshot) {
-    if ((store == NULL) || (query == NULL) || (snapshot == NULL) ||
-        (store->count == 0U) ||
+    if ((store == NULL) || (query == NULL) || (workspace == NULL) ||
+        (snapshot == NULL) || (store->count == 0U) ||
         (store->count > DB_QUALIFICATION_MAX_DESCRIPTORS)) {
         return 0;
+    }
+    for (size_t index = 0U; index < store->count; index++) {
+        if (db_qualification_descriptor_validate(&store->descriptors[index]) ==
+            0) {
+            return 0;
+        }
     }
     *snapshot = (db_qualification_snapshot_t){
         .generation = db_qualification_generation_hash(store->generation),
@@ -634,38 +666,36 @@ int db_qualification_service_resolve_descriptors(
         return 1;
     }
 
-    db_conformance_key_t keys[DB_QUALIFICATION_MAX_DESCRIPTORS] = {0};
-    size_t decision_indices[DB_QUALIFICATION_MAX_DESCRIPTORS] = {0};
+    *workspace = (db_qualification_service_workspace_t){0};
     size_t key_count = 0U;
-    db_conformance_decision_t decisions[DB_QUALIFICATION_MAX_DESCRIPTORS] = {0};
     for (size_t index = 0U; index < store->count; index++) {
         const db_renderer_probe_descriptor_t *const descriptor =
             &store->descriptors[index];
         if (descriptor->compatibility_validated != 0) {
-            decisions[index] = (db_conformance_decision_t){
+            workspace->decisions[index] = (db_conformance_decision_t){
                 .outcome = DB_QUALIFICATION_OUTCOME_CONFORMING,
                 .result = DB_CONFORMANCE_CONFORMING,
                 .source = DB_QUALIFICATION_SOURCE_BASELINE,
                 .cache_status = DB_CONFORMANCE_CACHE_MISS,
                 .probe_status = DB_PROBE_STATUS_OK,
             };
-            set_reason(&decisions[index], "validated_compatibility");
+            set_reason(&workspace->decisions[index], "validated_compatibility");
             continue;
         }
-        keys[key_count] = descriptor_key(descriptor);
-        decision_indices[key_count] = index;
+        workspace->keys[key_count] = descriptor_key(descriptor);
+        workspace->decision_indices[key_count] = index;
         key_count++;
     }
     if (key_count != 0U) {
-        db_conformance_decision_t compact[DB_QUALIFICATION_MAX_DESCRIPTORS] = {
-            0};
-        if (db_conformance_qualify_batch(keys, key_count, query,
-                                         aggregate_timeout_ns, compact) == 0) {
+        if (db_conformance_qualify_batch(workspace->keys, key_count, query,
+                                         aggregate_timeout_ns,
+                                         workspace->compact) == 0) {
             set_snapshot_reason(snapshot, "qualification_batch_failed");
             return 1;
         }
         for (size_t index = 0U; index < key_count; index++) {
-            decisions[decision_indices[index]] = compact[index];
+            workspace->decisions[workspace->decision_indices[index]] =
+                workspace->compact[index];
         }
     }
 
@@ -709,7 +739,7 @@ int db_qualification_service_resolve_descriptors(
                 if (descriptor->is_primary != 0) {
                     primary_mask |= lane_bit;
                 }
-                if ((decisions[lane_index].outcome ==
+                if ((workspace->decisions[lane_index].outcome ==
                      DB_QUALIFICATION_OUTCOME_CONFORMING) ||
                     (descriptor->compatibility_validated != 0)) {
                     retained_mask |= lane_bit;
@@ -719,7 +749,8 @@ int db_qualification_service_resolve_descriptors(
                 } else {
                     all_conforming = 0;
                 }
-                combine_decision_metadata(&decisions[lane_index], snapshot);
+                combine_decision_metadata(&workspace->decisions[lane_index],
+                                          snapshot);
             }
             if ((retained_mask == 0U) || (primary_mask == 0U) ||
                 (primary_conforming == 0)) {

@@ -2,7 +2,7 @@
 #define DRIVERBENCH_BENCHMARK_TYPES_INTERNAL_H
 
 #include "benchmarks/db_benchmark_runtime.h"
-#include "core/db_render_types.h"
+#include <stdint.h>
 
 #define DB_BENCH_COMMON_BACKEND "benchmark"
 #define DB_BENCHMARK_MODE_BANDS "bands"

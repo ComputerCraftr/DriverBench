@@ -2,9 +2,14 @@
 #define DRIVERBENCH_RENDERER_SNAKE_COMMON_EMIT_INTERNAL_H
 
 #include "../config/benchmark_config.h"
+#include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_snake_collect_internal.h"
 #include "benchmarks/db_snake_shape_internal.h"
 #include "benchmarks/db_snake_types_internal.h"
+#include "core/db_core.h"
+#include "core/db_hash.h"
+#include "core/db_numeric.h"
+#include <stdint.h>
 #include <string.h>
 
 static inline db_snake_plan_t db_snake_plan_next_step_for_region(

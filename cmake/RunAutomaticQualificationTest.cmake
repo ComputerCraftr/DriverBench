@@ -42,6 +42,19 @@ if(TEST_KIND STREQUAL "gl3_semantic")
         --rerun-conformance-probe
         1
         ${db_common_args})
+elseif(TEST_KIND STREQUAL "gl3_exact")
+    set(db_mode topology_exact)
+    set(db_expected "gradient_path=gl3_exact_lookup")
+    set(db_args
+        --api
+        opengl
+        --renderer
+        gl3_3
+        --display
+        offscreen
+        --rerun-conformance-probe
+        1
+        ${db_common_args})
 elseif(TEST_KIND STREQUAL "vulkan_exact")
     set(db_mode topology_exact)
     set(db_expected "gradient_path=vulkan_exact_lookup")

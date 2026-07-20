@@ -7,6 +7,8 @@
 
 #include "core/db_core.h"
 #include "core/db_hash.h"
+#include "core/db_log.h"
+#include "core/db_render_types.h"
 #include "gl_common.h"
 
 typedef struct {

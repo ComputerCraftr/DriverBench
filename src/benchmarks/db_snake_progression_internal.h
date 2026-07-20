@@ -5,11 +5,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "benchmarks/db_benchmark_runtime_internal.h"
+#include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_snake_emit_internal.h"
 #include "benchmarks/db_snake_shape_internal.h"
 #include "benchmarks/db_snake_types_internal.h"
 #include "core/db_core.h"
+#include "core/db_geometry.h"
 
 typedef struct {
     db_grid_block_t *blocks;

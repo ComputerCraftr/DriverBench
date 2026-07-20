@@ -9,6 +9,7 @@
 #include <string.h>
 #include <vulkan/vulkan_core.h>
 
+#include "../../core/db_core.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
 
@@ -237,7 +238,7 @@ db_vk_create_worker_render_resources(db_vk_independent_lane_runtime_t *runtime,
         slot->initialized = 0;
     }
     if ((runtime->transport == DB_VK_TRANSPORT_DMA_BUF_BUFFER) &&
-        (db_vk_buffer_transport_create(runtime, lane_index) == 0)) {
+        (db_vk_buffer_transport_create(runtime) == 0)) {
         return 0;
     }
     const VkCommandPoolCreateInfo pool_info = {
@@ -278,8 +279,8 @@ db_vk_create_worker_render_resources(db_vk_independent_lane_runtime_t *runtime,
 }
 
 void db_vk_independent_lanes_init(void) {
-    if (g_state.device.selection.execution_mode ==
-        DB_VK_EXECUTION_MODE_DEVICE_GROUP) {
+    if (db_vk_execution_mode_uses_independent_lanes(
+            g_state.device.selection.execution_mode) == 0) {
         return;
     }
     uint32_t active_count = 1U;
@@ -372,7 +373,9 @@ void db_vk_independent_lane_quarantine(uint32_t lane_index,
     db_vk_independent_lane_runtime_t *const runtime =
         &g_state.scheduler.independent_lanes[lane_index];
     runtime->active = 0;
-    runtime->scheduling_epoch++;
+    runtime->scheduling_epoch =
+        db_checked_add_u32(BACKEND_NAME, "independent_lane_scheduling_epoch",
+                           runtime->scheduling_epoch, 1U);
     for (uint32_t slot_index = 0U; slot_index < DB_VK_LANE_SLOT_COUNT;
          slot_index++) {
         runtime->slots[slot_index].quarantined = 1;
@@ -383,7 +386,9 @@ void db_vk_independent_lane_quarantine(uint32_t lane_index,
         db_vk_set_lane_reason(&g_state.device.selection.lanes[lane_index],
                               reason);
     }
-    g_state.scheduler.scheduling_epoch++;
+    g_state.scheduler.scheduling_epoch =
+        db_checked_add_u32(BACKEND_NAME, "scheduling_epoch",
+                           g_state.scheduler.scheduling_epoch, 1U);
     g_state.calibration.state = (db_vk_calibration_state_t){
         .phase = DB_VK_MULTI_GPU_CLOSED,
     };

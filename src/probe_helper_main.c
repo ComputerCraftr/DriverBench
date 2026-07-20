@@ -23,6 +23,7 @@
 enum {
     DB_PROBE_CHILD_OUTPUT_BYTES = 262144U,
     DB_PROBE_EXECUTABLE_PATH_BYTES = 4096U,
+    DB_PROBE_CHILD_ARGUMENT_CAPACITY = 32U,
     DB_PROBE_TEST_CHILD_FAILURE_EXIT = 9,
     DB_PROBE_TIMEOUT_TEST_SECONDS = 120U,
 };
@@ -59,14 +60,12 @@ static int sibling_driverbench_path(char *output, size_t output_size) {
 }
 
 static int spawn_capture(const char *executable, const char *const *arguments,
-                         char *output, size_t output_capacity) {
+                         size_t argument_count, char *output,
+                         size_t output_capacity) {
     if ((executable == NULL) || (arguments == NULL) || (output == NULL) ||
-        (output_capacity == 0U)) {
+        (output_capacity == 0U) ||
+        (argument_count > DB_PROBE_CHILD_ARGUMENT_CAPACITY)) {
         return 0;
-    }
-    size_t argument_count = 0U;
-    while (arguments[argument_count] != NULL) {
-        argument_count++;
     }
     size_t argv_count = 0U;
     if (db_try_add_size(argument_count, 2U, &argv_count) == 0) {
@@ -79,6 +78,9 @@ static int spawn_capture(const char *executable, const char *const *arguments,
     char **const argv = (char **)argv_storage;
     argv[0] = strdup(executable);
     for (size_t index = 0U; index < argument_count; index++) {
+        if (arguments[index] == NULL) {
+            break;
+        }
         argv[index + 1U] = strdup(arguments[index]);
     }
     int valid = argv[0] != NULL;
@@ -107,12 +109,14 @@ static int parse_aggregate_hash(const char *output, uint64_t *hash) {
     if ((last == NULL) || (hash == NULL)) {
         return 0;
     }
-    char *end = NULL;
-    const unsigned long long value = strtoull(last, &end, 16);
-    if (end == last) {
+    const char *end = NULL;
+    uint64_t value = 0U;
+    if ((db_parse_u64_prefix(last, 16, &value, &end) == 0) ||
+        ((*end != '\0') && (*end != '\n') && (*end != '\r') && (*end != ' ') &&
+         (*end != '\t'))) {
         return 0;
     }
-    *hash = (uint64_t)value;
+    *hash = value;
     return 1;
 }
 
@@ -132,10 +136,6 @@ static db_probe_result_t execute_live_probe(const db_probe_request_t *request) {
         .status = DB_PROBE_STATUS_UNAVAILABLE,
         .result = DB_CONFORMANCE_UNTESTED,
     };
-    if ((request->backend != DB_PROBE_BACKEND_VULKAN) &&
-        (request->implementation == DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP)) {
-        return result;
-    }
     char executable[DB_PROBE_EXECUTABLE_PATH_BYTES] = {0};
     if (sibling_driverbench_path(executable, sizeof(executable)) == 0) {
         return result;
@@ -165,8 +165,9 @@ static db_probe_result_t execute_live_probe(const db_probe_request_t *request) {
     char *const reference_output = calloc(DB_PROBE_CHILD_OUTPUT_BYTES, 1U);
     char *const observed_output = calloc(DB_PROBE_CHILD_OUTPUT_BYTES, 1U);
     if ((reference_output == NULL) || (observed_output == NULL) ||
-        (spawn_capture(executable, cpu_args, reference_output,
-                       DB_PROBE_CHILD_OUTPUT_BYTES) == 0) ||
+        (spawn_capture(executable, cpu_args,
+                       (sizeof(cpu_args) / sizeof(cpu_args[0])) - 1U,
+                       reference_output, DB_PROBE_CHILD_OUTPUT_BYTES) == 0) ||
         (parse_aggregate_hash(reference_output, &result.expected_hash) == 0)) {
         free(reference_output);
         free(observed_output);
@@ -180,10 +181,13 @@ static db_probe_result_t execute_live_probe(const db_probe_request_t *request) {
         db_gradient_implementation_name(request->implementation);
     (void)setenv("DRIVERBENCH_PROBE_GRADIENT_IMPLEMENTATION", implementation,
                  1);
-    const char *const backend_gradient =
-        (request->implementation == DB_GRADIENT_IMPLEMENTATION_SEMANTIC)
-            ? "semantic"
-            : "row-fill";
+    const char *backend_gradient = "row-fill";
+    if (request->implementation == DB_GRADIENT_IMPLEMENTATION_SEMANTIC) {
+        backend_gradient = "semantic";
+    } else if (request->implementation ==
+               DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP) {
+        backend_gradient = "exact-lookup";
+    }
     const char *const vulkan_args[] = {
         "--api",
         "vulkan",
@@ -260,6 +264,8 @@ static db_probe_result_t execute_live_probe(const db_probe_request_t *request) {
         NULL,
     };
     const char *const *gpu_args = vulkan_args;
+    size_t gpu_argument_count =
+        (sizeof(vulkan_args) / sizeof(vulkan_args[0])) - 1U;
     const char *expected_path = "gradient_path=vulkan_row_fill";
     if (request->implementation == DB_GRADIENT_IMPLEMENTATION_SEMANTIC) {
         expected_path = "gradient_path=vulkan_semantic_gradient";
@@ -269,19 +275,24 @@ static db_probe_result_t execute_live_probe(const db_probe_request_t *request) {
     }
     if (request->backend == DB_PROBE_BACKEND_GL3) {
         gpu_args = gl3_args;
+        gpu_argument_count = (sizeof(gl3_args) / sizeof(gl3_args[0])) - 1U;
         expected_path = "gradient_path=gl3_row_fill";
         if (request->implementation == DB_GRADIENT_IMPLEMENTATION_SEMANTIC) {
             expected_path = "gradient_path=gl3_semantic_gradient";
+        } else if (request->implementation ==
+                   DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP) {
+            expected_path = "gradient_path=gl3_exact_lookup";
         }
     } else if (request->backend == DB_PROBE_BACKEND_GL1) {
         gpu_args = gl1_args;
+        gpu_argument_count = (sizeof(gl1_args) / sizeof(gl1_args[0])) - 1U;
         expected_path = "gradient_path=gl1_row_fill";
         if (request->implementation == DB_GRADIENT_IMPLEMENTATION_SEMANTIC) {
             expected_path = "gradient_path=gl1_interpolated_gradient";
         }
     }
     const int executed =
-        spawn_capture(executable, gpu_args, observed_output,
+        spawn_capture(executable, gpu_args, gpu_argument_count, observed_output,
                       DB_PROBE_CHILD_OUTPUT_BYTES) &&
         parse_aggregate_hash(observed_output, &result.observed_hash) &&
         (strstr(observed_output, expected_path) != NULL);

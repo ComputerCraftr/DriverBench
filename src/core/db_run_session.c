@@ -29,6 +29,7 @@ struct db_run_session {
     db_qualification_snapshot_t qualification;
     db_renderer_applied_selection_t applied;
     db_renderer_qualification_descriptor_store_t descriptors;
+    db_qualification_service_workspace_t qualification_workspace;
     db_benchmark_model_t benchmark;
     db_frame_coordinator_t coordinator;
     db_qualification_identity_generation_t pending_generation;
@@ -38,7 +39,7 @@ struct db_run_session {
     uint64_t retries;
     uint64_t frame_start_ns;
     uint64_t pacing_deadline_ns;
-    uint32_t next_frame_index;
+    uint64_t next_frame_index;
     int qualification_dirty;
     int frame_started;
 };
@@ -91,7 +92,8 @@ static int resolve_qualification(db_run_session_t *session) {
         db_qualification_snapshot_t snapshot = {0};
         if (db_qualification_service_resolve_descriptors(
                 &session->descriptors, &session->config.qualification_query,
-                timeout, session->unavailable_candidate_mask, &snapshot) == 0) {
+                timeout, session->unavailable_candidate_mask,
+                &session->qualification_workspace, &snapshot) == 0) {
             return 0;
         }
         if ((snapshot.production_qualified == 0) &&
@@ -216,7 +218,8 @@ static db_committed_frame_summary_t committed_summary(db_run_session_t *session,
     const db_renderer_frame_output_t *const output =
         &session->coordinator.renderer.output;
     db_committed_frame_summary_t summary = {
-        .frame_index = session->next_frame_index,
+        .frame_index = db_checked_u64_to_u32(
+            "run_session", "committed_frame_index", session->next_frame_index),
         .committed_frame_count = session->committed_frames + 1U,
         .frame_total_ms =
             DB_TO_F64(frame_end_ns - session->frame_start_ns) / DB_NS_PER_MS,
@@ -299,6 +302,9 @@ db_run_step_result_t db_run_session_step(db_run_session_t *session) {
         (session->committed_frames >= session->config.frame_limit)) {
         return run_result(DB_RUN_COMPLETE, DB_RUN_STOP_FRAME_LIMIT);
     }
+    if (session->next_frame_index > UINT32_MAX) {
+        return run_result(DB_RUN_COMPLETE, DB_RUN_STOP_FRAME_INDEX_EXHAUSTED);
+    }
     if (session->qualification_dirty != 0) {
         if (session->coordinator.active != 0) {
             db_frame_coordinator_abort(&session->coordinator);
@@ -313,7 +319,9 @@ db_run_step_result_t db_run_session_step(db_run_session_t *session) {
         session->frame_started = 1;
     }
     const db_frame_step_result_t frame = db_frame_coordinator_run_frame(
-        &session->coordinator, session->next_frame_index);
+        &session->coordinator,
+        db_checked_u64_to_u32("run_session", "next_frame_index",
+                              session->next_frame_index));
     if (frame.outcome == DB_FRAME_STEP_WAIT) {
         session->retries = db_u64_saturating_add(session->retries, 1U);
         db_run_step_result_t result = run_result(DB_RUN_WAIT, DB_RUN_STOP_NONE);

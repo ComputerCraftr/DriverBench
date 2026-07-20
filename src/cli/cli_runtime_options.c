@@ -470,6 +470,19 @@ int db_cli_try_parse_runtime_override_option(const char *arg, size_t argc,
             db_runtime_option_set(mappings[map_index].runtime_option, value);
             break;
         case DB_CLI_RT_GL3_GRADIENT:
+            if (!db_string_is(value, "auto") &&
+                !db_string_is(value, "semantic") &&
+                !db_string_is(value, "exact-lookup") &&
+                !db_string_is(value, "row-fill")) {
+                (void)db_cli_validation_set_error(
+                    error, error_size,
+                    "Invalid gradient strategy for %s: %s "
+                    "(expected auto|semantic|exact-lookup|row-fill)",
+                    mappings[map_index].cli_option, value);
+                return -1;
+            }
+            db_runtime_option_set(mappings[map_index].runtime_option, value);
+            break;
         case DB_CLI_RT_VK_GRADIENT:
             if (!db_string_is(value, "auto") &&
                 !db_string_is(value, "semantic") &&

@@ -124,6 +124,26 @@ elseif(RULE_SET STREQUAL "renderer_gl_upload_policy")
         "Apple-specific OpenGL/buffer policy text must live only in the approved GL resolver/proc files"
     )
 
+    set(DB_PP_HDR_UPLOAD_FILE
+        "${SOURCE_ROOT}/src/renderers/gl_shadow_present_hdr.c")
+    file(READ "${DB_PP_HDR_UPLOAD_FILE}" DB_PP_HDR_UPLOAD_CONTENT)
+    string(FIND "${DB_PP_HDR_UPLOAD_CONTENT}"
+                "void db_gl_shadow_present_upload_hdr_damage_blocks"
+                DB_PP_HDR_UPLOAD_START)
+    if(DB_PP_HDR_UPLOAD_START EQUAL -1)
+        db_pp_append_failure("${DB_PP_HDR_UPLOAD_FILE}"
+                             "missing bounded HDR damage upload implementation")
+    else()
+        string(SUBSTRING "${DB_PP_HDR_UPLOAD_CONTENT}"
+                         ${DB_PP_HDR_UPLOAD_START} -1 DB_PP_HDR_UPLOAD_BODY)
+        if(DB_PP_HDR_UPLOAD_BODY MATCHES "(malloc|calloc|realloc)[ \t\r\n]*[(]")
+            db_pp_append_failure(
+                "${DB_PP_HDR_UPLOAD_FILE}"
+                "HDR damage upload must use provisioned workspace and cannot allocate in the frame hot path"
+            )
+        endif()
+    endif()
+
 elseif(RULE_SET STREQUAL "renderer_ir_policy")
     db_pp_collect_files(
         DB_PP_SCAN_FILES
@@ -140,6 +160,16 @@ elseif(RULE_SET STREQUAL "renderer_ir_policy")
         DB_PP_SCAN_FILES
         "db_colored_f64_block_t|db_geometry_execution_t|db_frame_plan_draw_fill|geometry\\.current_blocks|rebuild_seed\\.geometry"
         "renderers and displays must consume canonical render IR instead of legacy colored-block storage"
+    )
+    db_pp_check_forbidden_in_files(
+        DB_PP_SCAN_FILES
+        "db_render_ir_command_range_rect_(count|at)"
+        "renderers must expand each IR command range once through the bounded range-copy contract"
+    )
+    db_pp_check_forbidden_in_files(
+        DB_PP_SCAN_FILES
+        "db_render_ir_rect_(count|at)|db_vk_frame_rect_at"
+        "renderers must use stateful flattened-IR iterators instead of repeated indexed scans"
     )
 
     db_pp_check_forbidden_in_files(
@@ -574,8 +604,14 @@ elseif(RULE_SET STREQUAL "sorting_policy")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
         DB_PP_SORT_IMPLEMENTATION_FILES
-        "(^|[^A-Za-z0-9_])(qsort|heapsort|mergesort)[ \\t\\r\\n]*\\(|insertion[_A-Za-z0-9]*sort|sort[_A-Za-z0-9]*doubles"
+        "(^|[^A-Za-z0-9_])(qsort|heapsort|mergesort)[ \\t\\r\\n]*\\(|insertion[_A-Za-z0-9]*sort|sort[_A-Za-z0-9]*doubles|(^|[^A-Za-z0-9_])stable_sort_|[A-Za-z0-9_]*(heap|merge)[A-Za-z0-9_]*sort[A-Za-z0-9_]*[ \\t\\r\\n]*\\("
         "sorting must use the canonical db_sort policy instead of local or direct libc implementations"
+    )
+    db_pp_check_forbidden_outside_allowlist(
+        DB_PP_SCAN_FILES
+        DB_PP_SORT_IMPLEMENTATION_FILES
+        "\\[[A-Za-z_][A-Za-z0-9_]*[ \\t]*-[ \\t]*1U\\][^\\}]*[A-Za-z_][A-Za-z0-9_]*--"
+        "adjacent-shift insertion sorting must use the canonical db_sort policy"
     )
     db_pp_check_forbidden_in_files(
         DB_PP_SCAN_FILES

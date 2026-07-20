@@ -95,6 +95,24 @@ void db_benchmark_core_init(db_benchmark_core_t *core,
     core->ir.optimizer_secondary = (db_render_ir_fill_t *)db_malloc_or_fail(
         "benchmark_core", "ir_optimizer_secondary", core->ir.fill_capacity,
         sizeof(*core->ir.optimizer_secondary));
+    core->ir.optimizer_coverage_bands =
+        (db_render_ir_band_t *)db_malloc_or_fail(
+            "benchmark_core", "ir_optimizer_coverage_bands",
+            core->ir.fill_capacity, sizeof(*core->ir.optimizer_coverage_bands));
+    core->ir.optimizer_coverage_band_scratch =
+        (db_render_ir_band_t *)db_malloc_or_fail(
+            "benchmark_core", "ir_optimizer_coverage_band_scratch",
+            core->ir.fill_capacity,
+            sizeof(*core->ir.optimizer_coverage_band_scratch));
+    core->ir.optimizer_coverage_spans =
+        (db_render_ir_span_t *)db_malloc_or_fail(
+            "benchmark_core", "ir_optimizer_coverage_spans",
+            core->ir.fill_capacity, sizeof(*core->ir.optimizer_coverage_spans));
+    core->ir.optimizer_coverage_span_scratch =
+        (db_render_ir_span_t *)db_malloc_or_fail(
+            "benchmark_core", "ir_optimizer_coverage_span_scratch",
+            core->ir.fill_capacity,
+            sizeof(*core->ir.optimizer_coverage_span_scratch));
     core->ir.rebuild_fills = (db_render_ir_fill_t *)db_malloc_or_fail(
         "benchmark_core", "ir_rebuild_fills", core->ir.fill_capacity,
         sizeof(*core->ir.rebuild_fills));
@@ -142,6 +160,10 @@ void db_benchmark_core_shutdown(db_benchmark_core_t *core) {
     free_ir_store(&core->ir.rebuild);
     free(core->ir.optimizer_primary);
     free(core->ir.optimizer_secondary);
+    free(core->ir.optimizer_coverage_bands);
+    free(core->ir.optimizer_coverage_band_scratch);
+    free(core->ir.optimizer_coverage_spans);
+    free(core->ir.optimizer_coverage_span_scratch);
     free(core->ir.rebuild_fills);
     core->geometry.logical_blocks = NULL;
     core->geometry.rebuild_logical_blocks = NULL;

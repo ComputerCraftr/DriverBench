@@ -3,7 +3,15 @@
 
 #include "benchmarks/db_benchmark_checkpoint_internal.h"
 #include "benchmarks/db_benchmark_emitters.h"
+#include "benchmarks/db_snake_collect_internal.h"
+#include "benchmarks/db_snake_emit_internal.h"
 #include "benchmarks/db_snake_progression_internal.h"
+#include "benchmarks/db_snake_shape_internal.h"
+#include "benchmarks/db_snake_types_internal.h"
+#include "config/benchmark_config.h"
+#include "core/db_hash.h"
+#include "core/db_numeric.h"
+#include <stdint.h>
 
 typedef struct {
     db_benchmark_ir_emitter_t *emitter;

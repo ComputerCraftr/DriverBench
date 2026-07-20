@@ -105,43 +105,62 @@ db_presentation_damage_add_one(db_presentation_damage_builder_t *builder,
         (block->col_count == 0U)) {
         return 0;
     }
-    const uint64_t block_row_end =
-        (uint64_t)block->row_start + block->row_count;
-    const uint64_t block_col_end =
-        (uint64_t)block->col_start + block->col_count;
-    for (size_t index = 0U; index < builder->count; index++) {
+    db_grid_block_t merged = *block;
+    size_t index = 0U;
+    while (index < builder->count) {
         db_grid_block_t *const existing = &builder->blocks[index];
+        const uint64_t block_row_end =
+            (uint64_t)merged.row_start + merged.row_count;
+        const uint64_t block_col_end =
+            (uint64_t)merged.col_start + merged.col_count;
         const uint64_t existing_row_end =
             (uint64_t)existing->row_start + existing->row_count;
         const uint64_t existing_col_end =
             (uint64_t)existing->col_start + existing->col_count;
-        if ((existing->row_start == block->row_start) &&
-            (existing->row_count == block->row_count) &&
-            ((uint64_t)block->col_start <= existing_col_end) &&
-            ((uint64_t)existing->col_start <= block_col_end)) {
+        if ((block_row_end > UINT32_MAX) || (block_col_end > UINT32_MAX) ||
+            (existing_row_end > UINT32_MAX) ||
+            (existing_col_end > UINT32_MAX)) {
+            return 0;
+        }
+        const int merge_horizontal =
+            DB_BOOL((existing->row_start == merged.row_start) &&
+                    (existing->row_count == merged.row_count) &&
+                    ((uint64_t)merged.col_start <= existing_col_end) &&
+                    ((uint64_t)existing->col_start <= block_col_end));
+        const int merge_vertical =
+            DB_BOOL((existing->col_start == merged.col_start) &&
+                    (existing->col_count == merged.col_count) &&
+                    ((uint64_t)merged.row_start <= existing_row_end) &&
+                    ((uint64_t)existing->row_start <= block_row_end));
+        if (merge_horizontal != 0) {
             const uint32_t start =
-                DB_MIN(existing->col_start, block->col_start);
+                DB_MIN(existing->col_start, merged.col_start);
             const uint64_t end = DB_MAX(existing_col_end, block_col_end);
-            existing->col_start = start;
-            existing->col_count = (uint32_t)(end - start);
-            return 1;
-        }
-        if ((existing->col_start == block->col_start) &&
-            (existing->col_count == block->col_count) &&
-            ((uint64_t)block->row_start <= existing_row_end) &&
-            ((uint64_t)existing->row_start <= block_row_end)) {
+            merged.col_start = start;
+            merged.col_count = (uint32_t)(end - start);
+        } else if (merge_vertical != 0) {
             const uint32_t start =
-                DB_MIN(existing->row_start, block->row_start);
+                DB_MIN(existing->row_start, merged.row_start);
             const uint64_t end = DB_MAX(existing_row_end, block_row_end);
-            existing->row_start = start;
-            existing->row_count = (uint32_t)(end - start);
-            return 1;
+            merged.row_start = start;
+            merged.row_count = (uint32_t)(end - start);
+        } else {
+            index++;
+            continue;
         }
+        const size_t move_count = builder->count - index - 1U;
+        const size_t move_bytes =
+            db_checked_mul_size("presentation_policy", "damage merge bytes",
+                                move_count, sizeof(*builder->blocks));
+        memmove(&builder->blocks[index], &builder->blocks[index + 1U],
+                move_bytes);
+        builder->count--;
+        index = 0U;
     }
     if (builder->count >= builder->capacity) {
         return 0;
     }
-    builder->blocks[builder->count++] = *block;
+    builder->blocks[builder->count++] = merged;
     return 1;
 }
 

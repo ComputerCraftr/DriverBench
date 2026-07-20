@@ -92,12 +92,7 @@ db_offscreen_fixed_target_provision(void *context,
     if ((preflight == NULL) || (target == NULL)) {
         return 0;
     }
-    *target = (db_renderer_target_t){
-        .identity = 1U,
-        .generation = 1U,
-        .strategy = preflight->target_strategy,
-        .valid = 1,
-    };
+    *target = db_renderer_target_from_preflight(preflight, 1U, 1U);
     return 1;
 }
 
@@ -561,8 +556,11 @@ db_offscreen_gl3_execute(void *user_data, const db_frame_plan_t *plan,
         .force_full = 1,
         .repair_reason = "offscreen_full",
     };
-    db_display_gl_render_frame(ctx->renderer_ops->renderer, plan,
-                               &presentation);
+    if (db_display_gl_render_frame(ctx->renderer_ops->renderer, plan, target,
+                                   &presentation) == 0) {
+        output->target_content = DB_TARGET_CONTENT_PARTIALLY_MODIFIED;
+        return DB_RENDER_FATAL;
+    }
     output->result = db_render_result_success();
     ctx->renderer_ops->execution_report(&output->result.execution);
     if (db_display_frame_step_should_hash_output(ctx->frame_step,

@@ -2,7 +2,7 @@
 #define DRIVERBENCH_BENCHMARK_GRADIENT_PROGRESSION_INTERNAL_H
 
 #include "benchmarks/db_benchmark_gradient_internal.h"
-#include "benchmarks/db_benchmark_runtime_internal.h"
+#include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_benchmark_types_internal.h"
 
 static inline db_gradient_damage_plan_t

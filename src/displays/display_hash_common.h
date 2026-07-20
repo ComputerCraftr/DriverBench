@@ -7,6 +7,8 @@
 #include "../config/runtime_options.h"
 #include "../core/db_core.h"
 #include "../core/db_hash.h"
+#include "core/db_log.h"
+#include "core/db_numeric.h"
 
 typedef struct {
     uint64_t aggregate_hash;

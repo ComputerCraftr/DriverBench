@@ -5,8 +5,9 @@
 #include <stdint.h>
 
 #include "core/db_format_contract.h"
+#include "core/db_frame_plan.h"
+#include "core/db_geometry.h"
 #include "core/db_progress_policy.h"
-#include "core/db_render_result.h"
 #include "core/db_render_types.h"
 #include "core/db_renderer_support.h"
 
@@ -33,6 +34,7 @@ typedef enum {
     DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER = 0,
     DB_GL_UPLOAD_TARGET_PBO_UNPACK_BUFFER = 1,
     DB_GL_UPLOAD_TARGET_PBO_PACK_BUFFER = 2,
+    DB_GL_UPLOAD_TARGET_TEXTURE_BUFFER = 3,
 } db_gl_upload_target_t;
 
 typedef enum {
@@ -272,8 +274,8 @@ typedef struct {
     uint32_t required_previous_frames;
     size_t historical_block_count;
     size_t repair_block_count;
-    db_gl_upload_span_trace_t
-        upload_spans[DB_GL_DIRTY_TRACE_UPLOAD_SPAN_CAPACITY];
+    db_gl_upload_span_trace_t *upload_spans;
+    size_t upload_span_capacity;
     size_t upload_span_count;
     db_gl_error_trace_t error_trace;
 } db_gl_shadow_upload_trace_t;
@@ -332,6 +334,8 @@ typedef struct {
     size_t present_damage_block_count;
     int present_damage_full;
     int present_damage_configured;
+    uint64_t last_surface_restoration_bytes;
+    uint64_t last_encoded_span_bytes;
     db_gl_shadow_upload_trace_t upload_trace;
 } db_gl_shadow_present_state_t;
 
@@ -527,6 +531,11 @@ void db_gl_shadow_present_present_replace_pixels(
     db_gl_shadow_present_state_t *state, const char *backend,
     const db_gl_pixel_upload_payload_t *source_pixels,
     const db_damage_block_t *damage_blocks, size_t damage_block_count);
+void db_gl_shadow_present_present_replace_pixels_ir(
+    db_gl_shadow_present_state_t *state, const char *backend,
+    const db_gl_pixel_upload_payload_t *source_pixels,
+    const db_damage_block_t *damage_blocks, size_t damage_block_count,
+    const db_frame_plan_t *plan);
 void db_gl_shadow_present_present_replace_pixels_direct_client(
     db_gl_shadow_present_state_t *state, const char *backend,
     const db_gl_pixel_upload_payload_t *source_pixels,
@@ -556,6 +565,9 @@ int db_gl_texture_create_rgb10a2_bt2020_pq(unsigned int *out_texture,
                                            const uint32_t *pixels);
 void db_gl_texture_delete_if_valid(unsigned int *texture);
 void db_gl_texture_bind_2d(unsigned int texture);
+int db_gl_texture_buffer_create(unsigned int *texture, unsigned int buffer,
+                                unsigned int internal_format);
+void db_gl_texture_buffer_bind(unsigned int texture);
 void db_gl_texture_sub_image_2d_rgba(uint32_t x_px, uint32_t y_px,
                                      uint32_t width, uint32_t height,
                                      const uint8_t *pixels);
@@ -572,6 +584,7 @@ void db_gl_set_blend_enabled(int enabled);
 void db_gl_set_cull_face_enabled(int enabled);
 void db_gl_set_depth_test_enabled(int enabled);
 void db_gl_set_dither_enabled(int enabled);
+void db_gl_set_framebuffer_srgb_enabled(int enabled);
 void db_gl_set_pack_alignment_1(void);
 void db_gl_set_unpack_alignment_1(void);
 void db_gl_prepare_textured_present_state(void);
@@ -618,6 +631,8 @@ void db_gl_framebuffer_texture_2d(unsigned int target, unsigned int attachment,
 void db_gl_gen_framebuffers(uint32_t count, unsigned int *framebuffers);
 void db_gl_gen_vertex_arrays(uint32_t count, unsigned int *arrays);
 void db_gl_get_integerv(unsigned int pname, int *value);
+void db_gl_query_default_framebuffer_format(int *channel_bits,
+                                            int *sample_count);
 void db_gl_get_program_info_log(unsigned int program, size_t buf_size,
                                 int *length, char *log);
 void db_gl_get_program_iv(unsigned int program, unsigned int pname, int *value);
@@ -637,6 +652,8 @@ void db_gl_vertex_attrib_pointer_2f(unsigned int index, int stride_bytes,
 void db_gl_vertex_attrib_pointer_3f(unsigned int index, int stride_bytes,
                                     size_t byte_offset);
 void db_gl_vertex_attrib_pointer_4f(unsigned int index, int stride_bytes,
+                                    size_t byte_offset);
+int db_gl_vertex_attrib_pointer_2ui(unsigned int index, int stride_bytes,
                                     size_t byte_offset);
 int db_gl_vertex_attrib_divisor(unsigned int index, unsigned int divisor);
 uint32_t db_gl_get_error_value(void);

@@ -20,8 +20,15 @@ function(db_register_unit_and_probe_tests)
         tests/test_progress_policy.c)
     target_sources(
         driverbench_unit_tests
-        PRIVATE tests/test_render_ir.c tests/test_render_ir_snapshot.c
-                tests/test_run_session.c tests/test_sort.c)
+        PRIVATE tests/test_render_ir.c
+                tests/test_render_ir_clip.c
+                tests/test_render_ir_malformed.c
+                tests/test_render_ir_policy.c
+                tests/test_render_ir_ranges.c
+                tests/test_render_ir_snapshot.c
+                tests/test_render_ir_upload.c
+                tests/test_run_session.c
+                tests/test_sort.c)
     if(DB_BUILD_VULKAN AND DB_VULKAN_LIB)
         target_sources(driverbench_unit_tests PRIVATE tests/test_vk_scheduler.c)
     endif()
@@ -82,6 +89,14 @@ function(db_register_unit_and_probe_tests)
     find_program(DB_TEST_PYTHON_EXECUTABLE NAMES python3)
     if(DB_TEST_PYTHON_EXECUTABLE)
         add_test(
+            NAME unit_test_dispatch_contract
+            COMMAND
+                ${DB_TEST_PYTHON_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/tests/test_unit_test_dispatch.py
+                ${CMAKE_SOURCE_DIR} $<TARGET_FILE:driverbench_unit_tests>)
+        set_tests_properties(unit_test_dispatch_contract
+                             PROPERTIES LABELS "unit;test_contract")
+        add_test(
             NAME ctest_outcome_auditor
             COMMAND
                 ${DB_TEST_PYTHON_EXECUTABLE}
@@ -93,7 +108,9 @@ function(db_register_unit_and_probe_tests)
         message(FATAL_ERROR "CTest outcome auditing requires python3")
     endif()
 
-    if(DB_ENABLE_SANITIZERS AND DB_TARGET_LINUX_32BIT)
+    if(DB_ENABLE_SANITIZERS
+       AND CMAKE_BUILD_TYPE STREQUAL "Debug"
+       AND DB_TARGET_LINUX_32BIT)
         add_executable(driverbench_asan_activation
                        tests/sanitizer_asan_activation.c)
         add_executable(driverbench_ubsan_activation

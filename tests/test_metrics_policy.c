@@ -186,6 +186,20 @@ db_test_run_metrics_classification_and_shared_scratch(db_test_state_t *state) {
     DB_TEST_EXPECT_TRUE(state, metrics.storage == NULL);
 }
 
+static void
+db_test_run_metrics_reinitialization_preserves_owner(db_test_state_t *state) {
+    db_run_metrics_t metrics = {0};
+    DB_TEST_EXPECT_TRUE(state, db_run_metrics_init(&metrics, 1));
+    double *const storage = metrics.storage;
+    DB_TEST_EXPECT_TRUE(state, storage != NULL);
+
+    DB_TEST_EXPECT_TRUE(state, db_run_metrics_init(&metrics, 0) == 0);
+    DB_TEST_EXPECT_TRUE(state, metrics.storage == storage);
+    DB_TEST_EXPECT_EQ_INT(state, metrics.initialized, 1);
+
+    db_run_metrics_shutdown(&metrics);
+}
+
 unsigned db_metrics_policy_test_run_all(void) {
     static const db_test_case_t cases[] = {
         {"metrics_ring_empty_partial", db_test_ring_empty_and_partial},
@@ -195,6 +209,8 @@ unsigned db_metrics_policy_test_run_all(void) {
         {"metrics_ring_invalid", db_test_ring_rejects_invalid_values},
         {"run_metrics_classification_shared_scratch",
          db_test_run_metrics_classification_and_shared_scratch},
+        {"run_metrics_reinitialization_preserves_owner",
+         db_test_run_metrics_reinitialization_preserves_owner},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

@@ -39,9 +39,13 @@ def main() -> int:
             root,
             """
 void clean(void *destination, const void *source, size_t checked_bytes) {
+    struct record { unsigned value; } record = {0};
+    struct record *record_pointer = &record;
     void *resized = realloc(destination, checked_bytes);
     if (resized != NULL) {
         memcpy(resized, source, checked_bytes);
+        memcpy(&record, source, sizeof(record));
+        memcpy(&record, source, sizeof(*record_pointer));
     }
     free(resized != NULL ? resized : destination);
 }
@@ -77,11 +81,20 @@ void clean(void *destination, const void *source, size_t checked_bytes) {
             "    memset(d, 0, n * sizeof(unsigned));\n"
             "}\n"
         ),
+        "object_memcmp": (
+            "int bad(const struct value *a, const struct value *b) {\n"
+            "    return memcmp(&a->field, &b->field, sizeof(a->field));\n"
+            "}\n"
+        ),
         "unchecked_malloc": (
             "void *bad(size_t n) { return malloc(n * sizeof(unsigned)); }\n"
         ),
         "unchecked_calloc_count": (
             "void *bad(size_t n) { return calloc(n + 1U, sizeof(unsigned)); }\n"
+        ),
+        "duplicate_overlap_helper": (
+            "static int local_memory_ranges_overlap(const void *a, "
+            "const void *b) { return a == b; }\n"
         ),
     }
     for name, source in cases.items():

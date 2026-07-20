@@ -301,7 +301,7 @@ static void db_test_cli_renderer_diagnostics(db_test_state_t *state) {
         "--gl1-replay-capacity",
         "3",
         "--gl3-gradient",
-        "semantic",
+        "exact-lookup",
         "--vk-gradient",
         "row-fill",
         "--ignore-conformance-cache",
@@ -323,7 +323,7 @@ static void db_test_cli_renderer_diagnostics(db_test_state_t *state) {
                           DB_GL1_GRADIENT_ROW_FILL);
     DB_TEST_EXPECT_EQ_U32(state, diagnostics.gl1_replay_capacity, 3U);
     DB_TEST_EXPECT_EQ_INT(state, diagnostics.gl3_gradient,
-                          DB_GL3_GRADIENT_SEMANTIC);
+                          DB_GL3_GRADIENT_EXACT_LOOKUP);
     DB_TEST_EXPECT_EQ_INT(state, diagnostics.vk_gradient,
                           DB_VK_GRADIENT_ROW_FILL);
     DB_TEST_EXPECT_EQ_INT(state, diagnostics.ignore_conformance_cache, 1);

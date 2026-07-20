@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../../core/db_conformance.h"
+#include "../../core/db_frame_contracts.h"
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_qualification_contracts.h"
 #include "../../core/db_render_ir_snapshot.h"
@@ -13,7 +13,12 @@
 #include "../gl_common.h"
 #include "../gl_hash_readback.h"
 #include "core/db_format_contract.h"
+#include "core/db_geometry.h"
+#include "core/db_log.h"
+#include "core/db_render_ir.h"
+#include "core/db_render_result.h"
 #include "core/db_render_types.h"
+#include "core/db_renderer_support.h"
 
 typedef enum {
     GL1_STRATEGY_UNRESOLVED = 0,
@@ -41,7 +46,7 @@ typedef struct {
 typedef struct {
     db_render_ir_snapshot_t update;
     uint32_t frame_index;
-    uint32_t target_generation;
+    uint64_t target_generation;
     uint32_t width;
     uint32_t height;
     db_pixel_format_t format;
@@ -51,10 +56,14 @@ typedef struct {
 
 typedef struct {
     db_replay_policy_t policy;
-    gl1_replay_entry_t entries[DB_REPLAY_CAPACITY_MAX];
+    gl1_replay_entry_t entries[DB_REPLAY_CAPACITY_MAX + 1U];
     uint32_t next_entry;
-    uint32_t target_generation;
+    uint32_t pending_entry;
+    uint64_t target_generation;
+    db_render_target_strategy_t committed_strategy;
+    uint64_t committed_target_generation;
     size_t allocation_bytes;
+    int direct_window_lineage_valid;
     int available;
 } gl1_replay_history_t;
 
@@ -131,25 +140,30 @@ void db_gl1_rebuild_backing(const db_frame_plan_t *plan, uint32_t pixel_width,
                             uint32_t pixel_height);
 void db_gl1_update_backing(const db_frame_plan_t *plan, uint32_t pixel_width,
                            uint32_t pixel_height);
-int db_gl1_present_backing(db_pixel_block_view_t blocks_view,
+int db_gl1_present_backing(const db_frame_plan_t *plan,
+                           db_pixel_block_view_t blocks_view,
                            uint32_t pixel_width, uint32_t pixel_height);
 void db_gl1_refresh_capability_mode(void);
 int db_gl1_init_runtime(const db_renderer_execution_config_t *runtime_state);
 int db_gl1_native_init(void);
 const db_renderer_qualification_ops_t *db_gl1_native_qualification_ops(void);
 int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
+                         const db_renderer_target_t *target,
                          uint32_t logical_height, int presentation_fbo,
                          int viewport_width, int viewport_height);
 void db_gl1_native_shutdown(void);
 int db_gl1_replay_init(void);
 void db_gl1_replay_shutdown(void);
 void db_gl1_replay_reset(void);
+void db_gl1_replay_discard_pending(void);
 size_t db_gl1_replay_collect(const db_frame_plan_t *plan,
                              db_render_ir_view_t *views, size_t view_capacity,
                              int *use_rebuild);
-int db_gl1_replay_commit(const db_frame_plan_t *plan, uint32_t width,
-                         uint32_t height, db_pixel_format_t format,
-                         int replay_boundary);
+int db_gl1_replay_prepare(const db_frame_plan_t *plan, uint32_t width,
+                          uint32_t height, db_pixel_format_t format,
+                          uint64_t target_generation, int replay_boundary);
+void db_gl1_replay_publish_pending(void);
+void db_gl1_replay_prepare_boundary(void);
 void db_gl1_render_geometry_to_backing(const db_frame_plan_t *plan,
                                        int viewport_width, int viewport_height);
 

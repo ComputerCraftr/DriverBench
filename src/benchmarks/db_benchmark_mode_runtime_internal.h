@@ -2,7 +2,7 @@
 #define DRIVERBENCH_BENCHMARK_MODE_RUNTIME_INTERNAL_H
 
 #include "benchmarks/db_benchmark_mode_flags.h"
-#include "benchmarks/db_benchmark_runtime_internal.h"
+#include "benchmarks/db_benchmark_runtime.h"
 
 typedef struct {
     int uses_dirty_backbuffer_mode;

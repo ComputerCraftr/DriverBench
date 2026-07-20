@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -68,8 +69,79 @@ def representative_entry(entries: list[dict[str, object]]) -> dict[str, object]:
     return max(entries, key=lambda entry: len(command_arguments(entry)))
 
 
+def optional_component(source_root: Path, path: Path) -> Path | None:
+    """Return the independently enabled presenter/renderer component for path."""
+    try:
+        relative = path.resolve().relative_to(source_root.resolve())
+    except ValueError:
+        return None
+    parts = relative.parts
+    if (
+        len(parts) >= 3
+        and parts[0] == "src"
+        and parts[1]
+        in {
+            "displays",
+            "renderers",
+        }
+    ):
+        return source_root / Path(*parts[:3])
+    return None
+
+
+def entries_for_header(
+    source_root: Path,
+    header: Path,
+    entries: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Select the compile context that actually owns an optional header."""
+    component = optional_component(source_root, header)
+    if component is not None:
+        return [
+            entry
+            for entry in entries
+            if Path(str(entry["file"])).resolve().is_relative_to(component.resolve())
+        ]
+    return entries
+
+
+def run_one(
+    clang_tidy: str,
+    database_dir: Path,
+    source: Path,
+    reported_header: Path,
+    checks: str | None = None,
+) -> tuple[Path, int, str]:
+    command = [
+        clang_tidy,
+        "--quiet",
+        f"-p={database_dir}",
+        "-header-filter=.*",
+        str(source),
+    ]
+    if checks is not None:
+        command.insert(2, f"-checks={checks}")
+    result = subprocess.run(
+        command,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    return reported_header, result.returncode, result.stdout
+
+
+def include_name(source_root: Path, header: Path) -> Path:
+    for include_root in (source_root / "src", source_root / "tests"):
+        try:
+            return header.relative_to(include_root)
+        except ValueError:
+            continue
+    raise ValueError(f"header is outside first-party include roots: {header}")
+
+
 def write_header_tu(source_root: Path, output_dir: Path, header: Path) -> Path:
-    relative = header.relative_to(source_root / "src")
+    relative = include_name(source_root, header)
     generated_name = "__".join(relative.parts).replace(".", "_") + ".c"
     generated = output_dir / generated_name
     generated.write_text(
@@ -78,26 +150,6 @@ def write_header_tu(source_root: Path, output_dir: Path, header: Path) -> Path:
         encoding="ascii",
     )
     return generated
-
-
-def run_one(
-    clang_tidy: str, database_dir: Path, generated: Path, header: Path
-) -> tuple[Path, int, str]:
-    command = [
-        clang_tidy,
-        "--quiet",
-        f"-p={database_dir}",
-        "-header-filter=.*",
-        str(generated),
-    ]
-    result = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-    return header, result.returncode, result.stdout
 
 
 def contains_diagnostic(output: str) -> bool:
@@ -126,32 +178,54 @@ def main() -> int:
         print(f"invalid compile database: {database_path}", file=sys.stderr)
         return 2
 
-    output_dir = build_dir / "header-clang-tidy"
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True)
+    output_dir = Path(tempfile.mkdtemp(prefix="header-clang-tidy-", dir=build_dir))
 
-    entry = representative_entry(entries)
-    compiler = command_arguments(entry)[0]
-    flags = analysis_flags(entry)
-    headers = sorted((source_root / "src").rglob("*.h"))
+    headers = sorted(
+        [
+            *(source_root / "src").rglob("*.h"),
+            *(source_root / "tests").rglob("*.h"),
+        ]
+    )
     if sys.platform != "linux":
         headers = [
             header
             for header in headers
             if "displays/linux_kms_atomic" not in header.as_posix()
         ]
+    header_entries = {
+        header: entries_for_header(source_root, header, entries) for header in headers
+    }
+    headers = [header for header in headers if header_entries[header]]
     generated_by_header = {
         header: write_header_tu(source_root, output_dir, header) for header in headers
     }
-    synthetic_database = [
-        {
-            "directory": str(source_root),
-            "file": str(generated),
-            "arguments": [compiler, *flags, "-c", str(generated)],
-        }
-        for generated in generated_by_header.values()
-    ]
+    synthetic_database = []
+    for header, generated in generated_by_header.items():
+        entry = representative_entry(header_entries[header])
+        compiler = command_arguments(entry)[0]
+        flags = [*analysis_flags(entry), "-I", str(source_root / "tests")]
+        synthetic_database.append(
+            {
+                "directory": str(source_root),
+                "file": str(generated),
+                "arguments": [compiler, *flags, "-c", str(generated)],
+            }
+        )
+        synthetic_database.append(
+            {
+                "directory": str(source_root),
+                "file": str(header),
+                "arguments": [
+                    compiler,
+                    *flags,
+                    "-Wno-unused-macros",
+                    "-x",
+                    "c-header",
+                    "-c",
+                    str(header),
+                ],
+            }
+        )
     (output_dir / "compile_commands.json").write_text(
         json.dumps(synthetic_database, indent=2) + "\n", encoding="utf-8"
     )
@@ -162,6 +236,17 @@ def main() -> int:
             pool.submit(run_one, clang_tidy, output_dir, generated, header)
             for header, generated in generated_by_header.items()
         ]
+        futures.extend(
+            pool.submit(
+                run_one,
+                clang_tidy,
+                output_dir,
+                header,
+                header,
+                "-*,misc-include-cleaner",
+            )
+            for header in headers
+        )
         for future in concurrent.futures.as_completed(futures):
             header, returncode, output = future.result()
             if returncode != 0 or contains_diagnostic(output):
@@ -172,8 +257,10 @@ def main() -> int:
             relative = header.relative_to(source_root)
             print(f"== {relative} (exit {returncode}) ==", file=sys.stderr)
             print(output.rstrip(), file=sys.stderr)
+        shutil.rmtree(output_dir)
         return 1
 
+    shutil.rmtree(output_dir)
     print(f"Header clang-tidy passed for {len(headers)} headers.")
     return 0
 

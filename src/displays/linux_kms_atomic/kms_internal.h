@@ -1,7 +1,11 @@
 #ifndef DRIVERBENCH_KMS_INTERNAL_H
 #define DRIVERBENCH_KMS_INTERNAL_H
 
-#include "kms_hdr.h"
+#include "core/db_format_contract.h"
+#include "core/db_frame_contracts.h"
+#include "core/db_render_types.h"
+#include "displays/display_runtime_config_common.h"
+#include "displays/display_types.h"
 #include "kms_runner.h"
 
 #include "../display_frame_loop_common.h"

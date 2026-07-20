@@ -3,6 +3,7 @@
 #include "core/db_conformance.h"
 #include "core/db_core.h"
 #include "core/db_format_contract.h"
+#include "core/db_frame_contracts.h"
 #include "core/db_frame_plan.h"
 #include "core/db_geometry.h"
 #include "core/db_gradient_divergence.h"
@@ -22,6 +23,7 @@
 #include "renderers/gl_common.h"
 #include "renderers/gl_gradient_qualification.h"
 #include "renderers/gl_hash_readback.h"
+#include "renderers/gl_probe_internal.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -267,36 +269,32 @@ static void trace_native_plan(const db_frame_plan_t *plan) {
 }
 
 static int restore_seed_texture(const db_frame_plan_t *plan) {
-    db_render_ir_iterator_t iterator = {0};
-    db_render_ir_iterator_begin(&iterator, &plan->rebuild_ir);
-    const db_render_ir_upload_command_t *upload = NULL;
-    const db_render_ir_command_header_t *command = NULL;
-    while ((command = db_render_ir_iterator_next(&iterator)) != NULL) {
-        if (command->opcode == DB_RENDER_IR_OP_UPLOAD_IMAGE) {
-            upload = (const db_render_ir_upload_command_t *)command;
-            break;
-        }
-    }
-    if (upload == NULL) {
+    db_render_ir_upload_command_t upload = {0};
+    db_render_ir_external_binding_t source = {0};
+    if ((db_render_ir_resolve_full_upload(&plan->rebuild_ir,
+                                          plan->external_bindings, &upload,
+                                          &source) == 0) ||
+        (source.pixels == NULL) || (source.width != g_state.native.width) ||
+        (source.height != g_state.native.height) ||
+        (source.format != g_state.backing.format.surface_pixel_format)) {
         return 0;
     }
-    const db_render_ir_external_binding_t *const source =
-        db_render_ir_find_binding(plan->external_bindings, upload->source);
-    if ((source == NULL) || (source->pixels == NULL) ||
-        (source->width != g_state.native.width) ||
-        (source->height != g_state.native.height) ||
-        (source->format != g_state.backing.format.surface_pixel_format)) {
+    uint32_t row_length_pixels = 0U;
+    if (db_gl_external_binding_unpack_row_length(
+            &source, db_gl_context_supports_unpack_row_length_upload(),
+            &row_length_pixels) == 0) {
         return 0;
     }
     db_gl_texture_bind_2d(g_state.presentation.shadow.texture);
-    if (source->format == DB_PIXEL_FORMAT_RGBA16F) {
-        db_gl_texture_sub_image_2d_rgba16f(0U, 0U, source->width,
-                                           source->height,
-                                           (const uint16_t *)source->pixels);
+    db_gl_set_unpack_row_length_pixels(row_length_pixels);
+    if (source.format == DB_PIXEL_FORMAT_RGBA16F) {
+        db_gl_texture_sub_image_2d_rgba16f(0U, 0U, source.width, source.height,
+                                           (const uint16_t *)source.pixels);
     } else {
-        db_gl_texture_sub_image_2d_rgba(0U, 0U, source->width, source->height,
-                                        (const uint8_t *)source->pixels);
+        db_gl_texture_sub_image_2d_rgba(0U, 0U, source.width, source.height,
+                                        (const uint8_t *)source.pixels);
     }
+    db_gl_set_unpack_row_length_pixels(0U);
     db_gl_texture_bind_2d(0U);
     return 1;
 }
@@ -348,12 +346,10 @@ static size_t append_rect_vertices(db_render_ir_rect_t rect,
 
 static size_t append_row_vertices(const db_render_ir_view_t *ir,
                                   size_t first_rect) {
-    const size_t rect_count = db_render_ir_rect_count(ir);
-    for (size_t index = 0U; index < rect_count; index++) {
-        db_render_ir_fill_t fill = {0};
-        if (db_render_ir_rect_at(ir, index, &fill) == 0) {
-            return SIZE_MAX;
-        }
+    db_render_ir_rect_iterator_t iterator = {0};
+    db_render_ir_rect_iterator_begin(&iterator, ir);
+    db_render_ir_fill_t fill = {0};
+    while (db_render_ir_rect_iterator_next(&iterator, &fill) != 0) {
         first_rect =
             append_rect_vertices(fill.rect, fill.color, fill.color, first_rect);
         if (first_rect == SIZE_MAX) {
@@ -384,7 +380,7 @@ static size_t append_ir_vertices(const db_render_ir_view_t *ir,
             break;
         case DB_RENDER_IR_OP_CLEAR: {
             const db_render_ir_clear_command_t *const clear =
-                (const db_render_ir_clear_command_t *)command;
+                DB_RENDER_IR_COMMAND_AS(db_render_ir_clear_command_t, command);
             const db_render_ir_rect_t rect = {
                 .width = db_checked_u32_to_i32(BACKEND_NAME, "clear_width",
                                                g_state.runtime.grid_cols),
@@ -397,7 +393,7 @@ static size_t append_ir_vertices(const db_render_ir_view_t *ir,
         }
         case DB_RENDER_IR_OP_FILL_RECTS: {
             const db_render_ir_fill_command_t *const fills =
-                (const db_render_ir_fill_command_t *)command;
+                DB_RENDER_IR_COMMAND_AS(db_render_ir_fill_command_t, command);
             for (uint32_t index = 0U; index < fills->fill_count; index++) {
                 const db_render_ir_fill_t fill =
                     ir->fills[fills->first_fill + index];
@@ -411,7 +407,8 @@ static size_t append_ir_vertices(const db_render_ir_view_t *ir,
         }
         case DB_RENDER_IR_OP_FILL_LINEAR_GRADIENT: {
             const db_render_ir_linear_gradient_command_t *const gradient =
-                (const db_render_ir_linear_gradient_command_t *)command;
+                DB_RENDER_IR_COMMAND_AS(db_render_ir_linear_gradient_command_t,
+                                        command);
             if (command->clip_region != DB_RENDER_IR_INVALID_ID) {
                 return SIZE_MAX;
             }
@@ -542,26 +539,29 @@ static int ensure_fbo(uint32_t width, uint32_t height) {
     }
     g_state.native.width = width;
     g_state.native.height = height;
-    g_state.native.generation++;
+    g_state.native.generation =
+        db_checked_add_u32(BACKEND_NAME, "native_target_generation",
+                           g_state.native.generation, 1U);
     g_state.native.valid = 0;
     g_state.native.strategy = GL1_STRATEGY_PERSISTENT_FBO;
     return 1;
 }
 
 int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
+                         const db_renderer_target_t *target,
                          uint32_t logical_height, int presentation_fbo,
                          int viewport_width, int viewport_height) {
     const uint32_t planned_gradient_commands =
         (plan != NULL) ? plan->update_metadata.gradient_count +
                              plan->rebuild_metadata.gradient_count
                        : 0U;
-    if ((plan == NULL) || (logical_width == 0U) || (logical_height == 0U) ||
+    if ((plan == NULL) || (target == NULL) || (target->valid == 0) ||
+        (logical_width == 0U) || (logical_height == 0U) ||
         (viewport_width <= 0) || (viewport_height <= 0) ||
-        (g_state.diagnostics.gl1_gradient == DB_GL1_GRADIENT_CPU) ||
-        (plan->external_bindings.count > 0U) ||
-        (g_state.diagnostics.gl1_target == DB_GL1_TARGET_CPU_UPLOAD) ||
-        (g_state.native.strategy == GL1_STRATEGY_CPU_UPLOAD) ||
-        ((g_state.diagnostics.gl1_target != DB_GL1_TARGET_DIRECT_WINDOW) &&
+        ((target->strategy == DB_RENDER_TARGET_GL1_DIRECT_WINDOW) &&
+         (plan->external_bindings.count > 0U)) ||
+        (target->strategy == DB_RENDER_TARGET_GL1_CPU_UPLOAD) ||
+        ((target->strategy != DB_RENDER_TARGET_GL1_DIRECT_WINDOW) &&
          (ensure_fbo(logical_width, logical_height) == 0))) {
         return 0;
     }
@@ -571,7 +571,7 @@ int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
             return 0;
         }
     }
-    if (g_state.diagnostics.gl1_target == DB_GL1_TARGET_DIRECT_WINDOW) {
+    if (target->strategy == DB_RENDER_TARGET_GL1_DIRECT_WINDOW) {
         if ((g_state.replay.available == 0) ||
             ((uint32_t)viewport_width != logical_width) ||
             ((uint32_t)viewport_height != logical_height) ||
@@ -581,9 +581,9 @@ int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
         }
         if ((g_state.native.strategy != GL1_STRATEGY_DIRECT_WINDOW) ||
             (g_state.native.width != logical_width) ||
-            (g_state.native.height != logical_height)) {
-            g_state.replay.target_generation++;
-            db_gl1_replay_reset();
+            (g_state.native.height != logical_height) ||
+            (g_state.replay.target_generation != target->target_generation)) {
+            g_state.replay.target_generation = target->target_generation;
         }
         db_render_ir_view_t replay_views[DB_REPLAY_CAPACITY_MAX] = {};
         int use_rebuild = 0;
@@ -606,6 +606,11 @@ int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
                                db_checked_int_to_u32(BACKEND_NAME,
                                                      "presentation_fbo",
                                                      presentation_fbo));
+        db_gl_set_dither_enabled(0);
+        db_gl_set_framebuffer_srgb_enabled(0);
+        db_gl_set_blend_enabled(0);
+        db_gl_set_depth_test_enabled(0);
+        db_gl_set_cull_face_enabled(0);
         db_gl_set_viewport_px(viewport_width, viewport_height);
         if (draw_ir_sequence(streams, stream_count) == 0) {
             return 0;
@@ -639,18 +644,23 @@ int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
             .cache_status = g_state.native.applied.cache_status,
             .qualification_lane_count = g_state.native.applied.lane_count,
             .qualification_reason = g_state.native.applied.reason,
-            .qualified = DB_BOOL(
-                (g_state.diagnostics.gl1_target == DB_GL1_TARGET_AUTO) &&
-                (g_state.diagnostics.gl1_gradient == DB_GL1_GRADIENT_AUTO) &&
-                ((gradient_commands == 0U) ||
-                 (g_state.native.applied.generation != 0U))),
+            .strategy_reason =
+                db_renderer_strategy_reason_name(target->strategy_reason),
+            .strategy_generation = target->strategy_generation,
+            .qualification_generation = target->qualification_generation,
+            .target_generation = target->target_generation,
+            .qualified =
+                DB_BOOL((g_state.native.applied.production_qualified != 0) &&
+                        ((gradient_commands == 0U) ||
+                         (g_state.native.applied.generation != 0U))),
             .replay_stream_count = db_checked_size_to_u32(
                 BACKEND_NAME, "replay_stream_count", replay_count),
             .diagnostic_forced = g_state.native.applied.diagnostic_forced,
         };
-        if (db_gl1_replay_commit(plan, logical_width, logical_height,
-                                 g_state.backing.format.surface_pixel_format,
-                                 use_rebuild) == 0) {
+        if (db_gl1_replay_prepare(plan, logical_width, logical_height,
+                                  g_state.backing.format.surface_pixel_format,
+                                  target->target_generation,
+                                  use_rebuild) == 0) {
             return 0;
         }
         trace_native_plan(plan);
@@ -676,7 +686,9 @@ int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
         return 0;
     }
     if ((planned_gradient_commands > 0U) && (rebuild != 0) &&
-        (g_state.diagnostics.gl1_gradient == DB_GL1_GRADIENT_INTERPOLATED)) {
+        (g_state.native.applied.diagnostic_forced != 0) &&
+        (g_state.native.applied.implementation ==
+         DB_GRADIENT_IMPLEMENTATION_SEMANTIC)) {
         (void)qualify_row_fill(plan);
     }
     g_state.native.valid = 1;
@@ -714,12 +726,18 @@ int db_gl1_native_render(const db_frame_plan_t *plan, uint32_t logical_width,
         .cache_status = g_state.native.applied.cache_status,
         .qualification_lane_count = g_state.native.applied.lane_count,
         .qualification_reason = g_state.native.applied.reason,
-        .qualified = DB_BOOL(
-            (gradient_commands == 0U) ||
-            ((g_state.diagnostics.gl1_gradient == DB_GL1_GRADIENT_AUTO) &&
-             (g_state.native.applied.generation != 0U))),
+        .strategy_reason =
+            db_renderer_strategy_reason_name(target->strategy_reason),
+        .strategy_generation = target->strategy_generation,
+        .qualification_generation = target->qualification_generation,
+        .target_generation = target->target_generation,
+        .qualified =
+            DB_BOOL((g_state.native.applied.production_qualified != 0) &&
+                    ((gradient_commands == 0U) ||
+                     (g_state.native.applied.generation != 0U))),
         .diagnostic_forced = g_state.native.applied.diagnostic_forced,
     };
+    db_gl1_replay_prepare_boundary();
     trace_native_plan(plan);
     return 1;
 }

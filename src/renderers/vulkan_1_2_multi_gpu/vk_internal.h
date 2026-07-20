@@ -1,11 +1,18 @@
 #ifndef DRIVERBENCH_VK_INTERNAL_H
 #define DRIVERBENCH_VK_INTERNAL_H
 
+#include "core/db_conformance.h"
+#include "core/db_format_contract.h"
+#include "core/db_frame_plan.h"
+#include "core/db_geometry.h"
+#include "core/db_numeric.h"
+#include "core/db_render_ir.h"
+#include "core/db_render_types.h"
 #include "core/db_renderer_support.h"
-#include "vk_diagnostics.h"
 #include "vk_renderer.h"
 #include <stddef.h>
 #include <stdint.h>
+#include <vulkan/vulkan_core.h>
 
 #define DB_VK_MAX_LANES 8U
 #define MAX_GPU_COUNT DB_VK_MAX_LANES
@@ -251,6 +258,17 @@ typedef struct {
 } DeviceSelectionState;
 
 typedef struct {
+    uint32_t phys_count;
+    db_vk_physical_device_info_t phys_info[MAX_GPU_COUNT];
+    db_vk_execution_mode_t execution_mode;
+    uint32_t primary_phys_index;
+    uint32_t primary_lane_index;
+    uint32_t lane_count;
+    uint32_t active_lane_count;
+    db_vk_device_lane_t lanes[MAX_GPU_COUNT];
+} db_vk_selected_device_state_t;
+
+typedef struct {
     VkSwapchainKHR swapchain;
     VkExtent2D extent;
     uint32_t image_count;
@@ -492,6 +510,11 @@ db_vk_scheduler_mode_name(db_vk_execution_mode_t execution_mode) {
     return "unknown";
 }
 
+static inline int db_vk_execution_mode_uses_independent_lanes(
+    db_vk_execution_mode_t execution_mode) {
+    return DB_BOOL(execution_mode == DB_VK_EXECUTION_MODE_INDEPENDENT_DEVICES);
+}
+
 static inline const char *
 db_vk_scheduler_mode_name_effective(db_vk_execution_mode_t execution_mode,
                                     uint32_t active_lane_count) {
@@ -603,8 +626,7 @@ uint32_t db_vk_import_memory_type_bits(uint32_t exported_fd_type_bits,
                                        uint32_t alias_requirement_type_bits);
 int db_vk_external_interop_usable(int platform_supported, int external_memory,
                                   int external_semaphore, int external_image);
-int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime,
-                                  uint32_t lane_index);
+int db_vk_buffer_transport_create(db_vk_independent_lane_runtime_t *runtime);
 void db_vk_buffer_transport_destroy(db_vk_independent_lane_runtime_t *runtime);
 db_vk_transport_profile_t
 db_vk_negotiate_transport(const db_vk_transport_capabilities_t *capabilities);
@@ -615,23 +637,43 @@ int db_vk_build_shared_buffer_plan(const db_vk_execution_plan_t *execution_plan,
                                    db_vk_shared_piece_layout_t *layouts,
                                    size_t layout_capacity,
                                    db_vk_shared_buffer_plan_t *out_plan);
+typedef struct {
+    db_render_ir_command_range_t *ranges;
+    size_t capacity;
+    size_t range_high_water;
+} db_vk_planner_workspace_t;
 int db_vk_build_execution_plan(
-    const db_frame_plan_t *frame_plan, uint32_t lane_count,
-    db_vk_scheduling_policy_t policy, const double *ema_ms_per_work_unit,
-    uint32_t scheduling_epoch, uint32_t content_generation,
-    db_vk_present_piece_t *pieces, size_t piece_capacity,
-    db_vk_lane_assignment_t *assignments, size_t assignment_capacity,
-    db_vk_execution_plan_t *out_plan);
+    const db_frame_plan_t *frame_plan, db_vk_planner_workspace_t *workspace,
+    uint32_t lane_count, db_vk_scheduling_policy_t policy,
+    const double *ema_ms_per_work_unit, uint32_t scheduling_epoch,
+    uint32_t content_generation, db_vk_present_piece_t *pieces,
+    size_t piece_capacity, db_vk_lane_assignment_t *assignments,
+    size_t assignment_capacity, db_vk_execution_plan_t *out_plan);
 int db_vk_build_execution_plan_for_gradient_path(
-    const db_frame_plan_t *frame_plan, uint32_t lane_count,
-    db_vk_scheduling_policy_t policy, const double *ema_ms_per_work_unit,
-    uint32_t scheduling_epoch, uint32_t content_generation,
-    db_vk_present_piece_t *pieces, size_t piece_capacity,
-    db_vk_lane_assignment_t *assignments, size_t assignment_capacity,
-    db_vk_execution_plan_t *out_plan, int semantic_gradient);
+    const db_frame_plan_t *frame_plan, db_vk_planner_workspace_t *workspace,
+    uint32_t lane_count, db_vk_scheduling_policy_t policy,
+    const double *ema_ms_per_work_unit, uint32_t scheduling_epoch,
+    uint32_t content_generation, db_vk_present_piece_t *pieces,
+    size_t piece_capacity, db_vk_lane_assignment_t *assignments,
+    size_t assignment_capacity, db_vk_execution_plan_t *out_plan,
+    int semantic_gradient);
+uint32_t db_vk_route_accelerated_gradients_to_primary(
+    db_vk_execution_plan_t *execution_plan,
+    db_gradient_implementation_t implementation);
+typedef struct {
+    const db_frame_plan_t *plan;
+    db_render_ir_rect_iterator_t stream;
+    uint32_t stream_index;
+} db_vk_frame_rect_iterator_t;
+void db_vk_frame_rect_iterator_begin(db_vk_frame_rect_iterator_t *iterator,
+                                     const db_frame_plan_t *plan);
+int db_vk_frame_rect_iterator_next(db_vk_frame_rect_iterator_t *iterator,
+                                   db_render_ir_fill_t *fill);
+int db_vk_frame_rect_iterator_advance_to(db_vk_frame_rect_iterator_t *iterator,
+                                         size_t *next_index,
+                                         size_t target_index,
+                                         db_render_ir_fill_t *fill);
 size_t db_vk_frame_rect_count(const db_frame_plan_t *plan);
-int db_vk_frame_rect_at(const db_frame_plan_t *plan, size_t index,
-                        db_render_ir_fill_t *fill);
 size_t db_vk_write_frame_instances(const db_frame_plan_t *plan,
                                    db_vk_ir_execute_instance_t *instances,
                                    size_t instance_capacity);
@@ -644,12 +686,13 @@ size_t db_vk_write_frame_instances_for_implementation(
     size_t *lookup_word_count, db_pixel_format_t working_format,
     db_gradient_implementation_t implementation);
 int db_vk_build_execution_plan_with_worker_share(
-    const db_frame_plan_t *frame_plan, uint32_t lane_count,
-    db_vk_scheduling_policy_t policy, uint32_t worker_share_bps,
-    const double *ema_ms_per_work_unit, uint32_t scheduling_epoch,
-    uint32_t content_generation, db_vk_present_piece_t *pieces,
-    size_t piece_capacity, db_vk_lane_assignment_t *assignments,
-    size_t assignment_capacity, db_vk_execution_plan_t *out_plan);
+    const db_frame_plan_t *frame_plan, db_vk_planner_workspace_t *workspace,
+    uint32_t lane_count, db_vk_scheduling_policy_t policy,
+    uint32_t worker_share_bps, const double *ema_ms_per_work_unit,
+    uint32_t scheduling_epoch, uint32_t content_generation,
+    db_vk_present_piece_t *pieces, size_t piece_capacity,
+    db_vk_lane_assignment_t *assignments, size_t assignment_capacity,
+    db_vk_execution_plan_t *out_plan);
 uint32_t db_vk_split_search_next_share(const db_vk_split_search_t *search);
 void db_vk_split_search_record(db_vk_split_search_t *search,
                                const db_vk_split_sample_t *sample);
@@ -681,6 +724,7 @@ void db_vk_device_group_lanes_shutdown(void);
 int db_vk_device_group_peer_read_usable(VkPeerMemoryFeatureFlags features);
 uint32_t db_vk_device_group_record(const db_frame_plan_t *plan,
                                    const db_vk_execution_plan_t *execution_plan,
+                                   size_t instance_count,
                                    VkCommandBuffer command_buffer,
                                    uint32_t *frame_work_units,
                                    uint8_t *frame_owner_used,

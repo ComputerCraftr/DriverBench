@@ -27,14 +27,25 @@
 
 static const float db_vk_gradient_lookup_mode_threshold = 1.5F;
 
+static int vk_rebuild_binding(const db_frame_plan_t *plan,
+                              db_render_ir_external_binding_t *binding) {
+    if ((plan == NULL) || (binding == NULL)) {
+        return 0;
+    }
+    db_render_ir_upload_command_t upload = {0};
+    return db_render_ir_resolve_full_upload(
+        &plan->rebuild_ir, plan->external_bindings, &upload, binding);
+}
+
 db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
     if (!g_state.initialized || plan == NULL) {
         return DB_VK_FRAME_STOP;
     }
     g_state.frame.frame_index = plan->frame_index;
+    db_render_ir_external_binding_t rebuild_binding_storage = {0};
     const db_render_ir_external_binding_t *const rebuild_binding =
-        (plan->external_bindings.count > 0U)
-            ? &plan->external_bindings.bindings[0]
+        (vk_rebuild_binding(plan, &rebuild_binding_storage) != 0)
+            ? &rebuild_binding_storage
             : NULL;
     const int use_raster_seed = DB_BOOL(rebuild_binding != NULL);
 
@@ -48,10 +59,14 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
         active_gpu_count = 1U;
     }
     if ((plan->rebuild_required != 0) && (plan->frame_index > 0U)) {
-        g_state.scheduler.content_generation++;
+        g_state.scheduler.content_generation =
+            db_checked_add_u32(BACKEND_NAME, "content_generation",
+                               g_state.scheduler.content_generation, 1U);
     }
     if (active_gpu_count != g_state.scheduler.last_active_lane_count) {
-        g_state.scheduler.scheduling_epoch++;
+        g_state.scheduler.scheduling_epoch =
+            db_checked_add_u32(BACKEND_NAME, "scheduling_epoch",
+                               g_state.scheduler.scheduling_epoch, 1U);
         g_state.scheduler.last_active_lane_count = active_gpu_count;
     }
     db_vk_scheduling_policy_t scheduling_policy = DB_VK_SCHEDULING_PRIMARY_ONLY;
@@ -95,8 +110,8 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
         gradient_implementation != DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES);
     db_vk_execution_plan_t execution_plan = {0};
     if (db_vk_build_execution_plan_for_gradient_path(
-            plan, active_gpu_count, scheduling_policy,
-            g_state.scheduler.ema_ms_per_work_unit,
+            plan, &g_state.scheduler.planner_workspace, active_gpu_count,
+            scheduling_policy, g_state.scheduler.ema_ms_per_work_unit,
             g_state.scheduler.scheduling_epoch,
             g_state.scheduler.content_generation,
             g_state.scheduler.piece_storage, DB_VK_MAX_PIECES_PER_FRAME,
@@ -109,6 +124,11 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
         db_log_error(BACKEND_NAME, "vk_execution_error", fields,
                      DB_LOG_FIELD_COUNT(fields));
         return DB_VK_FRAME_STOP;
+    }
+    if (g_state.device.selection.execution_mode ==
+        DB_VK_EXECUTION_MODE_INDEPENDENT_DEVICES) {
+        (void)db_vk_route_accelerated_gradients_to_primary(
+            &execution_plan, gradient_implementation);
     }
     if ((db_vk_trace_level() >= 1) &&
         ((plan->frame_index == 0U) || execution_plan.primary_only_fallback)) {
@@ -159,7 +179,11 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
             (uint32_t *)g_state.pipelines.lookup_mapped,
             DB_VK_LOOKUP_WORD_CAPACITY, &lookup_word_count,
             g_state.backing.pixel_format, gradient_implementation);
-    if ((instance_count == 0U) && (db_vk_frame_rect_count(plan) != 0U)) {
+    const int planned_instances =
+        DB_BOOL((plan->update_metadata.instance_count != 0U) ||
+                ((plan->external_bindings.count == 0U) &&
+                 (plan->rebuild_metadata.instance_count != 0U)));
+    if ((instance_count == 0U) && (planned_instances != 0)) {
         DB_RUNTIME_FAIL(BACKEND_NAME, "Vulkan instance stream overflow");
     }
     if ((db_vk_trace_level() >= 2) && (lookup_word_count > 0U)) {
@@ -446,7 +470,7 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
 
     const uint64_t frame_start_ns = db_now_ns_monotonic();
     uint32_t grid_tiles_drawn = 0U;
-    const size_t draw_count = db_vk_frame_rect_count(plan);
+    const size_t draw_count = instance_count;
     (void)db_damage_trace_emit(&(const db_damage_trace_event_t){
         .frame_index = plan->frame_index,
         .backend = DB_DAMAGE_TRACE_BACKEND_VULKAN,
@@ -465,8 +489,9 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
     });
     if (have_group != 0) {
         grid_tiles_drawn = db_vk_device_group_record(
-            plan, &execution_plan, g_state.device.command_buffer,
-            frame_work_units, frame_owner_used, frame_owner_finished);
+            plan, &execution_plan, instance_count,
+            g_state.device.command_buffer, frame_work_units, frame_owner_used,
+            frame_owner_finished);
     } else {
         VkRenderPassBeginInfo rbi = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};

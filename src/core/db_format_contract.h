@@ -2,6 +2,7 @@
 #define DRIVERBENCH_CORE_DB_FORMAT_CONTRACT_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "core/db_numeric.h"
 #include "core/db_render_types.h"

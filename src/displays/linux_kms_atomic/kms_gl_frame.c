@@ -93,7 +93,10 @@ db_kms_gl_execute(void *user_ctx, const db_frame_plan_t *plan,
         .force_full = force_full,
         .repair_reason = force_full != 0 ? age.fallback_reason : "none",
     };
-    producer->renderer->render_frame(plan, &presentation);
+    if (producer->renderer->render_frame(plan, target, &presentation) == 0) {
+        output->target_content = DB_TARGET_CONTENT_PARTIALLY_MODIFIED;
+        return DB_RENDER_FATAL;
+    }
     EGLBoolean swapped = EGL_FALSE;
     if ((producer->presentation.swap_damage_supported != 0) &&
         (producer->presentation.swap_buffers_with_damage != NULL) &&
@@ -143,6 +146,10 @@ static int db_kms_gl_acquire(void *user_ctx, uint32_t frame_index,
         .destination_width = producer->destination_width,
         .destination_height = producer->destination_height,
         .generation = producer->transaction.generation,
+        .prior_content_state = (producer->transaction.initial_modeset != 0)
+                                   ? DB_TARGET_CONTENT_LOST
+                                   : DB_TARGET_CONTENT_UNCHANGED,
+        .target_recreated = producer->transaction.initial_modeset,
         .valid = 1,
     };
     return 1;
@@ -189,9 +196,6 @@ static int db_kms_gl_preflight(void *user_ctx,
                     .pixel_width = producer->pixel_width,
                     .pixel_height = producer->pixel_height,
                 },
-            .rebuild_required =
-                DB_BOOL(producer->transaction.initial_modeset != 0),
-            .rebuild_reason = DB_FRAME_REBUILD_INITIAL_TARGET,
         },
         presenter, qualification, preflight);
 }
@@ -204,12 +208,8 @@ static int db_kms_gl_provision(void *user_ctx,
     if ((producer == NULL) || (preflight == NULL) || (target == NULL)) {
         return 0;
     }
-    *target = (db_renderer_target_t){
-        .identity = 1U,
-        .generation = producer->transaction.generation,
-        .strategy = preflight->target_strategy,
-        .valid = 1,
-    };
+    *target = db_renderer_target_from_preflight(
+        preflight, 1U, producer->transaction.generation);
     return 1;
 }
 

@@ -22,6 +22,7 @@ typedef enum {
 typedef enum {
     DB_GL3_GRADIENT_AUTO = 0,
     DB_GL3_GRADIENT_SEMANTIC,
+    DB_GL3_GRADIENT_EXACT_LOOKUP,
     DB_GL3_GRADIENT_ROW_FILL,
 } db_gl3_gradient_request_t;
 

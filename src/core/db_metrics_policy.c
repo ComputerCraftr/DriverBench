@@ -136,7 +136,7 @@ db_f64_sample_ring_summarize(const db_f64_sample_ring_t *ring, double *scratch,
 }
 
 int db_run_metrics_init(db_run_metrics_t *metrics, int recent_enabled) {
-    if (metrics == NULL) {
+    if ((metrics == NULL) || (metrics->initialized != 0)) {
         return 0;
     }
     *metrics = (db_run_metrics_t){.initialized = 1};

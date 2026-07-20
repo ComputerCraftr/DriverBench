@@ -144,7 +144,8 @@ function(db_register_release_suite suite_id)
         db_test_apply_skip_regex("${db_test_name}"
                                  "${DB_TEST_GLFW_ENV_SKIP_REGEX}")
 
-        foreach(db_qualification_kind IN ITEMS gl3_semantic vulkan_exact)
+        foreach(db_qualification_kind IN ITEMS gl3_semantic gl3_exact
+                                               vulkan_exact)
             db_suite_make_test_name(
                 db_test_name "${db_prefix}"
                 "regression_automatic_qualification_${db_qualification_kind}")

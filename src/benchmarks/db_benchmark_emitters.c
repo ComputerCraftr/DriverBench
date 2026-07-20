@@ -13,6 +13,29 @@
 #include <stddef.h>
 #include <stdint.h>
 
+static int emitter_rect_endpoints_valid(uint32_t row_start, uint32_t row_count,
+                                        uint32_t col_start,
+                                        uint32_t col_count) {
+    uint32_t row_end = 0U;
+    uint32_t col_end = 0U;
+    return DB_BOOL((row_count > 0U) && (col_count > 0U) &&
+                   (db_try_add_u32(row_start, row_count, &row_end) != 0) &&
+                   (db_try_add_u32(col_start, col_count, &col_end) != 0) &&
+                   (row_start <= INT32_MAX) && (row_count <= INT32_MAX) &&
+                   (row_end <= INT32_MAX) && (col_start <= INT32_MAX) &&
+                   (col_count <= INT32_MAX) && (col_end <= INT32_MAX));
+}
+
+static int emitter_tile_index(uint32_t row, uint32_t cols, uint32_t col,
+                              size_t tile_count, size_t *index) {
+    size_t row_offset = 0U;
+    return DB_BOOL(
+        (index != NULL) &&
+        (db_try_mul_size((size_t)row, (size_t)cols, &row_offset) != 0) &&
+        (db_try_add_size(row_offset, (size_t)col, index) != 0) &&
+        (*index < tile_count));
+}
+
 void db_benchmark_ir_emitter_reset(db_benchmark_ir_emitter_t *emitter) {
     if (emitter != NULL) {
         emitter->logical_count = 0U;
@@ -24,7 +47,11 @@ void db_benchmark_ir_emitter_reset(db_benchmark_ir_emitter_t *emitter) {
 int db_benchmark_ir_emitter_add_damage(db_benchmark_ir_emitter_t *emitter,
                                        const db_grid_block_t *block) {
     if ((emitter == NULL) || (block == NULL) || (block->row_count == 0U) ||
-        (block->col_count == 0U)) {
+        (block->col_count == 0U) ||
+        ((emitter->logical_blocks == NULL) &&
+         ((emitter->logical_capacity > 0U) || (emitter->logical_count > 0U))) ||
+        ((emitter != NULL) &&
+         (emitter->logical_count > emitter->logical_capacity))) {
         if (emitter != NULL) {
             emitter->status = DB_BENCHMARK_IR_EMITTER_INVALID;
         }
@@ -42,10 +69,12 @@ int db_benchmark_ir_emitter_add_rect(db_benchmark_ir_emitter_t *emitter,
                                      uint32_t row_start, uint32_t row_count,
                                      uint32_t col_start, uint32_t col_count,
                                      const double rgb[3]) {
-    if ((emitter == NULL) || (rgb == NULL) || (row_count == 0U) ||
-        (col_count == 0U) || (row_start > INT32_MAX) ||
-        (row_count > INT32_MAX) || (col_start > INT32_MAX) ||
-        (col_count > INT32_MAX)) {
+    if ((emitter == NULL) || (rgb == NULL) ||
+        ((emitter->fills == NULL) &&
+         ((emitter->fill_capacity > 0U) || (emitter->fill_count > 0U))) ||
+        ((emitter != NULL) && (emitter->fill_count > emitter->fill_capacity)) ||
+        (emitter_rect_endpoints_valid(row_start, row_count, col_start,
+                                      col_count) == 0)) {
         if (emitter != NULL) {
             emitter->status = DB_BENCHMARK_IR_EMITTER_INVALID;
         }
@@ -54,12 +83,18 @@ int db_benchmark_ir_emitter_add_rect(db_benchmark_ir_emitter_t *emitter,
     if (emitter->fill_count > 0U) {
         db_render_ir_fill_t *const previous =
             &emitter->fills[emitter->fill_count - 1U];
+        const int64_t previous_y_end =
+            (int64_t)previous->rect.y + previous->rect.height;
+        const int64_t merged_height =
+            (int64_t)previous->rect.height + (int64_t)row_count;
+        const int adjacent = DB_BOOL(previous_y_end == (int64_t)row_start);
+        const int merge_height_valid =
+            DB_BOOL((merged_height > 0) && (merged_height <= INT32_MAX));
         if ((previous->rect.x == (int32_t)col_start) &&
-            (previous->rect.width == (int32_t)col_count) &&
-            ((previous->rect.y + previous->rect.height) ==
-             (int32_t)row_start) &&
+            (previous->rect.width == (int32_t)col_count) && (adjacent != 0) &&
+            (merge_height_valid != 0) &&
             (db_equal_f64_rgb3(previous->color.rgba, rgb) != 0)) {
-            previous->rect.height += (int32_t)row_count;
+            previous->rect.height = (int32_t)merged_height;
             return 1;
         }
     }
@@ -156,7 +191,8 @@ db_benchmark_emit_grid_state_damage(uint32_t cols, uint32_t rows,
                                     const double *tile_rgb, size_t tile_count,
                                     db_benchmark_ir_emitter_t *emitter) {
     if ((emitter == NULL) || (tile_rgb == NULL) || (cols == 0U) ||
-        (rows == 0U) || ((damage.blocks == NULL) && (damage.count > 0U))) {
+        (rows == 0U) || (tile_count > (SIZE_MAX / 3U)) ||
+        ((damage.blocks == NULL) && (damage.count > 0U))) {
         return DB_BENCHMARK_IR_EMITTER_INVALID;
     }
     for (size_t damage_index = 0U; damage_index < damage.count;
@@ -174,17 +210,23 @@ db_benchmark_emit_grid_state_damage(uint32_t cols, uint32_t rows,
         for (uint32_t row = block.row_start; row < row_end; row++) {
             uint32_t run_start = block.col_start;
             while (run_start < col_end) {
-                const size_t run_index = ((size_t)row * cols) + run_start;
-                if (run_index >= tile_count) {
+                size_t run_index = 0U;
+                if (emitter_tile_index(row, cols, run_start, tile_count,
+                                       &run_index) == 0) {
+                    emitter->status = DB_BENCHMARK_IR_EMITTER_INVALID;
                     break;
                 }
                 uint32_t run_end = run_start + 1U;
                 const double *const run_rgb = &tile_rgb[run_index * 3U];
                 while (run_end < col_end) {
-                    const size_t next_index = ((size_t)row * cols) + run_end;
-                    if ((next_index >= tile_count) ||
-                        (db_equal_f64_rgb3(run_rgb,
-                                           &tile_rgb[next_index * 3U]) == 0)) {
+                    size_t next_index = 0U;
+                    if ((emitter_tile_index(row, cols, run_end, tile_count,
+                                            &next_index) == 0) ||
+                        (db_equal_f64_rgb3(
+                             run_rgb, &tile_rgb[db_checked_mul_size(
+                                          "benchmark_emitters",
+                                          "tile_rgb_index", next_index, 3U)]) ==
+                         0)) {
                         break;
                     }
                     run_end++;

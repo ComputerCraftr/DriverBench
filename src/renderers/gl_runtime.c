@@ -183,7 +183,11 @@ void db_gl_shadow_upload_trace_reset(db_gl_shadow_upload_trace_t *trace) {
     if (trace == NULL) {
         return;
     }
+    db_gl_upload_span_trace_t *const upload_spans = trace->upload_spans;
+    const size_t upload_span_capacity = trace->upload_span_capacity;
     *trace = (db_gl_shadow_upload_trace_t){0};
+    trace->upload_spans = upload_spans;
+    trace->upload_span_capacity = upload_span_capacity;
 }
 
 void db_gl_shadow_upload_trace_capture_pixel_payload(
@@ -271,7 +275,8 @@ void db_gl_shadow_upload_trace_capture_upload_span(
     db_gl_shadow_upload_trace_t *trace, const db_damage_block_t *block,
     size_t offset_bytes, size_t size_bytes, const char *source_label) {
     if ((trace == NULL) || (block == NULL) ||
-        (trace->upload_span_count >= DB_GL_DIRTY_TRACE_UPLOAD_SPAN_CAPACITY)) {
+        (trace->upload_span_count >= trace->upload_span_capacity) ||
+        (trace->upload_spans == NULL)) {
         return;
     }
     trace->upload_spans[trace->upload_span_count] =
@@ -374,6 +379,8 @@ const char *db_gl_upload_target_name(db_gl_upload_target_t target) {
         return "pbo_unpack";
     case DB_GL_UPLOAD_TARGET_PBO_PACK_BUFFER:
         return "pbo_pack";
+    case DB_GL_UPLOAD_TARGET_TEXTURE_BUFFER:
+        return "texture_buffer";
     case DB_GL_UPLOAD_TARGET_VBO_ARRAY_BUFFER:
     default:
         return "vbo_array";

@@ -9,6 +9,7 @@
 #include "../gl_common.h"
 #include "../gl_hash_readback.h"
 #include "../renderer_viewport_common.h"
+#include "core/db_frame_contracts.h"
 #include "core/db_log.h"
 #include "core/db_qualification_contracts.h"
 #include "core/db_render_result.h"
@@ -90,12 +91,13 @@ const db_renderer_qualification_ops_t *db_gl1_qualification_ops(void) {
     return db_gl1_native_qualification_ops();
 }
 
-void db_gl1_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
-                         int viewport_height_px,
-                         db_pixel_block_view_t presentation_damage,
-                         int force_full_presentation) {
-    if (plan == NULL) {
-        return;
+int db_gl1_render_frame(const db_frame_plan_t *plan,
+                        const db_renderer_target_t *target,
+                        int viewport_width_px, int viewport_height_px,
+                        db_pixel_block_view_t presentation_damage,
+                        int force_full_presentation) {
+    if ((plan == NULL) || (target == NULL) || (target->valid == 0)) {
+        return 0;
     }
     g_state.telemetry.frame.frame_index = plan->frame_index;
     const db_renderer_viewport_state_t viewport_state =
@@ -118,8 +120,12 @@ void db_gl1_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
     int presentation_fbo = 0;
     db_gl_get_integerv(GL_DRAW_FRAMEBUFFER_BINDING, &presentation_fbo);
     const int native_rendered = db_gl1_native_render(
-        plan, plan->pixel_width, plan->pixel_height, presentation_fbo,
+        plan, plan->pixel_width, target, plan->pixel_height, presentation_fbo,
         viewport_width_px, viewport_height_px);
+    if ((native_rendered == 0) &&
+        (target->strategy != DB_RENDER_TARGET_GL1_CPU_UPLOAD)) {
+        return 0;
+    }
     if (native_rendered == 0) {
         g_state.native.strategy = GL1_STRATEGY_CPU_UPLOAD;
         db_gl1_render_geometry_to_backing(
@@ -128,9 +134,11 @@ void db_gl1_render_frame(const db_frame_plan_t *plan, int viewport_width_px,
                                   plan->pixel_width),
             db_checked_u32_to_i32(BACKEND_NAME, "logical_raster_height",
                                   plan->pixel_height));
+        db_gl1_replay_prepare_boundary();
     }
     g_state.telemetry.frame.state_hash = plan->expected_state_hash;
     g_state.telemetry.frame.frame_index++;
+    return 1;
 }
 
 void db_gl1_shutdown(void) {
@@ -140,6 +148,39 @@ void db_gl1_shutdown(void) {
     free(g_state.upload.blocks);
     db_gl_shadow_present_shutdown(&g_state.presentation.shadow);
     g_state = (renderer_state_t){0};
+}
+
+void db_gl1_replay_preflight_facts(db_render_target_strategy_t *strategy,
+                                   uint64_t *target_generation,
+                                   int *direct_window_lineage_valid) {
+    if (strategy != NULL) {
+        *strategy = g_state.replay.committed_strategy;
+    }
+    if (target_generation != NULL) {
+        *target_generation = g_state.replay.committed_target_generation;
+    }
+    if (direct_window_lineage_valid != NULL) {
+        *direct_window_lineage_valid =
+            g_state.replay.direct_window_lineage_valid;
+    }
+}
+
+void db_gl1_finalize_frame(int commit,
+                           db_render_target_strategy_t target_strategy,
+                           uint64_t target_generation) {
+    if (commit != 0) {
+        const gl1_replay_entry_t *const pending =
+            &g_state.replay.entries[g_state.replay.pending_entry];
+        const int lineage_valid =
+            DB_BOOL((target_strategy == DB_RENDER_TARGET_GL1_DIRECT_WINDOW) &&
+                    (pending->valid != 0) && (pending->replay_boundary == 0));
+        db_gl1_replay_publish_pending();
+        g_state.replay.committed_strategy = target_strategy;
+        g_state.replay.committed_target_generation = target_generation;
+        g_state.replay.direct_window_lineage_valid = lineage_valid;
+    } else {
+        db_gl1_replay_discard_pending();
+    }
 }
 
 const char *db_gl1_capability_mode(void) {

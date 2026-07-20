@@ -2,7 +2,10 @@
 #define DRIVERBENCH_RENDERER_DAMAGE_TRACE_H
 
 #include "../core/db_frame_plan.h"
+#include "core/db_geometry.h"
 #include "core/db_render_types.h"
+#include <stddef.h>
+#include <stdint.h>
 
 typedef enum {
     DB_DAMAGE_TRACE_BACKEND_CPU = 0,
@@ -127,8 +130,13 @@ typedef struct {
     db_damage_block_t bounds;
     size_t valid_block_count;
     size_t rejected_block_count;
+    uint64_t band_block_comparisons;
+    uint64_t interval_sort_comparisons;
+    uint64_t interval_merge_comparisons;
     int truncated;
 } db_damage_trace_summary_t;
+
+enum { DB_DAMAGE_TRACE_REGION_COMPARISON_BUDGET = 1048576U };
 
 int db_damage_trace_level(void);
 int db_damage_trace_enabled(void);

@@ -8,6 +8,9 @@
 #include "../core/db_buffer_convert.h"
 #include "../core/db_core.h"
 #include "core/db_format_contract.h"
+#include "core/db_geometry.h"
+#include "core/db_log.h"
+#include "core/db_numeric.h"
 #include "core/db_render_types.h"
 
 static inline uint32_t
@@ -74,6 +77,50 @@ static inline uint64_t db_display_scale_surface_region_validated(
         DB_MIN(region.row_count, destination_height - region.row_start);
     region.col_count =
         DB_MIN(region.col_count, destination_width - region.col_start);
+    if ((source->pixel_width == destination_width) &&
+        (source->pixel_height == destination_height) &&
+        (db_pointer_is_aligned(destination, _Alignof(uint32_t)) != 0) &&
+        ((destination_stride_bytes % sizeof(uint32_t)) == 0U)) {
+        uint32_t *const native_pixels =
+            DB_ASSUME_ALIGNED(destination, _Alignof(uint32_t));
+        const size_t native_stride =
+            destination_stride_bytes / sizeof(uint32_t);
+        if (native_format == DB_NATIVE_OUTPUT_XRGB2101010) {
+            if (source->format == DB_PIXEL_FORMAT_RGBA16F) {
+                db_convert_rgba16f_to_xrgb2101010_block(
+                    native_pixels, native_stride,
+                    (const uint16_t *)source->pixels, source->pixel_width,
+                    region.row_start, region.row_count, region.col_start,
+                    region.col_count);
+            } else {
+                db_convert_rgba8_to_xrgb2101010_block(
+                    native_pixels, native_stride,
+                    (const uint32_t *)source->pixels, source->pixel_width,
+                    region.row_start, region.row_count, region.col_start,
+                    region.col_count);
+            }
+        } else if (source->format == DB_PIXEL_FORMAT_RGBA16F) {
+            db_convert_rgba16f_to_xrgb8888_block(
+                native_pixels, native_stride, (const uint16_t *)source->pixels,
+                source->pixel_width, region.row_start, region.row_count,
+                region.col_start, region.col_count);
+        } else {
+            db_convert_rgba8_to_xrgb8888_block(
+                native_pixels, native_stride, (const uint32_t *)source->pixels,
+                source->pixel_width, region.row_start, region.row_count,
+                region.col_start, region.col_count);
+        }
+        uint64_t pixel_count = 0U;
+        uint64_t bytes_written = 0U;
+        if ((db_try_mul_u64(region.row_count, region.col_count, &pixel_count) ==
+             0) ||
+            (db_try_mul_u64(pixel_count, sizeof(uint32_t), &bytes_written) ==
+             0)) {
+            DB_RUNTIME_FAIL(backend,
+                            "identity CPU presentation byte count overflow");
+        }
+        return bytes_written;
+    }
     const uint32_t row_end = region.row_start + region.row_count;
     const uint32_t column_end = region.col_start + region.col_count;
     uint64_t bytes_written = 0U;

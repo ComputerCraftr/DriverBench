@@ -34,6 +34,14 @@ void db_convert_rgba16f_to_rgb10a2_bt2020_pq_tight(
     uint32_t *dst, const uint16_t *src, size_t src_stride_pixels,
     uint32_t row_start, uint32_t row_count, uint32_t col_start,
     uint32_t col_count);
+void db_convert_rgba8_to_xrgb2101010_block(
+    uint32_t *dst, size_t dst_stride_pixels, const uint32_t *src,
+    size_t src_stride_pixels, uint32_t row_start, uint32_t row_count,
+    uint32_t col_start, uint32_t col_count);
+void db_convert_rgba16f_to_xrgb2101010_block(
+    uint32_t *dst, size_t dst_stride_pixels, const uint16_t *src,
+    size_t src_stride_pixels, uint32_t row_start, uint32_t row_count,
+    uint32_t col_start, uint32_t col_count);
 void db_convert_rgba8_to_xrgb8888_block(uint32_t *dst, size_t dst_stride_pixels,
                                         const uint32_t *src,
                                         size_t src_stride_pixels,

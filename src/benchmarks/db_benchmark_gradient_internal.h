@@ -2,8 +2,14 @@
 #define DRIVERBENCH_RENDERER_BENCHMARK_COMMON_GRADIENT_INTERNAL_H
 
 #include "benchmarks/db_benchmark_geometry_internal.h"
+#include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_benchmark_runtime_internal.h"
 #include "benchmarks/db_benchmark_types_internal.h"
+#include "core/db_core.h"
+#include "core/db_geometry.h"
+#include "core/db_numeric.h"
+#include "core/db_render_types.h"
+#include <stdint.h>
 #include <string.h>
 
 static inline db_gradient_damage_plan_t

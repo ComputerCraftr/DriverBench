@@ -42,7 +42,7 @@ static void db_log_append_text(db_log_writer_t *writer, const char *value) {
         }
         return;
     }
-    while (*value != '\0') {
+    while ((writer->valid != 0) && (*value != '\0')) {
         db_log_append_char(writer, *value++);
     }
 }
@@ -74,11 +74,16 @@ static int db_log_identifier_valid(const char *value) {
         !((value[0] >= 'a') && (value[0] <= 'z'))) {
         return 0;
     }
+    size_t length = 1U;
     for (const char *cursor = value + 1; *cursor != '\0'; cursor++) {
+        if (length >= DB_LOG_IDENTIFIER_CAPACITY) {
+            return 0;
+        }
         if (!(((*cursor >= 'a') && (*cursor <= 'z')) ||
               ((*cursor >= '0') && (*cursor <= '9')) || (*cursor == '_'))) {
             return 0;
         }
+        length++;
     }
     return 1;
 }
@@ -87,11 +92,16 @@ static int db_log_component_valid(const char *value) {
     if ((value == NULL) || (value[0] == '\0')) {
         return 0;
     }
+    size_t length = 0U;
     for (const char *cursor = value; *cursor != '\0'; cursor++) {
+        if (length >= DB_LOG_IDENTIFIER_CAPACITY) {
+            return 0;
+        }
         if (!(isalnum((unsigned char)*cursor) || (*cursor == '_') ||
               (*cursor == '-') || (*cursor == '.'))) {
             return 0;
         }
+        length++;
     }
     return 1;
 }
@@ -100,21 +110,30 @@ static int db_log_token_valid(const char *value) {
     if ((value == NULL) || (value[0] == '\0')) {
         return 0;
     }
+    size_t length = 0U;
     for (const char *cursor = value; *cursor != '\0'; cursor++) {
+        if (length >= DB_LOG_TOKEN_CAPACITY) {
+            return 0;
+        }
         if (!(isalnum((unsigned char)*cursor) || (*cursor == '_') ||
               (*cursor == '-') || (*cursor == '.') || (*cursor == ':') ||
               (*cursor == '/') || (*cursor == '+'))) {
             return 0;
         }
+        length++;
     }
     return 1;
 }
 
 static int db_log_fields_valid(const db_log_event_t *event) {
-    if ((event == NULL) || (event->field_count == 0U)) {
+    if (event == NULL) {
+        return 0;
+    }
+    if (event->field_count == 0U) {
         return 1;
     }
-    if (event->fields == NULL) {
+    if ((event->fields == NULL) ||
+        (event->field_count > DB_LOG_FIELD_CAPACITY)) {
         return 0;
     }
     for (size_t i = 0U; i < event->field_count; i++) {
@@ -153,7 +172,7 @@ static void db_log_append_string(db_log_writer_t *writer, const char *value) {
     static const char hex[] = "0123456789abcdef";
     db_log_append_char(writer, '"');
     for (const unsigned char *cursor = (const unsigned char *)value;
-         *cursor != '\0'; cursor++) {
+         (writer->valid != 0) && (*cursor != '\0'); cursor++) {
         switch (*cursor) {
         case '"':
             db_log_append_text(writer, "\\\"");

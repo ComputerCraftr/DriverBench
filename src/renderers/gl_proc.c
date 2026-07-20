@@ -309,6 +309,12 @@ void db_gl_load_upload_proc_table(void) {
         (db_gl_tex_parameteri_fn_t)(db_gl_get_proc("glTexParameteri"));
     g_upload_proc_table.tex_envi =
         (db_gl_tex_envi_fn_t)(db_gl_get_proc("glTexEnvi"));
+    g_upload_proc_table.tex_buffer =
+        (db_gl_tex_buffer_fn_t)(db_gl_get_proc("glTexBuffer"));
+    if (g_upload_proc_table.tex_buffer == NULL) {
+        g_upload_proc_table.tex_buffer =
+            (db_gl_tex_buffer_fn_t)(db_gl_get_proc("glTexBufferARB"));
+    }
     g_upload_proc_table.tex_sub_image_2d =
         (db_gl_tex_sub_image_2d_fn_t)(db_gl_get_proc("glTexSubImage2D"));
     g_upload_proc_table.uniform_1i =
@@ -322,6 +328,9 @@ void db_gl_load_upload_proc_table(void) {
     g_upload_proc_table.vertex_attrib_pointer =
         (db_gl_vertex_attrib_pointer_fn_t)(db_gl_get_proc(
             "glVertexAttribPointer"));
+    g_upload_proc_table.vertex_attrib_i_pointer =
+        (db_gl_vertex_attrib_i_pointer_fn_t)(db_gl_get_proc(
+            "glVertexAttribIPointer"));
     g_upload_proc_table.vertex_attrib_divisor =
         (db_gl_vertex_attrib_divisor_fn_t)(db_gl_get_proc(
             "glVertexAttribDivisor"));

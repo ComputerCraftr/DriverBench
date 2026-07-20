@@ -1,9 +1,12 @@
 #ifndef DRIVERBENCH_CORE_DB_RENDERER_LOG_H
 #define DRIVERBENCH_CORE_DB_RENDERER_LOG_H
 
+#include "core/db_conformance.h"
+#include "core/db_conformance_cache.h"
 #include "core/db_core.h"
 #include "core/db_log.h"
 #include "core/db_render_result.h"
+#include <stdint.h>
 
 static inline void db_renderer_log_final_summary(
     const char *api_name, const char *renderer_name, const char *backend,
@@ -45,6 +48,13 @@ static inline void db_renderer_log_final_summary(
                          (execution.qualification_reason != NULL)
                              ? execution.qualification_reason
                              : "none"),
+            DB_LOG_TOKEN("strategy_reason", (execution.strategy_reason != NULL)
+                                                ? execution.strategy_reason
+                                                : "none"),
+            DB_LOG_U64("strategy_generation", execution.strategy_generation),
+            DB_LOG_U64("qualification_generation",
+                       execution.qualification_generation),
+            DB_LOG_U64("target_generation", execution.target_generation),
             DB_LOG_U64("solid_commands", execution.solid_commands),
             DB_LOG_U64("gradient_commands", execution.gradient_commands),
             DB_LOG_U64("solid_draws", execution.solid_draws),
@@ -54,6 +64,11 @@ static inline void db_renderer_log_final_summary(
             DB_LOG_U64("lookup_words", execution.lookup_words),
             DB_LOG_U64("cpu_pixels_written", execution.cpu_pixels_written),
             DB_LOG_U64("uploaded_bytes", execution.uploaded_bytes),
+            DB_LOG_U64("surface_restoration_bytes",
+                       execution.surface_restoration_bytes),
+            DB_LOG_U64("encoded_span_bytes", execution.encoded_span_bytes),
+            DB_LOG_U64("gradient_lookup_bytes", execution.lookup_upload_bytes),
+            DB_LOG_U64("command_vbo_bytes", execution.command_upload_bytes),
             DB_LOG_BOOL("qualified", execution.qualified),
             DB_LOG_BOOL("diagnostic_forced", execution.diagnostic_forced),
         };

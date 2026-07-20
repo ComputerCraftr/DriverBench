@@ -3,16 +3,20 @@
 #include "core/db_benchmark_model.h"
 #include "core/db_conformance.h"
 #include "core/db_core.h"
+#include "core/db_format_contract.h"
 #include "core/db_frame_contracts.h"
 #include "core/db_frame_plan.h"
 #include "core/db_numeric.h"
 #include "core/db_qualification_contracts.h"
 #include "core/db_render_result.h"
+#include "core/db_render_types.h"
 #include "core/db_renderer_diagnostics.h"
 #include "support/test_harness.h"
 
 #include <stddef.h>
 #include <stdint.h>
+
+enum { DB_TEST_MISMATCHED_CHANNEL_BITS = 10U };
 
 typedef struct {
     uint32_t probe_count;
@@ -284,6 +288,19 @@ static void test_successful_transaction(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_U64(state, fixture.finalize_commit_count, 1U);
 }
 
+static void
+test_transaction_identity_exhaustion_does_not_wrap(db_test_state_t *state) {
+    db_frame_coordinator_fixture_t fixture = {0};
+    db_benchmark_model_t model = {0};
+    db_frame_coordinator_t coordinator = make_coordinator(&fixture, &model);
+    coordinator.next_transaction_id = UINT64_MAX;
+    DB_TEST_EXPECT_EQ_INT(state, db_frame_coordinator_begin(&coordinator, 0U),
+                          0);
+    DB_TEST_EXPECT_EQ_INT(state, coordinator.active, 0);
+    DB_TEST_EXPECT_EQ_U64(state, coordinator.next_transaction_id, UINT64_MAX);
+    DB_TEST_EXPECT_EQ_U64(state, coordinator.identity.transaction_id, 0U);
+}
+
 static void test_retryable_present_keeps_plan(db_test_state_t *state) {
     db_frame_coordinator_fixture_t fixture = {.present_retry_count = 1U};
     db_benchmark_model_t model = {0};
@@ -370,47 +387,118 @@ static void test_shared_preflight_policy(db_test_state_t *state) {
         .strategy = DB_RENDER_TARGET_GL1_PERSISTENT_FBO,
         .production_qualified = 1,
     };
+    const db_gl1_direct_window_capabilities_t direct_capabilities = {
+        .can_control_dither = 1,
+        .can_control_srgb = 1,
+        .can_select_required_buffers = 1,
+        .pre_swap_readback_qualified = 1,
+        .fixed_function_raster_qualified = 1,
+    };
+    const db_presenter_facts_t direct_presenter = {
+        .destination_width = 1000U,
+        .destination_height = 600U,
+        .gl =
+            {
+                .native_width = 1000U,
+                .native_height = 600U,
+                .native_format = DB_NATIVE_OUTPUT_XRGB8888,
+                .channel_bits = {8U, 8U, 8U, 0U},
+                .generation = 3U,
+                .valid = 1,
+            },
+        .generation = 3U,
+        .buffer_age_valid = 1,
+        .valid = 1,
+    };
+    const db_renderer_preflight_policy_input_t direct_input = {
+        .profile = DB_RENDERER_PREFLIGHT_GL1_WINDOW,
+        .gl1_target_request = DB_GL1_TARGET_AUTO,
+        .working_format = DB_PIXEL_FORMAT_RGBA8,
+        .gl1_direct_window = direct_capabilities,
+        .previous_strategy = DB_RENDER_TARGET_GL1_DIRECT_WINDOW,
+        .previous_target_generation = 3U,
+        .direct_window_lineage_valid = 1,
+    };
     db_renderer_preflight_t preflight = {0};
-    DB_TEST_EXPECT_TRUE(state,
-                        db_renderer_preflight_policy_resolve(
-                            &(const db_renderer_preflight_policy_input_t){
-                                .profile = DB_RENDERER_PREFLIGHT_GL1_WINDOW,
-                                .gl1_target_request = DB_GL1_TARGET_AUTO,
-                            },
-                            &(const db_presenter_facts_t){
-                                .destination_width = 1000U,
-                                .destination_height = 600U,
-                                .generation = 3U,
-                                .buffer_age_valid = 1,
-                                .valid = 1,
-                            },
-                            &qualification, &preflight) != 0);
+    DB_TEST_EXPECT_TRUE(state, db_renderer_preflight_policy_resolve(
+                                   &direct_input, &direct_presenter,
+                                   &qualification, &preflight) != 0);
     DB_TEST_EXPECT_EQ_INT(state, preflight.target_strategy,
                           DB_RENDER_TARGET_GL1_DIRECT_WINDOW);
     DB_TEST_EXPECT_EQ_INT(state, preflight.gradient_path,
                           DB_RENDER_OPERATION_GL1_INTERPOLATED_GRADIENT);
     DB_TEST_EXPECT_EQ_U64(state, preflight.strategy_generation, 9U);
+    DB_TEST_EXPECT_EQ_INT(state, preflight.strategy_reason,
+                          DB_RENDERER_STRATEGY_REASON_DIRECT_WINDOW_ELIGIBLE);
+    const db_renderer_target_t target =
+        db_renderer_target_from_preflight(&preflight, 17U, 23U);
+    DB_TEST_EXPECT_EQ_U64(state, target.identity, 17U);
+    DB_TEST_EXPECT_EQ_U64(state, target.generation, 23U);
+    DB_TEST_EXPECT_EQ_INT(state, target.strategy, preflight.target_strategy);
+    DB_TEST_EXPECT_EQ_INT(state, target.gradient_path, preflight.gradient_path);
+    DB_TEST_EXPECT_EQ_U64(state, target.strategy_generation,
+                          preflight.strategy_generation);
+    DB_TEST_EXPECT_EQ_U64(state, target.qualification_generation,
+                          preflight.qualification_generation);
+    DB_TEST_EXPECT_EQ_U64(state, target.target_generation,
+                          preflight.target_generation);
+    DB_TEST_EXPECT_EQ_INT(state, target.strategy_reason,
+                          preflight.strategy_reason);
 
-    DB_TEST_EXPECT_TRUE(state,
-                        db_renderer_preflight_policy_resolve(
-                            &(const db_renderer_preflight_policy_input_t){
-                                .profile = DB_RENDERER_PREFLIGHT_GL1_WINDOW,
-                                .gl1_target_request = DB_GL1_TARGET_AUTO,
-                            },
-                            &(const db_presenter_facts_t){
-                                .destination_width = 1000U,
-                                .destination_height = 600U,
-                                .generation = 4U,
-                                .valid = 1,
-                            },
-                            &qualification, &preflight) != 0);
+    db_presenter_facts_t pending_age = direct_presenter;
+    pending_age.buffer_age_valid = 0;
+    DB_TEST_EXPECT_TRUE(state, db_renderer_preflight_policy_resolve(
+                                   &direct_input, &pending_age, &qualification,
+                                   &preflight) != 0);
     DB_TEST_EXPECT_EQ_INT(state, preflight.target_strategy,
                           DB_RENDER_TARGET_GL1_PERSISTENT_FBO);
+    DB_TEST_EXPECT_EQ_INT(state, preflight.strategy_reason,
+                          DB_RENDERER_STRATEGY_REASON_BUFFER_AGE_PENDING);
+
+    db_presenter_facts_t format_mismatch = direct_presenter;
+    format_mismatch.gl.channel_bits[0] = DB_TEST_MISMATCHED_CHANNEL_BITS;
+    DB_TEST_EXPECT_TRUE(state, db_renderer_preflight_policy_resolve(
+                                   &direct_input, &format_mismatch,
+                                   &qualification, &preflight) != 0);
+    DB_TEST_EXPECT_EQ_INT(
+        state, preflight.strategy_reason,
+        DB_RENDERER_STRATEGY_REASON_PRESENTER_FORMAT_MISMATCH);
+
+    db_presenter_facts_t conversion = direct_presenter;
+    conversion.gl.platform_conversion_required = 1;
+    DB_TEST_EXPECT_TRUE(state, db_renderer_preflight_policy_resolve(
+                                   &direct_input, &conversion, &qualification,
+                                   &preflight) != 0);
+    DB_TEST_EXPECT_EQ_INT(
+        state, preflight.strategy_reason,
+        DB_RENDERER_STRATEGY_REASON_PRESENTATION_CONVERSION_REQUIRED);
+
+    db_renderer_preflight_policy_input_t missing_capability = direct_input;
+    missing_capability.gl1_direct_window.can_control_dither = 0;
+    DB_TEST_EXPECT_TRUE(state, db_renderer_preflight_policy_resolve(
+                                   &missing_capability, &direct_presenter,
+                                   &qualification, &preflight) != 0);
+    DB_TEST_EXPECT_EQ_INT(
+        state, preflight.strategy_reason,
+        DB_RENDERER_STRATEGY_REASON_DIRECT_WINDOW_CAPABILITY_MISSING);
+
+    db_renderer_preflight_policy_input_t transition = direct_input;
+    transition.previous_strategy = DB_RENDER_TARGET_GL1_PERSISTENT_FBO;
+    transition.direct_window_lineage_valid = 0;
+    DB_TEST_EXPECT_TRUE(state, db_renderer_preflight_policy_resolve(
+                                   &transition, &direct_presenter,
+                                   &qualification, &preflight) != 0);
+    DB_TEST_EXPECT_EQ_INT(
+        state, preflight.strategy_reason,
+        DB_RENDERER_STRATEGY_REASON_STRATEGY_TRANSITION_REBUILD);
+    DB_TEST_EXPECT_EQ_INT(state, preflight.rebuild_required, 1);
 }
 
 unsigned db_frame_coordinator_test_run_all(void) {
     const db_test_case_t cases[] = {
         {"successful_transaction", test_successful_transaction},
+        {"transaction_identity_exhaustion_does_not_wrap",
+         test_transaction_identity_exhaustion_does_not_wrap},
         {"retryable_present_keeps_plan", test_retryable_present_keeps_plan},
         {"stale_presenter_restarts_transaction",
          test_stale_presenter_restarts_transaction},

@@ -1,9 +1,10 @@
-#include "core/db_renderer_support.h"
 #include <stddef.h>
 #include <stdint.h>
 
 #include "../../core/db_core.h"
 #include "../../core/db_hash.h"
+#include "../../core/db_log.h"
+#include "../../core/db_render_ir.h"
 #include "../damage_trace.h"
 #include "vk_internal.h"
 #include "vk_renderer.h"
@@ -11,8 +12,37 @@
 #include <vulkan/vulkan_core.h>
 
 #define BACKEND_NAME "renderer_vulkan_1_2_multi_gpu"
+#define runtime_failf(...) DB_RUNTIME_FAIL(BACKEND_NAME, __VA_ARGS__)
 
 renderer_state_t g_vk_state = {0};
+
+static db_vk_selected_device_state_t
+selected_device_state(const DeviceSelectionState *enumerated) {
+    if ((enumerated == NULL) || (enumerated->lane_count > MAX_GPU_COUNT) ||
+        (enumerated->primary_lane_index >= enumerated->lane_count)) {
+        runtime_failf("invalid Vulkan device selection");
+    }
+    db_vk_selected_device_state_t selected = {
+        .phys_count = enumerated->lane_count,
+        .execution_mode = enumerated->execution_mode,
+        .primary_phys_index = enumerated->primary_lane_index,
+        .primary_lane_index = enumerated->primary_lane_index,
+        .lane_count = enumerated->lane_count,
+        .active_lane_count = enumerated->active_lane_count,
+    };
+    for (uint32_t lane_index = 0U; lane_index < enumerated->lane_count;
+         lane_index++) {
+        const db_vk_device_lane_t source_lane = enumerated->lanes[lane_index];
+        if (source_lane.physical_index >= enumerated->phys_count) {
+            runtime_failf("invalid Vulkan lane physical-device index");
+        }
+        selected.phys_info[lane_index] =
+            enumerated->phys_info[source_lane.physical_index];
+        selected.lanes[lane_index] = source_lane;
+        selected.lanes[lane_index].physical_index = lane_index;
+    }
+    return selected;
+}
 
 void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     if (ctx == NULL) {
@@ -29,7 +59,7 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
     }
     g_state.device.instance = ctx->instance;
     g_state.presentation.surface = ctx->surface;
-    g_state.device.selection = ctx->selection;
+    g_state.device.selection = selected_device_state(&ctx->selection);
     g_state.device.gpu_count =
         db_vk_normalize_gpu_count(g_state.device.selection.active_lane_count);
     g_state.device.present_phys = ctx->present_phys;
@@ -143,6 +173,12 @@ void db_vk_publish_initialized_state(const db_vk_state_init_ctx_t *ctx) {
             BACKEND_NAME, "assignment_storage", DB_VK_MAX_PIECES_PER_FRAME,
             sizeof(*g_state.scheduler.assignment_storage),
             DB_CACHELINE_ALIGNMENT_BYTES);
+    g_state.scheduler.planner_workspace.ranges =
+        (db_render_ir_command_range_t *)db_calloc_or_fail(
+            BACKEND_NAME, "planner_ranges", DB_VK_MAX_PIECES_PER_FRAME,
+            sizeof(*g_state.scheduler.planner_workspace.ranges),
+            DB_CACHELINE_ALIGNMENT_BYTES);
+    g_state.scheduler.planner_workspace.capacity = DB_VK_MAX_PIECES_PER_FRAME;
     g_state.scheduler.scheduling_epoch = 1U;
     g_state.scheduler.content_generation = 1U;
     g_state.scheduler.last_active_lane_count = 1U;

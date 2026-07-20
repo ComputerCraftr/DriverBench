@@ -6,10 +6,11 @@
 #include "../../core/db_frame_contracts.h"
 #include "../../core/db_frame_plan.h"
 #include "../../driverbench_config.h"
-#include "../../renderers/gl_common.h"
 #include "../display_presentation_policy.h"
-#include "../display_runtime_config_common.h"
 #include "../display_types.h"
+#include "core/db_qualification_contracts.h"
+#include "core/db_render_result.h"
+#include "core/db_renderer_runtime_contract.h"
 
 typedef enum {
     DB_KMS_ATOMIC_CONTEXT_GL1_5_OR_GLES1_1 = 0,
@@ -22,8 +23,9 @@ typedef struct {
     void (*execution_report)(db_render_execution_report_t *report);
     const db_renderer_qualification_ops_t *qualification_ops;
     void (*init)(const db_renderer_runtime_contract_t *resolved_runtime);
-    void (*render_frame)(const db_frame_plan_t *plan,
-                         const db_gl_presentation_frame_t *presentation);
+    int (*render_frame)(const db_frame_plan_t *plan,
+                        const db_renderer_target_t *target,
+                        const db_gl_presentation_frame_t *presentation);
     void (*shutdown)(void);
     uint32_t (*work_unit_count)(void);
 } db_kms_atomic_renderer_vtable_t;

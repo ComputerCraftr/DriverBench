@@ -2,7 +2,8 @@
 #define DRIVERBENCH_CONFORMANCE_CACHE_H
 
 #include <stddef.h>
-#include <stdint.h>
+
+#define DB_CONFORMANCE_CACHE_MAX_KEY_BYTES 512U
 
 typedef enum {
     DB_CONFORMANCE_UNTESTED = 0,

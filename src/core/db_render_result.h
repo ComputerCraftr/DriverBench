@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_CORE_RENDER_RESULT_H
 #define DRIVERBENCH_CORE_RENDER_RESULT_H
 
+#include "core/db_conformance_cache.h"
 #include "db_conformance.h"
 
 #include <stdint.h>
@@ -24,6 +25,7 @@ typedef enum {
     DB_RENDER_OPERATION_GL1_CPU_UPLOAD,
     DB_RENDER_OPERATION_GL3_INSTANCED_SOLID,
     DB_RENDER_OPERATION_GL3_SEMANTIC_GRADIENT,
+    DB_RENDER_OPERATION_GL3_EXACT_LOOKUP,
     DB_RENDER_OPERATION_GL3_ROW_FILL,
     DB_RENDER_OPERATION_VULKAN_INSTANCED_SOLID,
     DB_RENDER_OPERATION_VULKAN_SEMANTIC_GRADIENT,
@@ -44,11 +46,19 @@ typedef struct {
     uint32_t lookup_words;
     uint64_t cpu_pixels_written;
     uint64_t uploaded_bytes;
+    uint64_t surface_restoration_bytes;
+    uint64_t encoded_span_bytes;
+    uint64_t lookup_upload_bytes;
+    uint64_t command_upload_bytes;
     db_gradient_implementation_t gradient_implementation;
     db_qualification_source_t qualification_source;
     db_conformance_cache_status_t cache_status;
     uint32_t qualification_lane_count;
     const char *qualification_reason;
+    const char *strategy_reason;
+    uint64_t strategy_generation;
+    uint64_t qualification_generation;
+    uint64_t target_generation;
     int qualified;
     int diagnostic_forced;
 } db_render_execution_report_t;

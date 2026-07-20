@@ -3,6 +3,9 @@
 
 #include "db_benchmark_model.h"
 #include "db_frame_contracts.h"
+#include "db_frame_plan.h"
+#include "db_progress_policy.h"
+#include "db_qualification_contracts.h"
 
 #include <stdint.h>
 

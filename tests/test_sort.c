@@ -83,15 +83,79 @@ static void db_test_sort_u32_contract(db_test_state_t *state) {
                           DB_SORT_INVALID_ARGUMENT);
 }
 
+static void db_test_sort_u64_contract(db_test_state_t *state) {
+    static const uint64_t repeated_value = UINT64_C(0x100000001);
+    uint64_t values[] = {UINT64_MAX, 0U, repeated_value, 1U, repeated_value};
+    const uint64_t expected[] = {0U, 1U, repeated_value, repeated_value,
+                                 UINT64_MAX};
+    const size_t count = sizeof(values) / sizeof(values[0]);
+    DB_TEST_EXPECT_EQ_INT(state, db_sort_u64_ascending(values, count),
+                          DB_SORT_OK);
+    DB_TEST_EXPECT_TRUE(state, memcmp(values, expected, sizeof(values)) == 0);
+    DB_TEST_EXPECT_EQ_INT(state, db_sort_u64_ascending(NULL, 0U), DB_SORT_OK);
+    DB_TEST_EXPECT_EQ_INT(state, db_sort_u64_ascending(NULL, 1U),
+                          DB_SORT_INVALID_ARGUMENT);
+}
+
 static int compare_bytes(const void *lhs, const void *rhs) {
     const uint8_t lhs_value = *(const uint8_t *)lhs;
     const uint8_t rhs_value = *(const uint8_t *)rhs;
     return (lhs_value > rhs_value) - (lhs_value < rhs_value);
 }
 
+typedef struct {
+    uint8_t key;
+    uint8_t original_index;
+} stable_record_t;
+
+static int compare_stable_records(const void *lhs_pointer,
+                                  const void *rhs_pointer) {
+    const stable_record_t *const lhs = (const stable_record_t *)lhs_pointer;
+    const stable_record_t *const rhs = (const stable_record_t *)rhs_pointer;
+    return (lhs->key > rhs->key) - (lhs->key < rhs->key);
+}
+
+static void db_test_stable_sort_contract(db_test_state_t *state) {
+    stable_record_t records[] = {{2U, 0U}, {1U, 1U}, {2U, 2U}, {1U, 3U}};
+    stable_record_t scratch[sizeof(records) / sizeof(records[0])] = {0};
+    const stable_record_t expected[] = {{1U, 1U}, {1U, 3U}, {2U, 0U}, {2U, 2U}};
+    uint64_t comparisons = 0U;
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_sort_records_stable(
+            records, scratch, sizeof(records) / sizeof(records[0]),
+            sizeof(records[0]), compare_stable_records, 16U, &comparisons),
+        DB_SORT_OK);
+    DB_TEST_EXPECT_TRUE(state, memcmp(records, expected, sizeof(records)) == 0);
+    DB_TEST_EXPECT_TRUE(state, comparisons > 0U);
+}
+
+static void
+db_test_stable_sort_rejects_overlap_and_budget(db_test_state_t *state) {
+    stable_record_t records[] = {{2U, 0U}, {1U, 1U}, {2U, 2U}, {1U, 3U}};
+    const stable_record_t original[] = {{2U, 0U}, {1U, 1U}, {2U, 2U}, {1U, 3U}};
+    stable_record_t scratch[sizeof(records) / sizeof(records[0])] = {0};
+    uint64_t comparisons = 0U;
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_sort_records_stable(
+            records, records, sizeof(records) / sizeof(records[0]),
+            sizeof(records[0]), compare_stable_records, 16U, &comparisons),
+        DB_SORT_INVALID_ARGUMENT);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_sort_records_stable(
+            records, scratch, sizeof(records) / sizeof(records[0]),
+            sizeof(records[0]), compare_stable_records, 3U, &comparisons),
+        DB_SORT_COMPLEXITY_LIMIT);
+    DB_TEST_EXPECT_TRUE(state, memcmp(records, original, sizeof(records)) == 0);
+    DB_TEST_EXPECT_EQ_U64(state, comparisons, 0U);
+}
+
 static void db_test_sort_rejects_size_overflow(db_test_state_t *state) {
     double f64_value = 0.0;
     uint32_t u32_value = 0U;
+    uint64_t u64_value = 0U;
     uint8_t record = 0U;
     DB_TEST_EXPECT_EQ_INT(
         state,
@@ -100,6 +164,10 @@ static void db_test_sort_rejects_size_overflow(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_INT(
         state,
         db_sort_u32_ascending(&u32_value, (SIZE_MAX / sizeof(u32_value)) + 1U),
+        DB_SORT_SIZE_OVERFLOW);
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_sort_u64_ascending(&u64_value, (SIZE_MAX / sizeof(u64_value)) + 1U),
         DB_SORT_SIZE_OVERFLOW);
     DB_TEST_EXPECT_EQ_INT(
         state,
@@ -113,6 +181,10 @@ unsigned db_sort_test_run_all(void) {
         {"sort_f64_total_edge_order", db_test_sort_f64_total_edge_order},
         {"sort_f64_argument_contract", db_test_sort_f64_argument_contract},
         {"sort_u32_contract", db_test_sort_u32_contract},
+        {"sort_u64_contract", db_test_sort_u64_contract},
+        {"stable_sort_contract", db_test_stable_sort_contract},
+        {"stable_sort_rejects_overlap_and_budget",
+         db_test_stable_sort_rejects_overlap_and_budget},
         {"sort_rejects_size_overflow", db_test_sort_rejects_size_overflow},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));

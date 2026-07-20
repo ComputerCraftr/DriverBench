@@ -1,9 +1,9 @@
 #ifndef DRIVERBENCH_CORE_BENCHMARK_MODEL_H
 #define DRIVERBENCH_CORE_BENCHMARK_MODEL_H
 
+#include "core/db_render_types.h"
 #include "db_frame_plan.h"
 #include "db_render_result.h"
-#include "db_renderer_runtime_contract.h"
 
 #include <stdint.h>
 

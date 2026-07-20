@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+static const double test_rgb[3] = {0.25, 0.5, 0.75};
+
 static void emitters_bands_use_ir_fills(db_test_state_t *state) {
     db_grid_block_t logical[1] = {};
     db_render_ir_fill_t fills[4] = {};
@@ -86,6 +88,63 @@ static void emitters_report_capacity(db_test_state_t *state) {
                           DB_BENCHMARK_IR_EMITTER_CAPACITY);
 }
 
+static void
+malformed_arenas_are_rejected_without_writes(db_test_state_t *state) {
+    db_benchmark_ir_emitter_t damage = {.logical_capacity = 1U};
+    const db_grid_block_t block = db_grid_block_full(1U, 1U);
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_benchmark_ir_emitter_add_damage(&damage, &block), 0);
+    DB_TEST_EXPECT_EQ_SIZE(state, damage.logical_count, 0U);
+    DB_TEST_EXPECT_EQ_INT(state, damage.status,
+                          DB_BENCHMARK_IR_EMITTER_INVALID);
+
+    db_benchmark_ir_emitter_t fills = {.fill_capacity = 1U};
+    DB_TEST_EXPECT_EQ_INT(
+        state,
+        db_benchmark_ir_emitter_add_rect(&fills, 0U, 1U, 0U, 1U, test_rgb), 0);
+    DB_TEST_EXPECT_EQ_SIZE(state, fills.fill_count, 0U);
+    DB_TEST_EXPECT_EQ_INT(state, fills.status, DB_BENCHMARK_IR_EMITTER_INVALID);
+
+    db_benchmark_ir_emitter_t stale_damage = {.logical_count = 1U};
+    DB_TEST_EXPECT_EQ_INT(
+        state, db_benchmark_ir_emitter_add_damage(&stale_damage, &block), 0);
+    DB_TEST_EXPECT_EQ_SIZE(state, stale_damage.logical_count, 1U);
+    DB_TEST_EXPECT_EQ_INT(state, stale_damage.status,
+                          DB_BENCHMARK_IR_EMITTER_INVALID);
+
+    db_benchmark_ir_emitter_t stale_fills = {.fill_count = 1U};
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_benchmark_ir_emitter_add_rect(&stale_fills, 0U, 1U,
+                                                           0U, 1U, test_rgb),
+                          0);
+    DB_TEST_EXPECT_EQ_SIZE(state, stale_fills.fill_count, 1U);
+    DB_TEST_EXPECT_EQ_INT(state, stale_fills.status,
+                          DB_BENCHMARK_IR_EMITTER_INVALID);
+}
+
+static void
+rectangle_endpoint_overflow_is_transactional(db_test_state_t *state) {
+    db_render_ir_fill_t storage[1] = {0};
+    db_benchmark_ir_emitter_t emitter = {
+        .fills = storage,
+        .fill_capacity = 1U,
+    };
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_benchmark_ir_emitter_add_rect(
+                              &emitter, INT32_MAX, 1U, 0U, 1U, test_rgb),
+                          0);
+    DB_TEST_EXPECT_EQ_SIZE(state, emitter.fill_count, 0U);
+    DB_TEST_EXPECT_EQ_INT(state, emitter.status,
+                          DB_BENCHMARK_IR_EMITTER_INVALID);
+
+    db_benchmark_ir_emitter_reset(&emitter);
+    DB_TEST_EXPECT_EQ_INT(state,
+                          db_benchmark_ir_emitter_add_rect(
+                              &emitter, 0U, 1U, INT32_MAX, 1U, test_rgb),
+                          0);
+    DB_TEST_EXPECT_EQ_SIZE(state, emitter.fill_count, 0U);
+}
+
 unsigned db_benchmark_emitters_test_run_all(void) {
     static const db_test_case_t cases[] = {
         {"emitters_bands_use_ir_fills", emitters_bands_use_ir_fills},
@@ -93,6 +152,10 @@ unsigned db_benchmark_emitters_test_run_all(void) {
         {"grid_state_merges_adjacent_equal_spans",
          grid_state_merges_adjacent_equal_spans},
         {"emitters_report_capacity", emitters_report_capacity},
+        {"malformed_arenas_are_rejected_without_writes",
+         malformed_arenas_are_rejected_without_writes},
+        {"rectangle_endpoint_overflow_is_transactional",
+         rectangle_endpoint_overflow_is_transactional},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

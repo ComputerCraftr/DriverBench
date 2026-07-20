@@ -1,12 +1,12 @@
 #ifndef DRIVERBENCH_VK_RUNTIME_INTERNAL_H
 #define DRIVERBENCH_VK_RUNTIME_INTERNAL_H
-#include "core/db_frame_plan.h"
-#include "core/db_metrics_policy.h"
 #include "core/db_progress_policy.h"
+#include "core/db_render_ir.h"
 #include "vk_internal.h"
 
 #include <stddef.h>
 #include <stdint.h>
+#include <vulkan/vulkan_core.h>
 
 #define DEFAULT_EMA_MS_PER_WORK_UNIT 0.2
 #define EMA_KEEP 0.9

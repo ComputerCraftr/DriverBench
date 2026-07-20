@@ -64,6 +64,9 @@ double widen(float value) {
         "double_cast": "double bad(float value) { return (double)value; }\n",
         "float_extrema": "float bad(float a, float b) { return fminf(a, b); }\n",
         "float_parse": "float bad(const char *s) { return strtof(s, 0); }\n",
+        "integer_parse": (
+            "unsigned long long bad(const char *s) { return strtoull(s, 0, 16); }\n"
+        ),
         "inline_min": (
             "unsigned bad(unsigned a, unsigned b) {\n    return (a < b) ? a : b;\n}\n"
         ),
@@ -98,6 +101,9 @@ double widen(float value) {
             "    return (height > 0) ? (size_t)height : 0U;\n"
             "}\n"
         ),
+        "signed_bit_shift": (
+            "uint32_t bad(uint32_t index) {\n    return 1 << index;\n}\n"
+        ),
         "saturating_subtract": (
             "uint64_t bad(uint64_t lhs, uint64_t rhs) {\n"
             "    return lhs > rhs ? lhs - rhs : 0U;\n"
@@ -127,6 +133,12 @@ double widen(float value) {
             "uint32_t bad(uint64_t lhs, uint64_t rhs) {\n"
             "    return (uint32_t)DB_MIN(lhs, rhs);\n"
             "}\n"
+        ),
+        "unchecked_generation_increment": (
+            "void bad(struct state *state) { state->generation++; }\n"
+        ),
+        "unchecked_serial_increment": (
+            "void bad(struct state *state) { state->present_serial++; }\n"
         ),
     }
     for name, source in cases.items():

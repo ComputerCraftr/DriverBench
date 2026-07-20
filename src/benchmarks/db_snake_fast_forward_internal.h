@@ -2,8 +2,10 @@
 #define DRIVERBENCH_BENCHMARK_SNAKE_FAST_FORWARD_INTERNAL_H
 
 #include "benchmarks/db_benchmark_checkpoint_internal.h"
+#include "benchmarks/db_benchmark_emitters.h"
 #include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_snake_progression_internal.h"
+#include <stdint.h>
 
 typedef struct {
     db_benchmark_runtime_init_t runtime;

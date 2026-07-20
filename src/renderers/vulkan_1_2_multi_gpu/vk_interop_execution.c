@@ -222,6 +222,9 @@ uint32_t db_vk_independent_lanes_submit(
                                       1U, &rect);
             }
             const size_t draw_count = db_vk_frame_rect_count(plan);
+            db_vk_frame_rect_iterator_t rect_iterator = {0};
+            db_vk_frame_rect_iterator_begin(&rect_iterator, plan);
+            size_t next_rect_index = 0U;
             uint32_t first_valid_piece = UINT32_MAX;
             uint32_t valid_piece_count = 0U;
             for (size_t assignment_index = 0U;
@@ -242,8 +245,10 @@ uint32_t db_vk_independent_lanes_submit(
                 for (uint32_t instance = 0U; instance < piece->instance_count;
                      instance++) {
                     db_render_ir_fill_t fill = {0};
-                    if (db_vk_frame_rect_at(
-                            plan, (size_t)piece->instance_first + instance,
+                    const size_t target_index =
+                        (size_t)piece->instance_first + instance;
+                    if (db_vk_frame_rect_iterator_advance_to(
+                            &rect_iterator, &next_rect_index, target_index,
                             &fill) == 0) {
                         continue;
                     }

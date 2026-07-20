@@ -1,6 +1,7 @@
 #ifndef DRIVERBENCH_CORE_RASTER_GEOMETRY_H
 #define DRIVERBENCH_CORE_RASTER_GEOMETRY_H
 
+#include "core/db_geometry.h"
 #include "db_numeric.h"
 #include "db_render_types.h"
 #include <stddef.h>

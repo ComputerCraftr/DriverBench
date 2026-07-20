@@ -322,7 +322,8 @@ Runtime flags:
 - `--gl1-target <auto|direct-window|persistent-fbo|cpu-upload>` diagnostic target forcing
 - `--gl1-gradient <auto|interpolated|row-fill|cpu>` diagnostic gradient forcing
 - `--gl1-replay-capacity <1..8>` bounded direct-window replay history
-- `--gl3-gradient <auto|semantic|row-fill>` diagnostic gradient forcing
+- `--gl3-gradient <auto|semantic|exact-lookup|row-fill>` diagnostic gradient
+  forcing
 - `--vk-gradient <auto|semantic|row-fill>` diagnostic gradient forcing
 - `--ignore-conformance-cache <0|1>` bypass cached qualification results
 - `--rerun-conformance-probe <0|1>` rerun qualification without promoting forced paths

@@ -192,6 +192,18 @@ void db_gl_get_integerv(unsigned int pname, int *value) {
     }
 }
 
+void db_gl_query_default_framebuffer_format(int *channel_bits,
+                                            int *sample_count) {
+    if ((channel_bits == NULL) || (sample_count == NULL)) {
+        return;
+    }
+    db_gl_get_integerv(GL_RED_BITS, &channel_bits[0]);
+    db_gl_get_integerv(GL_GREEN_BITS, &channel_bits[1]);
+    db_gl_get_integerv(GL_BLUE_BITS, &channel_bits[2]);
+    db_gl_get_integerv(GL_ALPHA_BITS, &channel_bits[3]);
+    db_gl_get_integerv(GL_SAMPLES, sample_count);
+}
+
 void db_gl_get_program_info_log(unsigned int program, size_t buf_size,
                                 int *length, char *log) {
     db_gl_load_upload_proc_table();
@@ -325,6 +337,18 @@ void db_gl_vertex_attrib_pointer_4f(unsigned int index, int stride_bytes,
             (GLuint)index, 4, GL_FLOAT, GL_FALSE, (GLsizei)stride_bytes,
             db_gl_vbo_offset_ptr(byte_offset));
     }
+}
+
+int db_gl_vertex_attrib_pointer_2ui(unsigned int index, int stride_bytes,
+                                    size_t byte_offset) {
+    db_gl_load_upload_proc_table();
+    if (g_upload_proc_table.vertex_attrib_i_pointer == NULL) {
+        return 0;
+    }
+    g_upload_proc_table.vertex_attrib_i_pointer(
+        (GLuint)index, 2, GL_UNSIGNED_INT, (GLsizei)stride_bytes,
+        db_gl_vbo_offset_ptr(byte_offset));
+    return 1;
 }
 
 int db_gl_vertex_attrib_divisor(unsigned int index, unsigned int divisor) {

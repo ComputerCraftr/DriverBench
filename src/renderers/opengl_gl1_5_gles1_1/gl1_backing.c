@@ -80,7 +80,8 @@ void db_gl1_ensure_backing_capacity(uint32_t pixel_width,
     g_state.backing.pixel_width = pixel_width;
     g_state.backing.pixel_height = pixel_height;
     if (target_changed != 0) {
-        g_state.backing.generation++;
+        g_state.backing.generation = db_checked_add_u32(
+            BACKEND_NAME, "backing_generation", g_state.backing.generation, 1U);
         db_damage_trace_emit_target_lifecycle(&(
             const db_target_lifecycle_event_t){
             .backend = DB_DAMAGE_TRACE_BACKEND_GL1,
@@ -182,7 +183,8 @@ void db_gl1_update_backing(const db_frame_plan_t *plan, uint32_t pixel_width,
     g_state.telemetry.backing.backing_incremental_frames++;
 }
 
-int db_gl1_present_backing(db_pixel_block_view_t blocks_view,
+int db_gl1_present_backing(const db_frame_plan_t *plan,
+                           db_pixel_block_view_t blocks_view,
                            uint32_t pixel_width, uint32_t pixel_height) {
     const db_pixel_surface_t surface =
         gl1_backing_surface(pixel_width, pixel_height);
@@ -213,9 +215,9 @@ int db_gl1_present_backing(db_pixel_block_view_t blocks_view,
     const db_gl_pixel_upload_payload_t payload =
         db_gl_pixel_upload_payload_from_surface(&surface);
     db_gl_shadow_upload_trace_reset(&g_state.presentation.shadow.upload_trace);
-    db_gl_shadow_present_present_replace_pixels(
+    db_gl_shadow_present_present_replace_pixels_ir(
         &g_state.presentation.shadow, BACKEND_NAME, &payload,
-        blocks_view.blocks, blocks_view.count);
+        blocks_view.blocks, blocks_view.count, plan);
     const db_gl_shadow_upload_trace_t *const upload_trace =
         &g_state.presentation.shadow.upload_trace;
     const size_t transfer_bytes = executed_upload_bytes(upload_trace);

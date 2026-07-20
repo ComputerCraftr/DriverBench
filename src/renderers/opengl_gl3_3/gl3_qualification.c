@@ -68,29 +68,51 @@ append_descriptor(db_renderer_qualification_descriptor_store_t *store,
 int db_gl3_describe_qualification(
     db_pixel_format_t format, uint32_t logical_width, uint32_t logical_height,
     db_gradient_implementation_t forced_implementation, int diagnostic_forced,
+    int exact_lookup_available, uint64_t exact_lookup_hash,
     db_renderer_qualification_descriptor_store_t *store) {
     if ((store == NULL) || (logical_width == 0U) || (logical_height == 0U)) {
         return 0;
     }
+    const uint64_t semantic_hash = gl3_implementation_hash();
+    const uint64_t generation_hash =
+        (exact_lookup_available != 0)
+            ? db_fnv1a64_mix_u64(semantic_hash, exact_lookup_hash)
+            : semantic_hash;
     *store = (db_renderer_qualification_descriptor_store_t){
         .generation =
             {
                 .device_generation = 1U,
-                .implementation_generation = gl3_implementation_hash(),
+                .implementation_generation = generation_hash,
                 .target_contract_generation =
                     ((uint64_t)logical_width << 32U) | logical_height,
             },
     };
-    const uint64_t hash = gl3_implementation_hash();
     if (diagnostic_forced != 0) {
-        return append_descriptor(store, format, forced_implementation, hash,
-                                 logical_width, logical_height);
+        if ((forced_implementation ==
+             DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP) &&
+            (exact_lookup_available == 0)) {
+            return 0;
+        }
+        const uint64_t forced_hash =
+            (forced_implementation == DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP)
+                ? exact_lookup_hash
+                : semantic_hash;
+        return append_descriptor(store, format, forced_implementation,
+                                 forced_hash, logical_width, logical_height);
     }
-    return append_descriptor(store, format, DB_GRADIENT_IMPLEMENTATION_SEMANTIC,
-                             hash, logical_width, logical_height) &&
-           append_descriptor(store, format,
-                             DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES, hash,
-                             logical_width, logical_height);
+    if (append_descriptor(store, format, DB_GRADIENT_IMPLEMENTATION_SEMANTIC,
+                          semantic_hash, logical_width, logical_height) == 0) {
+        return 0;
+    }
+    if ((exact_lookup_available != 0) &&
+        (append_descriptor(
+             store, format, DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP,
+             exact_lookup_hash, logical_width, logical_height) == 0)) {
+        return 0;
+    }
+    return append_descriptor(store, format,
+                             DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
+                             semantic_hash, logical_width, logical_height);
 }
 
 int db_gl3_qualify_current_target(const db_frame_plan_t *plan,

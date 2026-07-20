@@ -29,6 +29,7 @@
 #endif
 #include "../../config/benchmark_config.h"
 #include "../../renderers/gl_hash_readback.h"
+#include "../../renderers/opengl_gl1_5_gles1_1/gl1_renderer.h"
 #include "../display_dispatch.h"
 #include "../display_frame_loop_common.h"
 #include "../display_gl_renderer_select_common.h"
@@ -49,6 +50,8 @@ typedef struct {
     db_display_hash_tracker_t *state_hash_tracker;
     db_display_hash_tracker_t *framebuffer_hash_tracker;
     db_pixel_format_t framebuffer_hash_format;
+    db_display_resolved_format_config_t format;
+    db_gl1_direct_window_capabilities_t direct_window_capabilities;
     db_gl_framebuffer_hash_scratch_t *hash_scratch;
     double next_progress_log_due_ms;
     int state_hash_enabled;
@@ -66,6 +69,7 @@ typedef struct {
     uint32_t last_framebuffer_width;
     uint32_t last_framebuffer_height;
     uint32_t presentation_generation;
+    db_renderer_target_t pending_target;
     db_gl1_target_request_t gl1_target_request;
     int buffer_age_logged;
     int buffer_age_qualified;
@@ -211,20 +215,49 @@ static int db_glfw_opengl_acquire(void *user_data, uint32_t frame_index,
         buffer_age.force_full_repair = 1;
         buffer_age.valid = 0;
         buffer_age.fallback_reason = "framebuffer_resized";
-        ctx->presentation_generation++;
+        ctx->presentation_generation =
+            db_checked_add_u32("display_glfw_window", "presentation_generation",
+                               ctx->presentation_generation, 1U);
     }
     ctx->last_framebuffer_width = extent.width;
     ctx->last_framebuffer_height = extent.height;
     ctx->current_extent = extent;
     ctx->current_buffer_age = buffer_age;
+    int channel_bits[4] = {0};
+    int sample_count = 0;
+    db_gl_query_default_framebuffer_format(channel_bits, &sample_count);
     *facts = (db_presenter_facts_t){
         .destination_width = extent.width,
         .destination_height = extent.height,
         .native_hash_format = ctx->framebuffer_hash_format,
         .generation = ctx->presentation_generation,
+        .gl =
+            {
+                .native_width = extent.width,
+                .native_height = extent.height,
+                .native_format = ctx->format.native_output_format,
+                .channel_bits =
+                    {
+                        db_nonnegative_int_to_u32_or_zero(channel_bits[0]),
+                        db_nonnegative_int_to_u32_or_zero(channel_bits[1]),
+                        db_nonnegative_int_to_u32_or_zero(channel_bits[2]),
+                        db_nonnegative_int_to_u32_or_zero(channel_bits[3]),
+                    },
+                .sample_count = db_nonnegative_int_to_u32_or_zero(sample_count),
+                .buffer_age = buffer_age.raw_age,
+                .generation = ctx->presentation_generation,
+                .platform_conversion_required =
+                    DB_BOOL((ctx->format.surface_pixel_format !=
+                             DB_PIXEL_FORMAT_RGBA8) ||
+                            (ctx->format.native_output_format !=
+                             DB_NATIVE_OUTPUT_XRGB8888) ||
+                            (ctx->format.native_hdr_enabled != 0)),
+                .valid = 1,
+            },
         .raw_buffer_age = buffer_age.raw_age,
         .replay_depth = buffer_age.effective_replay_depth,
         .buffer_age_valid = buffer_age.valid,
+        .prior_content_state = DB_TARGET_CONTENT_UNCHANGED,
         .valid = 1,
     };
     return 1;
@@ -272,20 +305,32 @@ db_glfw_opengl_preflight(void *user_data, const db_presenter_facts_t *presenter,
     }
     const int is_gl1 =
         DB_BOOL(ctx->renderer_ops.renderer == DB_GL_RENDERER_GL1_5_GLES1_1);
+    db_gl1_direct_window_capabilities_t direct_capabilities =
+        ctx->direct_window_capabilities;
+    direct_capabilities.pre_swap_readback_qualified = ctx->buffer_age_qualified;
+    db_render_target_strategy_t previous_strategy =
+        DB_RENDER_TARGET_CPU_SURFACE;
+    uint64_t previous_target_generation = 0U;
+    int direct_window_lineage_valid = 0;
+    if (is_gl1 != 0) {
+        db_gl1_replay_preflight_facts(&previous_strategy,
+                                      &previous_target_generation,
+                                      &direct_window_lineage_valid);
+    }
     return db_renderer_preflight_policy_resolve(
         &(const db_renderer_preflight_policy_input_t){
             .profile = is_gl1 != 0 ? DB_RENDERER_PREFLIGHT_GL1_WINDOW
                                    : DB_RENDERER_PREFLIGHT_GL3_PERSISTENT,
             .gl1_target_request = ctx->gl1_target_request,
+            .working_format = ctx->format.surface_pixel_format,
+            .gl1_direct_window = direct_capabilities,
+            .previous_strategy = previous_strategy,
+            .previous_target_generation = previous_target_generation,
+            .direct_window_lineage_valid = direct_window_lineage_valid,
             .plan_request =
                 {
                     .presentation_replay_depth = presenter->replay_depth,
                 },
-            .rebuild_required =
-                DB_BOOL((is_gl1 != 0) &&
-                        (ctx->current_buffer_age.force_full_repair != 0)),
-            .rebuild_direct_window_only = 1,
-            .rebuild_reason = DB_FRAME_REBUILD_EXPLICIT,
         },
         presenter, qualification, preflight);
 }
@@ -293,17 +338,15 @@ db_glfw_opengl_preflight(void *user_data, const db_presenter_facts_t *presenter,
 static int db_glfw_opengl_provision(void *user_data,
                                     const db_renderer_preflight_t *preflight,
                                     db_renderer_target_t *target) {
-    const db_glfw_opengl_loop_ctx_t *const ctx =
-        (const db_glfw_opengl_loop_ctx_t *)user_data;
+    db_glfw_opengl_loop_ctx_t *const ctx =
+        (db_glfw_opengl_loop_ctx_t *)user_data;
     if ((ctx == NULL) || (preflight == NULL) || (target == NULL)) {
         return 0;
     }
-    *target = (db_renderer_target_t){
-        .identity = (uint64_t)preflight->target_strategy + 1U,
-        .generation = ctx->presentation_generation,
-        .strategy = preflight->target_strategy,
-        .valid = 1,
-    };
+    *target = db_renderer_target_from_preflight(
+        preflight, (uint64_t)preflight->target_strategy + 1U,
+        ctx->presentation_generation);
+    ctx->pending_target = *target;
     return 1;
 }
 
@@ -363,7 +406,11 @@ db_glfw_opengl_execute(void *user_data, const db_frame_plan_t *plan,
         .force_full = force_full_presentation,
         .repair_reason = ctx->current_buffer_age.fallback_reason,
     };
-    db_display_gl_render_frame(ctx->renderer_ops.renderer, plan, &presentation);
+    if (db_display_gl_render_frame(ctx->renderer_ops.renderer, plan, target,
+                                   &presentation) == 0) {
+        output->target_content = DB_TARGET_CONTENT_PARTIALLY_MODIFIED;
+        return DB_RENDER_FATAL;
+    }
     output->result = db_render_result_success();
     ctx->renderer_ops.execution_report(&output->result.execution);
     if (db_display_frame_step_should_hash_output(&ctx->frame_step,
@@ -409,6 +456,10 @@ static void db_glfw_opengl_finalize(void *user_data,
                 ctx->pending_buffer_age_expected_hash;
             ctx->buffer_age_validation_pending = 1;
         }
+    }
+    if (ctx->renderer_ops.renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
+        db_gl1_finalize_frame(commit, ctx->pending_target.strategy,
+                              ctx->pending_target.target_generation);
     }
     ctx->pending_history_valid = 0;
     ctx->pending_seed_buffer_age_validation = 0;
@@ -489,6 +540,15 @@ static int db_glfw_run_opengl_renderer_loop(
         .framebuffer_hash_tracker = &hash_trackers.output,
         .framebuffer_hash_format =
             resolved_runtime->renderer.format.framebuffer_hash_format,
+        .format = resolved_runtime->renderer.format,
+        .direct_window_capabilities =
+            {
+                .can_control_dither = 1,
+                .can_control_srgb = DB_BOOL(
+                    db_gl_is_es_context(db_gl_get_version_string()) == 0),
+                .can_select_required_buffers = 1,
+                .fixed_function_raster_qualified = 1,
+            },
         .presentation_generation = 1U,
         .gl1_target_request = resolved_runtime->renderer.diagnostics.gl1_target,
         .hash_scratch = &hash_scratch,

@@ -198,6 +198,98 @@ static void db_test_hdr10_tight_block_conversion_preserves_region_and_format(
                           test_rgb10a2_alpha_opaque);
 }
 
+static void
+db_test_hdr10_strided_xrgb_conversion_preserves_region(db_test_state_t *state) {
+    enum {
+        TEST_DESTINATION_STRIDE = 5U,
+        TEST_DESTINATION_PIXELS =
+            TEST_DESTINATION_STRIDE * TEST_HDR_BLOCK_SOURCE_HEIGHT,
+    };
+    static const uint32_t sentinel = UINT32_C(0xA5A5A5A5);
+    const uint32_t rgba8[] = {
+        0x000000FFU, 0x0000FFFFU, 0x00FF00FFU,
+        0xFF0000FFU, 0xFFFFFFFFU, 0x808080FFU,
+    };
+    uint32_t encoded_rgba8[TEST_DESTINATION_PIXELS] = {0U};
+    db_fill_u32_buffer(encoded_rgba8, TEST_DESTINATION_PIXELS, sentinel);
+    db_convert_rgba8_to_xrgb2101010_block(
+        encoded_rgba8, TEST_DESTINATION_STRIDE, rgba8,
+        TEST_HDR_BLOCK_SOURCE_WIDTH, TEST_HDR_BLOCK_ROW, 1U, TEST_HDR_BLOCK_COL,
+        TEST_HDR_BLOCK_COL_COUNT);
+    const size_t destination_index =
+        (TEST_HDR_BLOCK_ROW * TEST_DESTINATION_STRIDE) + TEST_HDR_BLOCK_COL;
+    DB_TEST_EXPECT_EQ_U32(
+        state, encoded_rgba8[destination_index],
+        db_pack_xrgb2101010_from_rgba8888(
+            rgba8[(TEST_HDR_BLOCK_ROW * TEST_HDR_BLOCK_SOURCE_WIDTH) +
+                  TEST_HDR_BLOCK_COL]));
+    DB_TEST_EXPECT_EQ_U32(
+        state, encoded_rgba8[destination_index] & test_rgb10a2_alpha_mask, 0U);
+    DB_TEST_EXPECT_EQ_U32(state, encoded_rgba8[destination_index - 1U],
+                          sentinel);
+    DB_TEST_EXPECT_EQ_U32(state, encoded_rgba8[destination_index + 2U],
+                          sentinel);
+
+    uint16_t rgba16f[TEST_HDR_BLOCK_SOURCE_WIDTH *
+                     TEST_HDR_BLOCK_SOURCE_HEIGHT *
+                     DB_RGBA16F_CHANNELS_PER_PIXEL] = {0U};
+    const size_t selected_pixel =
+        ((size_t)TEST_HDR_BLOCK_ROW * TEST_HDR_BLOCK_SOURCE_WIDTH) +
+        TEST_HDR_BLOCK_COL;
+    rgba16f[(selected_pixel * DB_RGBA16F_CHANNELS_PER_PIXEL) + 0U] =
+        db_double_to_f16(1.0);
+    rgba16f[(selected_pixel * DB_RGBA16F_CHANNELS_PER_PIXEL) + 3U] = DB_F16_ONE;
+    uint32_t encoded_rgba16f[TEST_DESTINATION_PIXELS] = {0U};
+    db_fill_u32_buffer(encoded_rgba16f, TEST_DESTINATION_PIXELS, sentinel);
+    db_convert_rgba16f_to_xrgb2101010_block(
+        encoded_rgba16f, TEST_DESTINATION_STRIDE, rgba16f,
+        TEST_HDR_BLOCK_SOURCE_WIDTH, TEST_HDR_BLOCK_ROW, 1U, TEST_HDR_BLOCK_COL,
+        1U);
+    DB_TEST_EXPECT_EQ_U32(
+        state, encoded_rgba16f[destination_index],
+        db_pack_xrgb2101010_from_rgb16f3(
+            &rgba16f[selected_pixel * DB_RGBA16F_CHANNELS_PER_PIXEL]));
+    DB_TEST_EXPECT_EQ_U32(state, encoded_rgba16f[destination_index - 1U],
+                          sentinel);
+}
+
+static void db_test_hdr10_run_conversion_preserves_color_transitions(
+    db_test_state_t *state) {
+    const uint32_t rgba8[] = {
+        0x204060FFU, 0x204060FFU, 0x80A0C0FFU, 0x80A0C0FFU, 0x204060FFU,
+    };
+    uint32_t encoded_rgba8[sizeof(rgba8) / sizeof(rgba8[0])] = {0U};
+    db_convert_rgba8_to_rgb10a2_bt2020_pq_tight(
+        encoded_rgba8, rgba8, sizeof(rgba8) / sizeof(rgba8[0]), 0U, 1U, 0U,
+        sizeof(rgba8) / sizeof(rgba8[0]));
+    for (size_t index = 0U; index < sizeof(rgba8) / sizeof(rgba8[0]); index++) {
+        DB_TEST_EXPECT_EQ_U32(
+            state, encoded_rgba8[index],
+            db_pack_rgb10a2_bt2020_pq_from_rgba8888(rgba8[index]));
+    }
+
+    uint16_t rgba16f[(sizeof(rgba8) / sizeof(rgba8[0])) *
+                     DB_RGBA16F_CHANNELS_PER_PIXEL] = {0U};
+    for (size_t index = 0U; index < sizeof(rgba8) / sizeof(rgba8[0]); index++) {
+        const double value = ((index < 2U) || (index == 4U)) ? 0.25 : 0.75;
+        const size_t base = index * DB_RGBA16F_CHANNELS_PER_PIXEL;
+        rgba16f[base] = db_double_to_f16(value);
+        rgba16f[base + 1U] = db_double_to_f16(value);
+        rgba16f[base + 2U] = db_double_to_f16(value);
+        rgba16f[base + 3U] = DB_F16_ONE;
+    }
+    uint32_t encoded_rgba16f[sizeof(rgba8) / sizeof(rgba8[0])] = {0U};
+    db_convert_rgba16f_to_rgb10a2_bt2020_pq_tight(
+        encoded_rgba16f, rgba16f, sizeof(rgba8) / sizeof(rgba8[0]), 0U, 1U, 0U,
+        sizeof(rgba8) / sizeof(rgba8[0]));
+    for (size_t index = 0U; index < sizeof(rgba8) / sizeof(rgba8[0]); index++) {
+        DB_TEST_EXPECT_EQ_U32(
+            state, encoded_rgba16f[index],
+            db_pack_rgb10a2_bt2020_pq_from_rgb16f3(
+                &rgba16f[index * DB_RGBA16F_CHANNELS_PER_PIXEL]));
+    }
+}
+
 #ifdef DB_HAS_LINUX_KMS_ATOMIC
 static void
 db_test_kms_edid_hdr10_requires_pq_and_bt2020_rgb(db_test_state_t *state) {
@@ -251,6 +343,10 @@ unsigned db_display_hdr_test_run_all(void) {
          db_test_hdr10_reference_conversion_and_packing},
         {"hdr10_tight_block_conversion_preserves_region_and_format",
          db_test_hdr10_tight_block_conversion_preserves_region_and_format},
+        {"hdr10_strided_xrgb_conversion_preserves_region",
+         db_test_hdr10_strided_xrgb_conversion_preserves_region},
+        {"hdr10_run_conversion_preserves_color_transitions",
+         db_test_hdr10_run_conversion_preserves_color_transitions},
 #ifdef DB_HAS_LINUX_KMS_ATOMIC
         {"kms_edid_hdr10_requires_pq_and_bt2020_rgb",
          db_test_kms_edid_hdr10_requires_pq_and_bt2020_rgb},

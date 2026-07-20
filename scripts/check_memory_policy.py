@@ -21,12 +21,21 @@ DIRECT_REALLOC_PATTERN = re.compile(
     r"\s*=\s*(?:\([^()]+\)\s*)?realloc\s*\(\s*(?P=target)\b"
 )
 FIXED_SIZE_MULTIPLICATION = re.compile(
-    r"^\s*[0-9]+[uUlL]*\s*\*\s*sizeof\s*\([^()]+\)\s*$"
+    r"^\s*(?:[0-9]+[uUlL]*\s*\*\s*)?sizeof\s*\([^()]+\)\s*$"
 )
 ARITHMETIC_OPERATOR = re.compile(r"(?<![<>=!])(?:\+|-|\*)(?![=>])")
 MALLOC_MULTIPLICATION_ALLOWLIST = {
     Path("src/core/db_core.h"),
     Path("src/core/db_render_ir_snapshot.c"),
+}
+RANGE_OVERLAP_HELPER_PATTERN = re.compile(
+    r"\b(?:static\s+)?int\s+[A-Za-z_][A-Za-z0-9_]*"
+    r"(?:memory|pointer|address)[A-Za-z0-9_]*range[A-Za-z0-9_]*overlap"
+    r"\s*\("
+)
+RANGE_OVERLAP_HELPER_ALLOWLIST = {
+    Path("src/core/db_core.c"),
+    Path("src/core/db_core.h"),
 }
 
 
@@ -66,6 +75,15 @@ def scan_file(source_root: Path, path: Path) -> list[tuple[int, str]]:
     relative = path.relative_to(source_root)
     source = strip_comments_and_literals(path.read_text(encoding="utf-8"))
     violations: list[tuple[int, str]] = []
+    if relative not in RANGE_OVERLAP_HELPER_ALLOWLIST:
+        for match in RANGE_OVERLAP_HELPER_PATTERN.finditer(source):
+            violations.append(
+                (
+                    line_at(source, match.start()),
+                    "memory-range overlap classification must use "
+                    "db_memory_ranges_overlap",
+                )
+            )
     for match in FREE_CAST_PATTERN.finditer(source):
         violations.append(
             (
@@ -84,6 +102,16 @@ def scan_file(source_root: Path, path: Path) -> list[tuple[int, str]]:
         for offset, arguments in function_call_arguments(source, function_name):
             if len(arguments) != 3:
                 continue
+            if function_name == "memcmp" and any(
+                argument.strip().startswith("&") for argument in arguments[:2]
+            ):
+                violations.append(
+                    (
+                        line_at(source, offset),
+                        "memcmp must compare explicit byte arrays, not object "
+                        "representations",
+                    )
+                )
             byte_count = arguments[2].strip()
             if "*" in byte_count and not FIXED_SIZE_MULTIPLICATION.fullmatch(
                 byte_count

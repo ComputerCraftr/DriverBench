@@ -4,7 +4,9 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
+#include "core/db_buffer_convert.h"
 #include "core/db_core.h"
 #include "core/db_numeric.h"
 
@@ -235,7 +237,13 @@ static void db_test_aligned_calloc_is_zero_initialized(db_test_state_t *state) {
 static void
 db_test_checked_arithmetic_reports_overflow(db_test_state_t *state) {
     size_t size_result = 0U;
+    uint32_t u32_result = 0U;
     uint64_t u64_result = 0U;
+    DB_TEST_EXPECT_TRUE(state, db_try_add_u32(7U, 9U, &u32_result));
+    DB_TEST_EXPECT_EQ_U32(state, u32_result, 16U);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_try_add_u32(UINT32_MAX, 1U, &u32_result) == 0);
+    DB_TEST_EXPECT_TRUE(state, db_try_add_u32(1U, 1U, NULL) == 0);
     DB_TEST_EXPECT_TRUE(state, db_try_mul_size(7U, 9U, &size_result));
     DB_TEST_EXPECT_EQ_SIZE(state, size_result, 63U);
     DB_TEST_EXPECT_TRUE(state,
@@ -305,11 +313,152 @@ static void db_test_byte_ranges_reject_wraparound(db_test_state_t *state) {
         state, db_try_strided_size(2U, SIZE_MAX, 4U, &strided_size) == 0);
     DB_TEST_EXPECT_TRUE(state,
                         db_try_strided_size(2U, 3U, 4U, &strided_size) == 0);
+
+    uint8_t storage[8] = {0};
+    int overlap = -1;
+    DB_TEST_EXPECT_TRUE(state, db_memory_ranges_overlap(
+                                   storage, 4U, storage + 3U, 4U, &overlap));
+    DB_TEST_EXPECT_EQ_INT(state, overlap, 1);
+    DB_TEST_EXPECT_TRUE(state, db_memory_ranges_overlap(
+                                   storage, 2U, storage + 4U, 2U, &overlap));
+    DB_TEST_EXPECT_EQ_INT(state, overlap, 0);
+    DB_TEST_EXPECT_TRUE(
+        state,
+        db_memory_ranges_overlap(NULL, 0U, storage, sizeof(storage), &overlap));
+    DB_TEST_EXPECT_EQ_INT(state, overlap, 0);
+    DB_TEST_EXPECT_TRUE(
+        state,
+        db_memory_ranges_overlap(db_test_pointer_from_uintptr(UINTPTR_MAX - 1U),
+                                 4U, storage, sizeof(storage), &overlap) == 0);
+}
+
+static void
+db_test_strided_row_copy_is_tight_and_overlap_safe(db_test_state_t *state) {
+    enum {
+        ROW_COUNT = 3U,
+        ROW_BYTES = 4U,
+        SOURCE_STRIDE = 6U,
+        SOURCE_BYTES = 16U,
+        PACKED_BYTES = ROW_COUNT * ROW_BYTES,
+    };
+    const uint8_t padded[SOURCE_BYTES] = {
+        1U, 2U, 3U, 4U, 90U, 91U, 5U, 6U, 7U, 8U, 92U, 93U, 9U, 10U, 11U, 12U,
+    };
+    const uint8_t expected[PACKED_BYTES] = {1U, 2U, 3U, 4U,  5U,  6U,
+                                            7U, 8U, 9U, 10U, 11U, 12U};
+    uint8_t packed[PACKED_BYTES] = {0};
+    DB_TEST_EXPECT_TRUE(
+        state, db_copy_strided_rows_tight(packed, sizeof(packed), padded,
+                                          sizeof(padded), ROW_COUNT,
+                                          SOURCE_STRIDE, ROW_BYTES) != 0);
+    DB_TEST_EXPECT_TRUE(state, memcmp(packed, expected, sizeof(expected)) == 0);
+
+    uint8_t overlap[PACKED_BYTES + 1U] = {0};
+    memcpy(overlap, expected, sizeof(expected));
+    DB_TEST_EXPECT_TRUE(
+        state, db_copy_strided_rows_tight(overlap + 1U, PACKED_BYTES, overlap,
+                                          PACKED_BYTES, ROW_COUNT, ROW_BYTES,
+                                          ROW_BYTES) != 0);
+    DB_TEST_EXPECT_TRUE(state,
+                        memcmp(overlap + 1U, expected, sizeof(expected)) == 0);
+    uint8_t padded_overlap[32] = {0};
+    memcpy(padded_overlap, expected, ROW_BYTES);
+    memcpy(padded_overlap + SOURCE_STRIDE, expected + ROW_BYTES, ROW_BYTES);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_copy_strided_rows_tight(
+                            padded_overlap + 1U, sizeof(padded_overlap) - 1U,
+                            padded_overlap, sizeof(padded_overlap), ROW_COUNT,
+                            SOURCE_STRIDE, ROW_BYTES) == 0);
+    DB_TEST_EXPECT_TRUE(
+        state, db_copy_strided_rows_tight(packed, sizeof(packed) - 1U, padded,
+                                          sizeof(padded), ROW_COUNT,
+                                          SOURCE_STRIDE, ROW_BYTES) == 0);
+
+    uint8_t unaligned_storage[SOURCE_BYTES + PACKED_BYTES + 3U] = {0};
+    uint8_t *const unaligned_source = unaligned_storage + 1U;
+    uint8_t *const unaligned_destination =
+        unaligned_storage + SOURCE_BYTES + 2U;
+    memcpy(unaligned_source, padded, sizeof(padded));
+    DB_TEST_EXPECT_TRUE(state, db_copy_strided_rows_tight(
+                                   unaligned_destination, PACKED_BYTES,
+                                   unaligned_source, SOURCE_BYTES, ROW_COUNT,
+                                   SOURCE_STRIDE, ROW_BYTES) != 0);
+    DB_TEST_EXPECT_TRUE(
+        state, memcmp(unaligned_destination, expected, sizeof(expected)) == 0);
+
+    uint8_t forward_overlap[SOURCE_BYTES + 2U] = {0};
+    memcpy(forward_overlap + 2U, padded, sizeof(padded));
+    DB_TEST_EXPECT_TRUE(state, db_copy_strided_rows_tight(
+                                   forward_overlap, PACKED_BYTES,
+                                   forward_overlap + 2U, SOURCE_BYTES,
+                                   ROW_COUNT, SOURCE_STRIDE, ROW_BYTES) != 0);
+    DB_TEST_EXPECT_TRUE(
+        state, memcmp(forward_overlap, expected, sizeof(expected)) == 0);
+}
+
+static void
+db_test_pixel_conversion_rejects_malformed_layouts(db_test_state_t *state) {
+    enum { TEST_CONVERSION_SENTINEL = 0x5A5A5A5A };
+    const uint32_t rgba8[4] = {1U, 2U, 3U, 4U};
+    const uint16_t rgba16f[16] = {0U};
+    uint32_t destination[4] = {
+        TEST_CONVERSION_SENTINEL, TEST_CONVERSION_SENTINEL,
+        TEST_CONVERSION_SENTINEL, TEST_CONVERSION_SENTINEL};
+    const uint32_t expected[4] = {
+        TEST_CONVERSION_SENTINEL, TEST_CONVERSION_SENTINEL,
+        TEST_CONVERSION_SENTINEL, TEST_CONVERSION_SENTINEL};
+
+    db_convert_rgba8_to_xrgb8888_block(destination, 2U, rgba8, 2U, UINT32_MAX,
+                                       2U, 0U, 1U);
+    db_convert_rgba8_to_xrgb2101010_block(destination, 1U, rgba8, 1U, 0U, 1U,
+                                          1U, 1U);
+    db_convert_rgba16f_to_xrgb8888_block(destination, 1U, rgba16f, 1U, 0U, 1U,
+                                         1U, 1U);
+    db_convert_rgba16f_to_xrgb2101010_block(destination, 1U, rgba16f, 1U, 0U,
+                                            1U, 1U, 1U);
+    db_convert_rgba16f_to_rgba8888_block(destination, 1U, rgba16f, 1U, 0U, 1U,
+                                         1U, 1U, UINT8_MAX);
+    db_convert_rgba8_to_rgb10a2_bt2020_pq_tight(destination, rgba8, 1U,
+                                                UINT32_MAX, 2U, 0U, 1U);
+    db_convert_rgba16f_to_rgb10a2_bt2020_pq_tight(destination, rgba16f, 1U, 0U,
+                                                  1U, 1U, 1U);
+    DB_TEST_EXPECT_TRUE(
+        state, memcmp(destination, expected, sizeof(destination)) == 0);
+
+    uint32_t overlapping[5] = {1U, 2U, 3U, 4U, TEST_CONVERSION_SENTINEL};
+    const uint32_t overlapping_expected[5] = {1U, 2U, 3U, 4U,
+                                              TEST_CONVERSION_SENTINEL};
+    db_convert_rgba8_to_xrgb8888_block(overlapping + 1U, 4U, overlapping, 4U,
+                                       0U, 1U, 0U, 4U);
+    DB_TEST_EXPECT_TRUE(state, memcmp(overlapping, overlapping_expected,
+                                      sizeof(overlapping_expected)) == 0);
+
+    db_convert_rgba8_to_xrgb8888_block(overlapping, 4U, overlapping, 4U, 0U, 1U,
+                                       0U, 4U);
+    DB_TEST_EXPECT_TRUE(state,
+                        overlapping[0] == db_pack_xrgb8888_from_rgba8888(1U));
+}
+
+static void
+db_test_rgba16f_fill_accepts_unaligned_output(db_test_state_t *state) {
+    enum { TEST_PIXEL_COUNT = 2U };
+    const uint16_t rgba[4] = {1U, 2U, 3U, 4U};
+    const uint64_t expected = UINT64_C(1) | (UINT64_C(2) << 16U) |
+                              (UINT64_C(3) << 32U) | (UINT64_C(4) << 48U);
+    uint8_t bytes[(TEST_PIXEL_COUNT * sizeof(uint64_t)) + 1U] = {0U};
+    db_fill_rgba16f_buffer(bytes + 1U, TEST_PIXEL_COUNT, rgba);
+    for (size_t pixel = 0U; pixel < TEST_PIXEL_COUNT; pixel++) {
+        uint64_t observed = 0U;
+        memcpy(&observed, bytes + 1U + (pixel * sizeof(observed)),
+               sizeof(observed));
+        DB_TEST_EXPECT_EQ_U64(state, observed, expected);
+    }
 }
 
 static void db_test_numeric_text_rejects_host_overflow(db_test_state_t *state) {
     const char *end = NULL;
     uint32_t u32_value = 0U;
+    uint64_t u64_value = 0U;
     int int_value = 0;
     double double_value = 0.0;
     DB_TEST_EXPECT_TRUE(state,
@@ -328,6 +477,14 @@ static void db_test_numeric_text_rejects_host_overflow(db_test_state_t *state) {
                                                    &u32_value, &end) == 0);
     DB_TEST_EXPECT_TRUE(state,
                         db_parse_u32_prefix("1", 1, &u32_value, &end) == 0);
+    DB_TEST_EXPECT_TRUE(
+        state, db_parse_u64_prefix("ffffffffffffffff!", 16, &u64_value, &end));
+    DB_TEST_EXPECT_EQ_U64(state, u64_value, UINT64_MAX);
+    DB_TEST_EXPECT_TRUE(state, *end == '!');
+    DB_TEST_EXPECT_TRUE(state, db_parse_u64_prefix("10000000000000000", 16,
+                                                   &u64_value, &end) == 0);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_parse_u64_prefix("-1", 16, &u64_value, &end) == 0);
     DB_TEST_EXPECT_TRUE(state, db_parse_int_text("2147483648", &int_value) ==
                                    (INT_MAX > INT32_MAX));
     DB_TEST_EXPECT_TRUE(state, db_parse_int_text("999999999999999999999999999",
@@ -364,6 +521,12 @@ unsigned db_numeric_test_run_all(void) {
          db_test_double_to_long_uses_half_open_bounds},
         {"byte_ranges_reject_wraparound",
          db_test_byte_ranges_reject_wraparound},
+        {"strided_row_copy_is_tight_and_overlap_safe",
+         db_test_strided_row_copy_is_tight_and_overlap_safe},
+        {"pixel_conversion_rejects_malformed_layouts",
+         db_test_pixel_conversion_rejects_malformed_layouts},
+        {"rgba16f_fill_accepts_unaligned_output",
+         db_test_rgba16f_fill_accepts_unaligned_output},
         {"numeric_text_rejects_host_overflow",
          db_test_numeric_text_rejects_host_overflow},
     };

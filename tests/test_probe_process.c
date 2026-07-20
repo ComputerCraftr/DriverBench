@@ -200,10 +200,11 @@ static int test_cache_service(const char *helper_path) {
                 DB_TEST_TOPOLOGY_BUILD_VERSION_OFFSET + (uint32_t)lane_index;
         }
     }
+    db_qualification_service_workspace_t workspace = {0};
     db_qualification_topology_result_t topology_result = {0};
-    if ((db_qualification_service_resolve_topology(&topology_request, &query,
-                                                   UINT64_C(1000000000),
-                                                   &topology_result) == 0) ||
+    if ((db_qualification_service_resolve_topology(
+             &topology_request, &query, UINT64_C(1000000000), &workspace,
+             &topology_result) == 0) ||
         (topology_result.topology.qualified == 0) ||
         (topology_result.topology.implementation !=
          DB_GRADIENT_IMPLEMENTATION_SEMANTIC) ||

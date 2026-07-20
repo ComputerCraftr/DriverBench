@@ -1,3 +1,4 @@
+#include "../../core/db_frame_contracts.h"
 #include "../../core/db_frame_plan.h"
 #include "kms_runner.h"
 
@@ -18,17 +19,20 @@ typedef struct {
     const db_display_gl_renderer_ops_t renderer_ops;
 } db_kms_gl_renderer_config_t;
 
-static void
+static int
 kms_render_frame_gl1(const db_frame_plan_t *plan,
+                     const db_renderer_target_t *target,
                      const db_gl_presentation_frame_t *presentation) {
-    db_display_gl_render_frame(DB_GL_RENDERER_GL1_5_GLES1_1, plan,
-                               presentation);
+    return db_display_gl_render_frame(DB_GL_RENDERER_GL1_5_GLES1_1, plan,
+                                      target, presentation);
 }
 
-static void
+static int
 kms_render_frame_gl3(const db_frame_plan_t *plan,
+                     const db_renderer_target_t *target,
                      const db_gl_presentation_frame_t *presentation) {
-    db_display_gl_render_frame(DB_GL_RENDERER_GL3_3, plan, presentation);
+    return db_display_gl_render_frame(DB_GL_RENDERER_GL3_3, plan, target,
+                                      presentation);
 }
 
 int db_run_linux_kms_atomic(db_api_t api, db_gl_renderer_t renderer,

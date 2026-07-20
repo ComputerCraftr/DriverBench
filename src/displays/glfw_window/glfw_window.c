@@ -207,7 +207,9 @@ static int db_glfw_cpu_acquire(void *user_data, uint32_t frame_index,
     }
     if ((extent.width != ctx->last_width) ||
         (extent.height != ctx->last_height)) {
-        ctx->presentation_generation++;
+        ctx->presentation_generation =
+            db_checked_add_u64("display_glfw_window", "presentation_generation",
+                               ctx->presentation_generation, 1U);
         ctx->last_width = extent.width;
         ctx->last_height = extent.height;
     }
@@ -516,7 +518,9 @@ static int db_glfw_vulkan_acquire(void *user_data, uint32_t frame_index,
     }
     if ((extent.width != ctx->last_width) ||
         (extent.height != ctx->last_height)) {
-        ctx->presentation_generation++;
+        ctx->presentation_generation =
+            db_checked_add_u64("display_glfw_window", "presentation_generation",
+                               ctx->presentation_generation, 1U);
         ctx->last_width = extent.width;
         ctx->last_height = extent.height;
     }

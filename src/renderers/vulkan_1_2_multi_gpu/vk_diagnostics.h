@@ -4,7 +4,7 @@
 #include "core/db_log.h"
 #include "core/db_numeric.h"
 #include "core/db_trace.h"
-#include "vk_renderer.h"
+#include <vulkan/vulkan_core.h>
 
 static inline int db_vk_trace_level(void) {
     return db_trace_config_current().vulkan;

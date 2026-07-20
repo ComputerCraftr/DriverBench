@@ -4,6 +4,7 @@
 #include "benchmarks/db_benchmark_runtime_internal.h"
 #include "benchmarks/db_benchmark_types_internal.h"
 #include "core/db_conformance.h"
+#include "core/db_conformance_service.h"
 #include "core/db_core.h"
 #include "core/db_frame_contracts.h"
 #include "core/db_frame_plan.h"
@@ -14,6 +15,7 @@
 #include "support/test_harness.h"
 
 #include <stdint.h>
+#include <string.h>
 
 enum {
     DB_RUN_SESSION_TEST_WIDTH = 1000U,
@@ -206,8 +208,9 @@ static db_benchmark_runtime_init_t benchmark_runtime(db_test_state_t *state) {
 }
 
 static db_run_session_t *
-create_session(db_test_state_t *state, db_run_session_fixture_t *fixture,
-               const db_benchmark_runtime_init_t *runtime) {
+create_session_at(db_test_state_t *state, db_run_session_fixture_t *fixture,
+                  const db_benchmark_runtime_init_t *runtime,
+                  uint32_t initial_frame_index, uint32_t frame_limit) {
     db_run_session_t *session = NULL;
     const db_run_session_status_t status = db_run_session_create(
         &(const db_run_session_config_t){
@@ -236,11 +239,62 @@ create_session(db_test_state_t *state, db_run_session_fixture_t *fixture,
                 },
             .presenter_context = fixture,
             .renderer_context = fixture,
-            .frame_limit = DB_RUN_SESSION_TEST_FRAME_LIMIT,
+            .frame_limit = frame_limit,
+            .initial_frame_index = initial_frame_index,
         },
         &session);
     DB_TEST_EXPECT_EQ_INT(state, status, DB_RUN_SESSION_OK);
     return session;
+}
+
+static db_run_session_t *
+create_session(db_test_state_t *state, db_run_session_fixture_t *fixture,
+               const db_benchmark_runtime_init_t *runtime) {
+    return create_session_at(state, fixture, runtime, 0U,
+                             DB_RUN_SESSION_TEST_FRAME_LIMIT);
+}
+
+static void
+qualification_descriptors_reject_malformed_storage(db_test_state_t *state) {
+    db_renderer_probe_descriptor_t valid = {
+        .backend = DB_PROBE_BACKEND_GL3,
+        .strategy = DB_RENDER_TARGET_GL3_PERSISTENT_FBO,
+        .implementation = DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES,
+        .lane_index = 0U,
+        .is_primary = 1,
+        .working_format = DB_PIXEL_FORMAT_RGBA8,
+        .logical_width = 16U,
+        .logical_height = 16U,
+        .compatibility_validated = 1,
+    };
+    db_renderer_qualification_descriptor_store_t store = {0};
+    DB_TEST_EXPECT_TRUE(
+        state, db_qualification_descriptor_store_append(&store, &valid) != 0);
+    const size_t retained_count = store.count;
+
+    db_renderer_probe_descriptor_t invalid = valid;
+    invalid.lane_index = 32U;
+    DB_TEST_EXPECT_TRUE(
+        state, db_qualification_descriptor_store_append(&store, &invalid) == 0);
+    DB_TEST_EXPECT_EQ_SIZE(state, store.count, retained_count);
+
+    invalid = valid;
+    memset(invalid.provider, 'x', sizeof(invalid.provider));
+    DB_TEST_EXPECT_TRUE(
+        state, db_qualification_descriptor_store_append(&store, &invalid) == 0);
+    DB_TEST_EXPECT_EQ_SIZE(state, store.count, retained_count);
+
+    db_renderer_qualification_descriptor_store_t bypass = {
+        .descriptors = {valid}, .count = 1U};
+    bypass.descriptors[0].lane_index = 32U;
+    db_qualification_service_workspace_t workspace = {0};
+    db_qualification_snapshot_t snapshot = {.generation = UINT64_MAX};
+    DB_TEST_EXPECT_TRUE(
+        state,
+        db_qualification_service_resolve_descriptors(
+            &bypass, &(const db_conformance_query_t){.helper_path = "unused"},
+            1U, 0U, &workspace, &snapshot) == 0);
+    DB_TEST_EXPECT_EQ_U64(state, snapshot.generation, UINT64_MAX);
 }
 
 static void steady_state_does_not_requalify(db_test_state_t *state) {
@@ -293,11 +347,42 @@ failed_requalification_preserves_active_selection(db_test_state_t *state) {
     db_run_session_destroy(session);
 }
 
+static void frame_index_exhaustion_does_not_wrap(db_test_state_t *state) {
+    db_run_session_fixture_t fixture = {
+        .generation =
+            {
+                .device_generation = 1U,
+                .implementation_generation = 1U,
+                .target_contract_generation = 1U,
+            },
+    };
+    const db_benchmark_runtime_init_t runtime = benchmark_runtime(state);
+    db_run_session_t *const session =
+        create_session_at(state, &fixture, &runtime, UINT32_MAX, 0U);
+
+    const db_run_step_result_t committed = db_run_session_step(session);
+    DB_TEST_EXPECT_EQ_INT(state, committed.outcome, DB_RUN_FRAME_COMMITTED);
+    DB_TEST_EXPECT_EQ_U32(state, committed.committed_frame.frame_index,
+                          UINT32_MAX);
+    const uint32_t acquired = fixture.acquire_count;
+
+    const db_run_step_result_t exhausted = db_run_session_step(session);
+    DB_TEST_EXPECT_EQ_INT(state, exhausted.outcome, DB_RUN_COMPLETE);
+    DB_TEST_EXPECT_EQ_INT(state, exhausted.stop_reason,
+                          DB_RUN_STOP_FRAME_INDEX_EXHAUSTED);
+    DB_TEST_EXPECT_EQ_U32(state, fixture.acquire_count, acquired);
+    db_run_session_destroy(session);
+}
+
 unsigned db_run_session_test_run_all(void) {
     static const db_test_case_t cases[] = {
+        {"qualification_descriptors_reject_malformed_storage",
+         qualification_descriptors_reject_malformed_storage},
         {"steady_state_does_not_requalify", steady_state_does_not_requalify},
         {"failed_requalification_preserves_active_selection",
          failed_requalification_preserves_active_selection},
+        {"frame_index_exhaustion_does_not_wrap",
+         frame_index_exhaustion_does_not_wrap},
     };
     return db_test_run_cases(cases, sizeof(cases) / sizeof(cases[0]));
 }

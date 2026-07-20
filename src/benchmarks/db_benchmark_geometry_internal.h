@@ -1,7 +1,13 @@
 #ifndef DRIVERBENCH_BENCHMARK_GEOMETRY_INTERNAL_H
 #define DRIVERBENCH_BENCHMARK_GEOMETRY_INTERNAL_H
 
-#include "benchmarks/db_benchmark_runtime_internal.h"
+#include "benchmarks/db_benchmark_types_internal.h"
+#include "config/benchmark_config.h"
+#include "core/db_core.h"
+#include "core/db_hash.h"
+#include "core/db_numeric.h"
+#include <math.h>
+#include <stdint.h>
 #include <string.h>
 
 static inline void db_band_color_rgb3(uint32_t band_index, uint32_t band_count,

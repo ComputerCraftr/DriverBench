@@ -4,8 +4,10 @@
 #include "db_render_ir.h"
 
 #include <stddef.h>
+#include <stdint.h>
 
 typedef struct {
+    uint32_t layout_generation;
     db_render_ir_store_t store;
 } db_render_ir_snapshot_t;
 

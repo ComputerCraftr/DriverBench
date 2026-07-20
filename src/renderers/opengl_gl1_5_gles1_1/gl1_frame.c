@@ -179,7 +179,8 @@ void db_gl1_render_geometry_to_backing(const db_frame_plan_t *plan,
     const db_pixel_block_view_t upload_blocks =
         upload_blocks_for_plan(plan, pixel_width, pixel_height, rebuilt);
     trace_plan(plan, upload_blocks, pixel_width, pixel_height);
-    if (db_gl1_present_backing(upload_blocks, pixel_width, pixel_height) == 0) {
+    if (db_gl1_present_backing(plan, upload_blocks, pixel_width,
+                               pixel_height) == 0) {
         DB_RUNTIME_FAIL(BACKEND_NAME,
                         "failed to present persistent backing target");
     }
@@ -202,6 +203,10 @@ void db_gl1_render_geometry_to_backing(const db_frame_plan_t *plan,
             ((rebuilt != 0) ? plan->rebuild_metadata.damage_area : 0U),
         .uploaded_bytes =
             upload_trace_bytes(&g_state.presentation.shadow.upload_trace),
+        .surface_restoration_bytes =
+            g_state.presentation.shadow.last_surface_restoration_bytes,
+        .encoded_span_bytes =
+            g_state.presentation.shadow.last_encoded_span_bytes,
     };
     const int full_present = g_state.presentation.current_present_full;
     const uint32_t work_count =

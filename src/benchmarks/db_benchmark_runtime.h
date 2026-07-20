@@ -1,7 +1,6 @@
 #ifndef DRIVERBENCH_CORE_BENCHMARK_RUNTIME_H
 #define DRIVERBENCH_CORE_BENCHMARK_RUNTIME_H
 
-#include "core/db_render_types.h"
 #include <stdint.h>
 
 typedef enum {

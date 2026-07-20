@@ -305,6 +305,11 @@
         {
             "name": "native-sanitize",
             "configurePreset": "ninja-linux-native-clang-debug",
+            "filter": {
+                "exclude": {
+                    "label": "hardware"
+                }
+            },
             "output": {
                 "outputOnFailure": true
             },

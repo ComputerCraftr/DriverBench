@@ -48,7 +48,7 @@ static void db_usage(void) {
         "  --gl1-target <auto|direct-window|persistent-fbo|cpu-upload>\n"
         "  --gl1-gradient <auto|interpolated|row-fill|cpu>\n"
         "  --gl1-replay-capacity <1..8>\n"
-        "  --gl3-gradient <auto|semantic|row-fill>\n"
+        "  --gl3-gradient <auto|semantic|exact-lookup|row-fill>\n"
         "  --hash <none|state|pixel|both>\n"
         "  --frame-limit <value>\n"
         "  --glfw-hidden-window <0|1>\n"

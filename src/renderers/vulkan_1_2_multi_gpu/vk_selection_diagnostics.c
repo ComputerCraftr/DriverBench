@@ -49,6 +49,22 @@ void db_vk_log_execution_plan(const DeviceSelectionState *selection) {
     if (selection == NULL) {
         return;
     }
+    uint32_t independent_candidate_count = 0U;
+    for (uint32_t index = 0U; index < selection->lane_count; index++) {
+        const db_vk_device_lane_t *const lane = &selection->lanes[index];
+        if ((lane->backend == DB_VK_LANE_BACKEND_INDEPENDENT) &&
+            (lane->can_compose_to_primary != 0)) {
+            independent_candidate_count++;
+        }
+    }
+    const db_log_field_t topology_fields[] = {
+        DB_LOG_BOOL("device_group_available", selection->have_group),
+        DB_LOG_U64("independent_candidate_count", independent_candidate_count),
+        DB_LOG_BOOL("independent_topology_available",
+                    independent_candidate_count > 0U),
+    };
+    db_log_info(BACKEND_NAME, "vk_topology_capability", topology_fields,
+                DB_LOG_FIELD_COUNT(topology_fields));
     const db_log_field_t plan_fields[] = {
         DB_LOG_TOKEN("execution_mode", db_vk_scheduler_mode_name_effective(
                                            selection->execution_mode,

@@ -1,9 +1,12 @@
 #ifndef DRIVERBENCH_VK_FRAME_FINALIZE_H
 #define DRIVERBENCH_VK_FRAME_FINALIZE_H
 
+#include "core/db_conformance.h"
 #include "core/db_frame_plan.h"
+#include "renderers/vulkan_1_2_multi_gpu/vk_renderer.h"
 #include "vk_internal.h"
-#include "vk_runtime_internal.h"
+#include <stddef.h>
+#include <stdint.h>
 
 typedef struct {
     const db_frame_plan_t *plan;

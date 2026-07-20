@@ -57,6 +57,8 @@ const char *db_render_operation_path_name(db_render_operation_path_t value) {
         return "gl3_instanced_solid";
     case DB_RENDER_OPERATION_GL3_SEMANTIC_GRADIENT:
         return "gl3_semantic_gradient";
+    case DB_RENDER_OPERATION_GL3_EXACT_LOOKUP:
+        return "gl3_exact_lookup";
     case DB_RENDER_OPERATION_GL3_ROW_FILL:
         return "gl3_row_fill";
     case DB_RENDER_OPERATION_VULKAN_INSTANCED_SOLID:

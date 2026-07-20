@@ -9,6 +9,11 @@
 #include "../renderers/opengl_gl1_5_gles1_1/gl1_renderer.h"
 #include "../renderers/opengl_gl3_3/gl3_renderer.h"
 #include "../renderers/renderer_identity.h"
+#include "core/db_frame_contracts.h"
+#include "core/db_geometry.h"
+#include "core/db_qualification_contracts.h"
+#include "core/db_render_result.h"
+#include "core/db_renderer_runtime_contract.h"
 #include "display_presentation_policy.h"
 #include "display_types.h"
 
@@ -26,9 +31,10 @@ typedef struct {
     uint32_t (*work_unit_count)(void);
 } db_display_gl_renderer_ops_t;
 
-static inline void
+static inline int
 db_display_gl_render_frame(db_gl_renderer_t renderer,
                            const db_frame_plan_t *plan,
+                           const db_renderer_target_t *target,
                            const db_gl_presentation_frame_t *presentation) {
     const int viewport_width_px =
         (presentation != NULL)
@@ -46,11 +52,12 @@ db_display_gl_render_frame(db_gl_renderer_t renderer,
     const int force_full_presentation =
         (presentation != NULL) ? presentation->force_full : 1;
     if (renderer == DB_GL_RENDERER_GL1_5_GLES1_1) {
-        db_gl1_render_frame(plan, viewport_width_px, viewport_height_px, damage,
-                            force_full_presentation);
-        return;
+        return db_gl1_render_frame(plan, target, viewport_width_px,
+                                   viewport_height_px, damage,
+                                   force_full_presentation);
     }
-    db_gl3_render_frame(plan, viewport_width_px, viewport_height_px);
+    db_gl3_render_frame(plan, target, viewport_width_px, viewport_height_px);
+    return 1;
 }
 
 static inline uint32_t db_display_gl_default_preserved_framebuffer_count() {

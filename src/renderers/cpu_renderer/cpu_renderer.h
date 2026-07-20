@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "core/db_geometry.h"
 #include "core/db_render_result.h"
 #include "core/db_render_types.h"
 #include "core/db_renderer_runtime_contract.h"

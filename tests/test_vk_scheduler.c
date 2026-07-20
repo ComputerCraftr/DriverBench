@@ -1,5 +1,6 @@
 #include "support/test_harness.h"
 
+#include "core/db_conformance.h"
 #include "core/db_format_contract.h"
 #include "core/db_frame_plan.h"
 #include "core/db_render_ir.h"
@@ -18,6 +19,7 @@ enum {
     TEST_SLOT_FRAME = 12U,
     TEST_SCHEDULING_EPOCH = 9U,
     TEST_CONTENT_GENERATION = 4U,
+    TEST_GRADIENT_AXIS_END = 9,
     TEST_IR_COMMAND_BYTES = 1024U,
     TEST_SPLIT_DEFAULT_NS = 8000000U,
     TEST_SPLIT_COARSE_BEST_NS = 7000000U,
@@ -25,6 +27,9 @@ enum {
     TEST_SPLIT_COARSE_BEST_BPS = 5000U,
     TEST_SPLIT_REFINED_LOW_BPS = 3750U,
     TEST_SPLIT_REFINED_HIGH_BPS = 6250U,
+    TEST_REJECTED_LOOKUP_WORD_COUNT = 19U,
+    TEST_REJECTED_EXACT_LOOKUP_WORD_COUNT = 29U,
+    TEST_UNCHANGED_BYTE = 0xa5U,
     TEST_SPLIT_SEARCH_ITERATION_LIMIT =
         DB_VK_SPLIT_SEARCH_SHARE_COUNT * (DB_VK_SPLIT_SAMPLES_PER_SHARE + 1U),
 };
@@ -36,6 +41,16 @@ static const double test_candidate_faster_ms = 8.0;
 static const double test_primary_p95_ms = 12.0;
 static const double test_candidate_good_p95_ms = 12.5;
 static const double test_candidate_bad_p95_ms = 14.0;
+
+static void db_test_vk_independent_lane_mode_gate(db_test_state_t *state) {
+    DB_TEST_EXPECT_TRUE(state,
+                        db_vk_execution_mode_uses_independent_lanes(
+                            DB_VK_EXECUTION_MODE_INDEPENDENT_DEVICES) != 0);
+    DB_TEST_EXPECT_TRUE(state, db_vk_execution_mode_uses_independent_lanes(
+                                   DB_VK_EXECUTION_MODE_SINGLE_GPU) == 0);
+    DB_TEST_EXPECT_TRUE(state, db_vk_execution_mode_uses_independent_lanes(
+                                   DB_VK_EXECUTION_MODE_DEVICE_GROUP) == 0);
+}
 
 static db_frame_plan_t
 db_test_vk_piece_frame_plan(const db_render_ir_fill_t *fills, size_t count) {
@@ -78,6 +93,63 @@ db_test_vk_piece_frame_plan(const db_render_ir_fill_t *fills, size_t count) {
         .pixel_width = TEST_PIXEL_WIDTH,
         .pixel_height = TEST_PIXEL_HEIGHT,
         .update_ir = db_render_ir_store_view(&store),
+    };
+}
+
+static db_frame_plan_t db_test_vk_clipped_gradient_plan(void) {
+    static max_align_t commands[TEST_IR_COMMAND_BYTES / sizeof(max_align_t)] = {
+        0};
+    static db_render_ir_fill_t fill_storage[8] = {0};
+    static db_render_ir_resource_t resources[1] = {0};
+    static db_render_ir_region_t regions[8] = {0};
+    static db_render_ir_band_t bands[8] = {0};
+    static db_render_ir_span_t spans[8] = {0};
+    db_render_ir_store_t store = {
+        .commands = commands,
+        .command_capacity = sizeof(commands),
+        .fills = fill_storage,
+        .fill_capacity = 8U,
+        .resources = resources,
+        .resource_capacity = 1U,
+        .regions = regions,
+        .region_capacity = 8U,
+        .bands = bands,
+        .band_capacity = 8U,
+        .spans = spans,
+        .span_capacity = 8U,
+    };
+    db_render_ir_resource_id_t target = DB_RENDER_IR_INVALID_ID;
+    (void)db_render_ir_add_resource(
+        &store,
+        &(const db_render_ir_resource_t){
+            .kind = DB_RENDER_IR_RESOURCE_CANONICAL_TARGET,
+            .width = TEST_GRID_EXTENT,
+            .height = TEST_GRID_EXTENT,
+            .format = DB_PIXEL_FORMAT_RGBA8,
+        },
+        &target);
+    const db_render_ir_fill_t fragments[] = {
+        {.rect = {.x = 1, .y = 2, .width = 3, .height = 2}},
+        {.rect = {.x = 7, .y = 6, .width = 2, .height = 3}},
+    };
+    db_render_ir_region_id_t clip = DB_RENDER_IR_INVALID_ID;
+    (void)db_render_ir_add_fill_region(&store, fragments, 2U, &clip);
+    (void)db_render_ir_fill_linear_gradient(
+        &store, target,
+        (db_render_ir_rect_t){.width = TEST_GRID_EXTENT,
+                              .height = TEST_GRID_EXTENT},
+        0, TEST_GRADIENT_AXIS_END, 0,
+        (db_render_ir_color_t){.rgba = {1.0, 0.0, 0.0, 1.0}},
+        (db_render_ir_color_t){.rgba = {0.0, 0.0, 1.0, 1.0}}, clip);
+    const db_render_ir_view_t view = db_render_ir_store_view(&store);
+    return (db_frame_plan_t){
+        .grid_cols = TEST_GRID_EXTENT,
+        .grid_rows = TEST_GRID_EXTENT,
+        .pixel_width = TEST_PIXEL_WIDTH,
+        .pixel_height = TEST_PIXEL_HEIGHT,
+        .update_ir = view,
+        .update_metadata = db_render_ir_metadata(
+            &view, DB_RENDER_IR_OK, TEST_GRID_EXTENT, TEST_GRID_EXTENT),
     };
 }
 
@@ -156,12 +228,15 @@ static void db_test_vk_piece_plan_preserves_order(db_test_state_t *state) {
         db_test_vk_piece_frame_plan(blocks, sizeof(blocks) / sizeof(blocks[0]));
     db_vk_present_piece_t pieces[2] = {0};
     db_vk_lane_assignment_t assignments[2] = {0};
+    db_render_ir_command_range_t ranges[2] = {0};
+    db_vk_planner_workspace_t workspace = {.ranges = ranges, .capacity = 2U};
     db_vk_execution_plan_t plan = {0};
     DB_TEST_EXPECT_TRUE(
-        state, db_vk_build_execution_plan(
-                   &frame, 2U, DB_VK_SCHEDULING_PRIMARY_ONLY, NULL, 7U, 11U,
-                   pieces, sizeof(pieces) / sizeof(pieces[0]), assignments,
-                   sizeof(assignments) / sizeof(assignments[0]), &plan));
+        state,
+        db_vk_build_execution_plan(
+            &frame, &workspace, 2U, DB_VK_SCHEDULING_PRIMARY_ONLY, NULL, 7U,
+            11U, pieces, sizeof(pieces) / sizeof(pieces[0]), assignments,
+            sizeof(assignments) / sizeof(assignments[0]), &plan));
     DB_TEST_EXPECT_EQ_U32(state, (uint32_t)plan.piece_count, 1U);
     DB_TEST_EXPECT_EQ_U32(state, pieces[0].piece_index, 0U);
     DB_TEST_EXPECT_EQ_U32(state, pieces[0].instance_count, 2U);
@@ -171,6 +246,7 @@ static void db_test_vk_piece_plan_preserves_order(db_test_state_t *state) {
     DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.extent.width, 40U);
     DB_TEST_EXPECT_EQ_U32(state, pieces[0].source_rect.extent.height, 32U);
     DB_TEST_EXPECT_EQ_U32(state, assignments[0].lane, 0U);
+    DB_TEST_EXPECT_EQ_SIZE(state, workspace.range_high_water, 1U);
 }
 
 static void
@@ -189,9 +265,153 @@ db_test_vk_instance_bounds_use_top_left_origin(db_test_state_t *state) {
     DB_TEST_EXPECT_TRUE(state, instances[1].rect[1] > 0.0F);
     DB_TEST_EXPECT_TRUE(state, instances[0].rect[3] > 0.0F);
     DB_TEST_EXPECT_TRUE(state, instances[1].rect[3] > 0.0F);
+
+    memset(instances, TEST_UNCHANGED_BYTE, sizeof(instances));
+    size_t lookup_word_count = TEST_REJECTED_LOOKUP_WORD_COUNT;
+    DB_TEST_EXPECT_EQ_SIZE(state,
+                           db_vk_write_frame_instances_for_implementation(
+                               &plan, instances, 1U, NULL, 0U,
+                               &lookup_word_count, DB_PIXEL_FORMAT_RGBA8,
+                               DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES),
+                           0U);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_test_memory_is_filled(instances, sizeof(instances),
+                                                 TEST_UNCHANGED_BYTE));
+    DB_TEST_EXPECT_EQ_SIZE(state, lookup_word_count,
+                           TEST_REJECTED_LOOKUP_WORD_COUNT);
 }
 
-static void db_test_vk_piece_plan_overflow_is_primary(db_test_state_t *state) {
+static void
+db_test_vk_semantic_gradient_emits_one_instance(db_test_state_t *state) {
+    max_align_t commands[TEST_IR_COMMAND_BYTES / sizeof(max_align_t)] = {0};
+    db_render_ir_fill_t fills[1] = {0};
+    db_render_ir_resource_t resources[1] = {0};
+    db_render_ir_region_t regions[1] = {0};
+    db_render_ir_band_t bands[1] = {0};
+    db_render_ir_span_t spans[1] = {0};
+    db_render_ir_store_t store = {
+        .commands = commands,
+        .command_capacity = sizeof(commands),
+        .fills = fills,
+        .fill_capacity = 1U,
+        .resources = resources,
+        .resource_capacity = 1U,
+        .regions = regions,
+        .region_capacity = 1U,
+        .bands = bands,
+        .band_capacity = 1U,
+        .spans = spans,
+        .span_capacity = 1U,
+    };
+    db_render_ir_resource_id_t target = DB_RENDER_IR_INVALID_ID;
+    (void)db_render_ir_add_resource(
+        &store,
+        &(const db_render_ir_resource_t){
+            .kind = DB_RENDER_IR_RESOURCE_CANONICAL_TARGET,
+            .width = TEST_GRID_EXTENT,
+            .height = TEST_GRID_EXTENT,
+            .format = DB_PIXEL_FORMAT_RGBA16F,
+        },
+        &target);
+    (void)db_render_ir_begin_target(&store, target);
+    (void)db_render_ir_fill_linear_gradient(
+        &store, target,
+        (db_render_ir_rect_t){.width = TEST_GRID_EXTENT,
+                              .height = TEST_GRID_EXTENT},
+        0, TEST_GRADIENT_AXIS_END, 0,
+        (db_render_ir_color_t){.rgba = {0.0, 0.0, 0.0, 1.0}},
+        (db_render_ir_color_t){.rgba = {1.0, 1.0, 1.0, 1.0}},
+        DB_RENDER_IR_INVALID_ID);
+    (void)db_render_ir_end_target(&store, target);
+    const db_frame_plan_t plan = {
+        .grid_cols = TEST_GRID_EXTENT,
+        .grid_rows = TEST_GRID_EXTENT,
+        .pixel_width = TEST_PIXEL_WIDTH,
+        .pixel_height = TEST_PIXEL_HEIGHT,
+        .update_ir = db_render_ir_store_view(&store),
+    };
+    db_vk_ir_execute_instance_t instances[2];
+    memset(instances, TEST_UNCHANGED_BYTE, sizeof(instances));
+    DB_TEST_EXPECT_EQ_SIZE(
+        state,
+        db_vk_write_frame_instances_for_gradient_path(&plan, instances, 2U, 1),
+        1U);
+    DB_TEST_EXPECT_TRUE(state, db_test_memory_is_filled(&instances[1],
+                                                        sizeof(instances[1]),
+                                                        TEST_UNCHANGED_BYTE));
+    DB_TEST_EXPECT_DOUBLE_EQUAL(state, instances[0].gradient[0], 1.0F);
+
+    uint32_t lookup_words[TEST_GRID_EXTENT];
+    memset(lookup_words, TEST_UNCHANGED_BYTE, sizeof(lookup_words));
+    memset(instances, TEST_UNCHANGED_BYTE, sizeof(instances));
+    size_t lookup_word_count = TEST_REJECTED_EXACT_LOOKUP_WORD_COUNT;
+    DB_TEST_EXPECT_EQ_SIZE(state,
+                           db_vk_write_frame_instances_for_implementation(
+                               &plan, instances, 2U, lookup_words,
+                               TEST_GRID_EXTENT - 1U, &lookup_word_count,
+                               DB_PIXEL_FORMAT_RGBA8,
+                               DB_GRADIENT_IMPLEMENTATION_EXACT_LOOKUP),
+                           0U);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_test_memory_is_filled(instances, sizeof(instances),
+                                                 TEST_UNCHANGED_BYTE));
+    DB_TEST_EXPECT_TRUE(state, db_test_memory_is_filled(lookup_words,
+                                                        sizeof(lookup_words),
+                                                        TEST_UNCHANGED_BYTE));
+    DB_TEST_EXPECT_EQ_SIZE(state, lookup_word_count,
+                           TEST_REJECTED_EXACT_LOOKUP_WORD_COUNT);
+}
+
+static void db_test_vk_clipped_gradient_fallback_is_fragment_bounded(
+    db_test_state_t *state) {
+    const db_frame_plan_t plan = db_test_vk_clipped_gradient_plan();
+    DB_TEST_EXPECT_EQ_U32(
+        state, plan.update_metadata.exact_fallback_instance_count, 5U);
+    db_vk_ir_execute_instance_t instances[5] = {0};
+    DB_TEST_EXPECT_EQ_SIZE(
+        state,
+        db_vk_write_frame_instances_for_gradient_path(&plan, instances, 5U, 0),
+        5U);
+    for (size_t index = 0U; index < 5U; index++) {
+        DB_TEST_EXPECT_TRUE(state, instances[index].rect[2] > 0.0F);
+        DB_TEST_EXPECT_TRUE(state, instances[index].rect[3] > 0.0F);
+    }
+}
+
+static void db_test_vk_independent_accelerated_gradients_route_primary(
+    db_test_state_t *state) {
+    db_vk_present_piece_t pieces[2] = {
+        {.command_range = {.opcode = DB_RENDER_IR_OP_FILL_LINEAR_GRADIENT,
+                           .semantic_gradient_eligible = 1U}},
+        {.command_range = {.opcode = DB_RENDER_IR_OP_FILL_RECTS}},
+    };
+    db_vk_lane_assignment_t assignments[2] = {
+        {.piece_first = 0U, .piece_count = 1U, .lane = 1U},
+        {.piece_first = 1U, .piece_count = 1U, .lane = 1U},
+    };
+    db_vk_execution_plan_t plan = {
+        .pieces = pieces,
+        .piece_count = 2U,
+        .assignments = assignments,
+        .assignment_count = 2U,
+    };
+    DB_TEST_EXPECT_EQ_U32(state,
+                          db_vk_route_accelerated_gradients_to_primary(
+                              &plan, DB_GRADIENT_IMPLEMENTATION_SEMANTIC),
+                          1U);
+    DB_TEST_EXPECT_EQ_U32(state, assignments[0].lane, 0U);
+    DB_TEST_EXPECT_EQ_U32(state, assignments[1].lane, 1U);
+
+    assignments[0].lane = 1U;
+    DB_TEST_EXPECT_EQ_U32(state,
+                          db_vk_route_accelerated_gradients_to_primary(
+                              &plan, DB_GRADIENT_IMPLEMENTATION_ROW_INSTANCES),
+                          0U);
+    DB_TEST_EXPECT_EQ_U32(state, assignments[0].lane, 1U);
+}
+
+static void db_test_vk_batched_instances_do_not_consume_piece_capacity(
+    db_test_state_t *state) {
     const db_render_ir_fill_t blocks[] = {
         {.rect = {.width = 1, .height = 1},
          .color = {.rgba = {1.0, 0.0, 0.0, 1.0}}},
@@ -202,15 +422,20 @@ static void db_test_vk_piece_plan_overflow_is_primary(db_test_state_t *state) {
         db_test_vk_piece_frame_plan(blocks, sizeof(blocks) / sizeof(blocks[0]));
     db_vk_present_piece_t piece = {0};
     db_vk_lane_assignment_t assignment = {0};
+    db_render_ir_command_range_t range = {0};
+    db_vk_planner_workspace_t workspace = {.ranges = &range, .capacity = 1U};
     db_vk_execution_plan_t plan = {0};
-    DB_TEST_EXPECT_TRUE(
-        state, db_vk_build_execution_plan(
-                   &frame, 2U, DB_VK_SCHEDULING_THROUGHPUT_WEIGHTED_CHUNKS,
-                   NULL, 2U, 4U, &piece, 1U, &assignment, 1U, &plan));
-    DB_TEST_EXPECT_TRUE(state, plan.primary_only_fallback);
+    DB_TEST_EXPECT_TRUE(state,
+                        db_vk_build_execution_plan(
+                            &frame, &workspace, 2U,
+                            DB_VK_SCHEDULING_THROUGHPUT_WEIGHTED_CHUNKS, NULL,
+                            2U, 4U, &piece, 1U, &assignment, 1U, &plan));
+    DB_TEST_EXPECT_TRUE(state, !plan.primary_only_fallback);
+    DB_TEST_EXPECT_EQ_SIZE(state, plan.piece_count, 1U);
+    DB_TEST_EXPECT_EQ_U32(state, piece.instance_count, 2U);
     DB_TEST_EXPECT_EQ_U32(state, assignment.lane, 0U);
-    DB_TEST_EXPECT_EQ_U32(state, piece.source_rect.extent.width, 100U);
-    DB_TEST_EXPECT_EQ_U32(state, piece.source_rect.extent.height, 80U);
+    DB_TEST_EXPECT_TRUE(state,
+                        workspace.range_high_water <= workspace.capacity);
 }
 
 static void db_test_vk_overlapping_pieces_are_primary(db_test_state_t *state) {
@@ -220,16 +445,20 @@ static void db_test_vk_overlapping_pieces_are_primary(db_test_state_t *state) {
         {.rect = {.x = 3, .y = 3, .width = 4, .height = 4},
          .color = {.rgba = {0.0, 1.0, 0.0, 1.0}}},
     };
-    const db_frame_plan_t frame =
+    db_frame_plan_t frame =
         db_test_vk_piece_frame_plan(blocks, sizeof(blocks) / sizeof(blocks[0]));
+    frame.update_metadata.prior_content_required = 1;
     db_vk_present_piece_t pieces[2] = {0};
     db_vk_lane_assignment_t assignments[2] = {0};
+    db_render_ir_command_range_t ranges[2] = {0};
+    db_vk_planner_workspace_t workspace = {.ranges = ranges, .capacity = 2U};
     db_vk_execution_plan_t plan = {0};
     const double costs[2] = {10.0, 1.0};
-    DB_TEST_EXPECT_TRUE(
-        state, db_vk_build_execution_plan(
-                   &frame, 2U, DB_VK_SCHEDULING_THROUGHPUT_WEIGHTED_CHUNKS,
-                   costs, 1U, 1U, pieces, 2U, assignments, 2U, &plan));
+    DB_TEST_EXPECT_TRUE(state,
+                        db_vk_build_execution_plan(
+                            &frame, &workspace, 2U,
+                            DB_VK_SCHEDULING_THROUGHPUT_WEIGHTED_CHUNKS, costs,
+                            1U, 1U, pieces, 2U, assignments, 2U, &plan));
     DB_TEST_EXPECT_EQ_U32(state, plan.policy, DB_VK_SCHEDULING_PRIMARY_ONLY);
     DB_TEST_EXPECT_EQ_U32(state, assignments[0].lane, 0U);
 }
@@ -557,6 +786,8 @@ static void db_test_vk_hdr_surface_selection_requires_complete_pair(
 
 unsigned db_vk_scheduler_test_run_all(void) {
     static const db_test_case_t cases[] = {
+        {"vk_independent_lane_mode_gate",
+         db_test_vk_independent_lane_mode_gate},
         {"vk_measured_benefit_gate", db_test_vk_measured_benefit_gate},
         {"vk_external_interop_classification",
          db_test_vk_external_interop_classification},
@@ -568,8 +799,14 @@ unsigned db_vk_scheduler_test_run_all(void) {
          db_test_vk_piece_plan_preserves_order},
         {"vk_instance_bounds_use_top_left_origin",
          db_test_vk_instance_bounds_use_top_left_origin},
-        {"vk_piece_plan_overflow_is_primary",
-         db_test_vk_piece_plan_overflow_is_primary},
+        {"vk_semantic_gradient_emits_one_instance",
+         db_test_vk_semantic_gradient_emits_one_instance},
+        {"vk_clipped_gradient_fallback_is_fragment_bounded",
+         db_test_vk_clipped_gradient_fallback_is_fragment_bounded},
+        {"vk_independent_accelerated_gradients_route_primary",
+         db_test_vk_independent_accelerated_gradients_route_primary},
+        {"vk_batched_instances_do_not_consume_piece_capacity",
+         db_test_vk_batched_instances_do_not_consume_piece_capacity},
         {"vk_overlapping_pieces_are_primary",
          db_test_vk_overlapping_pieces_are_primary},
         {"vk_sync_fd_state_machine", db_test_vk_sync_fd_state_machine},

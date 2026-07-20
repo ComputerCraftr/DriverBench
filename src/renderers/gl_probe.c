@@ -1,4 +1,6 @@
+#include "../core/db_core.h"
 #include "../core/db_numeric.h"
+#include "../core/db_render_ir.h"
 #include "core/db_render_types.h"
 #include "gl_api.h"
 #include "gl_common.h"
@@ -6,6 +8,32 @@
 #include "gl_proc_runtime.h"
 #include <stddef.h>
 #include <stdint.h>
+
+int db_gl_external_binding_unpack_row_length(
+    const db_render_ir_external_binding_t *binding,
+    int unpack_row_length_supported, uint32_t *row_length_pixels) {
+    if ((binding == NULL) || (row_length_pixels == NULL)) {
+        return 0;
+    }
+    const size_t pixel_bytes = db_pixel_format_bytes_per_pixel(binding->format);
+    size_t tight_row_bytes = 0U;
+    if ((pixel_bytes == 0U) ||
+        (db_try_mul_size(binding->width, pixel_bytes, &tight_row_bytes) == 0) ||
+        (binding->row_stride_bytes < tight_row_bytes) ||
+        ((binding->row_stride_bytes % pixel_bytes) != 0U)) {
+        return 0;
+    }
+    if (binding->row_stride_bytes == tight_row_bytes) {
+        *row_length_pixels = 0U;
+        return 1;
+    }
+    const size_t row_pixels = binding->row_stride_bytes / pixel_bytes;
+    if ((unpack_row_length_supported == 0) || (row_pixels > INT32_MAX)) {
+        return 0;
+    }
+    *row_length_pixels = (uint32_t)row_pixels;
+    return 1;
+}
 
 int db_gl_context_supports_unpack_row_length_upload(void) {
     const db_gl_runtime_metadata_t runtime = db_gl_runtime_metadata_load();

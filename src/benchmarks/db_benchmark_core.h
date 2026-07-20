@@ -3,9 +3,13 @@
 
 #include "benchmarks/db_benchmark_checkpoint_internal.h"
 #include "benchmarks/db_benchmark_mode_runtime_internal.h"
+#include "benchmarks/db_benchmark_runtime.h"
 #include "benchmarks/db_snake_progression_internal.h"
 #include "core/db_frame_plan.h"
+#include "core/db_geometry.h"
 #include "core/db_render_ir.h"
+#include "core/db_render_result.h"
+#include "core/db_render_types.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -21,6 +25,10 @@ typedef struct {
     db_render_ir_store_t rebuild;
     db_render_ir_fill_t *optimizer_primary;
     db_render_ir_fill_t *optimizer_secondary;
+    db_render_ir_band_t *optimizer_coverage_bands;
+    db_render_ir_band_t *optimizer_coverage_band_scratch;
+    db_render_ir_span_t *optimizer_coverage_spans;
+    db_render_ir_span_t *optimizer_coverage_span_scratch;
     db_render_ir_fill_t *rebuild_fills;
     size_t rebuild_fill_count;
     db_render_ir_status_t rebuild_status;
