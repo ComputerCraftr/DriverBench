@@ -2,6 +2,7 @@ set(DB_LINUX_TARGET_KIND "native")
 set(DB_LINUX_EFFECTIVE_ROOT "")
 set(DB_LINUX_ROOT_SOURCE "")
 set(DB_LINUX_REQUIRE_STATIC_ARCHIVES OFF)
+set(DB_LINUX_ROOT_CACHE_DESCRIPTION "Resolved Linux cross root/sysroot path")
 
 set(DB_LINUX_MULTILIB_LIB_DIRS "/usr/lib32" "/lib32" "/usr/lib/i386-linux-gnu"
                                "/lib/i386-linux-gnu")
@@ -32,7 +33,7 @@ endfunction()
 function(db_linux_append_root_flags root_path)
     set(CMAKE_SYSROOT
         "${root_path}"
-        CACHE PATH "Resolved Linux cross root/sysroot path" FORCE)
+        CACHE PATH "${DB_LINUX_ROOT_CACHE_DESCRIPTION}" FORCE)
     list(PREPEND CMAKE_FIND_ROOT_PATH "${root_path}")
     list(PREPEND CMAKE_PREFIX_PATH "${root_path}" "${root_path}/usr")
     set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
@@ -261,7 +262,7 @@ set(DB_LINUX_TARGET_KIND
     CACHE INTERNAL "Resolved Linux cross target kind" FORCE)
 set(DB_LINUX_EFFECTIVE_ROOT
     "${DB_LINUX_EFFECTIVE_ROOT}"
-    CACHE INTERNAL "Resolved Linux cross root/sysroot path" FORCE)
+    CACHE INTERNAL "${DB_LINUX_ROOT_CACHE_DESCRIPTION}" FORCE)
 set(DB_LINUX_ROOT_SOURCE
     "${DB_LINUX_ROOT_SOURCE}"
     CACHE INTERNAL "Resolved Linux cross root source" FORCE)

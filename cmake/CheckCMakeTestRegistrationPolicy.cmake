@@ -2,6 +2,7 @@ if(NOT DEFINED SOURCE_ROOT OR "${SOURCE_ROOT}" STREQUAL "")
     message(FATAL_ERROR "SOURCE_ROOT is required")
 endif()
 
+set(DB_TEST_REGISTRATION_POLICY_FILE "${CMAKE_CURRENT_LIST_FILE}")
 set(DB_ALLOWED_TEST_REGISTRATION_FILES
     "${SOURCE_ROOT}/cmake/DriverBenchTests.cmake"
     "${SOURCE_ROOT}/cmake/DriverBenchRuntimeRegressionTests.cmake"
@@ -9,7 +10,7 @@ set(DB_ALLOWED_TEST_REGISTRATION_FILES
     "${SOURCE_ROOT}/cmake/DriverBenchTestHelpers.cmake"
     "${SOURCE_ROOT}/cmake/DriverBenchDeterminismSuites.cmake"
     "${SOURCE_ROOT}/cmake/DriverBenchUnitProbeTests.cmake"
-    "${SOURCE_ROOT}/cmake/CheckCMakeTestRegistrationPolicy.cmake")
+    "${DB_TEST_REGISTRATION_POLICY_FILE}")
 
 set(DB_CMAKE_FILES "${SOURCE_ROOT}/CMakeLists.txt")
 file(GLOB DB_PROJECT_CMAKE_FILES "${SOURCE_ROOT}/cmake/*.cmake")
@@ -36,8 +37,7 @@ endforeach()
 
 set(DB_DRIVERBENCH_TESTS_CONTENT "")
 foreach(DB_REGISTRATION_FILE IN LISTS DB_ALLOWED_TEST_REGISTRATION_FILES)
-    if(DB_REGISTRATION_FILE STREQUAL
-       "${SOURCE_ROOT}/cmake/CheckCMakeTestRegistrationPolicy.cmake")
+    if(DB_REGISTRATION_FILE STREQUAL "${DB_TEST_REGISTRATION_POLICY_FILE}")
         continue()
     endif()
     file(READ "${DB_REGISTRATION_FILE}" DB_REGISTRATION_CONTENT)

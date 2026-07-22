@@ -110,6 +110,7 @@ endfunction()
 
 function(db_glfw_probe_linux_x11_dependencies out_ok out_reason)
     set(db_glfw_missing_libs "")
+    set(db_glfw_active_root_pattern "^${DB_LINUX_EFFECTIVE_ROOT}(/|$)")
     set(db_glfw_saved_find_library_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
     set(db_glfw_required_headers
         "X11/Xlib.h"
@@ -145,7 +146,7 @@ function(db_glfw_probe_linux_x11_dependencies out_ok out_reason)
             list(APPEND db_glfw_missing_libs "${db_glfw_lib_name}")
         elseif((NOT DB_LINUX_EFFECTIVE_ROOT STREQUAL "")
                AND (NOT db_glfw_probe_lib MATCHES
-                    "^${DB_LINUX_EFFECTIVE_ROOT}(/|$)"))
+                    "${db_glfw_active_root_pattern}"))
             list(APPEND db_glfw_missing_libs
                  "${db_glfw_lib_name} (outside active root)")
         elseif(DB_LINUX_REQUIRE_STATIC_ARCHIVES AND (NOT db_glfw_probe_lib
@@ -162,7 +163,7 @@ function(db_glfw_probe_linux_x11_dependencies out_ok out_reason)
             list(APPEND db_glfw_missing_libs "${db_glfw_header}")
         elseif((NOT DB_LINUX_EFFECTIVE_ROOT STREQUAL "")
                AND (NOT db_glfw_probe_include MATCHES
-                    "^${DB_LINUX_EFFECTIVE_ROOT}(/|$)"))
+                    "${db_glfw_active_root_pattern}"))
             list(APPEND db_glfw_missing_libs
                  "${db_glfw_header} (outside active root)")
         endif()
@@ -196,11 +197,10 @@ function(db_glfw_resolve_system_provider)
     find_package(glfw3 QUIET)
     if(TARGET glfw)
         set(DB_GLFW_SYSTEM_TARGET glfw)
-        set(DB_GLFW_SYSTEM_LINK_LIB glfw)
     elseif(TARGET glfw3::glfw)
         set(DB_GLFW_SYSTEM_TARGET glfw3::glfw)
-        set(DB_GLFW_SYSTEM_LINK_LIB glfw3::glfw)
     endif()
+    set(DB_GLFW_SYSTEM_LINK_LIB "${DB_GLFW_SYSTEM_TARGET}")
 
     if(DB_GLFW_SYSTEM_LINK_LIB STREQUAL "")
         find_package(PkgConfig QUIET)

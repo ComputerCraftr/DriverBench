@@ -24,8 +24,9 @@ FIXED_SIZE_MULTIPLICATION = re.compile(
     r"^\s*(?:[0-9]+[uUlL]*\s*\*\s*)?sizeof\s*\([^()]+\)\s*$"
 )
 ARITHMETIC_OPERATOR = re.compile(r"(?<![<>=!])(?:\+|-|\*)(?![=>])")
+CORE_MEMORY_HEADER = Path("src/core/db_core.h")
 MALLOC_MULTIPLICATION_ALLOWLIST = {
-    Path("src/core/db_core.h"),
+    CORE_MEMORY_HEADER,
     Path("src/core/db_render_ir_snapshot.c"),
 }
 RANGE_OVERLAP_HELPER_PATTERN = re.compile(
@@ -35,7 +36,7 @@ RANGE_OVERLAP_HELPER_PATTERN = re.compile(
 )
 RANGE_OVERLAP_HELPER_ALLOWLIST = {
     Path("src/core/db_core.c"),
-    Path("src/core/db_core.h"),
+    CORE_MEMORY_HEADER,
 }
 
 

@@ -20,6 +20,7 @@ def main() -> int:
     image = os.environ.get(
         "DB_UBUNTU2604_QUALITY_IMAGE", "driverbench-ubuntu2604-quality"
     )
+    platform = "linux/amd64"
     network = os.environ.get("DB_DOCKER_BUILD_NETWORK", "default")
     build = ["docker", "build"]
     if network != "default":
@@ -27,7 +28,7 @@ def main() -> int:
     build.extend(
         [
             "--platform",
-            "linux/amd64",
+            platform,
             "--file",
             "ci/ubuntu2604/Dockerfile",
             "--tag",
@@ -42,7 +43,7 @@ def main() -> int:
             "run",
             "--rm",
             "--platform",
-            "linux/amd64",
+            platform,
             "--user",
             f"{os.getuid()}:{os.getgid()}",
             "--env",

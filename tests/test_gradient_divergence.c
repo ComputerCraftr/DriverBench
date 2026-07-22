@@ -8,6 +8,8 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 enum { DB_TEST_DIVERGENCE_LINE_CAPACITY = 1024 };
 
@@ -72,8 +74,13 @@ static void replay_policy_age_semantics(db_test_state_t *state) {
 }
 
 static void divergence_file_uses_schema_two(db_test_state_t *state) {
-    const char *const path = "/tmp/driverbench-gradient-divergence-test.log";
-    (void)remove(path);
+    char path[] = "/tmp/driverbench-gradient-divergence-XXXXXX";
+    const int temporary_fd = mkstemp(path);
+    DB_TEST_EXPECT_TRUE(state, temporary_fd >= 0);
+    if (temporary_fd < 0) {
+        return;
+    }
+    DB_TEST_EXPECT_EQ_INT(state, close(temporary_fd), 0);
     const db_gradient_divergence_t divergence = {
         .stage = DB_GRADIENT_DIVERGENCE_COORDINATE,
         .command_index = 2U,
@@ -92,7 +99,7 @@ static void divergence_file_uses_schema_two(db_test_state_t *state) {
         DB_TEST_EXPECT_STR_CONTAINS(state, line, "stage=coordinate");
         (void)fclose(input);
     }
-    (void)remove(path);
+    DB_TEST_EXPECT_EQ_INT(state, remove(path), 0);
 }
 
 static void

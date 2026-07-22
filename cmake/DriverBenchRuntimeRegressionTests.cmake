@@ -167,7 +167,12 @@ function(db_register_release_suite suite_id)
         endforeach()
 
         if("${db_prefix}" STREQUAL "")
-            foreach(db_hardware_kind IN ITEMS gl1_direct_window gl3_native)
+            set(db_hardware_kinds gl1_direct_window gl3_native)
+            if(DB_BUILD_VULKAN AND DB_VULKAN_LIB)
+                list(APPEND db_hardware_kinds vulkan_single vulkan_device_group
+                     vulkan_independent)
+            endif()
+            foreach(db_hardware_kind IN LISTS db_hardware_kinds)
                 set(db_test_name "hardware_${db_hardware_kind}_auto")
                 add_test(
                     NAME ${db_test_name}
@@ -176,33 +181,18 @@ function(db_register_release_suite suite_id)
                         -DTEST_KIND=${db_hardware_kind} -P
                         ${CMAKE_SOURCE_DIR}/cmake/RunHardwareQualificationTest.cmake
                 )
+                set(db_hardware_timeout 120)
+                if(db_hardware_kind MATCHES "^vulkan_")
+                    set(db_hardware_timeout 180)
+                endif()
                 set_tests_properties(
                     ${db_test_name}
-                    PROPERTIES LABELS "hardware;qualification" TIMEOUT 120
-                               RESOURCE_LOCK driverbench_gpu_matrix)
+                    PROPERTIES LABELS "hardware;qualification" TIMEOUT
+                               ${db_hardware_timeout} RESOURCE_LOCK
+                               driverbench_gpu_matrix)
                 db_test_apply_skip_regex("${db_test_name}"
                                          "${DB_TEST_CANONICAL_SKIP_REGEX}")
             endforeach()
-            if(DB_BUILD_VULKAN AND DB_VULKAN_LIB)
-                foreach(db_hardware_kind IN
-                        ITEMS vulkan_single vulkan_device_group
-                              vulkan_independent)
-                    set(db_test_name "hardware_${db_hardware_kind}_auto")
-                    add_test(
-                        NAME ${db_test_name}
-                        COMMAND
-                            ${CMAKE_COMMAND} -DTEST_BIN=${db_test_bin}
-                            -DTEST_KIND=${db_hardware_kind} -P
-                            ${CMAKE_SOURCE_DIR}/cmake/RunHardwareQualificationTest.cmake
-                    )
-                    set_tests_properties(
-                        ${db_test_name}
-                        PROPERTIES LABELS "hardware;qualification" TIMEOUT 180
-                                   RESOURCE_LOCK driverbench_gpu_matrix)
-                    db_test_apply_skip_regex("${db_test_name}"
-                                             "${DB_TEST_CANONICAL_SKIP_REGEX}")
-                endforeach()
-            endif()
         endif()
 
         db_suite_make_test_name(db_test_name "${db_prefix}"

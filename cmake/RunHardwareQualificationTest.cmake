@@ -6,26 +6,23 @@ db_test_require_defined(TEST_KIND)
 set(common_args
     "--benchmark-mode gradient_fill --random-seed 123456 --output-format sdr --fps-cap 0 --hash pixel"
 )
+set(required "qualified=true;diagnostic_forced=false")
 if(TEST_KIND STREQUAL "gl1_direct_window")
     set(args
         "--api opengl --renderer gl1_5_gles1_1 --display glfw_window --glfw-hidden-window 1 --working-format rgba8 --gl1-target auto --frame-limit 24 ${common_args}"
     )
-    set(required
-        "target_strategy=gl1_direct_window;qualified=true;diagnostic_forced=false"
-    )
+    list(PREPEND required "target_strategy=gl1_direct_window")
     set(capability "gl1_direct_window")
 elseif(TEST_KIND STREQUAL "gl3_native")
     set(args
         "--api opengl --renderer gl3_3 --display offscreen --working-format rgba16f --gl3-gradient auto --frame-limit 24 ${common_args}"
     )
-    set(required "qualified=true;diagnostic_forced=false")
     set(path_regex "gradient_path=gl3_(semantic_gradient|exact_lookup)")
     set(capability "gl3_native")
 elseif(TEST_KIND STREQUAL "vulkan_single")
     set(args
         "--api vulkan --display glfw_window --glfw-hidden-window 1 --working-format rgba16f --vk-multi-device-policy group_only --vk-gradient auto --frame-limit 24 ${common_args}"
     )
-    set(required "qualified=true;diagnostic_forced=false")
     set(path_regex
         "gradient_path=vulkan_(semantic_gradient|exact_lookup|row_instances)")
     set(capability "vulkan_single_device")
@@ -33,7 +30,6 @@ elseif(TEST_KIND STREQUAL "vulkan_device_group")
     set(args
         "--api vulkan --display glfw_window --glfw-hidden-window 1 --working-format rgba16f --vk-multi-device-policy group_only --vk-gradient auto --frame-limit 80 ${common_args}"
     )
-    set(required "qualified=true;diagnostic_forced=false")
     set(path_regex "execution_mode=device_group")
     set(calibration_regex
         "event=vk_multi_gpu_phase[^\r\n]*to=(validated|active)")
@@ -42,7 +38,6 @@ elseif(TEST_KIND STREQUAL "vulkan_independent")
     set(args
         "--api vulkan --display glfw_window --glfw-hidden-window 1 --working-format rgba16f --vk-multi-device-policy independent_ok --vk-gradient auto --frame-limit 80 ${common_args}"
     )
-    set(required "qualified=true;diagnostic_forced=false")
     set(path_regex "independent_topology_available=true")
     set(calibration_regex
         "event=vk_multi_gpu_phase[^\r\n]*to=(validated|active)")

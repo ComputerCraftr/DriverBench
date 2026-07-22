@@ -27,6 +27,7 @@ set(DB_FORBIDDEN_PROGRESS_PATTERNS
     "DB_PROBE_PROCESS_POLL_INTERVAL"
     "realloc[ \t\r\n]*\\([^;]*(sample|metric|timing)"
     "reserve_array[^;]*(sample|metric|timing)")
+set(DB_PROGRESS_POLICY_IMPLEMENTATION "src/core/db_progress_policy.c")
 
 set(db_violations "")
 foreach(db_path IN LISTS DB_WAIT_POLICY_FILES)
@@ -50,7 +51,7 @@ foreach(db_path IN LISTS DB_WAIT_POLICY_FILES)
         endif()
     endforeach()
 
-    if(NOT db_file STREQUAL "src/core/db_progress_policy.c"
+    if(NOT db_file STREQUAL "${DB_PROGRESS_POLICY_IMPLEMENTATION}"
        AND db_content MATCHES
            "policy->(max_attempts|attempt_timeout_ns|total_timeout_ns)")
         list(
@@ -60,7 +61,7 @@ foreach(db_path IN LISTS DB_WAIT_POLICY_FILES)
         )
     endif()
 
-    if(NOT db_file STREQUAL "src/core/db_progress_policy.c")
+    if(NOT db_file STREQUAL "${DB_PROGRESS_POLICY_IMPLEMENTATION}")
         set(db_local_policy_content "${db_content}")
         # Split-search retries are a fixed calibration dataset, not a runtime
         # progress loop.

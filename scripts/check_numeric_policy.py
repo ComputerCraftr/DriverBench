@@ -96,6 +96,12 @@ UNCHECKED_ID_INCREMENT_PATTERN = re.compile(
     r"(?:generation|epoch|revision|sequence|serial)\b)"
 )
 SIGNED_ONE_SHIFT_PATTERN = re.compile(r"(?<![A-Za-z0-9_])1\s*<<")
+CORE_NUMERIC_HEADER = Path("src/core/db_numeric.h")
+CORE_CONVERSION_IMPLEMENTATION = Path("src/core/db_core.c")
+NUMERIC_POLICY_IMPLEMENTATIONS = {
+    Path("src/core/db_core.h"),
+    CORE_NUMERIC_HEADER,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -196,11 +202,8 @@ def is_extrema_ternary(match: re.Match[str]) -> bool:
 
 def scan_file(source_root: Path, path: Path) -> list[Violation]:
     relative = path.relative_to(source_root)
-    policy_implementation = relative in {
-        Path("src/core/db_core.h"),
-        Path("src/core/db_numeric.h"),
-    }
-    if relative == Path("src/core/db_numeric.h"):
+    policy_implementation = relative in NUMERIC_POLICY_IMPLEMENTATIONS
+    if relative == CORE_NUMERIC_HEADER:
         return []
 
     source = strip_comments_and_literals(path.read_text(encoding="utf-8"))
@@ -222,7 +225,7 @@ def scan_file(source_root: Path, path: Path) -> list[Violation]:
                 "floating conversion/extrema must use the numeric policy helpers",
             )
         )
-    if relative != Path("src/core/db_core.c"):
+    if relative != CORE_CONVERSION_IMPLEMENTATION:
         for match in STRTOD_PATTERN.finditer(source):
             violations.append(
                 Violation(

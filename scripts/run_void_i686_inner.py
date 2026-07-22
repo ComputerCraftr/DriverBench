@@ -28,6 +28,9 @@ def main() -> int:
         raise RuntimeError("Void container does not provide Clang 22")
 
     build_dir = root / "build/linux32-sanitize"
+    junit_path = build_dir / "ctest-results.xml"
+    result_auditor = root / "scripts/audit_ctest_results.py"
+    capability_manifest = root / "ci/capabilities/i686-sanitizer.json"
     run(
         [
             "cmake",
@@ -44,18 +47,18 @@ def main() -> int:
             "--preset",
             "i686-headless-sanitize",
             "--output-junit",
-            str(build_dir / "ctest-results.xml"),
+            str(junit_path),
         ],
         root,
     )
     run(
         [
             "python3",
-            str(root / "scripts/audit_ctest_results.py"),
+            str(result_auditor),
             "--junit",
-            str(build_dir / "ctest-results.xml"),
+            str(junit_path),
             "--manifest",
-            str(root / "ci/capabilities/i686-sanitizer.json"),
+            str(capability_manifest),
         ],
         root,
     )

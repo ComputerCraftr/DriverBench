@@ -3,12 +3,12 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "core/db_byte_codec.h"
 #include "core/db_conformance_cache.h"
-#include "core/db_core.h"
 #include "core/db_hash.h"
 #include "core/db_hash_simd_internal.h"
 #include "core/db_render_types.h"
@@ -17,7 +17,6 @@ enum {
     DB_TEST_TREE_MAX_BYTES = 8193U,
     DB_TEST_TREE_BYTE_MULTIPLIER = 37U,
     DB_TEST_TREE_BYTE_OFFSET = 11U,
-    DB_TEST_CACHE_PATH_BYTES = 128U,
     DB_TEST_OVERLAP_STORAGE_BYTES = 20U,
 };
 
@@ -266,10 +265,14 @@ db_test_hash_canonicalization_rejects_overlap(db_test_state_t *state) {
 }
 
 static void db_test_conformance_cache_round_trip(db_test_state_t *state) {
-    char path[DB_TEST_CACHE_PATH_BYTES];
-    (void)db_snprintf(path, sizeof(path), "/tmp/driverbench-probe-%ld.cache",
-                      (long)getpid());
-    (void)remove(path);
+    char path[] = "/tmp/driverbench-probe-cache-XXXXXX";
+    const int temporary_fd = mkstemp(path);
+    DB_TEST_EXPECT_TRUE(state, temporary_fd >= 0);
+    if (temporary_fd < 0) {
+        return;
+    }
+    DB_TEST_EXPECT_EQ_INT(state, close(temporary_fd), 0);
+    DB_TEST_EXPECT_EQ_INT(state, remove(path), 0);
     const uint8_t key[] = {1U, 2U, 3U, 4U, 5U};
     db_conformance_result_t result = DB_CONFORMANCE_UNTESTED;
     DB_TEST_EXPECT_EQ_INT(
@@ -319,7 +322,7 @@ static void db_test_conformance_cache_round_trip(db_test_state_t *state) {
                                                      DB_CONFORMANCE_CONFORMING),
                           DB_CONFORMANCE_CACHE_IO_ERROR);
 #endif
-    (void)remove(path);
+    DB_TEST_EXPECT_EQ_INT(state, remove(path), 0);
 }
 
 unsigned db_hash_test_run_all(void) {

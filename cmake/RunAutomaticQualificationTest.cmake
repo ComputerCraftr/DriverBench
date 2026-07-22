@@ -29,6 +29,7 @@ if(NOT db_reference_result EQUAL 0)
     message(FATAL_ERROR "CPU qualification reference failed:\n${db_reference}")
 endif()
 
+set(db_mode topology_exact)
 if(TEST_KIND STREQUAL "gl3_semantic")
     set(db_mode conforming)
     set(db_expected "gradient_path=gl3_semantic_gradient")
@@ -43,7 +44,6 @@ if(TEST_KIND STREQUAL "gl3_semantic")
         1
         ${db_common_args})
 elseif(TEST_KIND STREQUAL "gl3_exact")
-    set(db_mode topology_exact)
     set(db_expected "gradient_path=gl3_exact_lookup")
     set(db_args
         --api
@@ -56,7 +56,6 @@ elseif(TEST_KIND STREQUAL "gl3_exact")
         1
         ${db_common_args})
 elseif(TEST_KIND STREQUAL "vulkan_exact")
-    set(db_mode topology_exact)
     set(db_expected "gradient_path=vulkan_exact_lookup")
     set(db_args
         --api

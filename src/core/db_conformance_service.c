@@ -147,7 +147,7 @@ static int make_directory(const char *path) {
 }
 
 static int cache_directory(char *output, size_t output_size) {
-    const char *const configured = getenv("DRIVERBENCH_PROBE_CACHE_DIR");
+    const char *const configured = getenv(DB_PROBE_ENV_CACHE_DIR);
     if ((configured != NULL) && (configured[0] != '\0')) {
         return db_snprintf(output, output_size, "%s", configured) > 0;
     }

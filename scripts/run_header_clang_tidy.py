@@ -15,6 +15,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+SOURCE_DIRECTORY = "src"
+TEST_DIRECTORY = "tests"
+FIRST_PARTY_INCLUDE_DIRECTORIES = (SOURCE_DIRECTORY, TEST_DIRECTORY)
+OPTIONAL_COMPONENT_CATEGORIES = frozenset(("displays", "renderers"))
+LINUX_ONLY_HEADER_COMPONENT = Path(SOURCE_DIRECTORY, "displays", "linux_kms_atomic")
+COMPILE_DATABASE_FILENAME = "compile_commands.json"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -65,7 +72,7 @@ def analysis_flags(entry: dict[str, object]) -> list[str]:
 
 def representative_entry(entries: list[dict[str, object]]) -> dict[str, object]:
     if not entries:
-        raise ValueError("compile_commands.json contains no entries")
+        raise ValueError(f"{COMPILE_DATABASE_FILENAME} contains no entries")
     return max(entries, key=lambda entry: len(command_arguments(entry)))
 
 
@@ -78,12 +85,8 @@ def optional_component(source_root: Path, path: Path) -> Path | None:
     parts = relative.parts
     if (
         len(parts) >= 3
-        and parts[0] == "src"
-        and parts[1]
-        in {
-            "displays",
-            "renderers",
-        }
+        and parts[0] == SOURCE_DIRECTORY
+        and parts[1] in OPTIONAL_COMPONENT_CATEGORIES
     ):
         return source_root / Path(*parts[:3])
     return None
@@ -132,7 +135,8 @@ def run_one(
 
 
 def include_name(source_root: Path, header: Path) -> Path:
-    for include_root in (source_root / "src", source_root / "tests"):
+    for directory in FIRST_PARTY_INCLUDE_DIRECTORIES:
+        include_root = source_root / directory
         try:
             return header.relative_to(include_root)
         except ValueError:
@@ -169,7 +173,7 @@ def main() -> int:
         )
         return 2
 
-    database_path = build_dir / "compile_commands.json"
+    database_path = build_dir / COMPILE_DATABASE_FILENAME
     if not database_path.is_file():
         print(f"compile database not found: {database_path}", file=sys.stderr)
         return 2
@@ -181,16 +185,15 @@ def main() -> int:
     output_dir = Path(tempfile.mkdtemp(prefix="header-clang-tidy-", dir=build_dir))
 
     headers = sorted(
-        [
-            *(source_root / "src").rglob("*.h"),
-            *(source_root / "tests").rglob("*.h"),
-        ]
+        header
+        for directory in FIRST_PARTY_INCLUDE_DIRECTORIES
+        for header in (source_root / directory).rglob("*.h")
     )
     if sys.platform != "linux":
         headers = [
             header
             for header in headers
-            if "displays/linux_kms_atomic" not in header.as_posix()
+            if not header.is_relative_to(source_root / LINUX_ONLY_HEADER_COMPONENT)
         ]
     header_entries = {
         header: entries_for_header(source_root, header, entries) for header in headers
@@ -203,7 +206,7 @@ def main() -> int:
     for header, generated in generated_by_header.items():
         entry = representative_entry(header_entries[header])
         compiler = command_arguments(entry)[0]
-        flags = [*analysis_flags(entry), "-I", str(source_root / "tests")]
+        flags = [*analysis_flags(entry), "-I", str(source_root / TEST_DIRECTORY)]
         synthetic_database.append(
             {
                 "directory": str(source_root),
@@ -226,7 +229,7 @@ def main() -> int:
                 ],
             }
         )
-    (output_dir / "compile_commands.json").write_text(
+    (output_dir / COMPILE_DATABASE_FILENAME).write_text(
         json.dumps(synthetic_database, indent=2) + "\n", encoding="utf-8"
     )
 

@@ -11,6 +11,7 @@ from pathlib import Path
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     image = os.environ.get("DB_VOID_I686_IMAGE", "driverbench-void-i686")
+    platform = "linux/386"
     network = os.environ.get("DB_DOCKER_BUILD_NETWORK", "default")
     build = ["docker", "build"]
     if network != "default":
@@ -18,7 +19,7 @@ def main() -> int:
     build.extend(
         [
             "--platform",
-            "linux/386",
+            platform,
             "--file",
             "ci/void-i686/Dockerfile",
             "--tag",
@@ -33,7 +34,7 @@ def main() -> int:
             "run",
             "--rm",
             "--platform",
-            "linux/386",
+            platform,
             "--user",
             f"{os.getuid()}:{os.getgid()}",
             "--env",

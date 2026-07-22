@@ -8,6 +8,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+FIXTURE_DIAGNOSTIC_PREFIX = "src/fixture.c:"
+
 
 def require(condition: bool, message: str) -> None:
     if not condition:
@@ -57,7 +59,7 @@ void bad(unsigned *values, unsigned count) {
         )
         result = run_checker(checker, root)
         require(result.returncode != 0, "inline insertion sort was accepted")
-        require("src/fixture.c:" in result.stderr, result.stderr)
+        require(FIXTURE_DIAGNOSTIC_PREFIX in result.stderr, result.stderr)
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         write_fixture(
@@ -72,7 +74,7 @@ void bad(unsigned *values, unsigned count,
         )
         result = run_checker(checker, root)
         require(result.returncode != 0, "direct libc sorting was accepted")
-        require("src/fixture.c:" in result.stderr, result.stderr)
+        require(FIXTURE_DIAGNOSTIC_PREFIX in result.stderr, result.stderr)
     return 0
 
 

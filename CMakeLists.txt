@@ -8,7 +8,6 @@ include(CheckSymbolExists)
 include(${CMAKE_SOURCE_DIR}/cmake/DriverBenchPlatform.cmake)
 
 set(DB_SOURCE_FILE_LINE_LIMIT 1000)
-set(DB_SOURCE_FILE_SOFT_LINE_LIMIT 800)
 
 set(CMAKE_C_STANDARD 23)
 set(CMAKE_C_STANDARD_REQUIRED ON)

@@ -28,6 +28,12 @@ enum {
     DB_TEST_TOPOLOGY_BUILD_VERSION_OFFSET = 10U,
 };
 static const uint64_t db_test_protocol_timeout_ns = UINT64_C(500000000);
+static const char db_test_missing_helper_path[] =
+    "/driverbench-test/missing-probe-helper";
+static const char db_test_mode_count_failure[] = "count_failure";
+static const char db_test_mode_malformed_repeat[] = "malformed_repeat";
+static const char db_test_mode_none[] = "none";
+static const char db_test_mode_service[] = "service";
 
 static int service_failure(int code, const char *stage,
                            const db_conformance_decision_t *decision) {
@@ -51,13 +57,14 @@ static int service_failure(int code, const char *stage,
 static db_probe_status_t run_probe(const char *helper_path, const char *mode,
                                    const db_probe_request_t *request,
                                    db_probe_result_t *result) {
-    if (strcmp(mode, "none") == 0) {
-        (void)unsetenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE");
+    if (strcmp(mode, db_test_mode_none) == 0) {
+        (void)unsetenv(DB_PROBE_ENV_HELPER_TEST_MODE);
     } else {
-        (void)setenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE", mode, 1);
+        (void)setenv(DB_PROBE_ENV_HELPER_TEST_MODE, mode, 1);
     }
-    const int expect_timeout = (strcmp(mode, "timeout") == 0) ||
-                               (strcmp(mode, "postwrite_timeout") == 0);
+    const int expect_timeout =
+        (strcmp(mode, DB_PROBE_TEST_MODE_TIMEOUT) == 0) ||
+        (strcmp(mode, DB_PROBE_TEST_MODE_POSTWRITE_TIMEOUT) == 0);
     const uint64_t timeout_ns = (expect_timeout != 0)
                                     ? DB_TEST_TIMEOUT_NS
                                     : db_test_protocol_timeout_ns;
@@ -70,8 +77,9 @@ static int test_cache_service(const char *helper_path) {
     if (mkdtemp(directory) == NULL) {
         return 1;
     }
-    (void)setenv("DRIVERBENCH_PROBE_CACHE_DIR", directory, 1);
-    (void)setenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE", "conforming", 1);
+    (void)setenv(DB_PROBE_ENV_CACHE_DIR, directory, 1);
+    (void)setenv(DB_PROBE_ENV_HELPER_TEST_MODE, DB_PROBE_TEST_MODE_CONFORMING,
+                 1);
     const db_conformance_key_t key = {
         .schema_version = 1U,
         .evaluator_version = 1U,
@@ -97,7 +105,7 @@ static int test_cache_service(const char *helper_path) {
         (decision.outcome != DB_QUALIFICATION_OUTCOME_CONFORMING)) {
         return service_failure(2, "initial_helper", &decision);
     }
-    query.helper_path = "/does/not/exist";
+    query.helper_path = db_test_missing_helper_path;
     decision = db_conformance_qualify(&key, &query);
     if ((decision.result != DB_CONFORMANCE_CONFORMING) ||
         (decision.source != DB_QUALIFICATION_SOURCE_CACHE)) {
@@ -105,14 +113,15 @@ static int test_cache_service(const char *helper_path) {
     }
     query.helper_path = helper_path;
     query.rerun_probe = 1;
-    (void)setenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE", "nonconforming", 1);
+    (void)setenv(DB_PROBE_ENV_HELPER_TEST_MODE,
+                 DB_PROBE_TEST_MODE_NONCONFORMING, 1);
     decision = db_conformance_qualify(&key, &query);
     if ((decision.result != DB_CONFORMANCE_NONCONFORMING) ||
         (decision.source != DB_QUALIFICATION_SOURCE_HELPER) ||
         (decision.outcome != DB_QUALIFICATION_OUTCOME_NONCONFORMING)) {
         return service_failure(4, "rerun_nonconforming", &decision);
     }
-    query = (db_conformance_query_t){.helper_path = "/does/not/exist",
+    query = (db_conformance_query_t){.helper_path = db_test_missing_helper_path,
                                      .diagnostic_forced = 1};
     decision = db_conformance_qualify(&key, &query);
     if ((decision.result != DB_CONFORMANCE_UNTESTED) ||
@@ -123,14 +132,15 @@ static int test_cache_service(const char *helper_path) {
     db_conformance_key_t transient_key = key;
     transient_key.build_version++;
     query = (db_conformance_query_t){.helper_path = helper_path};
-    (void)setenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE", "unavailable", 1);
+    (void)setenv(DB_PROBE_ENV_HELPER_TEST_MODE, DB_PROBE_TEST_MODE_UNAVAILABLE,
+                 1);
     decision = db_conformance_qualify(&transient_key, &query);
     if ((decision.outcome != DB_QUALIFICATION_OUTCOME_UNAVAILABLE) ||
         (decision.result != DB_CONFORMANCE_UNTESTED)) {
         return service_failure(DB_TEST_CACHE_UNAVAILABLE_FAILURE,
                                "transient_unavailable", &decision);
     }
-    query.helper_path = "/does/not/exist";
+    query.helper_path = db_test_missing_helper_path;
     decision = db_conformance_qualify(&transient_key, &query);
     if ((decision.source == DB_QUALIFICATION_SOURCE_CACHE) ||
         (decision.outcome != DB_QUALIFICATION_OUTCOME_INTERNAL_ERROR)) {
@@ -143,8 +153,9 @@ static int test_cache_service(const char *helper_path) {
         0) {
         return service_failure(DB_TEST_COUNT_PATH_FAILURE, "count_path", NULL);
     }
-    (void)setenv("DRIVERBENCH_PROBE_HELPER_COUNT_FILE", count_path, 1);
-    (void)setenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE", "conforming", 1);
+    (void)setenv(DB_PROBE_ENV_HELPER_COUNT_FILE, count_path, 1);
+    (void)setenv(DB_PROBE_ENV_HELPER_TEST_MODE, DB_PROBE_TEST_MODE_CONFORMING,
+                 1);
     db_conformance_key_t duplicate_keys[2] = {key, key};
     duplicate_keys[0].build_version += 2U;
     duplicate_keys[1] = duplicate_keys[0];
@@ -163,7 +174,7 @@ static int test_cache_service(const char *helper_path) {
         return service_failure(DB_TEST_BATCH_DEDUP_FAILURE, "batch_dedup",
                                &duplicate_decisions[1]);
     }
-    (void)unsetenv("DRIVERBENCH_PROBE_HELPER_COUNT_FILE");
+    (void)unsetenv(DB_PROBE_ENV_HELPER_COUNT_FILE);
 
     db_conformance_decision_t expired = {0};
     if ((db_conformance_qualify_batch(&key, 1U, &query, 1U, &expired) == 0) ||
@@ -173,7 +184,8 @@ static int test_cache_service(const char *helper_path) {
                                "aggregate_deadline", &expired);
     }
 
-    (void)setenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE", "conforming", 1);
+    (void)setenv(DB_PROBE_ENV_HELPER_TEST_MODE, DB_PROBE_TEST_MODE_CONFORMING,
+                 1);
     db_qualification_topology_request_t topology_request = {
         .lane_count = 2U,
         .lanes =
@@ -220,7 +232,7 @@ int main(int argc, char **argv) {
     if ((argc != 3) || (argv[1] == NULL) || (argv[2] == NULL)) {
         return 2;
     }
-    if (strcmp(argv[2], "service") == 0) {
+    if (strcmp(argv[2], db_test_mode_service) == 0) {
         return test_cache_service(argv[1]);
     }
     const db_probe_request_t request = {
@@ -231,17 +243,17 @@ int main(int argc, char **argv) {
         .working_format = DB_PIXEL_FORMAT_RGBA16F,
     };
     db_probe_result_t result = {0};
-    if (strcmp(argv[2], "count_failure") == 0) {
-        (void)setenv("DRIVERBENCH_PROBE_HELPER_COUNT_FILE", "/", 1);
-        const db_probe_status_t count_status =
-            run_probe(argv[1], "conforming", &request, &result);
-        (void)unsetenv("DRIVERBENCH_PROBE_HELPER_COUNT_FILE");
+    if (strcmp(argv[2], db_test_mode_count_failure) == 0) {
+        (void)setenv(DB_PROBE_ENV_HELPER_COUNT_FILE, "/", 1);
+        const db_probe_status_t count_status = run_probe(
+            argv[1], DB_PROBE_TEST_MODE_CONFORMING, &request, &result);
+        (void)unsetenv(DB_PROBE_ENV_HELPER_COUNT_FILE);
         return count_status != DB_PROBE_STATUS_CHILD_FAILURE;
     }
-    if (strcmp(argv[2], "malformed_repeat") == 0) {
+    if (strcmp(argv[2], db_test_mode_malformed_repeat) == 0) {
         for (unsigned iteration = 0U; iteration < 64U; iteration++) {
-            if (run_probe(argv[1], "malformed", &request, &result) !=
-                DB_PROBE_STATUS_MALFORMED) {
+            if (run_probe(argv[1], DB_PROBE_TEST_MODE_MALFORMED, &request,
+                          &result) != DB_PROBE_STATUS_MALFORMED) {
                 return 1;
             }
         }
@@ -249,32 +261,32 @@ int main(int argc, char **argv) {
     }
     const db_probe_status_t status =
         run_probe(argv[1], argv[2], &request, &result);
-    if (strcmp(argv[2], "conforming") == 0) {
+    if (strcmp(argv[2], DB_PROBE_TEST_MODE_CONFORMING) == 0) {
         return !((status == DB_PROBE_STATUS_OK) &&
                  (result.result == DB_CONFORMANCE_CONFORMING));
     }
-    if (strcmp(argv[2], "nonconforming") == 0) {
+    if (strcmp(argv[2], DB_PROBE_TEST_MODE_NONCONFORMING) == 0) {
         return !((status == DB_PROBE_STATUS_OK) &&
                  (result.result == DB_CONFORMANCE_NONCONFORMING));
     }
-    if (strcmp(argv[2], "crash") == 0) {
+    if (strcmp(argv[2], DB_PROBE_TEST_MODE_CRASH) == 0) {
         return status != DB_PROBE_STATUS_CRASHED;
     }
-    if (strcmp(argv[2], "child_failure") == 0) {
+    if (strcmp(argv[2], DB_PROBE_TEST_MODE_CHILD_FAILURE) == 0) {
         return status != DB_PROBE_STATUS_CHILD_FAILURE;
     }
-    if ((strcmp(argv[2], "timeout") == 0) ||
-        (strcmp(argv[2], "postwrite_timeout") == 0)) {
+    if ((strcmp(argv[2], DB_PROBE_TEST_MODE_TIMEOUT) == 0) ||
+        (strcmp(argv[2], DB_PROBE_TEST_MODE_POSTWRITE_TIMEOUT) == 0)) {
         return status != DB_PROBE_STATUS_TIMEOUT;
     }
-    if ((strcmp(argv[2], "malformed") == 0) ||
-        (strcmp(argv[2], "malformed_checksum") == 0)) {
+    if ((strcmp(argv[2], DB_PROBE_TEST_MODE_MALFORMED) == 0) ||
+        (strcmp(argv[2], DB_PROBE_TEST_MODE_MALFORMED_CHECKSUM) == 0)) {
         return status != DB_PROBE_STATUS_MALFORMED;
     }
-    if (strcmp(argv[2], "identity") == 0) {
+    if (strcmp(argv[2], DB_PROBE_TEST_MODE_IDENTITY) == 0) {
         return status != DB_PROBE_STATUS_IDENTITY_MISMATCH;
     }
-    if (strcmp(argv[2], "fragmented") == 0) {
+    if (strcmp(argv[2], DB_PROBE_TEST_MODE_FRAGMENTED) == 0) {
         return status != DB_PROBE_STATUS_UNAVAILABLE;
     }
     return (status != DB_PROBE_STATUS_OK) &&

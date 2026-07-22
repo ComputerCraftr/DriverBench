@@ -2,10 +2,11 @@ if(NOT DEFINED SOURCE_ROOT OR "${SOURCE_ROOT}" STREQUAL "")
     message(FATAL_ERROR "SOURCE_ROOT is required")
 endif()
 
+set(DB_KMS_CPU_FILE "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_cpu.c")
 set(DB_KMS_FILES
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_core.c"
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_gl_frame.c"
-    "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_cpu.c"
+    "${DB_KMS_CPU_FILE}"
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_display.c"
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_egl.c"
     "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_internal.h"
@@ -19,9 +20,8 @@ foreach(DB_KMS_FILE IN LISTS DB_KMS_FILES)
 endforeach()
 
 set(DB_KMS_FORBIDDEN
-    "db_display_gl_render_frame_kms"
-    "db_kms_atomic_enable_preserved_swap_behavior"
     "DB_GL_SHADOW_PRESENT|db_gl_shadow_present|PBO"
+    "preserved_framebuffer_count[ \t\r\n]*=[ \t\r\n]*[1-9]"
     "EGL_(RED|GREEN|BLUE)_SIZE[ \t\r\n]*,[ \t\r\n]*8")
 foreach(DB_KMS_PATTERN IN LISTS DB_KMS_FORBIDDEN)
     if(DB_KMS_SOURCE MATCHES "${DB_KMS_PATTERN}")
@@ -30,8 +30,7 @@ foreach(DB_KMS_PATTERN IN LISTS DB_KMS_FORBIDDEN)
     endif()
 endforeach()
 
-file(READ "${SOURCE_ROOT}/src/displays/linux_kms_atomic/kms_cpu.c"
-     DB_KMS_CPU_SOURCE)
+file(READ "${DB_KMS_CPU_FILE}" DB_KMS_CPU_SOURCE)
 string(REGEX MATCHALL "gbm_bo_create[ \t\r\n]*\\(" DB_KMS_BO_CREATES
              "${DB_KMS_CPU_SOURCE}")
 list(LENGTH DB_KMS_BO_CREATES DB_KMS_BO_CREATE_COUNT)

@@ -4,6 +4,8 @@ endif()
 
 set(DB_TEST_ROOT
     "${CMAKE_CURRENT_BINARY_DIR}/structured_control_flow_policy_contract")
+set(DB_CLEANUP_FIXTURE "${DB_TEST_ROOT}/src/cleanup.c")
+set(DB_REJECTED_FIXTURE "${DB_TEST_ROOT}/src/rejected.c")
 file(REMOVE_RECURSE "${DB_TEST_ROOT}")
 file(MAKE_DIRECTORY "${DB_TEST_ROOT}/src")
 
@@ -24,7 +26,7 @@ if(NOT DB_CLEAN_RESULT EQUAL 0)
 endif()
 
 file(
-    WRITE "${DB_TEST_ROOT}/src/cleanup.c"
+    WRITE "${DB_CLEANUP_FIXTURE}"
     "static int cleanup_ok(int value) {\n    int result = 1;\n    if (value != 0) {\n        result = 0;\n        goto cleanup; /* DB_CLEANUP_GOTO */\n    }\ncleanup:\n    return result;\n}\n"
 )
 execute_process(
@@ -38,10 +40,10 @@ if(NOT DB_CLEANUP_RESULT EQUAL 0)
             "structured control-flow policy rejected annotated cleanup:\n${DB_CLEANUP_OUTPUT}${DB_CLEANUP_ERROR}"
     )
 endif()
-file(REMOVE "${DB_TEST_ROOT}/src/cleanup.c")
+file(REMOVE "${DB_CLEANUP_FIXTURE}")
 
 file(
-    WRITE "${DB_TEST_ROOT}/src/rejected.c"
+    WRITE "${DB_REJECTED_FIXTURE}"
     "static int rejected(int value) {\n    if (value != 0) {\n        goto fail;\n    }\n    return 1;\nfail:\n    return 0;\n}\n"
 )
 execute_process(
@@ -58,7 +60,7 @@ if(NOT "${DB_REJECTED_OUTPUT}${DB_REJECTED_ERROR}" MATCHES "goto is restricted")
             "structured control-flow policy failed without its stable diagnostic:\n${DB_REJECTED_OUTPUT}${DB_REJECTED_ERROR}"
     )
 endif()
-file(REMOVE "${DB_TEST_ROOT}/src/rejected.c")
+file(REMOVE "${DB_REJECTED_FIXTURE}")
 
 foreach(DB_BAD_CASE IN ITEMS backward multi_label business_flow)
     if(DB_BAD_CASE STREQUAL "backward")
@@ -74,7 +76,8 @@ foreach(DB_BAD_CASE IN ITEMS backward multi_label business_flow)
             "static int bad(int value) {\n    if (value != 0) {\n        goto retry;\n    }\nretry:\n    return value;\n}\n"
         )
     endif()
-    file(WRITE "${DB_TEST_ROOT}/src/${DB_BAD_CASE}.c" "${DB_BAD_SOURCE}")
+    set(DB_BAD_FIXTURE "${DB_TEST_ROOT}/src/${DB_BAD_CASE}.c")
+    file(WRITE "${DB_BAD_FIXTURE}" "${DB_BAD_SOURCE}")
     execute_process(
         COMMAND "${CMAKE_COMMAND}" -DSOURCE_ROOT=${DB_TEST_ROOT} -P "${CHECKER}"
         RESULT_VARIABLE DB_BAD_RESULT
@@ -85,7 +88,7 @@ foreach(DB_BAD_CASE IN ITEMS backward multi_label business_flow)
             FATAL_ERROR
                 "structured control-flow policy accepted ${DB_BAD_CASE} goto")
     endif()
-    file(REMOVE "${DB_TEST_ROOT}/src/${DB_BAD_CASE}.c")
+    file(REMOVE "${DB_BAD_FIXTURE}")
 endforeach()
 
 file(REMOVE_RECURSE "${DB_TEST_ROOT}")

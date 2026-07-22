@@ -3,6 +3,7 @@
 #include "../../core/db_frame_plan.h"
 #include "../../core/db_geometry.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_probe_protocol.h"
 #include "../../core/db_progress_policy.h"
 #include "../../core/db_render_result.h"
 #include "../damage_trace.h"
@@ -78,8 +79,8 @@ db_vk_frame_result_t db_vk_render_frame(const db_frame_plan_t *plan) {
         ((plan->rebuild_required != 0) ? plan->rebuild_metadata.gradient_count
                                        : 0U);
     const char *const probe_implementation =
-        getenv("DRIVERBENCH_PROBE_GRADIENT_IMPLEMENTATION");
-    const int probe_child = getenv("DRIVERBENCH_PROBE_CHILD") != NULL;
+        getenv(DB_PROBE_ENV_GRADIENT_IMPLEMENTATION);
+    const int probe_child = getenv(DB_PROBE_ENV_CHILD) != NULL;
     if ((planned_gradient_commands > 0U) &&
         (g_state.diagnostics.vk_gradient == DB_VK_GRADIENT_AUTO) &&
         (probe_child == 0)) {

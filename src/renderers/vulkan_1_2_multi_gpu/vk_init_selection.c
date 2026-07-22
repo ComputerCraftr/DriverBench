@@ -4,6 +4,7 @@
 #include "../../core/db_format_contract.h"
 #include "../../core/db_log.h"
 #include "../../core/db_numeric.h"
+#include "../../core/db_probe_protocol.h"
 #include "../../core/db_renderer_support.h"
 #include "vk_diagnostics.h"
 #include "vk_init_internal.h"
@@ -489,7 +490,7 @@ db_vk_select_devices_and_group(VkInstance instance, VkSurfaceKHR surface,
     selection.primary_phys_index =
         db_vk_choose_primary_physical_index_for_output(&selection,
                                                        output_request);
-    const char *const probe_uuid = getenv("DRIVERBENCH_PROBE_DEVICE_UUID");
+    const char *const probe_uuid = getenv(DB_PROBE_ENV_DEVICE_UUID);
     if ((probe_uuid != NULL) && (strlen(probe_uuid) == (VK_UUID_SIZE * 2U))) {
         for (uint32_t index = 0U; index < selection.phys_count; index++) {
             char uuid_text[(VK_UUID_SIZE * 2U) + 1U] = {0};

@@ -1,7 +1,6 @@
 #ifndef DRIVERBENCH_TEST_HARNESS_H
 #define DRIVERBENCH_TEST_HARNESS_H
 
-#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -122,8 +121,7 @@ db_test_failf_impl(db_test_state_t *state, const char *file, int line,
         const double _a = DB_TO_F64(_a_value);                                 \
         const double _b = DB_TO_F64(_b_value);                                 \
         const double _difference = _a - _b;                                    \
-        if (!isfinite(_a) || !isfinite(_b) || (_difference < -0.000001) ||     \
-            (_difference > 0.000001)) {                                        \
+        if (!((_difference >= -0.000001) && (_difference <= 0.000001))) {      \
             DB_TEST_FAILF((state), "expected %s == %s (%f != %f)", #a, #b, _a, \
                           _b);                                                 \
         }                                                                      \

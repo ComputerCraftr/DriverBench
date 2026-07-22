@@ -3,8 +3,7 @@ function(db_register_source_policy_tests)
         NAME source_file_line_limit
         COMMAND
             ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
-            -DLINE_LIMIT=${DB_SOURCE_FILE_LINE_LIMIT}
-            -DSOFT_LINE_LIMIT=${DB_SOURCE_FILE_SOFT_LINE_LIMIT} -P
+            -DLINE_LIMIT=${DB_SOURCE_FILE_LINE_LIMIT} -P
             ${CMAKE_SOURCE_DIR}/cmake/CheckSourceFileLineLimit.cmake)
     set_tests_properties(source_file_line_limit PROPERTIES LABELS "regression")
     add_test(
@@ -299,10 +298,10 @@ function(db_register_source_policy_tests)
                                                                    "regression")
 
     add_test(
-        NAME source_frame_lifecycle_migration
+        NAME source_frame_lifecycle_ownership
         COMMAND ${CMAKE_COMMAND} -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P
-                ${CMAKE_SOURCE_DIR}/cmake/CheckFrameLifecycleMigration.cmake)
-    set_tests_properties(source_frame_lifecycle_migration
+                ${CMAKE_SOURCE_DIR}/cmake/CheckFrameLifecycleOwnership.cmake)
+    set_tests_properties(source_frame_lifecycle_ownership
                          PROPERTIES LABELS "regression")
 
 endfunction()

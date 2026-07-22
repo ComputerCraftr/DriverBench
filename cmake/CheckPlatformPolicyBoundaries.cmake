@@ -6,6 +6,46 @@ if(NOT DEFINED RULE_SET OR "${RULE_SET}" STREQUAL "")
     message(FATAL_ERROR "RULE_SET is required")
 endif()
 
+set(DB_PP_SOURCE_ROOT "${SOURCE_ROOT}/src")
+set(DB_PP_CORE_ROOT "${DB_PP_SOURCE_ROOT}/core")
+set(DB_PP_BENCHMARK_ROOT "${DB_PP_SOURCE_ROOT}/benchmarks")
+set(DB_PP_DISPLAY_ROOT "${DB_PP_SOURCE_ROOT}/displays")
+set(DB_PP_RENDERER_ROOT "${DB_PP_SOURCE_ROOT}/renderers")
+set(DB_PP_TEST_ROOT "${SOURCE_ROOT}/tests")
+set(DB_PP_CORE_IMPLEMENTATION "${DB_PP_CORE_ROOT}/db_core.c")
+set(DB_PP_CORE_HEADER "${DB_PP_CORE_ROOT}/db_core.h")
+set(DB_PP_NUMERIC_HEADER "${DB_PP_CORE_ROOT}/db_numeric.h")
+set(DB_PP_GL1_ROOT "${DB_PP_RENDERER_ROOT}/opengl_gl1_5_gles1_1")
+set(DB_PP_GL1_FRAME_FILE "${DB_PP_GL1_ROOT}/gl1_frame.c")
+set(DB_PP_GL1_INTERNAL_FILE "${DB_PP_GL1_ROOT}/gl1_internal.h")
+set(DB_PP_GL_DISPLAY_RUNTIME_FILES "${DB_PP_DISPLAY_ROOT}/gl_display_runtime.c"
+                                   "${DB_PP_DISPLAY_ROOT}/gl_display_runtime.h")
+set(DB_PP_GLFW_ROOT "${DB_PP_DISPLAY_ROOT}/glfw_window")
+set(DB_PP_GLFW_IMPLEMENTATION "${DB_PP_GLFW_ROOT}/glfw_window.c")
+set(DB_PP_GLFW_COMMON_IMPLEMENTATION "${DB_PP_GLFW_ROOT}/glfw_window_common.c")
+set(DB_PP_GLFW_COMMON_FILES "${DB_PP_GLFW_COMMON_IMPLEMENTATION}"
+                            "${DB_PP_GLFW_ROOT}/glfw_window_common.h")
+set(DB_PP_GL_PROC_FILES "${DB_PP_RENDERER_ROOT}/gl_proc.c"
+                        "${DB_PP_RENDERER_ROOT}/gl_proc_runtime.h")
+set(DB_PP_LOG_IMPLEMENTATION "${DB_PP_CORE_ROOT}/db_log.c")
+set(DB_PP_DISPLAY_RUNTIME_CONFIG
+    "${DB_PP_DISPLAY_ROOT}/display_runtime_config_common.h")
+set(DB_PP_RENDERER_GLOBS
+    "${DB_PP_RENDERER_ROOT}/*.c" "${DB_PP_RENDERER_ROOT}/*.h"
+    "${DB_PP_RENDERER_ROOT}/*/*.c" "${DB_PP_RENDERER_ROOT}/*/*.h")
+set(DB_PP_DISPLAY_GLOBS
+    "${DB_PP_DISPLAY_ROOT}/*.c" "${DB_PP_DISPLAY_ROOT}/*.h"
+    "${DB_PP_DISPLAY_ROOT}/*/*.c" "${DB_PP_DISPLAY_ROOT}/*/*.h")
+set(DB_PP_CORE_BENCHMARK_GLOBS
+    "${DB_PP_CORE_ROOT}/*.c" "${DB_PP_CORE_ROOT}/*.h"
+    "${DB_PP_BENCHMARK_ROOT}/*.c" "${DB_PP_BENCHMARK_ROOT}/*.h")
+set(DB_PP_SOURCE_GLOBS
+    "${DB_PP_SOURCE_ROOT}/*.c" "${DB_PP_SOURCE_ROOT}/*.h"
+    "${DB_PP_SOURCE_ROOT}/*/*.c" "${DB_PP_SOURCE_ROOT}/*/*.h"
+    "${DB_PP_SOURCE_ROOT}/*/*/*.c" "${DB_PP_SOURCE_ROOT}/*/*/*.h")
+set(DB_PP_TEST_GLOBS "${DB_PP_TEST_ROOT}/*.c" "${DB_PP_TEST_ROOT}/*.h"
+                     "${DB_PP_TEST_ROOT}/*/*.c" "${DB_PP_TEST_ROOT}/*/*.h")
+
 function(db_pp_collect_files OUT_VAR)
     set(DB_PP_FILES "")
     foreach(DB_PP_GLOB IN LISTS ARGN)
@@ -57,17 +97,11 @@ set(DB_FAILURES "")
 
 if(RULE_SET STREQUAL "display_glfw_policy")
     set(DB_PP_SCAN_FILES
-        "${SOURCE_ROOT}/src/displays/gl_display_runtime.c"
-        "${SOURCE_ROOT}/src/displays/gl_display_runtime.h"
-        "${SOURCE_ROOT}/src/displays/glfw_window/glfw_window.c"
-        "${SOURCE_ROOT}/src/displays/glfw_window/glfw_window_common.c"
-        "${SOURCE_ROOT}/src/displays/glfw_window/glfw_window_common.h")
+        ${DB_PP_GL_DISPLAY_RUNTIME_FILES} "${DB_PP_GLFW_IMPLEMENTATION}"
+        ${DB_PP_GLFW_COMMON_FILES})
 
-    set(DB_PP_ALLOWED_FILES
-        "${SOURCE_ROOT}/src/displays/gl_display_runtime.c"
-        "${SOURCE_ROOT}/src/displays/gl_display_runtime.h"
-        "${SOURCE_ROOT}/src/displays/glfw_window/glfw_window_common.c"
-        "${SOURCE_ROOT}/src/displays/glfw_window/glfw_window_common.h")
+    set(DB_PP_ALLOWED_FILES ${DB_PP_GL_DISPLAY_RUNTIME_FILES}
+                            ${DB_PP_GLFW_COMMON_FILES})
 
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
@@ -76,17 +110,14 @@ if(RULE_SET STREQUAL "display_glfw_policy")
         "platform-specific GLFW/OpenGL policy branches must live only in approved display policy/helper files"
     )
 
-    set(DB_PP_WORDING_FILES "${SOURCE_ROOT}/src/displays/gl_display_runtime.c"
-                            "${SOURCE_ROOT}/src/displays/gl_display_runtime.h")
     db_pp_check_forbidden_in_files(
-        DB_PP_WORDING_FILES
+        DB_PP_GL_DISPLAY_RUNTIME_FILES
         "Linux GLFW|Apple GLFW|macOS GLFW"
         "shared OpenGL display policy must not contain platform-specific GLFW reason text"
     )
 
-    set(DB_PP_GLFW_HINT_FILES
-        "${SOURCE_ROOT}/src/displays/glfw_window/glfw_window.c"
-        "${SOURCE_ROOT}/src/displays/glfw_window/glfw_window_common.c")
+    set(DB_PP_GLFW_HINT_FILES "${DB_PP_GLFW_IMPLEMENTATION}"
+                              "${DB_PP_GLFW_COMMON_IMPLEMENTATION}")
     db_pp_check_forbidden_in_files(
         DB_PP_GLFW_HINT_FILES "GLFW_(RED|GREEN|BLUE|ALPHA)_BITS"
         "GLFW native color bits must come from the resolved output contract")
@@ -100,15 +131,10 @@ if(RULE_SET STREQUAL "display_glfw_policy")
         "KMS producers must consume the centralized native output format")
 
 elseif(RULE_SET STREQUAL "renderer_gl_upload_policy")
-    db_pp_collect_files(
-        DB_PP_SCAN_FILES "${SOURCE_ROOT}/src/renderers/*.c"
-        "${SOURCE_ROOT}/src/renderers/*.h" "${SOURCE_ROOT}/src/renderers/*/*.c"
-        "${SOURCE_ROOT}/src/renderers/*/*.h")
+    db_pp_collect_files(DB_PP_SCAN_FILES ${DB_PP_RENDERER_GLOBS})
 
-    set(DB_PP_ALLOWED_FILES
-        "${SOURCE_ROOT}/src/renderers/gl_runtime.c"
-        "${SOURCE_ROOT}/src/renderers/gl_proc.c"
-        "${SOURCE_ROOT}/src/renderers/gl_proc_runtime.h")
+    set(DB_PP_ALLOWED_FILES "${DB_PP_RENDERER_ROOT}/gl_runtime.c"
+                            ${DB_PP_GL_PROC_FILES})
 
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
@@ -145,16 +171,8 @@ elseif(RULE_SET STREQUAL "renderer_gl_upload_policy")
     endif()
 
 elseif(RULE_SET STREQUAL "renderer_ir_policy")
-    db_pp_collect_files(
-        DB_PP_SCAN_FILES
-        "${SOURCE_ROOT}/src/renderers/*.c"
-        "${SOURCE_ROOT}/src/renderers/*.h"
-        "${SOURCE_ROOT}/src/renderers/*/*.c"
-        "${SOURCE_ROOT}/src/renderers/*/*.h"
-        "${SOURCE_ROOT}/src/displays/*.c"
-        "${SOURCE_ROOT}/src/displays/*.h"
-        "${SOURCE_ROOT}/src/displays/*/*.c"
-        "${SOURCE_ROOT}/src/displays/*/*.h")
+    db_pp_collect_files(DB_PP_SCAN_FILES ${DB_PP_RENDERER_GLOBS}
+                        ${DB_PP_DISPLAY_GLOBS})
 
     db_pp_check_forbidden_in_files(
         DB_PP_SCAN_FILES
@@ -176,10 +194,7 @@ elseif(RULE_SET STREQUAL "renderer_ir_policy")
         DB_PP_SCAN_FILES "static[ \t]+int[ \t]+cached_result"
         "live backend probe results must not use unkeyed process-global caches")
 
-    db_pp_collect_files(
-        DB_PP_CORE_FILES "${SOURCE_ROOT}/src/core/*.c"
-        "${SOURCE_ROOT}/src/core/*.h" "${SOURCE_ROOT}/src/benchmarks/*.c"
-        "${SOURCE_ROOT}/src/benchmarks/*.h")
+    db_pp_collect_files(DB_PP_CORE_FILES ${DB_PP_CORE_BENCHMARK_GLOBS})
     db_pp_check_forbidden_in_files(
         DB_PP_CORE_FILES
         "#[ \t]*include[ \t]*[<\"][^>\"]*(renderers|GLFW|vulkan|OpenGL|GL/)"
@@ -187,13 +202,9 @@ elseif(RULE_SET STREQUAL "renderer_ir_policy")
     )
 
 elseif(RULE_SET STREQUAL "platform_proc_loading")
-    db_pp_collect_files(
-        DB_PP_SCAN_FILES "${SOURCE_ROOT}/src/renderers/*.c"
-        "${SOURCE_ROOT}/src/renderers/*.h" "${SOURCE_ROOT}/src/renderers/*/*.c"
-        "${SOURCE_ROOT}/src/renderers/*/*.h")
+    db_pp_collect_files(DB_PP_SCAN_FILES ${DB_PP_RENDERER_GLOBS})
 
-    set(DB_PP_ALLOWED_FILES "${SOURCE_ROOT}/src/renderers/gl_proc.c"
-                            "${SOURCE_ROOT}/src/renderers/gl_proc_runtime.h")
+    set(DB_PP_ALLOWED_FILES ${DB_PP_GL_PROC_FILES})
 
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
@@ -241,10 +252,8 @@ elseif(RULE_SET STREQUAL "cmake_platform_policy")
     )
 
 elseif(RULE_SET STREQUAL "architecture_boundaries")
-    db_pp_collect_files(
-        DB_PP_CORE_BENCHMARK_FILES "${SOURCE_ROOT}/src/core/*.c"
-        "${SOURCE_ROOT}/src/core/*.h" "${SOURCE_ROOT}/src/benchmarks/*.c"
-        "${SOURCE_ROOT}/src/benchmarks/*.h")
+    db_pp_collect_files(DB_PP_CORE_BENCHMARK_FILES
+                        ${DB_PP_CORE_BENCHMARK_GLOBS})
     db_pp_check_forbidden_in_files(
         DB_PP_CORE_BENCHMARK_FILES
         "#include[ \t]+\"[^\"]*(renderers|displays)/"
@@ -260,26 +269,15 @@ elseif(RULE_SET STREQUAL "architecture_boundaries")
         "overlapping benchmark recovery must use the bounded canonical checkpoint rather than replay or duplicate prior-color history"
     )
 
-    db_pp_collect_files(
-        DB_PP_RENDER_DISPLAY_FILES
-        "${SOURCE_ROOT}/src/renderers/*.c"
-        "${SOURCE_ROOT}/src/renderers/*.h"
-        "${SOURCE_ROOT}/src/renderers/*/*.c"
-        "${SOURCE_ROOT}/src/renderers/*/*.h"
-        "${SOURCE_ROOT}/src/displays/*.c"
-        "${SOURCE_ROOT}/src/displays/*.h"
-        "${SOURCE_ROOT}/src/displays/*/*.c"
-        "${SOURCE_ROOT}/src/displays/*/*.h")
+    db_pp_collect_files(DB_PP_RENDER_DISPLAY_FILES ${DB_PP_RENDERER_GLOBS}
+                        ${DB_PP_DISPLAY_GLOBS})
     db_pp_check_forbidden_in_files(
         DB_PP_RENDER_DISPLAY_FILES
         "DB_PATTERN_|is_snake|snake\\.|renderer_snake_|db_benchmark_core"
         "renderers and displays must consume generic frame contracts, not benchmark state"
     )
 
-    db_pp_collect_files(
-        DB_PP_RENDERER_FILES "${SOURCE_ROOT}/src/renderers/*.c"
-        "${SOURCE_ROOT}/src/renderers/*.h" "${SOURCE_ROOT}/src/renderers/*/*.c"
-        "${SOURCE_ROOT}/src/renderers/*/*.h")
+    db_pp_collect_files(DB_PP_RENDERER_FILES ${DB_PP_RENDERER_GLOBS})
     db_pp_check_forbidden_in_files(
         DB_PP_RENDERER_FILES "#include[ \t]+\"[^\"]*benchmarks/"
         "renderers must not include benchmark implementation headers")
@@ -289,9 +287,8 @@ elseif(RULE_SET STREQUAL "architecture_boundaries")
         "renderer subsystems must use core contracts and current subsystem generations"
     )
 
-    set(DB_PP_IR_HISTORY_ALLOWED_FILES
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_internal.h"
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_replay.c")
+    set(DB_PP_IR_HISTORY_ALLOWED_FILES "${DB_PP_GL1_INTERNAL_FILE}"
+                                       "${DB_PP_GL1_ROOT}/gl1_replay.c")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_RENDERER_FILES
         DB_PP_IR_HISTORY_ALLOWED_FILES
@@ -304,76 +301,44 @@ elseif(RULE_SET STREQUAL "architecture_boundaries")
         "GL1 replay storage must be preallocated and must never grow at frame time"
     )
 
-    db_pp_collect_files(
-        DB_PP_GL1_FILES "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/*.c"
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/*.h")
+    db_pp_collect_files(DB_PP_GL1_FILES "${DB_PP_GL1_ROOT}/*.c"
+                        "${DB_PP_GL1_ROOT}/*.h")
     db_pp_check_forbidden_in_files(
         DB_PP_GL1_FILES
         "begin_full_upload_target|present_full_upload_target|PRESERVE_RING_COHERENT|slot_matches_shadow"
         "GL1 must use one authoritative CPU backing and transient partial-upload streams"
     )
 
-    db_pp_collect_files(
-        DB_PP_DISPLAY_FILES "${SOURCE_ROOT}/src/displays/*.c"
-        "${SOURCE_ROOT}/src/displays/*.h" "${SOURCE_ROOT}/src/displays/*/*.c"
-        "${SOURCE_ROOT}/src/displays/*/*.h")
+    db_pp_collect_files(DB_PP_DISPLAY_FILES ${DB_PP_DISPLAY_GLOBS})
     db_pp_check_forbidden_in_files(
         DB_PP_DISPLAY_FILES
         "#include[ \t]+\"[^\"]*renderers/[^\"]*internal\\.h\""
         "displays must not include renderer-internal headers")
 
 elseif(RULE_SET STREQUAL "logging_policy")
-    db_pp_collect_files(
-        DB_PP_ALL_LOG_SOURCE_FILES
-        "${SOURCE_ROOT}/src/*.c"
-        "${SOURCE_ROOT}/src/*.h"
-        "${SOURCE_ROOT}/src/*/*.c"
-        "${SOURCE_ROOT}/src/*/*.h"
-        "${SOURCE_ROOT}/src/*/*/*.c"
-        "${SOURCE_ROOT}/src/*/*/*.h")
+    db_pp_collect_files(DB_PP_ALL_LOG_SOURCE_FILES ${DB_PP_SOURCE_GLOBS})
     set(DB_PP_VK_PRESENTATION_FILES
         "${SOURCE_ROOT}/src/renderers/vulkan_1_2_multi_gpu/vk_runtime_frame.c")
     db_pp_check_forbidden_in_files(
         DB_PP_VK_PRESENTATION_FILES "vkCmd(CopyImage|BlitImage)\\("
         "Vulkan final presentation must use the sampled fullscreen pipeline")
     set(DB_PP_ALLOWED_STDIO_LOG_FILES
-        "${SOURCE_ROOT}/src/core/db_log.c" "${SOURCE_ROOT}/src/core/db_core.c"
-        "${SOURCE_ROOT}/src/driverbench_cli.c")
+        "${DB_PP_LOG_IMPLEMENTATION}" "${DB_PP_CORE_IMPLEMENTATION}"
+        "${DB_PP_SOURCE_ROOT}/driverbench_cli.c")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_ALL_LOG_SOURCE_FILES
         DB_PP_ALLOWED_STDIO_LOG_FILES
         "(^|[^A-Za-z0-9_])(fputs|fprintf|printf|puts)[ \\t\\r\\n]*\\("
         "project output must use the structured logger; only core serialization and CLI help may write directly"
     )
-    set(DB_PP_ALLOWED_LOG_PREFIX_FILES "${SOURCE_ROOT}/src/core/db_log.c")
+    set(DB_PP_ALLOWED_LOG_PREFIX_FILES "${DB_PP_LOG_IMPLEMENTATION}")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_ALL_LOG_SOURCE_FILES DB_PP_ALLOWED_LOG_PREFIX_FILES
         "\"\\[[A-Za-z0-9_.-]+\\]\\[(info|error)\\]"
         "project log prefixes must be emitted only by the structured logger")
 
-    set(DB_PP_PROGRESS_FILES "${SOURCE_ROOT}/src/core/db_core.c")
-    db_pp_check_forbidden_in_files(
-        DB_PP_PROGRESS_FILES "benchmark \\(%s\\): mode=%s"
-        "periodic benchmark progress logs must not include static mode text")
-
-    set(DB_PP_PRESENT_LOG_FILES
-        "${SOURCE_ROOT}/src/renderers/gl_shadow_present.c")
-    db_pp_check_forbidden_in_files(
-        DB_PP_PRESENT_LOG_FILES
-        "effective_full_present_upload=%s, partial_present_upload=%s"
-        "shadow present decision logs must not append duplicated effective-mode text"
-    )
-
-    db_pp_collect_files(
-        DB_PP_LOG_SCAN_FILES
-        "${SOURCE_ROOT}/src/displays/*.c"
-        "${SOURCE_ROOT}/src/displays/*.h"
-        "${SOURCE_ROOT}/src/displays/*/*.c"
-        "${SOURCE_ROOT}/src/displays/*/*.h"
-        "${SOURCE_ROOT}/src/renderers/*.c"
-        "${SOURCE_ROOT}/src/renderers/*.h"
-        "${SOURCE_ROOT}/src/renderers/*/*.c"
-        "${SOURCE_ROOT}/src/renderers/*/*.h")
+    db_pp_collect_files(DB_PP_LOG_SCAN_FILES ${DB_PP_DISPLAY_GLOBS}
+                        ${DB_PP_RENDERER_GLOBS})
 
     set(DB_PP_NO_RUNTIME_WRAPPER_ALLOWLIST "")
     db_pp_check_forbidden_outside_allowlist(
@@ -389,8 +354,8 @@ elseif(RULE_SET STREQUAL "logging_policy")
     )
 
     set(DB_PP_ALLOWED_FINAL_SUMMARY_FILES
-        "${SOURCE_ROOT}/src/core/db_core.c" "${SOURCE_ROOT}/src/core/db_core.h"
-        "${SOURCE_ROOT}/src/displays/display_runtime_config_common.h")
+        "${DB_PP_CORE_IMPLEMENTATION}" "${DB_PP_CORE_HEADER}"
+        "${DB_PP_DISPLAY_RUNTIME_CONFIG}")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_LOG_SCAN_FILES
         DB_PP_ALLOWED_FINAL_SUMMARY_FILES
@@ -398,70 +363,11 @@ elseif(RULE_SET STREQUAL "logging_policy")
         "final benchmark summaries must be emitted only by the shared benchmark/final-summary helpers"
     )
 
-    set(DB_PP_ALLOWED_DRAW_STATS_FILES
-        "${SOURCE_ROOT}/src/displays/display_runtime_config_common.h")
+    set(DB_PP_ALLOWED_DRAW_STATS_FILES "${DB_PP_DISPLAY_RUNTIME_CONFIG}")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_LOG_SCAN_FILES DB_PP_ALLOWED_DRAW_STATS_FILES
         "db_display_log_draw_stats_with_fn\\("
         "draw stats must be emitted only by the shared final-summary helper")
-
-    set(DB_PP_ALLOWED_SCHEDULER_STATS_FILES
-        "${SOURCE_ROOT}/src/renderers/vulkan_1_2_multi_gpu/vk_runtime.c")
-    db_pp_check_forbidden_outside_allowlist(
-        DB_PP_LOG_SCAN_FILES
-        DB_PP_ALLOWED_SCHEDULER_STATS_FILES
-        "scheduler stats:"
-        "scheduler stats logs must be emitted only by the Vulkan final runtime summary"
-    )
-
-    set(DB_PP_SNAKE_RECOVERY_FILES
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_frame.c")
-    db_pp_check_forbidden_in_files(
-        DB_PP_SNAKE_RECOVERY_FILES
-        "Grid fast-path on invalid backbuffer"
-        "snake-grid invalid backbuffer recovery must not use the old renderer-local clear-and-redraw workaround"
-    )
-
-    set(DB_PP_GL1_HISTORY_RECOVERY_FILES
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_frame.c")
-    db_pp_check_forbidden_in_files(
-        DB_PP_GL1_HISTORY_RECOVERY_FILES
-        "db_history_should_seed_full_on_invalid\\("
-        "GL1 history-backed recovery must consume the shared recovery action instead of local invalid-backbuffer seed logic"
-    )
-
-    set(DB_PP_GL1_REPLAY_POLICY_FILES
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_frame.c")
-    db_pp_check_forbidden_in_files(
-        DB_PP_GL1_REPLAY_POLICY_FILES
-        "db_history_can_replay_previous_damage\\("
-        "GL1 snake replay must use the shared preserved-backbuffer replay readiness helper instead of raw preserved-count replay checks"
-    )
-
-    set(DB_PP_GL1_SEED_DRAW_POLICY_FILES
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_frame.c")
-    db_pp_check_forbidden_in_files(
-        DB_PP_GL1_SEED_DRAW_POLICY_FILES
-        "snake_plan = &snake_frame->expanded_plan|retroactive_frames"
-        "GL1 snake current draw must not use retroactive expanded replay plans during seed/recovery"
-    )
-
-    set(DB_PP_GL1_SHAPE_FALLBACK_POLICY_FILES
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_frame.c")
-    db_pp_check_forbidden_in_files(
-        DB_PP_GL1_SHAPE_FALLBACK_POLICY_FILES
-        "prefer_shadow_composite"
-        "GL1 snake_shapes dirty replay must not force steady-state shadow fallback"
-    )
-
-    set(DB_PP_GL1_SINGLE_FRAME_REPLAY_FILES
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_frame.c"
-        "${SOURCE_ROOT}/src/renderers/opengl_gl1_5_gles1_1/gl1_internal.h")
-    db_pp_check_forbidden_in_files(
-        DB_PP_GL1_SINGLE_FRAME_REPLAY_FILES
-        "prev_draw_blocks|prev_draw_block_count"
-        "GL1 snake dirty replay must not regress to the single-frame prev_draw_blocks replay model"
-    )
 
 elseif(RULE_SET STREQUAL "bool_normalization_policy")
     execute_process(
@@ -472,18 +378,10 @@ elseif(RULE_SET STREQUAL "bool_normalization_policy")
     if(NOT DB_PP_ARCHITECTURE_RESULT EQUAL 0)
         message(FATAL_ERROR "Architecture boundary policy failed")
     endif()
-    db_pp_collect_files(
-        DB_PP_SCAN_FILES
-        "${SOURCE_ROOT}/src/*.c"
-        "${SOURCE_ROOT}/src/*.h"
-        "${SOURCE_ROOT}/src/*/*.c"
-        "${SOURCE_ROOT}/src/*/*.h"
-        "${SOURCE_ROOT}/tests/*.c"
-        "${SOURCE_ROOT}/tests/*.h"
-        "${SOURCE_ROOT}/tests/*/*.c"
-        "${SOURCE_ROOT}/tests/*/*.h")
+    db_pp_collect_files(DB_PP_SCAN_FILES ${DB_PP_SOURCE_GLOBS}
+                        ${DB_PP_TEST_GLOBS})
 
-    set(DB_PP_ALLOWED_FILES "${SOURCE_ROOT}/src/core/db_numeric.h")
+    set(DB_PP_ALLOWED_FILES "${DB_PP_NUMERIC_HEADER}")
 
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
@@ -493,27 +391,10 @@ elseif(RULE_SET STREQUAL "bool_normalization_policy")
     )
 
 elseif(RULE_SET STREQUAL "numeric_boundary_policy")
-    db_pp_collect_files(
-        DB_PP_SCAN_FILES
-        "${SOURCE_ROOT}/src/*.c"
-        "${SOURCE_ROOT}/src/*.h"
-        "${SOURCE_ROOT}/src/*/*.c"
-        "${SOURCE_ROOT}/src/*/*.h"
-        "${SOURCE_ROOT}/src/*/*/*.c"
-        "${SOURCE_ROOT}/src/*/*/*.h")
+    db_pp_collect_files(DB_PP_SCAN_FILES ${DB_PP_SOURCE_GLOBS})
 
-    db_pp_collect_files(
-        DB_PP_ENUM_SCAN_FILES
-        "${SOURCE_ROOT}/src/*.c"
-        "${SOURCE_ROOT}/src/*.h"
-        "${SOURCE_ROOT}/src/*/*.c"
-        "${SOURCE_ROOT}/src/*/*.h"
-        "${SOURCE_ROOT}/src/*/*/*.c"
-        "${SOURCE_ROOT}/src/*/*/*.h"
-        "${SOURCE_ROOT}/tests/*.c"
-        "${SOURCE_ROOT}/tests/*.h"
-        "${SOURCE_ROOT}/tests/*/*.c"
-        "${SOURCE_ROOT}/tests/*/*.h")
+    db_pp_collect_files(DB_PP_ENUM_SCAN_FILES ${DB_PP_SOURCE_GLOBS}
+                        ${DB_PP_TEST_GLOBS})
 
     db_pp_check_forbidden_in_files(
         DB_PP_ENUM_SCAN_FILES
@@ -521,7 +402,7 @@ elseif(RULE_SET STREQUAL "numeric_boundary_policy")
         "ISO C enum values must fit in int; use an explicitly typed constant for high-bit data values"
     )
 
-    set(DB_PP_ALLOWED_FLOAT_CAST_FILES "${SOURCE_ROOT}/src/core/db_numeric.h")
+    set(DB_PP_ALLOWED_FLOAT_CAST_FILES "${DB_PP_NUMERIC_HEADER}")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
         DB_PP_ALLOWED_FLOAT_CAST_FILES
@@ -552,7 +433,7 @@ elseif(RULE_SET STREQUAL "numeric_boundary_policy")
         "pixel and Vulkan rectangle narrowing must use checked numeric boundary helpers"
     )
 
-    set(DB_PP_ALLOWED_RAW_ALLOCATION_MATH "${SOURCE_ROOT}/src/core/db_core.h")
+    set(DB_PP_ALLOWED_RAW_ALLOCATION_MATH "${DB_PP_CORE_HEADER}")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
         DB_PP_ALLOWED_RAW_ALLOCATION_MATH
@@ -565,8 +446,8 @@ elseif(RULE_SET STREQUAL "numeric_boundary_policy")
         "memcpy[ \\t\\r\\n]*\\([^;]*preserve_count[ \\t\\r\\n]*\\*[ \\t\\r\\n]*element_size"
         "array-preservation copy sizes must use checked multiplication")
 
-    set(DB_PP_NUMERIC_PRIMITIVE_FILES "${SOURCE_ROOT}/src/core/db_core.c"
-                                      "${SOURCE_ROOT}/src/core/db_core.h")
+    set(DB_PP_NUMERIC_PRIMITIVE_FILES "${DB_PP_CORE_IMPLEMENTATION}"
+                                      "${DB_PP_CORE_HEADER}")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
         DB_PP_NUMERIC_PRIMITIVE_FILES
@@ -592,15 +473,8 @@ elseif(RULE_SET STREQUAL "numeric_boundary_policy")
     )
 
 elseif(RULE_SET STREQUAL "sorting_policy")
-    db_pp_collect_files(
-        DB_PP_SCAN_FILES
-        "${SOURCE_ROOT}/src/*.c"
-        "${SOURCE_ROOT}/src/*.h"
-        "${SOURCE_ROOT}/src/*/*.c"
-        "${SOURCE_ROOT}/src/*/*.h"
-        "${SOURCE_ROOT}/src/*/*/*.c"
-        "${SOURCE_ROOT}/src/*/*/*.h")
-    set(DB_PP_SORT_IMPLEMENTATION_FILES "${SOURCE_ROOT}/src/core/db_sort.c")
+    db_pp_collect_files(DB_PP_SCAN_FILES ${DB_PP_SOURCE_GLOBS})
+    set(DB_PP_SORT_IMPLEMENTATION_FILES "${DB_PP_CORE_ROOT}/db_sort.c")
     db_pp_check_forbidden_outside_allowlist(
         DB_PP_SCAN_FILES
         DB_PP_SORT_IMPLEMENTATION_FILES

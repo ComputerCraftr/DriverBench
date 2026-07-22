@@ -20,28 +20,40 @@ def load_module(path: Path):  # type: ignore[no-untyped-def]
 def main() -> int:
     source_root = Path("/repo")
     module = load_module(Path(sys.argv[1]))
+    source_directory = Path(module.SOURCE_DIRECTORY)
+    test_directory = Path(module.TEST_DIRECTORY)
+    core_header = source_directory / "core/db_core.h"
+    gl3_header = source_directory / "renderers/opengl_gl3_3/gl3_internal.h"
+    kms_header = source_directory / "displays/linux_kms_atomic/kms_internal.h"
+    test_header = test_directory / "support/test_harness.h"
+
+    def absolute(path: Path) -> Path:
+        return source_root / path
+
     entries: list[dict[str, object]] = [
-        {"file": "/repo/src/core/db_core.c", "arguments": ["clang", "-c"]},
         {
-            "file": "/repo/src/renderers/opengl_gl3_3/gl3_execute.c",
+            "file": str(absolute(core_header.with_suffix(".c"))),
+            "arguments": ["clang", "-c"],
+        },
+        {
+            "file": str(absolute(gl3_header.with_name("gl3_execute.c"))),
             "arguments": ["clang", "-DGL3", "-c"],
         },
     ]
 
-    core_header = source_root / "src/core/db_core.h"
-    gl3_header = source_root / "src/renderers/opengl_gl3_3/gl3_internal.h"
-    kms_header = source_root / "src/displays/linux_kms_atomic/kms_internal.h"
-    test_header = source_root / "tests/support/test_harness.h"
-
-    assert module.optional_component(source_root, core_header) is None
-    assert module.optional_component(source_root, test_header) is None
-    assert module.optional_component(source_root, gl3_header) == (
-        source_root / "src/renderers/opengl_gl3_3"
+    cases = (
+        (core_header, None, 2),
+        (test_header, None, 2),
+        (gl3_header, absolute(gl3_header.parent), 1),
+        (kms_header, absolute(kms_header.parent), 0),
     )
-    assert len(module.entries_for_header(source_root, core_header, entries)) == 2
-    assert len(module.entries_for_header(source_root, test_header, entries)) == 2
-    assert len(module.entries_for_header(source_root, gl3_header, entries)) == 1
-    assert not module.entries_for_header(source_root, kms_header, entries)
+    for relative_header, expected_component, expected_entry_count in cases:
+        header = absolute(relative_header)
+        assert module.optional_component(source_root, header) == expected_component
+        assert (
+            len(module.entries_for_header(source_root, header, entries))
+            == expected_entry_count
+        )
     return 0
 
 

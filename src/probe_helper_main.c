@@ -173,14 +173,13 @@ static db_probe_result_t execute_live_probe(const db_probe_request_t *request) {
         free(observed_output);
         return result;
     }
-    (void)setenv("DRIVERBENCH_PROBE_CHILD", "1", 1);
+    (void)setenv(DB_PROBE_ENV_CHILD, "1", 1);
     char uuid[(DB_CONFORMANCE_UUID_BYTES * 2U) + 1U];
     device_uuid_text(request->device_uuid, uuid);
-    (void)setenv("DRIVERBENCH_PROBE_DEVICE_UUID", uuid, 1);
+    (void)setenv(DB_PROBE_ENV_DEVICE_UUID, uuid, 1);
     const char *const implementation =
         db_gradient_implementation_name(request->implementation);
-    (void)setenv("DRIVERBENCH_PROBE_GRADIENT_IMPLEMENTATION", implementation,
-                 1);
+    (void)setenv(DB_PROBE_ENV_GRADIENT_IMPLEMENTATION, implementation, 1);
     const char *backend_gradient = "row-fill";
     if (request->implementation == DB_GRADIENT_IMPLEMENTATION_SEMANTIC) {
         backend_gradient = "semantic";
@@ -315,8 +314,7 @@ int main(void) {
         (db_probe_request_decode(request_wire, &request) == 0)) {
         return 2;
     }
-    const char *const count_path =
-        getenv("DRIVERBENCH_PROBE_HELPER_COUNT_FILE");
+    const char *const count_path = getenv(DB_PROBE_ENV_HELPER_COUNT_FILE);
     if ((count_path != NULL) && (count_path[0] != '\0')) {
         const int count_fd =
             open(count_path, O_WRONLY | O_CREAT | O_APPEND, 0600);
@@ -331,15 +329,15 @@ int main(void) {
             return DB_PROBE_TEST_CHILD_FAILURE_EXIT;
         }
     }
-    const char *const mode = getenv("DRIVERBENCH_PROBE_HELPER_TEST_MODE");
-    if ((mode != NULL) && (strcmp(mode, "crash") == 0)) {
+    const char *const mode = getenv(DB_PROBE_ENV_HELPER_TEST_MODE);
+    if ((mode != NULL) && (strcmp(mode, DB_PROBE_TEST_MODE_CRASH) == 0)) {
         (void)raise(SIGABRT);
         return 3;
     }
-    if ((mode != NULL) && (strcmp(mode, "timeout") == 0)) {
+    if ((mode != NULL) && (strcmp(mode, DB_PROBE_TEST_MODE_TIMEOUT) == 0)) {
         (void)sleep(DB_PROBE_TIMEOUT_TEST_SECONDS);
     }
-    if ((mode != NULL) && (strcmp(mode, "malformed") == 0)) {
+    if ((mode != NULL) && (strcmp(mode, DB_PROBE_TEST_MODE_MALFORMED) == 0)) {
         const uint8_t malformed[] = {'b', 'a', 'd'};
         return db_probe_process_write_complete(STDOUT_FILENO, malformed,
                                                sizeof(malformed))
@@ -355,17 +353,19 @@ int main(void) {
     if (mode == NULL) {
         result = execute_live_probe(&request);
     }
-    if ((mode != NULL) && (strcmp(mode, "conforming") == 0)) {
+    if ((mode != NULL) && (strcmp(mode, DB_PROBE_TEST_MODE_CONFORMING) == 0)) {
         result.status = DB_PROBE_STATUS_OK;
         result.result = DB_CONFORMANCE_CONFORMING;
         result.expected_hash = request.identity_hash;
         result.observed_hash = request.identity_hash;
-    } else if ((mode != NULL) && (strcmp(mode, "nonconforming") == 0)) {
+    } else if ((mode != NULL) &&
+               (strcmp(mode, DB_PROBE_TEST_MODE_NONCONFORMING) == 0)) {
         result.status = DB_PROBE_STATUS_OK;
         result.result = DB_CONFORMANCE_NONCONFORMING;
         result.expected_hash = request.identity_hash;
         result.observed_hash = request.identity_hash ^ UINT64_C(1);
-    } else if ((mode != NULL) && (strcmp(mode, "topology_exact") == 0)) {
+    } else if ((mode != NULL) &&
+               (strcmp(mode, DB_PROBE_TEST_MODE_TOPOLOGY_EXACT) == 0)) {
         result.status = DB_PROBE_STATUS_OK;
         result.result =
             (request.implementation == DB_GRADIENT_IMPLEMENTATION_SEMANTIC)
@@ -375,16 +375,18 @@ int main(void) {
         result.observed_hash = (result.result == DB_CONFORMANCE_CONFORMING)
                                    ? request.identity_hash
                                    : request.identity_hash ^ UINT64_C(1);
-    } else if ((mode != NULL) && (strcmp(mode, "identity") == 0)) {
+    } else if ((mode != NULL) &&
+               (strcmp(mode, DB_PROBE_TEST_MODE_IDENTITY) == 0)) {
         result.identity_hash++;
     }
     uint8_t result_wire[DB_PROBE_RESULT_WIRE_BYTES] = {0};
     int written = db_probe_result_encode(&result, result_wire);
     if ((written != 0) && (mode != NULL) &&
-        (strcmp(mode, "malformed_checksum") == 0)) {
+        (strcmp(mode, DB_PROBE_TEST_MODE_MALFORMED_CHECKSUM) == 0)) {
         result_wire[0] ^= UINT8_C(1);
     }
-    if ((written != 0) && (mode != NULL) && (strcmp(mode, "fragmented") == 0)) {
+    if ((written != 0) && (mode != NULL) &&
+        (strcmp(mode, DB_PROBE_TEST_MODE_FRAGMENTED) == 0)) {
         const size_t prefix_size = 17U;
         written = db_probe_process_write_complete(STDOUT_FILENO, result_wire,
                                                   prefix_size) &&
@@ -397,11 +399,11 @@ int main(void) {
                                                   sizeof(result_wire));
     }
     if ((written != 0) && (mode != NULL) &&
-        (strcmp(mode, "postwrite_timeout") == 0)) {
+        (strcmp(mode, DB_PROBE_TEST_MODE_POSTWRITE_TIMEOUT) == 0)) {
         (void)sleep(DB_PROBE_TIMEOUT_TEST_SECONDS);
     }
     if ((written != 0) && (mode != NULL) &&
-        (strcmp(mode, "child_failure") == 0)) {
+        (strcmp(mode, DB_PROBE_TEST_MODE_CHILD_FAILURE) == 0)) {
         return DB_PROBE_TEST_CHILD_FAILURE_EXIT;
     }
     return (written != 0) ? 0 : 5;
